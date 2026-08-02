@@ -55,19 +55,22 @@ Environment variables do not map generically onto TOML keys.
 
 ```text
 tale [--profile NAME] [--read-only] [--no-local] [--view ROUTE]
-     [--config PATH] [--tailscale-path PATH]
+     [--config PATH] [--tailscale-path PATH] [--mock]
 
 tale auth add PROFILE
 tale auth remove PROFILE
 tale auth status [PROFILE]
 tale config path
 tale config check
-tale doctor
+tale doctor [--config PATH] [--mock]
 ```
 
 - `--read-only` disables all mutations regardless of profile configuration.
 - `--no-local` skips local-client detection and is useful on an admin workstation
   without Tailscale installed.
+- `--mock` selects deterministic fictional providers and prevents local process,
+  HTTP, and keyring access. It is incompatible with `--profile` and
+  `TALE_ACCESS_TOKEN`, visibly labels the session `mock`, and is never persisted.
 - `--view` accepts only canonical routes and documented aliases.
 - `auth remove` removes Tale's stored credential reference; it does not revoke
   the credential at Tailscale.
@@ -245,4 +248,3 @@ color system. The action registry is designed to support remapping later, but
 shipping arbitrary bindings or theme schemas before actions and visual states
 stabilize would create a compatibility burden without improving the first
 working product.
-
