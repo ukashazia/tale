@@ -62,7 +62,7 @@ tale auth remove PROFILE
 tale auth status [PROFILE]
 tale config path
 tale config check
-tale doctor [--config PATH] [--mock]
+tale doctor [--config PATH] [--mock] [--output PATH]
 ```
 
 - `--read-only` disables all mutations regardless of profile configuration.
@@ -75,7 +75,8 @@ tale doctor [--config PATH] [--mock]
 - `auth remove` removes Tale's stored credential reference; it does not revoke
   the credential at Tailscale.
 - `doctor` performs non-mutating local, keyring, API, terminal, and config checks
-  and redacts its output.
+  and redacts its output. `--output` writes the allowlisted Tale 1.0 support
+  bundle to an explicit path and never uploads it.
 
 ## TOML schema
 

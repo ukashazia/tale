@@ -135,8 +135,8 @@ Risk tiers:
 | Tier | Examples | Confirmation |
 | --- | --- | --- |
 | 0: observe | refresh, copy, filter, ping, validate | none |
-| 1: reversible | select exit node, toggle shields-up, approve route | review plus `Enter` |
-| 2: disruptive | disconnect local client, suspend user, enable Funnel | review plus explicit action mnemonic |
+| 1: reversible | select exit node, toggle shields-up | review plus `Enter` |
+| 2: disruptive | disconnect local client, suspend user, approve route, enable Funnel | review plus explicit action mnemonic |
 | 3: destructive/secret | remove device, delete user, revoke credential, expire key now | type the target name or generated phrase |
 
 Batch actions show every target, partial-failure behavior, and whether the API
@@ -279,4 +279,3 @@ Tailnet Lock signing is a different action and is never offered as â€œapprove.â€
 - Forms keep invalid input and explain the correction; they do not clear it.
 - Time is rendered in the configured local/UTC mode with an exact timestamp in
   details even when a relative age is shown in a table.
-

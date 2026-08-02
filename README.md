@@ -23,6 +23,11 @@ is added.
 - [02 — Local observer](docs/specs/02-local-observer.md)
 - [03 — Local operator](docs/specs/03-local-operator.md)
 - [04 — Local services](docs/specs/04-local-services.md)
+- [05 — Admin observer](docs/specs/05-admin-observer.md)
+- [06 — Admin operator](docs/specs/06-admin-operator.md)
+- [07 — Access, credentials, and audit security](docs/specs/07-access-security.md)
+- [08 — Operational depth](docs/specs/08-operational-depth.md)
+- [09 — Tale 1.0 hardening](docs/specs/09-one-zero-hardening.md)
 
 Each specification is an implementation contract for one roadmap phase. It
 defines feature behavior, code ownership, adapter boundaries, actions, error

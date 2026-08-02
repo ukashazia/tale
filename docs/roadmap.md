@@ -15,10 +15,15 @@ to that phase.
 - [02 — Local observer](specs/02-local-observer.md)
 - [03 — Local operator](specs/03-local-operator.md)
 - [04 — Local services](specs/04-local-services.md)
+- [05 — Admin observer](specs/05-admin-observer.md)
+- [06 — Admin operator](specs/06-admin-operator.md)
+- [07 — Access, credentials, and audit security](specs/07-access-security.md)
+- [08 — Operational depth](specs/08-operational-depth.md)
+- [09 — Tale 1.0 hardening](specs/09-one-zero-hardening.md)
 
-These are agent-ready contracts for the first four implementation phases. The
-roadmap remains the ordering and scope index; when a specification is more
-precise about a Phase 1–4 behavior, the specification controls.
+These are agent-ready contracts for every implementation phase. The roadmap
+remains the ordering and scope index; when a specification is more precise
+about its phase behavior, the specification controls.
 
 ## Delivery shape
 
