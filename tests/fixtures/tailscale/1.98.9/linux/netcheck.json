@@ -1,0 +1,21 @@
+{
+  "UDP": true,
+  "IPv4": true,
+  "IPv6": true,
+  "MappingVariesByDestIP": false,
+  "HairPinning": true,
+  "PortMapping": [
+    "UPnP",
+    "PCP"
+  ],
+  "NearestDERP": "fra",
+  "IPv4Address": "198.51.100.10:41641",
+  "DERPLatency": {
+    "1": 0.042,
+    "2": {
+      "Name": "Frankfurt",
+      "LatencyMs": 18
+    },
+    "3": 0.091
+  }
+}

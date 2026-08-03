@@ -1,20 +1,33 @@
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{self, ActionContext, ActionId, Capability};
 use crate::config::ResolvedConfig;
 use crate::domain::device::{
-    Device, DeviceId, SortDirection, SortField, SortSpec, compare_devices,
+    Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec, compare_devices,
 };
+use crate::domain::diagnostic::{DiagnosticResult, DiagnosticState};
 use crate::domain::filter::{self, FilterExpression};
+use crate::domain::redaction::{DiagnosticReportInput, redact_diagnostic_report};
+use crate::domain::source::{
+    LocalCapabilities, LocalExecutable, LocalFailure, LocalFailureKind, LocalResource,
+    LocalResourceStatus, LocalSnapshot, LocalState,
+};
 use crate::domain::{SourceHealth, Timestamp};
 use crate::effect::{Effect, Resource};
-use crate::event::{Event, InputEvent, ShutdownReason, SourceEvent, TaskEvent};
+use crate::event::{Event, InputEvent, LocalEvent, ShutdownReason, SourceEvent, TaskEvent};
+use crate::local::client::{ExecutableResolution, HostPlatform};
+use crate::local::diagnostics::{self, DiagnosticRequest};
 use crate::mock::{MOCK_NOW, MockLoadScenario, MockTaskBehavior};
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SourceMode {
     Mock,
+    Local,
     Unavailable,
 }
 
@@ -22,6 +35,7 @@ impl SourceMode {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Mock => "mock",
+            Self::Local => "local",
             Self::Unavailable => "local unavailable",
         }
     }
@@ -30,7 +44,9 @@ impl SourceMode {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Route {
     Overview,
+    Local,
     Devices,
+    Dns,
     Activity,
     Settings,
 }
@@ -39,7 +55,9 @@ impl Route {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Overview => "overview",
+            Self::Local => "local",
             Self::Devices => "devices",
+            Self::Dns => "dns",
             Self::Activity => "activity",
             Self::Settings => "settings",
         }
@@ -48,7 +66,9 @@ impl Route {
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "overview" | "ov" | "home" => Some(Self::Overview),
+            "local" | "self" => Some(Self::Local),
             "devices" | "device" | "dev" | "nodes" => Some(Self::Devices),
+            "dns" => Some(Self::Dns),
             "activity" | "tasks" => Some(Self::Activity),
             "settings" | "config" => Some(Self::Settings),
             _ => None,
@@ -93,6 +113,20 @@ pub struct CopyPickerState {
     pub selected: usize,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DiagnosticInputKind {
+    DnsQuery,
+    Whois,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DiagnosticInputState {
+    pub kind: DiagnosticInputKind,
+    pub input: String,
+    pub secondary: String,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CopyField {
     DeviceId,
@@ -101,6 +135,9 @@ pub enum CopyField {
     Owner,
     Addresses,
     Tags,
+    PublicKey,
+    Endpoint,
+    DiagnosticSummary,
 }
 
 impl CopyField {
@@ -112,6 +149,9 @@ impl CopyField {
             Self::Owner => "owner",
             Self::Addresses => "addresses",
             Self::Tags => "tags",
+            Self::PublicKey => "public key",
+            Self::Endpoint => "endpoint",
+            Self::DiagnosticSummary => "diagnostic summary",
         }
     }
 }
@@ -126,6 +166,7 @@ pub enum Overlay {
     QuitConfirmation,
     TaskInspector(TaskId),
     SortPicker { selected: usize },
+    DiagnosticInput(DiagnosticInputState),
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +186,7 @@ impl DeviceResource {
             observed_at: None,
             health: match mode {
                 SourceMode::Mock => SourceHealth::Loading,
+                SourceMode::Local => SourceHealth::Loading,
                 SourceMode::Unavailable => SourceHealth::Unavailable,
             },
             error: None,
@@ -193,6 +235,12 @@ pub struct App {
     pub overlays: Vec<Overlay>,
     pub views: Views,
     pub devices_resource: DeviceResource,
+    pub local_resource: LocalResource,
+    pub local_state: LocalState,
+    pub local_executable: Option<LocalExecutable>,
+    pub local_capabilities: LocalCapabilities,
+    pub local_diagnostics: BTreeMap<TaskId, DiagnosticState>,
+    pub local_self_id: Option<DeviceId>,
     pub tasks: TaskStore,
     pub notifications: Vec<Notification>,
     pub resolved_config: ResolvedConfig,
@@ -205,14 +253,29 @@ pub struct App {
     pub runtime_error: Option<String>,
     pub copied_value: Option<String>,
     render_invalidated: bool,
+    local_discovery_in_flight: bool,
+    local_status_in_flight: bool,
+    local_next_refresh: Option<Instant>,
+    local_last_tick: Option<Instant>,
 }
 
 impl App {
     pub fn new(config: ResolvedConfig) -> Self {
         let source_mode = if config.mock {
             SourceMode::Mock
-        } else {
+        } else if config.no_local || !config.local.enabled {
             SourceMode::Unavailable
+        } else {
+            SourceMode::Local
+        };
+        let local_state = if config.mock {
+            LocalState::Mock
+        } else if source_mode == SourceMode::Unavailable {
+            LocalState::Disabled
+        } else {
+            LocalState::DaemonUnavailable {
+                detail: "local client discovery pending".to_owned(),
+            }
         };
         Self {
             route_stack: vec![Route::Overview],
@@ -222,6 +285,12 @@ impl App {
                 devices: DeviceViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
+            local_resource: LocalResource::new(),
+            local_state,
+            local_executable: None,
+            local_capabilities: LocalCapabilities::default(),
+            local_diagnostics: BTreeMap::new(),
+            local_self_id: None,
             tasks: TaskStore::new(),
             notifications: Vec::new(),
             resolved_config: config,
@@ -229,23 +298,46 @@ impl App {
             source_mode,
             terminal_width: 80,
             terminal_height: 24,
-            now: MOCK_NOW,
+            now: if source_mode == SourceMode::Mock {
+                MOCK_NOW
+            } else {
+                crate::local::now()
+            },
             tick_count: 0,
             runtime_error: None,
             copied_value: None,
             render_invalidated: true,
+            local_discovery_in_flight: false,
+            local_status_in_flight: false,
+            local_next_refresh: None,
+            local_last_tick: None,
         }
     }
 
     pub fn bootstrap_effects(&mut self) -> Vec<Effect> {
-        if self.source_mode != SourceMode::Mock {
-            return Vec::new();
+        match self.source_mode {
+            SourceMode::Unavailable => return Vec::new(),
+            SourceMode::Mock => {
+                self.devices_resource.generation = 1;
+                return vec![Effect::StartMockLoad {
+                    resource: Resource::Devices,
+                    generation: 1,
+                    scenario: MockLoadScenario::Initial,
+                }];
+            }
+            SourceMode::Local => {}
         }
-        self.devices_resource.generation = 1;
-        vec![Effect::StartMockLoad {
-            resource: Resource::Devices,
+        self.local_resource.generation = 1;
+        self.local_resource.begin(1, self.now);
+        self.local_discovery_in_flight = true;
+        self.local_next_refresh = Some(instant_after(
+            Instant::now(),
+            self.resolved_config.local.refresh_interval,
+        ));
+        vec![Effect::StartLocalDiscovery {
             generation: 1,
-            scenario: MockLoadScenario::Initial,
+            resolution: local_resolution(&self.resolved_config),
+            timeout: self.resolved_config.local.command_timeout,
         }]
     }
 
@@ -260,20 +352,34 @@ impl App {
         }
         match event {
             Event::Input(input) => self.update_input(input),
-            Event::Tick(_) => self.update_tick(),
-            Event::Task(task) => self.update_task(task),
+            Event::Tick(tick) => self.update_tick(tick),
+            Event::Task(task) => self.update_task(*task),
             Event::Source(source) => self.update_source(source),
+            Event::Local(local) => self.update_local(*local),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         }
     }
 
-    fn update_tick(&mut self) -> Vec<Effect> {
+    fn update_tick(&mut self, tick: Instant) -> Vec<Effect> {
         self.tick_count = self.tick_count.saturating_add(1);
-        self.now = MOCK_NOW.saturating_add(self.tick_count);
+        self.now = if self.source_mode == SourceMode::Mock {
+            MOCK_NOW.saturating_add(self.tick_count)
+        } else {
+            crate::local::now()
+        };
+        self.local_last_tick = Some(tick);
         self.notifications
             .retain(|notification| notification.expires_at > self.now);
         if self.tasks.has_active() {
             self.render_invalidated = true;
+        }
+        if self.source_mode == SourceMode::Local
+            && !self.local_discovery_in_flight
+            && !self.local_status_in_flight
+            && self.overlays.is_empty()
+            && self.local_next_refresh.is_some_and(|due| tick >= due)
+        {
+            return self.start_refresh(false);
         }
         Vec::new()
     }
@@ -305,6 +411,7 @@ impl App {
                 state.error = None;
             }
             Overlay::Help(state) if state.searchable => state.query.push_str(text),
+            Overlay::DiagnosticInput(state) => state.input.push_str(text),
             _ => {}
         }
         Vec::new()
@@ -390,6 +497,25 @@ impl App {
                     }
                     KeyCode::Backspace => {
                         let _ = state.query.pop();
+                    }
+                    _ => return None,
+                }
+                Some(Vec::new())
+            }
+            Overlay::DiagnosticInput(state) => {
+                match key.code {
+                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                        state.input.push(character);
+                        state.error = None;
+                    }
+                    KeyCode::Backspace => {
+                        let _ = state.input.pop();
+                        state.error = None;
+                    }
+                    KeyCode::Enter => {
+                        let input = state.input.clone();
+                        let kind = state.kind.clone();
+                        return Some(self.accept_diagnostic_input(kind, &input));
                     }
                     _ => return None,
                 }
@@ -486,7 +612,7 @@ impl App {
             }
             Overlay::SortPicker { mut selected } => {
                 match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => selected = (selected + 1).min(13),
+                    KeyCode::Char('j') | KeyCode::Down => selected = (selected + 1).min(17),
                     KeyCode::Char('k') | KeyCode::Up => selected = selected.saturating_sub(1),
                     KeyCode::Enter => {
                         let value = selected;
@@ -496,6 +622,10 @@ impl App {
                     _ => {}
                 }
                 self.overlays.push(Overlay::SortPicker { selected });
+                Vec::new()
+            }
+            Overlay::DiagnosticInput(state) => {
+                self.overlays.push(Overlay::DiagnosticInput(state));
                 Vec::new()
             }
         }
@@ -598,7 +728,7 @@ impl App {
         let Some(spec) = action::find_action(action_id) else {
             return Vec::new();
         };
-        if !self.action_available(spec.capability) {
+        if !self.action_available(action_id, spec.capability) {
             self.runtime_error = Some(
                 spec.capability
                     .reason()
@@ -719,6 +849,12 @@ impl App {
                         ActionId::MockCancellable,
                         ActionId::MockNonCancellable,
                     ]
+                } else if self.source_mode == SourceMode::Local {
+                    vec![
+                        ActionId::LocalProbeConnection,
+                        ActionId::LocalWhois,
+                        ActionId::DiagnosticCopy,
+                    ]
                 } else {
                     Vec::new()
                 };
@@ -729,15 +865,20 @@ impl App {
                 Vec::new()
             }
             ActionId::ResourceCopy => {
+                let mut fields = vec![
+                    CopyField::DeviceId,
+                    CopyField::DisplayName,
+                    CopyField::Hostname,
+                    CopyField::Owner,
+                    CopyField::Addresses,
+                    CopyField::Tags,
+                ];
+                if self.source_mode == SourceMode::Local {
+                    fields.push(CopyField::PublicKey);
+                    fields.push(CopyField::Endpoint);
+                }
                 self.overlays.push(Overlay::CopyPicker(CopyPickerState {
-                    fields: vec![
-                        CopyField::DeviceId,
-                        CopyField::DisplayName,
-                        CopyField::Hostname,
-                        CopyField::Owner,
-                        CopyField::Addresses,
-                        CopyField::Tags,
-                    ],
+                    fields,
                     selected: 0,
                 }));
                 Vec::new()
@@ -763,38 +904,183 @@ impl App {
                 MockTaskBehavior::NonCancellable,
                 false,
             ),
+            ActionId::LocalDiagnostics => self.open_local_diagnostics(),
+            ActionId::LocalProbeConnection => self.start_probe_connection(),
+            ActionId::LocalNetcheck => {
+                self.start_local_diagnostic(DiagnosticRequest::Netcheck { live: false })
+            }
+            ActionId::LocalNetcheckLive => {
+                self.start_local_diagnostic(DiagnosticRequest::Netcheck { live: true })
+            }
+            ActionId::LocalDnsStatus => self.start_local_diagnostic(DiagnosticRequest::DnsStatus),
+            ActionId::LocalDnsQuery => {
+                self.overlays
+                    .push(Overlay::DiagnosticInput(DiagnosticInputState {
+                        kind: DiagnosticInputKind::DnsQuery,
+                        input: String::new(),
+                        secondary: "A".to_owned(),
+                        error: None,
+                    }));
+                Vec::new()
+            }
+            ActionId::LocalWhois => self.open_whois_input(),
+            ActionId::DiagnosticCopy => {
+                self.copy_diagnostic_summary();
+                Vec::new()
+            }
         }
     }
 
-    fn action_available(&self, capability: Capability) -> bool {
+    fn action_available(&self, action_id: ActionId, capability: Capability) -> bool {
         match capability {
-            Capability::Available => true,
+            Capability::Available => self.local_action_available(action_id),
             Capability::MockOnly => self.source_mode == SourceMode::Mock,
             Capability::Disabled(_) => false,
         }
     }
 
-    fn start_refresh(&mut self, _all: bool) -> Vec<Effect> {
-        if self.source_mode != SourceMode::Mock {
-            self.runtime_error = Some("local integration is unavailable in this build".to_owned());
-            return Vec::new();
+    pub fn action_is_available(&self, action_id: ActionId) -> bool {
+        action::find_action(action_id)
+            .is_some_and(|spec| self.action_available(action_id, spec.capability))
+    }
+
+    pub fn action_unavailable_reason(&self, action_id: ActionId) -> Option<String> {
+        if self.action_is_available(action_id) {
+            return None;
         }
-        self.devices_resource.generation = self.devices_resource.generation.saturating_add(1);
-        let generation = self.devices_resource.generation;
-        self.devices_resource.health = SourceHealth::Loading;
-        self.devices_resource.error = None;
-        let scenario = if generation.is_multiple_of(5) {
-            MockLoadScenario::Failure
-        } else if generation.is_multiple_of(3) {
-            MockLoadScenario::Stale
-        } else {
-            MockLoadScenario::Success
+        if self.source_mode != SourceMode::Local
+            && matches!(
+                action_id,
+                ActionId::LocalDiagnostics
+                    | ActionId::LocalProbeConnection
+                    | ActionId::LocalNetcheck
+                    | ActionId::LocalNetcheckLive
+                    | ActionId::LocalDnsStatus
+                    | ActionId::LocalDnsQuery
+                    | ActionId::LocalWhois
+                    | ActionId::DiagnosticCopy
+            )
+        {
+            return Some("local observer is disabled".to_owned());
+        }
+        if self.local_executable.is_none()
+            && matches!(
+                action_id,
+                ActionId::LocalDiagnostics
+                    | ActionId::LocalProbeConnection
+                    | ActionId::LocalNetcheck
+                    | ActionId::LocalNetcheckLive
+                    | ActionId::LocalDnsStatus
+                    | ActionId::LocalDnsQuery
+                    | ActionId::LocalWhois
+            )
+        {
+            return Some("tailscale executable has not been discovered".to_owned());
+        }
+        let reason = match action_id {
+            ActionId::LocalProbeConnection => "ping is unavailable for this client",
+            ActionId::LocalNetcheck => "one-shot netcheck is unavailable for this client",
+            ActionId::LocalNetcheckLive => "live netcheck is unavailable for this client",
+            ActionId::LocalDnsStatus => "DNS status is unavailable for this client",
+            ActionId::LocalDnsQuery => "DNS query is unavailable for this client",
+            ActionId::LocalWhois => "whois is unavailable for this client",
+            _ => "capability unavailable",
         };
-        vec![Effect::StartMockLoad {
-            resource: Resource::Devices,
-            generation,
-            scenario,
-        }]
+        Some(reason.to_owned())
+    }
+
+    fn local_action_available(&self, action_id: ActionId) -> bool {
+        if !matches!(
+            action_id,
+            ActionId::LocalDiagnostics
+                | ActionId::LocalProbeConnection
+                | ActionId::LocalNetcheck
+                | ActionId::LocalNetcheckLive
+                | ActionId::LocalDnsStatus
+                | ActionId::LocalDnsQuery
+                | ActionId::LocalWhois
+                | ActionId::DiagnosticCopy
+        ) {
+            return true;
+        }
+        if self.source_mode != SourceMode::Local {
+            return false;
+        }
+        if action_id == ActionId::DiagnosticCopy {
+            return true;
+        }
+        if self.local_executable.is_none() {
+            return false;
+        }
+        match action_id {
+            ActionId::LocalProbeConnection => self.local_capabilities.ping,
+            ActionId::LocalNetcheck => self.local_capabilities.netcheck_json,
+            ActionId::LocalNetcheckLive => self.local_capabilities.netcheck_json_line,
+            ActionId::LocalDnsStatus => self.local_capabilities.dns_status_json,
+            ActionId::LocalDnsQuery => self.local_capabilities.dns_query_json,
+            ActionId::LocalWhois => self.local_capabilities.whois_json,
+            ActionId::LocalDiagnostics => true,
+            ActionId::DiagnosticCopy => true,
+            _ => true,
+        }
+    }
+
+    fn start_refresh(&mut self, _all: bool) -> Vec<Effect> {
+        match self.source_mode {
+            SourceMode::Unavailable => {
+                self.runtime_error = Some("local integration is disabled".to_owned());
+                Vec::new()
+            }
+            SourceMode::Mock => {
+                self.devices_resource.generation =
+                    self.devices_resource.generation.saturating_add(1);
+                let generation = self.devices_resource.generation;
+                self.devices_resource.health = SourceHealth::Loading;
+                self.devices_resource.error = None;
+                let scenario = if generation.is_multiple_of(5) {
+                    MockLoadScenario::Failure
+                } else if generation.is_multiple_of(3) {
+                    MockLoadScenario::Stale
+                } else {
+                    MockLoadScenario::Success
+                };
+                vec![Effect::StartMockLoad {
+                    resource: Resource::Devices,
+                    generation,
+                    scenario,
+                }]
+            }
+            SourceMode::Local => {
+                let generation = self.local_resource.generation.saturating_add(1);
+                let mut effects = Vec::new();
+                if self.local_discovery_in_flight {
+                    effects.push(Effect::CancelLocalDiscovery);
+                }
+                if self.local_status_in_flight {
+                    effects.push(Effect::CancelLocalStatus);
+                }
+                self.local_resource.begin(generation, self.now);
+                self.local_status_in_flight = false;
+                self.local_discovery_in_flight = false;
+                self.local_next_refresh = None;
+                if let Some(executable) = self.local_executable.clone() {
+                    self.local_status_in_flight = true;
+                    effects.push(Effect::StartLocalStatus {
+                        generation,
+                        executable,
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                } else {
+                    self.local_discovery_in_flight = true;
+                    effects.push(Effect::StartLocalDiscovery {
+                        generation,
+                        resolution: local_resolution(&self.resolved_config),
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                }
+                effects
+            }
+        }
     }
 
     fn start_task(
@@ -810,6 +1096,224 @@ impl App {
             task_id: id,
             behavior,
         }]
+    }
+
+    fn open_local_diagnostics(&mut self) -> Vec<Effect> {
+        let actions = vec![
+            ActionId::LocalNetcheck,
+            ActionId::LocalNetcheckLive,
+            ActionId::LocalDnsStatus,
+            ActionId::LocalDnsQuery,
+            ActionId::LocalWhois,
+            ActionId::DiagnosticCopy,
+        ];
+        self.overlays.push(Overlay::ActionPicker(ActionPickerState {
+            actions,
+            selected: 0,
+        }));
+        Vec::new()
+    }
+
+    fn start_probe_connection(&mut self) -> Vec<Effect> {
+        let target = self
+            .selected_local_device()
+            .and_then(LocalDevice::preferred_target)
+            .map(str::to_owned);
+        let Some(target) = target else {
+            self.runtime_error = Some("selected peer has no DNS name or Tailscale IP".to_owned());
+            return Vec::new();
+        };
+        self.start_local_diagnostic(DiagnosticRequest::Ping { target })
+    }
+
+    fn start_local_diagnostic(&mut self, request: DiagnosticRequest) -> Vec<Effect> {
+        let Some(executable) = self.local_executable.clone() else {
+            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            return Vec::new();
+        };
+        if !self.request_capability_available(&request) {
+            self.runtime_error = Some(format!(
+                "{} is unavailable for this client",
+                request.label()
+            ));
+            return Vec::new();
+        }
+        if let DiagnosticRequest::DnsQuery { name, record_type } = &request
+            && let Err(error) = diagnostics::validate_dns_query(name, record_type.label())
+        {
+            self.runtime_error = Some(error);
+            return Vec::new();
+        }
+        if let DiagnosticRequest::Whois { target, .. } = &request
+            && let Err(error) = diagnostics::validate_whois_target(target)
+        {
+            self.runtime_error = Some(error);
+            return Vec::new();
+        }
+        let action_id = diagnostic_action(&request);
+        let target_label = match &request {
+            DiagnosticRequest::Ping { target } => format!("ping target {target}"),
+            DiagnosticRequest::DnsQuery { name, record_type } => {
+                format!("dns query {name} {}", record_type.label())
+            }
+            DiagnosticRequest::Whois { target, .. } => format!("whois {target}"),
+            _ => request.label().to_owned(),
+        };
+        let task_id = self.tasks.create(action_id, target_label, self.now, true);
+        self.local_diagnostics
+            .insert(task_id, DiagnosticState::new(request.label()));
+        vec![Effect::StartLocalDiagnostic {
+            task_id,
+            executable,
+            timeout: self.resolved_config.local.command_timeout,
+            request,
+        }]
+    }
+
+    fn request_capability_available(&self, request: &DiagnosticRequest) -> bool {
+        match request {
+            DiagnosticRequest::Ping { .. } => self.local_capabilities.ping,
+            DiagnosticRequest::Netcheck { live } => {
+                if *live {
+                    self.local_capabilities.netcheck_json_line
+                } else {
+                    self.local_capabilities.netcheck_json
+                }
+            }
+            DiagnosticRequest::DnsStatus => self.local_capabilities.dns_status_json,
+            DiagnosticRequest::DnsQuery { .. } => self.local_capabilities.dns_query_json,
+            DiagnosticRequest::Whois { .. } => self.local_capabilities.whois_json,
+        }
+    }
+
+    fn open_whois_input(&mut self) -> Vec<Effect> {
+        let seed = match self
+            .selected_local_device()
+            .and_then(|device| device.tailscale_ips.first())
+        {
+            Some(value) => value.clone(),
+            None => String::new(),
+        };
+        self.overlays
+            .push(Overlay::DiagnosticInput(DiagnosticInputState {
+                kind: DiagnosticInputKind::Whois,
+                input: seed,
+                secondary: String::new(),
+                error: None,
+            }));
+        Vec::new()
+    }
+
+    fn accept_diagnostic_input(&mut self, kind: DiagnosticInputKind, input: &str) -> Vec<Effect> {
+        match kind {
+            DiagnosticInputKind::DnsQuery => {
+                let mut parts = input.split_ascii_whitespace();
+                let Some(name) = parts.next() else {
+                    return self.set_diagnostic_input_error("enter a DNS name");
+                };
+                let record_type = parts.next().map_or("A", |value| value);
+                if parts.next().is_some() {
+                    return self
+                        .set_diagnostic_input_error("enter a DNS name and optional record type");
+                }
+                match diagnostics::validate_dns_query(name, record_type) {
+                    Ok(record_type) => {
+                        self.overlays.pop();
+                        self.start_local_diagnostic(DiagnosticRequest::DnsQuery {
+                            name: name.to_owned(),
+                            record_type,
+                        })
+                    }
+                    Err(error) => self.set_diagnostic_input_error(&error),
+                }
+            }
+            DiagnosticInputKind::Whois => {
+                let mut parts = input.split_ascii_whitespace();
+                let Some(target) = parts.next() else {
+                    return self.set_diagnostic_input_error("enter an IP address or IP:port");
+                };
+                let protocol = match parts.next() {
+                    None => None,
+                    Some("tcp") => Some(diagnostics::WhoisProtocol::Tcp),
+                    Some("udp") => Some(diagnostics::WhoisProtocol::Udp),
+                    Some(_) => {
+                        return self.set_diagnostic_input_error("protocol must be tcp or udp");
+                    }
+                };
+                if parts.next().is_some() {
+                    return self
+                        .set_diagnostic_input_error("enter an IP address and optional protocol");
+                }
+                match diagnostics::validate_whois_target(target) {
+                    Ok(_) => {
+                        self.overlays.pop();
+                        self.start_local_diagnostic(DiagnosticRequest::Whois {
+                            target: target.to_owned(),
+                            protocol,
+                        })
+                    }
+                    Err(error) => self.set_diagnostic_input_error(&error),
+                }
+            }
+        }
+    }
+
+    fn set_diagnostic_input_error(&mut self, error: &str) -> Vec<Effect> {
+        if let Some(Overlay::DiagnosticInput(state)) = self.overlays.last_mut() {
+            state.error = Some(error.to_owned());
+        }
+        Vec::new()
+    }
+
+    fn copy_diagnostic_summary(&mut self) {
+        let snapshot = self.local_resource.snapshot.as_ref();
+        let selected = self.selected_local_device();
+        let diagnostic = self.local_diagnostics.values().last();
+        let (ping, netcheck, dns) =
+            diagnostic_result_parts(diagnostic.and_then(|state| state.result.as_ref()));
+        let mut names = Vec::new();
+        let mut addresses = Vec::new();
+        let mut paths = Vec::new();
+        let mut public_endpoints = Vec::new();
+        if let Some(snapshot) = snapshot {
+            names.push(snapshot.self_node.display_name.clone());
+            names.extend(snapshot.current_tailnet.iter().cloned());
+            addresses.extend(snapshot.self_node.tailscale_ips.iter().cloned());
+        }
+        if let Some(device) = selected {
+            names.push(device.display_name.clone());
+            names.extend(device.dns_name.iter().cloned());
+            addresses.extend(device.tailscale_ips.iter().cloned());
+            if let Some(endpoint) = device.current_endpoint.as_deref() {
+                public_endpoints.push(endpoint.to_owned());
+            }
+            paths.push(device.path.label().to_owned());
+        }
+        let health_categories =
+            snapshot.map_or_else(Vec::new, |value| value.health_messages.clone());
+        let input = DiagnosticReportInput {
+            tale_version: env!("CARGO_PKG_VERSION").to_owned(),
+            tailscale_version: self
+                .local_executable
+                .as_ref()
+                .map_or_else(|| "not returned".to_owned(), |value| value.version.clone()),
+            platform: std::env::consts::OS.to_owned(),
+            local_state: self.local_state.label().to_owned(),
+            health_categories,
+            peer_identity: selected.and_then(|device| device.public_key.clone()),
+            peer_os: selected.map(|device| device.os.label().to_owned()),
+            peer_path: selected.map(|device| device.path.label().to_owned()),
+            ping,
+            netcheck,
+            dns,
+            observed_at: snapshot.map_or(self.now, |value| value.observed_at),
+            stale: self.local_resource.status == LocalResourceStatus::Stale,
+            names,
+            addresses,
+            paths,
+            public_endpoints,
+        };
+        self.copied_value = Some(redact_diagnostic_report(&input).text);
     }
 
     fn cancel_focused_task(&mut self) -> Option<Effect> {
@@ -886,6 +1390,24 @@ impl App {
                         .evict_completed(self.resolved_config.history.max_tasks);
                 }
             }
+            TaskEvent::DiagnosticProgress {
+                task_id,
+                progress,
+                detail,
+                sample,
+                netcheck,
+            } => {
+                return self.update_local(LocalEvent::DiagnosticProgress {
+                    task_id,
+                    progress,
+                    detail,
+                    sample,
+                    netcheck,
+                });
+            }
+            TaskEvent::DiagnosticResult { task_id, result } => {
+                return self.update_local(LocalEvent::DiagnosticResult { task_id, result });
+            }
         }
         Vec::new()
     }
@@ -947,6 +1469,175 @@ impl App {
         Vec::new()
     }
 
+    fn update_local(&mut self, event: LocalEvent) -> Vec<Effect> {
+        match event {
+            LocalEvent::DiscoveryStarted { generation } => {
+                if generation >= self.local_resource.generation {
+                    self.local_discovery_in_flight = true;
+                    self.local_resource.begin(generation, self.now);
+                }
+            }
+            LocalEvent::DiscoverySucceeded {
+                generation,
+                executable,
+            } => {
+                if generation < self.local_resource.generation {
+                    return Vec::new();
+                }
+                self.local_discovery_in_flight = false;
+                self.local_executable = Some(executable.clone());
+                self.local_capabilities = executable.capabilities;
+                self.local_status_in_flight = true;
+                self.local_resource.begin(generation, self.now);
+                return vec![Effect::StartLocalStatus {
+                    generation,
+                    executable,
+                    timeout: self.resolved_config.local.command_timeout,
+                }];
+            }
+            LocalEvent::DiscoveryFailed {
+                generation,
+                failure,
+            } => {
+                if generation < self.local_resource.generation {
+                    return Vec::new();
+                }
+                self.local_discovery_in_flight = false;
+                self.local_status_in_flight = false;
+                self.local_state = state_for_failure(&failure, self.local_executable.as_ref());
+                self.local_resource.fail(generation, failure.clone());
+                self.devices_resource.health = if self.local_resource.snapshot.is_some() {
+                    SourceHealth::Stale
+                } else {
+                    SourceHealth::Error
+                };
+                self.devices_resource.error = Some(failure.detail);
+                self.schedule_failure_backoff();
+            }
+            LocalEvent::StatusStarted {
+                generation,
+                attempted_at,
+            } => {
+                if generation >= self.local_resource.generation {
+                    self.local_status_in_flight = true;
+                    self.local_resource.begin(generation, attempted_at);
+                }
+            }
+            LocalEvent::StatusSucceeded {
+                generation,
+                snapshot,
+            } => {
+                if generation < self.local_resource.generation {
+                    return Vec::new();
+                }
+                self.local_status_in_flight = false;
+                let snapshot = *snapshot;
+                self.local_state = snapshot.backend_state.clone();
+                self.apply_local_snapshot(&snapshot);
+                self.local_resource.succeed(generation, snapshot);
+                self.local_capabilities.status_json = true;
+                self.local_next_refresh = self
+                    .local_last_tick
+                    .map(|tick| instant_after(tick, self.resolved_config.local.refresh_interval))
+                    .or_else(|| {
+                        Some(instant_after(
+                            Instant::now(),
+                            self.resolved_config.local.refresh_interval,
+                        ))
+                    });
+            }
+            LocalEvent::StatusFailed {
+                generation,
+                failure,
+            } => {
+                if generation < self.local_resource.generation {
+                    return Vec::new();
+                }
+                self.local_status_in_flight = false;
+                self.local_state = state_for_failure(&failure, self.local_executable.as_ref());
+                self.local_resource.fail(generation, failure.clone());
+                self.devices_resource.health = if self.local_resource.snapshot.is_some() {
+                    SourceHealth::Stale
+                } else {
+                    SourceHealth::Error
+                };
+                self.devices_resource.error = Some(failure.detail);
+                self.schedule_failure_backoff();
+            }
+            LocalEvent::DiagnosticProgress {
+                task_id,
+                progress,
+                detail,
+                sample,
+                netcheck,
+            } => {
+                if let Some(state) = self.local_diagnostics.get_mut(&task_id) {
+                    if let Some(sample) = sample {
+                        state.samples.push(sample);
+                    }
+                    if let Some(netcheck) = netcheck {
+                        state.netcheck = Some(netcheck);
+                    }
+                }
+                let _ = self.tasks.progress(task_id, progress, &detail);
+            }
+            LocalEvent::DiagnosticResult { task_id, result } => {
+                let linked_device_id = match &result {
+                    DiagnosticResult::Whois(whois) => whois.machine_id.as_ref().and_then(|id| {
+                        self.local_resource.snapshot.as_ref().and_then(|snapshot| {
+                            if snapshot.self_node.id.0 == *id {
+                                Some(snapshot.self_node.id.clone())
+                            } else {
+                                snapshot
+                                    .peers
+                                    .iter()
+                                    .find(|device| device.id.0 == *id)
+                                    .map(|device| device.id.clone())
+                            }
+                        })
+                    }),
+                    _ => None,
+                };
+                if let Some(state) = self.local_diagnostics.get_mut(&task_id) {
+                    state.linked_device_id = linked_device_id;
+                    state.result = Some(result);
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn apply_local_snapshot(&mut self, snapshot: &LocalSnapshot) {
+        let mut devices = Vec::with_capacity(snapshot.peers.len().saturating_add(1));
+        devices.push(snapshot.self_node.to_display_device());
+        devices.extend(snapshot.peers.iter().map(LocalDevice::to_display_device));
+        self.local_self_id = Some(snapshot.self_node.id.clone());
+        self.reconcile_selection(Some(&devices));
+        self.devices_resource.snapshot = devices;
+        self.devices_resource.generation = self.local_resource.generation;
+        self.devices_resource.observed_at = Some(snapshot.observed_at);
+        self.devices_resource.health = SourceHealth::Healthy;
+        self.devices_resource.error = None;
+        self.reconcile_selection(None);
+    }
+
+    fn schedule_failure_backoff(&mut self) {
+        let failures = self.local_resource.consecutive_failures;
+        let interval = self.resolved_config.local.refresh_interval;
+        let exponent = failures.saturating_sub(1).min(6);
+        let multiplier = 1_u32.checked_shl(exponent).map_or(u32::MAX, |value| value);
+        let delay = interval
+            .checked_mul(multiplier)
+            .map_or(Duration::from_secs(60), |value| {
+                value.min(Duration::from_secs(60))
+            });
+        let base = match self.local_last_tick {
+            Some(value) => value,
+            None => Instant::now(),
+        };
+        self.local_next_refresh = Some(instant_after(base, delay));
+    }
+
     fn reconcile_selection(&mut self, replacement: Option<&Vec<Device>>) {
         let old_visible = self.visible_indices_for(&self.devices_resource.snapshot);
         let old_position = self.views.devices.selected_id.as_ref().and_then(|id| {
@@ -995,18 +1686,87 @@ impl App {
         let mut indices: Vec<usize> = devices
             .iter()
             .enumerate()
-            .filter(|(_, device)| self.views.devices.applied_filter.matches(device, self.now))
+            .filter(|(_, device)| {
+                let dns_name = if self.source_mode == SourceMode::Local {
+                    self.local_dns_name(&device.id)
+                } else {
+                    None
+                };
+                self.views
+                    .devices
+                    .applied_filter
+                    .matches_with_dns(device, dns_name, self.now)
+            })
             .map(|(index, _)| index)
             .collect();
         indices.sort_by(|left, right| {
             let left_device = devices.get(*left);
             let right_device = devices.get(*right);
             match (left_device, right_device) {
+                (Some(left), Some(right)) if self.source_mode == SourceMode::Local => {
+                    self.compare_local_devices(left, right)
+                }
                 (Some(left), Some(right)) => compare_devices(left, right, self.views.devices.sort),
                 _ => left.cmp(right),
             }
         });
         indices
+    }
+
+    fn local_dns_name(&self, id: &DeviceId) -> Option<&str> {
+        self.local_resource.snapshot.as_ref().and_then(|snapshot| {
+            if &snapshot.self_node.id == id {
+                snapshot.self_node.dns_name.as_deref()
+            } else {
+                snapshot
+                    .peers
+                    .iter()
+                    .find(|device| &device.id == id)
+                    .and_then(|device| device.dns_name.as_deref())
+            }
+        })
+    }
+
+    fn compare_local_devices(&self, left: &Device, right: &Device) -> std::cmp::Ordering {
+        if self.views.devices.sort == SortSpec::default() {
+            let left_self = self.local_self_id.as_ref().is_some_and(|id| id == &left.id);
+            let right_self = self
+                .local_self_id
+                .as_ref()
+                .is_some_and(|id| id == &right.id);
+            return right_self
+                .cmp(&left_self)
+                .then_with(|| {
+                    right
+                        .liveness
+                        .eq(&crate::domain::device::Liveness::Online)
+                        .cmp(&left.liveness.eq(&crate::domain::device::Liveness::Online))
+                })
+                .then_with(|| {
+                    self.local_active(&right.id)
+                        .cmp(&self.local_active(&left.id))
+                })
+                .then_with(|| {
+                    left.display_name
+                        .to_lowercase()
+                        .cmp(&right.display_name.to_lowercase())
+                })
+                .then_with(|| left.id.cmp(&right.id));
+        }
+        compare_devices(left, right, self.views.devices.sort)
+    }
+
+    fn local_active(&self, id: &DeviceId) -> bool {
+        self.selected_local_by_id(id)
+            .is_some_and(|device| device.active)
+    }
+
+    fn selected_local_by_id(&self, id: &DeviceId) -> Option<&LocalDevice> {
+        let snapshot = self.local_resource.snapshot.as_ref()?;
+        if &snapshot.self_node.id == id {
+            return Some(&snapshot.self_node);
+        }
+        snapshot.peers.iter().find(|device| &device.id == id)
     }
 
     fn move_selection(&mut self, offset: isize) {
@@ -1062,6 +1822,8 @@ impl App {
             SortField::Os,
             SortField::Path,
             SortField::LastSeen,
+            SortField::Rx,
+            SortField::Tx,
             SortField::DeviceId,
         ];
         let field = fields
@@ -1078,6 +1840,22 @@ impl App {
     }
 
     fn copy_field(&mut self, field: CopyField) {
+        if field == CopyField::DiagnosticSummary {
+            self.copy_diagnostic_summary();
+            return;
+        }
+        if matches!(field, CopyField::PublicKey | CopyField::Endpoint) {
+            let value = self.selected_local_device().and_then(|device| match field {
+                CopyField::PublicKey => device.public_key.clone(),
+                CopyField::Endpoint => device.current_endpoint.clone(),
+                _ => None,
+            });
+            self.copied_value = Some(match value {
+                Some(value) => value,
+                None => "not returned".to_owned(),
+            });
+            return;
+        }
         let Some(device) = self.selected_device() else {
             return;
         };
@@ -1091,6 +1869,8 @@ impl App {
             },
             CopyField::Addresses => device.addresses.join(", "),
             CopyField::Tags => device.tags.join(", "),
+            CopyField::PublicKey | CopyField::Endpoint => "not returned".to_owned(),
+            CopyField::DiagnosticSummary => "not returned".to_owned(),
         };
         self.copied_value = Some(value);
     }
@@ -1101,6 +1881,15 @@ impl App {
             .snapshot
             .iter()
             .find(|device| &device.id == id)
+    }
+
+    pub fn selected_local_device(&self) -> Option<&LocalDevice> {
+        let id = self.views.devices.selected_id.as_ref()?;
+        let snapshot = self.local_resource.snapshot.as_ref()?;
+        if &snapshot.self_node.id == id {
+            return Some(&snapshot.self_node);
+        }
+        snapshot.peers.iter().find(|device| &device.id == id)
     }
 
     pub fn current_route(&self) -> Route {
@@ -1120,6 +1909,7 @@ impl App {
             Overlay::QuitConfirmation => "quit",
             Overlay::TaskInspector(_) => "task",
             Overlay::SortPicker { .. } => "sort",
+            Overlay::DiagnosticInput(_) => "diagnostic input",
         })
     }
 
@@ -1129,6 +1919,10 @@ impl App {
 
     pub const fn render_invalidated(&self) -> bool {
         self.render_invalidated
+    }
+
+    pub const fn local_refresh_due_at(&self) -> Option<Instant> {
+        self.local_next_refresh
     }
 
     pub fn has_active_spinner(&self) -> bool {
@@ -1146,7 +1940,9 @@ fn route_candidates(input: &str) -> Vec<Route> {
     let value = input.to_ascii_lowercase();
     [
         Route::Overview,
+        Route::Local,
         Route::Devices,
+        Route::Dns,
         Route::Activity,
         Route::Settings,
     ]
@@ -1163,8 +1959,89 @@ fn route_candidates(input: &str) -> Vec<Route> {
 fn route_aliases(route: Route) -> &'static [&'static str] {
     match route {
         Route::Overview => &["ov", "home"],
+        Route::Local => &["self"],
         Route::Devices => &["device", "dev", "nodes"],
+        Route::Dns => &[],
         Route::Activity => &["tasks"],
         Route::Settings => &["config"],
+    }
+}
+
+fn local_resolution(config: &ResolvedConfig) -> ExecutableResolution {
+    let configured = PathBuf::from(&config.local.tailscale_path);
+    let (cli_path, environment_path, config_path) = match config.local.tailscale_path_source {
+        crate::config::ValueSource::Cli => (Some(configured), None, None),
+        crate::config::ValueSource::Environment => (None, Some(configured.into_os_string()), None),
+        crate::config::ValueSource::File => (None, None, Some(configured)),
+        crate::config::ValueSource::Default => (None, None, None),
+    };
+    ExecutableResolution {
+        cli_path,
+        environment_path,
+        config_path,
+        path: std::env::var_os("PATH"),
+        platform: if cfg!(windows) {
+            HostPlatform::Windows
+        } else {
+            HostPlatform::Unix
+        },
+    }
+}
+
+fn diagnostic_action(request: &DiagnosticRequest) -> ActionId {
+    match request {
+        DiagnosticRequest::Ping { .. } => ActionId::LocalProbeConnection,
+        DiagnosticRequest::Netcheck { live: false } => ActionId::LocalNetcheck,
+        DiagnosticRequest::Netcheck { live: true } => ActionId::LocalNetcheckLive,
+        DiagnosticRequest::DnsStatus => ActionId::LocalDnsStatus,
+        DiagnosticRequest::DnsQuery { .. } => ActionId::LocalDnsQuery,
+        DiagnosticRequest::Whois { .. } => ActionId::LocalWhois,
+    }
+}
+
+fn state_for_failure(failure: &LocalFailure, executable: Option<&LocalExecutable>) -> LocalState {
+    match failure.kind {
+        LocalFailureKind::ExecutableMissing => LocalState::ExecutableMissing,
+        LocalFailureKind::ExecutableDenied => LocalState::ExecutableDenied,
+        LocalFailureKind::UnsupportedClient => LocalState::UnsupportedClient {
+            version: executable.map_or_else(|| "unknown".to_owned(), |value| value.version.clone()),
+            reason: failure.detail.clone(),
+        },
+        LocalFailureKind::PermissionDenied => LocalState::PermissionDenied {
+            operation: failure.operation.clone(),
+            detail: failure.detail.clone(),
+        },
+        LocalFailureKind::NeedsLogin => LocalState::NeedsLogin { auth_url: None },
+        LocalFailureKind::DaemonUnavailable
+        | LocalFailureKind::InvalidOutput
+        | LocalFailureKind::TimedOut
+        | LocalFailureKind::Cancelled
+        | LocalFailureKind::Transport => LocalState::DaemonUnavailable {
+            detail: failure.detail.clone(),
+        },
+    }
+}
+
+fn diagnostic_result_parts(
+    result: Option<&DiagnosticResult>,
+) -> (
+    Option<crate::domain::diagnostic::PingSummary>,
+    Option<crate::domain::diagnostic::NetcheckObservation>,
+    Option<crate::domain::diagnostic::DnsQueryResult>,
+) {
+    match result {
+        Some(DiagnosticResult::Ping(value)) => (Some(value.clone()), None, None),
+        Some(DiagnosticResult::Netcheck(value)) => (None, Some(value.clone()), None),
+        Some(DiagnosticResult::DnsQuery(value)) => (None, None, Some(value.clone())),
+        Some(DiagnosticResult::DnsStatus(_)) | Some(DiagnosticResult::Whois(_)) | None => {
+            (None, None, None)
+        }
+    }
+}
+
+fn instant_after(base: Instant, delay: Duration) -> Instant {
+    match base.checked_add(delay) {
+        Some(value) => value,
+        None => base,
     }
 }

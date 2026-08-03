@@ -25,6 +25,14 @@ pub enum ActionId {
     MockFailure,
     MockCancellable,
     MockNonCancellable,
+    LocalDiagnostics,
+    LocalProbeConnection,
+    LocalNetcheck,
+    LocalNetcheckLive,
+    LocalDnsStatus,
+    LocalDnsQuery,
+    LocalWhois,
+    DiagnosticCopy,
 }
 
 impl ActionId {
@@ -53,6 +61,14 @@ impl ActionId {
             Self::MockFailure => "mock.task.failure",
             Self::MockCancellable => "mock.task.cancellable",
             Self::MockNonCancellable => "mock.task.non_cancellable",
+            Self::LocalDiagnostics => "local.diagnostics",
+            Self::LocalProbeConnection => "local.probe_connection",
+            Self::LocalNetcheck => "local.netcheck",
+            Self::LocalNetcheckLive => "local.netcheck_live",
+            Self::LocalDnsStatus => "local.dns_status",
+            Self::LocalDnsQuery => "local.dns_query",
+            Self::LocalWhois => "local.whois",
+            Self::DiagnosticCopy => "diagnostic.copy",
         }
     }
 
@@ -81,6 +97,14 @@ impl ActionId {
             Self::MockFailure,
             Self::MockCancellable,
             Self::MockNonCancellable,
+            Self::LocalDiagnostics,
+            Self::LocalProbeConnection,
+            Self::LocalNetcheck,
+            Self::LocalNetcheckLive,
+            Self::LocalDnsStatus,
+            Self::LocalDnsQuery,
+            Self::LocalWhois,
+            Self::DiagnosticCopy,
         ]
     }
 }
@@ -227,6 +251,8 @@ const BIND_WIDE: &[Binding] = &[Binding::Char('w')];
 const BIND_ACTIONS: &[Binding] = &[Binding::Char('a')];
 const BIND_COPY: &[Binding] = &[Binding::Char('y')];
 const BIND_CANCEL: &[Binding] = &[Binding::Char('x')];
+
+const BIND_ACTIONS_ROOT: &[Binding] = &[Binding::Char('a')];
 
 pub fn phase_one_actions() -> Vec<ActionSpec> {
     vec![
@@ -468,11 +494,11 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
 }
 
 pub fn find_action(id: ActionId) -> Option<ActionSpec> {
-    phase_one_actions().into_iter().find(|spec| spec.id == id)
+    all_actions().into_iter().find(|spec| spec.id == id)
 }
 
 pub fn action_for_key(key: KeyEvent, context: ActionContext) -> Option<ActionId> {
-    phase_one_actions().into_iter().find_map(|spec| {
+    all_actions().into_iter().find_map(|spec| {
         if spec.contexts.contains(&context)
             && spec
                 .default_bindings
@@ -489,7 +515,7 @@ pub fn action_for_key(key: KeyEvent, context: ActionContext) -> Option<ActionId>
 pub fn footer_hints(context: ActionContext, width: u16) -> Vec<String> {
     let mut used = 0usize;
     let mut hints = Vec::new();
-    for spec in phase_one_actions() {
+    for spec in all_actions() {
         if !spec.contexts.contains(&context) || spec.default_bindings.is_empty() {
             continue;
         }
@@ -504,4 +530,109 @@ pub fn footer_hints(context: ActionContext, width: u16) -> Vec<String> {
         hints.push(hint);
     }
     hints
+}
+
+pub fn phase_two_actions() -> Vec<ActionSpec> {
+    vec![
+        ActionSpec {
+            id: ActionId::LocalDiagnostics,
+            label: "Local diagnostics",
+            description: "Open read-only local diagnostics",
+            contexts: ROOT,
+            selection_rule: SelectionRule::None,
+            default_bindings: BIND_ACTIONS_ROOT,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::LocalProbeConnection,
+            label: "Probe connection",
+            description: "Run a Tailscale ping against the selected peer",
+            contexts: &[
+                ActionContext::Collection,
+                ActionContext::Detail,
+                ActionContext::Overlay,
+            ],
+            selection_rule: SelectionRule::One,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::LocalNetcheck,
+            label: "Netcheck",
+            description: "Run one-shot local network diagnostics",
+            contexts: &[ActionContext::Root, ActionContext::Overlay],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::LocalNetcheckLive,
+            label: "Live netcheck",
+            description: "Stream local network diagnostics until cancelled",
+            contexts: &[ActionContext::Root, ActionContext::Overlay],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::LocalDnsStatus,
+            label: "DNS status",
+            description: "Inspect local DNS configuration",
+            contexts: &[ActionContext::Root, ActionContext::Overlay],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::LocalDnsQuery,
+            label: "DNS query",
+            description: "Query a DNS record through Tailscale",
+            contexts: &[ActionContext::Root, ActionContext::Overlay],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::LocalWhois,
+            label: "Whois",
+            description: "Identify a Tailscale IP address",
+            contexts: &[
+                ActionContext::Collection,
+                ActionContext::Detail,
+                ActionContext::Root,
+                ActionContext::Overlay,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::DiagnosticCopy,
+            label: "Copy redacted diagnostic",
+            description: "Render a redacted diagnostic summary",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+                ActionContext::Overlay,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+    ]
+}
+
+pub fn all_actions() -> Vec<ActionSpec> {
+    let mut actions = phase_one_actions();
+    actions.extend(phase_two_actions());
+    actions
 }

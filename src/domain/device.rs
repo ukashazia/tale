@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use super::Timestamp;
 
@@ -47,6 +48,8 @@ pub enum ConnectionPath {
     Direct { latency_ms: Option<u16> },
     Derp { region: String },
     PeerRelay { peer: String },
+    Idle,
+    Unknown(String),
     NoPath,
 }
 
@@ -56,6 +59,8 @@ impl ConnectionPath {
             Self::Direct { .. } => "direct",
             Self::Derp { .. } => "derp",
             Self::PeerRelay { .. } => "peer-relay",
+            Self::Idle => "idle",
+            Self::Unknown(_) => "unknown",
             Self::NoPath => "no-path",
         }
     }
@@ -87,6 +92,7 @@ impl OperatingSystem {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DeviceCapabilities {
     pub exit_node: bool,
+    pub exit_node_option: bool,
     pub subnet_router: bool,
     pub ssh: bool,
     pub funnel: bool,
@@ -107,10 +113,100 @@ pub struct Device {
     pub liveness: Liveness,
     pub path: ConnectionPath,
     pub addresses: Vec<String>,
+    pub advertised_routes: Vec<String>,
     pub tags: Vec<String>,
     pub last_seen: Option<Timestamp>,
-    pub created_at: Timestamp,
+    pub created_at: Option<Timestamp>,
+    pub rx_bytes: Option<u64>,
+    pub tx_bytes: Option<u64>,
     pub capabilities: DeviceCapabilities,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct LocalDevice {
+    pub id: DeviceId,
+    pub public_key: Option<String>,
+    pub display_name: String,
+    pub hostname: String,
+    pub dns_name: Option<String>,
+    pub os: OperatingSystem,
+    pub version: Option<String>,
+    pub owner_label: Option<String>,
+    pub user_id: Option<String>,
+    pub tags: Vec<String>,
+    pub tailscale_ips: Vec<String>,
+    pub advertised_routes: Vec<String>,
+    pub current_endpoint: Option<String>,
+    pub relay_region: Option<String>,
+    pub path: ConnectionPath,
+    pub online: Option<bool>,
+    pub active: bool,
+    pub rx_bytes: Option<u64>,
+    pub tx_bytes: Option<u64>,
+    pub created_at: Option<Timestamp>,
+    pub last_seen: Option<Timestamp>,
+    pub last_handshake: Option<Timestamp>,
+    pub exit_node: bool,
+    pub exit_node_option: bool,
+    pub ssh_host_keys_present: bool,
+    pub shared: bool,
+    pub capabilities: BTreeMap<String, bool>,
+}
+
+impl LocalDevice {
+    pub fn liveness(&self) -> Liveness {
+        match self.online {
+            Some(true) => Liveness::Online,
+            Some(false) => Liveness::Offline,
+            None => Liveness::Unknown,
+        }
+    }
+
+    pub fn preferred_target(&self) -> Option<&str> {
+        self.dns_name
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.tailscale_ips.first().map(String::as_str))
+    }
+
+    pub fn to_display_device(&self) -> Device {
+        let capabilities = DeviceCapabilities {
+            exit_node: self.exit_node,
+            exit_node_option: self.exit_node_option,
+            subnet_router: !self.advertised_routes.is_empty(),
+            ssh: self.ssh_host_keys_present || capability_is_true(&self.capabilities, "ssh"),
+            funnel: capability_is_true(&self.capabilities, "funnel"),
+            shared: self.shared,
+            expired: capability_is_true(&self.capabilities, "expired"),
+            approved: !matches!(self.capabilities.get("approved"), Some(false)),
+        };
+        Device {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            hostname: self.hostname.clone(),
+            owner: None,
+            owner_label: self.owner_label.clone(),
+            os: self.os.clone(),
+            version: match self.version.clone() {
+                Some(value) => value,
+                None => "not returned".to_owned(),
+            },
+            liveness: self.liveness(),
+            path: self.path.clone(),
+            addresses: self.tailscale_ips.clone(),
+            advertised_routes: self.advertised_routes.clone(),
+            tags: self.tags.clone(),
+            last_seen: self.last_seen,
+            created_at: self.created_at,
+            rx_bytes: self.rx_bytes,
+            tx_bytes: self.tx_bytes,
+            capabilities,
+        }
+    }
+}
+
+fn capability_is_true(capabilities: &BTreeMap<String, bool>, name: &str) -> bool {
+    capabilities.get(name).copied().is_some_and(|value| value)
 }
 
 impl Device {
@@ -142,6 +238,17 @@ impl Device {
         self.tags.iter().any(|tag| tag.eq_ignore_ascii_case(value))
     }
 
+    pub fn property_matches(&self, value: &str) -> bool {
+        match value.to_ascii_lowercase().as_str() {
+            "exit-node" => self.capabilities.exit_node,
+            "exit-node-option" => self.capabilities.exit_node_option,
+            "subnet-router" => self.capabilities.subnet_router,
+            "ssh" => self.capabilities.ssh,
+            "shared" => self.capabilities.shared,
+            _ => false,
+        }
+    }
+
     pub fn age_at(&self, now: Timestamp) -> Option<u64> {
         self.last_seen
             .map(|last_seen| now.saturating_sub(last_seen))
@@ -156,6 +263,8 @@ pub enum SortField {
     Os,
     Path,
     LastSeen,
+    Rx,
+    Tx,
     DeviceId,
 }
 
@@ -168,6 +277,8 @@ impl SortField {
             Self::Os => "os",
             Self::Path => "path",
             Self::LastSeen => "lastSeen",
+            Self::Rx => "rx",
+            Self::Tx => "tx",
             Self::DeviceId => "id",
         }
     }
@@ -217,10 +328,15 @@ pub fn compare_devices(left: &Device, right: &Device, sort: SortSpec) -> Orderin
             .to_lowercase()
             .cmp(&right.display_name.to_lowercase()),
         SortField::Liveness => liveness_rank(left.liveness).cmp(&liveness_rank(right.liveness)),
-        SortField::Owner => compare_optional_text(left.owner.as_deref(), right.owner.as_deref()),
+        SortField::Owner => compare_optional_text(
+            left.owner.as_deref().or(left.owner_label.as_deref()),
+            right.owner.as_deref().or(right.owner_label.as_deref()),
+        ),
         SortField::Os => left.os.label().cmp(right.os.label()),
         SortField::Path => left.path.label().cmp(right.path.label()),
         SortField::LastSeen => compare_optional(left.last_seen, right.last_seen),
+        SortField::Rx => compare_optional(left.rx_bytes, right.rx_bytes),
+        SortField::Tx => compare_optional(left.tx_bytes, right.tx_bytes),
         SortField::DeviceId => left.id.cmp(&right.id),
     };
     let directed = match sort.direction {

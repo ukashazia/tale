@@ -1,0 +1,4 @@
+pong from build.tail.example.ts.net (100.64.0.11) via DERP(fra) in 48ms
+pong from build.tail.example.ts.net (100.64.0.11) via 198.51.100.11:41641 in 4ms
+pong from build.tail.example.ts.net (100.64.0.11) via peer-relay(nodekey:relay) in 12ms
+timed out

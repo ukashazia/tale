@@ -1,0 +1,16 @@
+{
+  "Name": "build.tail.example.ts.net",
+  "Type": "A",
+  "Result": "NOERROR",
+  "Resolvers": [
+    "100.100.100.100"
+  ],
+  "LatencyMs": 3,
+  "Answers": [
+    {
+      "Type": "A",
+      "Value": "100.64.0.11",
+      "TTL": 60
+    }
+  ]
+}

@@ -6,6 +6,7 @@ pub mod domain;
 pub mod effect;
 pub mod error;
 pub mod event;
+pub mod local;
 pub mod mock;
 pub mod paths;
 pub mod runtime;

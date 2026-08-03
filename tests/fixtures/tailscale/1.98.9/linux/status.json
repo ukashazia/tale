@@ -1,0 +1,124 @@
+{
+  "Version": "1.98.9",
+  "BackendState": "Running",
+  "CurrentTailnet": {
+    "Name": "Example Tailnet",
+    "MagicDNSSuffix": "tail.example.ts.net"
+  },
+  "MagicDNSSuffix": "tail.example.ts.net",
+  "CertDomains": [
+    "node.tail.example.ts.net"
+  ],
+  "Health": [
+    "DNS configuration is healthy"
+  ],
+  "User": {
+    "1": {
+      "ID": "1",
+      "LoginName": "alice@example.com",
+      "DisplayName": "Alice Example"
+    }
+  },
+  "Self": {
+    "ID": "nodekey:selffixture",
+    "PublicKey": "nodekey:selffixture",
+    "HostName": "observer",
+    "DNSName": "observer.tail.example.ts.net.",
+    "OS": "linux",
+    "ClientVersion": "1.98.9",
+    "UserID": "1",
+    "TailscaleIPs": [
+      "100.64.0.10",
+      "fd7a:115c:a1e0::10"
+    ],
+    "AdvertisedRoutes": [
+      "10.20.0.0/16"
+    ],
+    "CurAddr": "192.0.2.10:41641",
+    "Online": true,
+    "Active": true,
+    "RxBytes": 123456,
+    "TxBytes": 654321,
+    "Created": "2026-07-01T12:00:00Z",
+    "LastSeen": "2026-08-03T08:00:00Z",
+    "LastHandshake": "2026-08-03T08:01:00Z",
+    "ExitNode": false,
+    "ExitNodeOption": true,
+    "SSHHostKeys": [
+      "ssh-ed25519 fixture"
+    ],
+    "Shared": false,
+    "Capabilities": {
+      "ssh": true,
+      "approved": true
+    }
+  },
+  "Peer": {
+    "nodekey:direct": {
+      "ID": "nodekey:direct",
+      "PublicKey": "nodekey:direct",
+      "HostName": "build fixture with a deliberately long name",
+      "DNSName": "build.tail.example.ts.net.",
+      "OS": "linux",
+      "ClientVersion": "1.98.9",
+      "UserID": "1",
+      "TailscaleIPs": [
+        "100.64.0.11"
+      ],
+      "AdvertisedRoutes": [
+        "10.30.0.0/16"
+      ],
+      "CurAddr": "198.51.100.11:41641",
+      "Online": true,
+      "Active": true,
+      "RxBytes": 100,
+      "TxBytes": 200,
+      "LastSeen": "2026-08-03T08:01:00Z",
+      "Relay": "",
+      "Tags": [
+        "tag:server",
+        "tag:prod"
+      ],
+      "ExitNode": true,
+      "ExitNodeOption": false,
+      "SSHHostKeys": [
+        "ssh-ed25519 fixture"
+      ],
+      "Shared": false,
+      "Capabilities": {
+        "ssh": true,
+        "approved": true
+      }
+    },
+    "nodekey:derp": {
+      "ID": "nodekey:derp",
+      "HostName": "relay fixture",
+      "OS": "plan9",
+      "TailscaleIPs": [
+        "100.64.0.12"
+      ],
+      "Online": false,
+      "Active": false,
+      "Relay": "fra",
+      "Tags": [
+        "tag:shared"
+      ],
+      "Shared": true
+    },
+    "nodekey:peer-relay": {
+      "ID": "nodekey:peer-relay",
+      "HostName": "relay peer",
+      "OS": "windows",
+      "TailscaleIPs": [
+        "fd7a:115c:a1e0::13"
+      ],
+      "Online": true,
+      "Active": true,
+      "PeerRelay": "nodekey:direct",
+      "Tags": [
+        "tag:relay"
+      ]
+    }
+  },
+  "unknownFutureStatusField": "accepted"
+}

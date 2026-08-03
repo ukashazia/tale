@@ -77,12 +77,12 @@ async fn bounded_queue_applies_backpressure_without_dropping_completion() {
         let queue = queue.clone();
         tokio::spawn(async move {
             queue
-                .send(Event::Task(TaskEvent::Succeeded {
+                .send(Event::Task(Box::new(TaskEvent::Succeeded {
                     task_id: TaskId(91),
                     finished_at: 1_754_000_000,
                     summary: "complete".to_owned(),
                     detail: "fictional completion".to_owned(),
-                }))
+                })))
                 .await;
         })
     };
@@ -95,10 +95,14 @@ async fn bounded_queue_applies_backpressure_without_dropping_completion() {
     if let Ok(event) = received {
         assert!(matches!(
             event,
-            Event::Task(TaskEvent::Succeeded {
-                task_id: TaskId(91),
-                ..
-            })
+            Event::Task(task)
+                if matches!(
+                    *task,
+                    TaskEvent::Succeeded {
+                        task_id: TaskId(91),
+                        ..
+                    }
+                )
         ));
     }
     let joined = tokio::time::timeout(Duration::from_millis(100), sender).await;
@@ -155,7 +159,7 @@ fn idle_ticks_do_not_invalidate_a_clean_frame_but_active_tasks_do() {
             1_754_000_000,
             true,
         );
-        let _ = app.update(Event::Task(TaskEvent::Started { task_id }));
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
         app.clear_render_invalidated();
         let _ = app.update(Event::Tick(Instant::now()));
         assert!(app.render_invalidated());

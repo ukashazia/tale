@@ -1,5 +1,9 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
+use crate::domain::source::LocalExecutable;
+use crate::local::client::ExecutableResolution;
+use crate::local::diagnostics::DiagnosticRequest;
 use crate::mock::{MockLoadScenario, MockTaskBehavior};
 use crate::task::TaskId;
 
@@ -14,6 +18,24 @@ pub enum Effect {
         task_id: TaskId,
         behavior: MockTaskBehavior,
     },
+    StartLocalDiscovery {
+        generation: u64,
+        resolution: ExecutableResolution,
+        timeout: Duration,
+    },
+    StartLocalStatus {
+        generation: u64,
+        executable: LocalExecutable,
+        timeout: Duration,
+    },
+    StartLocalDiagnostic {
+        task_id: TaskId,
+        executable: LocalExecutable,
+        timeout: Duration,
+        request: DiagnosticRequest,
+    },
+    CancelLocalDiscovery,
+    CancelLocalStatus,
     CancelTask {
         task_id: TaskId,
     },

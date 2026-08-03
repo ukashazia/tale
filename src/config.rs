@@ -860,8 +860,10 @@ impl ResolvedConfig {
                 name: "source",
                 value: if self.mock {
                     "mock"
+                } else if self.no_local || !self.local.enabled {
+                    "local disabled"
                 } else {
-                    "local unavailable"
+                    "local"
                 }
                 .to_owned(),
                 source: ValueSource::Cli,

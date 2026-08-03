@@ -1,0 +1,25 @@
+{
+  "Forwarder": true,
+  "MagicDNS": true,
+  "MagicDNSSuffix": "tail.example.ts.net",
+  "CurrentNodeDNSName": "observer.tail.example.ts.net.",
+  "Resolvers": [
+    "100.100.100.100",
+    "192.0.2.53"
+  ],
+  "SplitDNS": {
+    "corp.example.com": [
+      "192.0.2.53"
+    ],
+    "internal.example": [
+      "100.100.100.100",
+      "192.0.2.54"
+    ]
+  },
+  "CertDomains": [
+    "observer.tail.example.ts.net"
+  ],
+  "ExtraFutureRecord": {
+    "kept": true
+  }
+}

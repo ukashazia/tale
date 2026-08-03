@@ -1,0 +1,19 @@
+{
+  "Machine": {
+    "ID": "nodekey:direct",
+    "Name": "build fixture",
+    "Addresses": [
+      "100.64.0.11",
+      "fd7a:115c:a1e0::11"
+    ],
+    "Tags": [
+      "tag:server"
+    ]
+  },
+  "User": "alice@example.com",
+  "Capabilities": [
+    "ssh",
+    "subnet-router"
+  ],
+  "unknownFutureWhoisField": "accepted"
+}

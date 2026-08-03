@@ -1,5 +1,8 @@
 pub mod device;
+pub mod diagnostic;
 pub mod filter;
+pub mod redaction;
+pub mod source;
 
 pub type Timestamp = u64;
 

@@ -26,10 +26,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(text).style(style), area);
 }
 
-#[allow(clippy::manual_unwrap_or_default)]
 fn option_string_or_empty(value: Option<String>) -> String {
-    match value {
-        Some(value) => value,
-        None => String::new(),
+    let mut result = String::new();
+    if let Some(value) = value {
+        result.push_str(&value);
     }
+    result
 }

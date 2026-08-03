@@ -102,21 +102,21 @@ fn notifications_expire_without_removing_task_results() {
         let task = application
             .tasks
             .create(ActionId::MockSuccess, "fictional", MOCK_NOW, true);
-        let _ = application.update(Event::Task(TaskEvent::Started { task_id: task }));
-        let _ = application.update(Event::Task(TaskEvent::Progress {
+        let _ = application.update(Event::Task(Box::new(TaskEvent::Started { task_id: task })));
+        let _ = application.update(Event::Task(Box::new(TaskEvent::Progress {
             task_id: task,
             progress: Progress {
                 completed: 1,
                 total: 1,
             },
             detail: "step".to_owned(),
-        }));
-        let _ = application.update(Event::Task(TaskEvent::Succeeded {
+        })));
+        let _ = application.update(Event::Task(Box::new(TaskEvent::Succeeded {
             task_id: task,
             finished_at: MOCK_NOW,
             summary: "done".to_owned(),
             detail: "finished".to_owned(),
-        }));
+        })));
         assert_eq!(application.notifications.len(), 1);
         for _ in 0..6 {
             let _ = application.update(Event::Tick(std::time::Instant::now()));

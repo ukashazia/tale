@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
-use crate::ui::components::{action_picker, command_palette, filter, help};
+use crate::ui::components::{action_picker, command_palette, copy_picker, filter, help};
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
@@ -14,26 +14,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         Overlay::FilterEditor(_) => filter::render(frame, app, area, overlay),
         Overlay::Help(_) => help::render(frame, app, area, overlay),
         Overlay::ActionPicker(_) => action_picker::render(frame, app, area, overlay),
-        Overlay::CopyPicker(state) => {
-            let lines = state
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(index, field)| {
-                    let prefix = if index == state.selected { ">" } else { " " };
-                    format!("{prefix} {}", field.label())
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            frame.render_widget(
-                Paragraph::new(lines).style(theme::normal(app)).block(
-                    ratatui::widgets::Block::default()
-                        .borders(ratatui::widgets::Borders::ALL)
-                        .title("copy field"),
-                ),
-                area,
-            );
-        }
+        Overlay::CopyPicker(state) => copy_picker::render(frame, app, area, state),
         Overlay::QuitConfirmation => frame.render_widget(
             Paragraph::new(
                 "Active tasks are still running.\nEnter/y: quit and cancel tasks   n/Esc: continue",
@@ -68,6 +49,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 "path desc",
                 "lastSeen asc",
                 "lastSeen desc",
+                "rx asc",
+                "rx desc",
+                "tx asc",
+                "tx desc",
                 "id asc",
                 "id desc",
             ];
@@ -88,13 +73,37 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 area,
             );
         }
+        Overlay::DiagnosticInput(state) => {
+            let label = match &state.kind {
+                crate::app::DiagnosticInputKind::DnsQuery => "DNS name and optional type",
+                crate::app::DiagnosticInputKind::Whois => {
+                    "IP address or IP:port and optional tcp/udp"
+                }
+            };
+            let error = state
+                .error
+                .as_deref()
+                .map_or(String::new(), |value| format!("\nerror: {value}"));
+            frame.render_widget(
+                Paragraph::new(format!("{label}\n> {}{}", state.input, error))
+                    .style(theme::normal(app))
+                    .block(
+                        ratatui::widgets::Block::default()
+                            .borders(ratatui::widgets::Borders::ALL)
+                            .title("diagnostic input"),
+                    ),
+                area,
+            );
+        }
     }
 }
 
 fn centered(area: Rect, overlay: &Overlay) -> Rect {
     let width = match overlay {
         Overlay::Help(_) => area.width.saturating_mul(3) / 4,
-        Overlay::CommandPalette(_) | Overlay::FilterEditor(_) => area.width.saturating_mul(2) / 3,
+        Overlay::CommandPalette(_) | Overlay::FilterEditor(_) | Overlay::DiagnosticInput(_) => {
+            area.width.saturating_mul(2) / 3
+        }
         _ => area.width.saturating_mul(3) / 5,
     }
     .max(20)

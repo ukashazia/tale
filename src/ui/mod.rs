@@ -27,7 +27,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     components::header::render_route_line(frame, app, layout.title);
     match app.current_route() {
         Route::Overview => views::overview::render(frame, app, layout.content),
+        Route::Local => views::local::render(frame, app, layout.content),
         Route::Devices => views::devices::render(frame, app, layout.content, layout.inspector),
+        Route::Dns => views::dns::render(frame, app, layout.content),
         Route::Activity => views::activity::render(frame, app, layout.content),
         Route::Settings => views::settings::render(frame, app, layout.content),
     }

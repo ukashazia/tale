@@ -206,7 +206,7 @@ fn quit_and_ctrl_c_follow_task_rules() {
                 MOCK_NOW,
                 true,
             );
-            let _ = app.update(Event::Task(TaskEvent::Started { task_id }));
+            let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
             let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
                 KeyCode::Char('c'),
                 KeyModifiers::CONTROL,
@@ -232,15 +232,15 @@ fn task_progress_and_terminal_events_update_only_through_reducer() {
             MOCK_NOW,
             true,
         );
-        let _ = app.update(Event::Task(TaskEvent::Started { task_id }));
-        let _ = app.update(Event::Task(TaskEvent::Progress {
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Progress {
             task_id,
             progress: Progress {
                 completed: 1,
                 total: 2,
             },
             detail: "step one".to_owned(),
-        }));
+        })));
         assert_eq!(
             app.tasks.get(task_id).map(|task| task.progress),
             Some(Some(Progress {
@@ -248,17 +248,17 @@ fn task_progress_and_terminal_events_update_only_through_reducer() {
                 total: 2
             }))
         );
-        let _ = app.update(Event::Task(TaskEvent::Succeeded {
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Succeeded {
             task_id,
             finished_at: MOCK_NOW,
             summary: "done".to_owned(),
             detail: "complete".to_owned(),
-        }));
+        })));
         assert_eq!(
             app.tasks.get(task_id).map(|task| task.state),
             Some(TaskState::Succeeded)
         );
-        let _ = app.update(Event::Task(TaskEvent::Started { task_id }));
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
         assert_eq!(
             app.tasks.get(task_id).map(|task| task.state),
             Some(TaskState::Succeeded)

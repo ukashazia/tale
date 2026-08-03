@@ -1,5 +1,6 @@
 pub mod action_picker;
 pub mod command_palette;
+pub mod copy_picker;
 pub mod filter;
 pub mod footer;
 pub mod header;

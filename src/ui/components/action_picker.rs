@@ -14,15 +14,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, overlay: &Overlay) {
         let spec = action::find_action(*id);
         let label = spec.as_ref().map_or(id.as_str(), |value| value.label);
         let description = spec.as_ref().map_or("", |value| value.description);
+        let availability = app
+            .action_unavailable_reason(*id)
+            .map_or_else(String::new, |reason| format!(" [disabled: {reason}]"));
         let prefix = if index == state.selected { ">" } else { " " };
-        ListItem::new(format!("{prefix} {label} - {description}"))
+        ListItem::new(format!("{prefix} {label} - {description}{availability}"))
     });
     frame.render_widget(
-        List::new(items).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("actions · simulations"),
-        ),
+        List::new(items)
+            .style(theme::normal(app))
+            .block(Block::default().borders(Borders::ALL).title("actions")),
         area,
     );
 }

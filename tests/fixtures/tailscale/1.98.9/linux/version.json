@@ -1,0 +1,8 @@
+{
+  "version": "1.98.9",
+  "daemonVersion": "1.98.9",
+  "gitCommit": "fixture-commit",
+  "unknownFutureField": {
+    "accepted": true
+  }
+}

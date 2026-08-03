@@ -14,7 +14,18 @@ impl FilterExpression {
     }
 
     pub fn matches(&self, device: &Device, now: Timestamp) -> bool {
-        self.terms.iter().all(|term| term.matches(device, now))
+        self.matches_with_dns(device, None, now)
+    }
+
+    pub fn matches_with_dns(
+        &self,
+        device: &Device,
+        dns_name: Option<&str>,
+        now: Timestamp,
+    ) -> bool {
+        self.terms
+            .iter()
+            .all(|term| term.matches(device, dns_name, now))
     }
 }
 
@@ -37,6 +48,7 @@ pub enum FilterField {
     Path,
     Tag,
     LastSeen,
+    Property,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -173,7 +185,23 @@ fn parse_term((token, position): &(String, usize)) -> Result<FilterTerm, FilterE
                 value.as_str(),
                 "true" | "false" | "online" | "offline" | "unknown"
             ) {
-                return Err(error(*position + colon + 1, "online expects true or false"));
+                return Err(error(
+                    *position + colon + 1,
+                    "online expects true, false, or unknown",
+                ));
+            }
+        }
+    }
+    if field == FilterField::Property {
+        for value in &values {
+            if !matches!(
+                value.as_str(),
+                "exit-node" | "exit-node-option" | "subnet-router" | "ssh" | "shared"
+            ) {
+                return Err(error(
+                    *position + colon + 1,
+                    "property expects exit-node, exit-node-option, subnet-router, ssh, or shared",
+                ));
             }
         }
     }
@@ -230,6 +258,7 @@ fn parse_field(value: &str) -> Option<FilterField> {
         "path" => Some(FilterField::Path),
         "tag" => Some(FilterField::Tag),
         "lastseen" => Some(FilterField::LastSeen),
+        "property" => Some(FilterField::Property),
         _ => None,
     }
 }
@@ -292,9 +321,12 @@ impl Comparison {
 }
 
 impl FilterTerm {
-    fn matches(&self, device: &Device, now: Timestamp) -> bool {
+    fn matches(&self, device: &Device, dns_name: Option<&str>, now: Timestamp) -> bool {
         match self {
-            Self::Text(value) => device.search_text().contains(value),
+            Self::Text(value) => {
+                device.search_text().contains(value)
+                    || dns_name.is_some_and(|name| name.to_lowercase().contains(value))
+            }
             Self::Field {
                 field,
                 negated,
@@ -315,6 +347,7 @@ impl FilterTerm {
                         FilterField::Os => device.os.label().eq_ignore_ascii_case(value),
                         FilterField::Path => device.path.label().eq_ignore_ascii_case(value),
                         FilterField::Tag => device.tag_matches(value),
+                        FilterField::Property => device.property_matches(value),
                         FilterField::LastSeen => device
                             .last_seen
                             .is_some_and(|last_seen| last_seen.to_string() == *value),

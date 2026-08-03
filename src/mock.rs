@@ -53,6 +53,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(3)),
             DeviceCapabilities {
                 exit_node: true,
+                exit_node_option: false,
                 subnet_router: true,
                 ssh: true,
                 funnel: false,
@@ -77,6 +78,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(12)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: true,
                 funnel: true,
@@ -101,6 +103,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(7_200)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: true,
                 ssh: false,
                 funnel: false,
@@ -123,6 +126,7 @@ pub fn devices() -> Vec<Device> {
             None,
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: false,
                 funnel: false,
@@ -147,6 +151,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(60)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: false,
                 funnel: false,
@@ -171,6 +176,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(90)),
             DeviceCapabilities {
                 exit_node: true,
+                exit_node_option: false,
                 subnet_router: true,
                 ssh: true,
                 funnel: false,
@@ -195,6 +201,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(86_400)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: true,
                 ssh: true,
                 funnel: false,
@@ -217,6 +224,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(400)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: false,
                 funnel: false,
@@ -239,6 +247,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(15)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: true,
                 funnel: true,
@@ -263,6 +272,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(12_000)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: false,
                 funnel: false,
@@ -287,6 +297,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(5)),
             DeviceCapabilities {
                 exit_node: true,
+                exit_node_option: false,
                 subnet_router: true,
                 ssh: true,
                 funnel: false,
@@ -309,6 +320,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(172_800)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: false,
                 funnel: false,
@@ -333,6 +345,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(33)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: true,
                 funnel: false,
@@ -355,6 +368,7 @@ pub fn devices() -> Vec<Device> {
             Some(MOCK_NOW.saturating_sub(604_800)),
             DeviceCapabilities {
                 exit_node: false,
+                exit_node_option: false,
                 subnet_router: false,
                 ssh: false,
                 funnel: false,
@@ -392,9 +406,12 @@ fn device(
         liveness,
         path,
         addresses: addresses.into_iter().map(str::to_owned).collect(),
+        advertised_routes: Vec::new(),
         tags: tags.into_iter().map(str::to_owned).collect(),
         last_seen,
-        created_at: MOCK_NOW.saturating_sub(90 * 86_400),
+        created_at: Some(MOCK_NOW.saturating_sub(90 * 86_400)),
+        rx_bytes: None,
+        tx_bytes: None,
         capabilities,
     }
 }

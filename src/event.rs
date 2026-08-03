@@ -4,6 +4,8 @@ use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind};
 
 use crate::domain::Timestamp;
 use crate::domain::device::Device;
+use crate::domain::diagnostic::{DiagnosticResult, NetcheckObservation, PingSample};
+use crate::domain::source::{LocalExecutable, LocalFailure, LocalSnapshot};
 use crate::mock::MockScenario;
 use crate::task::{Progress, TaskId};
 
@@ -11,8 +13,9 @@ use crate::task::{Progress, TaskId};
 pub enum Event {
     Input(InputEvent),
     Tick(Instant),
-    Task(TaskEvent),
+    Task(Box<TaskEvent>),
     Source(SourceEvent),
+    Local(Box<LocalEvent>),
     ShutdownRequested(ShutdownReason),
 }
 
@@ -52,6 +55,17 @@ pub enum TaskEvent {
         finished_at: Timestamp,
         detail: String,
     },
+    DiagnosticProgress {
+        task_id: TaskId,
+        progress: Progress,
+        detail: String,
+        sample: Option<PingSample>,
+        netcheck: Option<NetcheckObservation>,
+    },
+    DiagnosticResult {
+        task_id: TaskId,
+        result: DiagnosticResult,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +84,44 @@ pub enum SourceEvent {
         detail: String,
     },
     InputFailed(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum LocalEvent {
+    DiscoveryStarted {
+        generation: u64,
+    },
+    DiscoverySucceeded {
+        generation: u64,
+        executable: LocalExecutable,
+    },
+    DiscoveryFailed {
+        generation: u64,
+        failure: LocalFailure,
+    },
+    StatusStarted {
+        generation: u64,
+        attempted_at: Timestamp,
+    },
+    StatusSucceeded {
+        generation: u64,
+        snapshot: Box<LocalSnapshot>,
+    },
+    StatusFailed {
+        generation: u64,
+        failure: LocalFailure,
+    },
+    DiagnosticProgress {
+        task_id: TaskId,
+        progress: Progress,
+        detail: String,
+        sample: Option<PingSample>,
+        netcheck: Option<NetcheckObservation>,
+    },
+    DiagnosticResult {
+        task_id: TaskId,
+        result: DiagnosticResult,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

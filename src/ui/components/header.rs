@@ -13,10 +13,18 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .profile
         .as_deref()
         .map_or("offline", |value| value);
-    let source = app.source_mode.label();
+    let source = if app.source_mode == crate::app::SourceMode::Local {
+        match app.local_resource.status {
+            crate::domain::source::LocalResourceStatus::Loading => "local: discovering".to_owned(),
+            crate::domain::source::LocalResourceStatus::Stale => "local: stale".to_owned(),
+            _ => format!("local: {}", app.local_state.label()),
+        }
+    } else {
+        format!("source: {}", app.source_mode.label())
+    };
     let line = Line::from(vec![
         Span::styled("Tale", theme::title()),
-        Span::raw(format!(" · {profile} · source: {source}")),
+        Span::raw(format!(" · {profile} · {source}")),
         Span::raw(format!(" · tasks: {}", app.tasks.all().len())),
     ]);
     frame.render_widget(Paragraph::new(line).style(theme::normal(app)), area);
