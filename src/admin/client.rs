@@ -11,7 +11,7 @@ use super::auth::AccessToken;
 use super::dto::{
     AuditResponse, ContactsResponse, DeviceDto, DevicePostureAttributesDto, DeviceRoutesDto,
     DevicesResponse, DnsPreferencesDto, KeyDto, KeysResponse, NameserversResponse, SearchPathsDto,
-    SettingsDto, UsersResponse,
+    SettingsDto, UserDto, UsersResponse,
 };
 use crate::domain::Timestamp;
 
@@ -24,13 +24,30 @@ const MAX_RETRIES: usize = 2;
 pub enum Endpoint {
     Devices,
     Device,
+    DeviceDelete,
+    DeviceAuthorized,
+    DeviceExpire,
+    DeviceKey,
+    DeviceName,
+    DeviceTags,
     Posture,
     Routes,
+    DeviceRoutesSet,
     Users,
+    User,
+    UserApprove,
+    UserRole,
+    UserSuspend,
+    UserRestore,
+    UserDelete,
     Nameservers,
+    NameserversSet,
     DnsPreferences,
+    DnsPreferencesSet,
     SearchPaths,
+    SearchPathsSet,
     SplitDns,
+    SplitDnsPatch,
     Policy,
     CredentialList,
     CredentialDetail,
@@ -44,13 +61,30 @@ impl Endpoint {
         match self {
             Self::Devices => "list devices",
             Self::Device => "get device",
+            Self::DeviceDelete => "delete device",
+            Self::DeviceAuthorized => "set device approval",
+            Self::DeviceExpire => "expire device key",
+            Self::DeviceKey => "configure device key expiry",
+            Self::DeviceName => "rename device",
+            Self::DeviceTags => "replace device tags",
             Self::Posture => "get device posture",
             Self::Routes => "get device routes",
+            Self::DeviceRoutesSet => "replace device route approvals",
             Self::Users => "list users",
+            Self::User => "get user",
+            Self::UserApprove => "approve user",
+            Self::UserRole => "change user role",
+            Self::UserSuspend => "suspend user",
+            Self::UserRestore => "restore user",
+            Self::UserDelete => "delete user",
             Self::Nameservers => "get DNS nameservers",
+            Self::NameserversSet => "replace DNS nameservers",
             Self::DnsPreferences => "get DNS preferences",
+            Self::DnsPreferencesSet => "edit DNS preferences",
             Self::SearchPaths => "get DNS search paths",
+            Self::SearchPathsSet => "replace DNS search paths",
             Self::SplitDns => "get split DNS",
+            Self::SplitDnsPatch => "edit split DNS",
             Self::Policy => "get policy source",
             Self::CredentialList => "list credential metadata",
             Self::CredentialDetail => "get credential metadata",
@@ -63,12 +97,29 @@ impl Endpoint {
     pub const fn required_scope(self) -> &'static str {
         match self {
             Self::Devices | Self::Device => "devices:core:read",
+            Self::DeviceDelete
+            | Self::DeviceAuthorized
+            | Self::DeviceExpire
+            | Self::DeviceKey
+            | Self::DeviceName
+            | Self::DeviceTags => "devices:core",
             Self::Posture => "devices:posture_attributes:read",
             Self::Routes => "devices:routes:read",
+            Self::DeviceRoutesSet => "devices:routes",
             Self::Users => "users:read",
+            Self::User => "users:read",
+            Self::UserApprove
+            | Self::UserRole
+            | Self::UserSuspend
+            | Self::UserRestore
+            | Self::UserDelete => "users",
             Self::Nameservers | Self::DnsPreferences | Self::SearchPaths | Self::SplitDns => {
                 "dns:read"
             }
+            Self::NameserversSet
+            | Self::DnsPreferencesSet
+            | Self::SearchPathsSet
+            | Self::SplitDnsPatch => "dns",
             Self::Policy => "policy_file:read",
             Self::CredentialList | Self::CredentialDetail => "credential-specific read scope",
             Self::Settings => "feature_settings:read",
@@ -105,11 +156,19 @@ pub struct ApiResponse<T> {
     pub meta: ResponseMeta,
 }
 
+pub type MutationResponse<T> = ApiResponse<T>;
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PolicyBody {
     pub source_bytes: Vec<u8>,
     pub content_type: String,
     pub etag: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct MutationBody {
+    source_bytes: Vec<u8>,
+    content_type: String,
 }
 
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
@@ -154,6 +213,7 @@ pub enum AdminError {
     Unsupported { operation: String, detail: String },
 }
 
+#[derive(Clone)]
 pub struct AdminClient {
     http: Client,
     base_url: Url,
@@ -233,6 +293,94 @@ impl AdminClient {
         self.json(Endpoint::Device, token, url, None).await
     }
 
+    pub async fn delete_device(
+        &self,
+        token: &AccessToken,
+        device_id: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["device", device_id], &[])?;
+        self.mutation_empty(Endpoint::DeviceDelete, Method::DELETE, token, url, None)
+            .await
+    }
+
+    pub async fn set_device_authorized(
+        &self,
+        token: &AccessToken,
+        device_id: &str,
+        authorized: bool,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["device", device_id, "authorized"], &[])?;
+        self.mutation_empty(
+            Endpoint::DeviceAuthorized,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"authorized": authorized})),
+        )
+        .await
+    }
+
+    pub async fn expire_device_key(
+        &self,
+        token: &AccessToken,
+        device_id: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["device", device_id, "expire"], &[])?;
+        self.mutation_empty(Endpoint::DeviceExpire, Method::POST, token, url, None)
+            .await
+    }
+
+    pub async fn set_device_key_expiry(
+        &self,
+        token: &AccessToken,
+        device_id: &str,
+        key_expiry_disabled: bool,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["device", device_id, "key"], &[])?;
+        self.mutation_empty(
+            Endpoint::DeviceKey,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"keyExpiryDisabled": key_expiry_disabled})),
+        )
+        .await
+    }
+
+    pub async fn set_device_name(
+        &self,
+        token: &AccessToken,
+        device_id: &str,
+        name: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["device", device_id, "name"], &[])?;
+        self.mutation_empty(
+            Endpoint::DeviceName,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"name": name})),
+        )
+        .await
+    }
+
+    pub async fn set_device_tags(
+        &self,
+        token: &AccessToken,
+        device_id: &str,
+        tags: &[String],
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["device", device_id, "tags"], &[])?;
+        self.mutation_empty(
+            Endpoint::DeviceTags,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"tags": tags})),
+        )
+        .await
+    }
+
     pub async fn get_posture(
         &self,
         token: &AccessToken,
@@ -251,6 +399,23 @@ impl AdminClient {
         self.json(Endpoint::Routes, token, url, None).await
     }
 
+    pub async fn set_device_routes(
+        &self,
+        token: &AccessToken,
+        device_id: &str,
+        routes: &[String],
+    ) -> Result<MutationResponse<DeviceRoutesDto>, AdminError> {
+        let url = self.path(&["device", device_id, "routes"], &[])?;
+        self.mutation_json(
+            Endpoint::DeviceRoutesSet,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"routes": routes})),
+        )
+        .await
+    }
+
     pub async fn list_users(
         &self,
         token: &AccessToken,
@@ -258,6 +423,68 @@ impl AdminClient {
     ) -> Result<ApiResponse<UsersResponse>, AdminError> {
         let url = self.path(&["tailnet", tailnet, "users"], &[])?;
         self.json(Endpoint::Users, token, url, None).await
+    }
+
+    pub async fn get_user(
+        &self,
+        token: &AccessToken,
+        user_id: &str,
+    ) -> Result<ApiResponse<UserDto>, AdminError> {
+        let url = self.path(&["users", user_id], &[])?;
+        self.json(Endpoint::User, token, url, None).await
+    }
+
+    pub async fn approve_user(
+        &self,
+        token: &AccessToken,
+        user_id: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        self.user_empty(Endpoint::UserApprove, token, user_id, "approve")
+            .await
+    }
+
+    pub async fn set_user_role(
+        &self,
+        token: &AccessToken,
+        user_id: &str,
+        role: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["users", user_id, "role"], &[])?;
+        self.mutation_empty(
+            Endpoint::UserRole,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"role": role})),
+        )
+        .await
+    }
+
+    pub async fn suspend_user(
+        &self,
+        token: &AccessToken,
+        user_id: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        self.user_empty(Endpoint::UserSuspend, token, user_id, "suspend")
+            .await
+    }
+
+    pub async fn restore_user(
+        &self,
+        token: &AccessToken,
+        user_id: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        self.user_empty(Endpoint::UserRestore, token, user_id, "restore")
+            .await
+    }
+
+    pub async fn delete_user(
+        &self,
+        token: &AccessToken,
+        user_id: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        self.user_empty(Endpoint::UserDelete, token, user_id, "delete")
+            .await
     }
 
     pub async fn get_nameservers(
@@ -269,6 +496,23 @@ impl AdminClient {
         self.json(Endpoint::Nameservers, token, url, None).await
     }
 
+    pub async fn set_nameservers(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        dns: &[String],
+    ) -> Result<MutationResponse<NameserversResponse>, AdminError> {
+        let url = self.path(&["tailnet", tailnet, "dns", "nameservers"], &[])?;
+        self.mutation_json(
+            Endpoint::NameserversSet,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"dns": dns})),
+        )
+        .await
+    }
+
     pub async fn get_dns_preferences(
         &self,
         token: &AccessToken,
@@ -276,6 +520,23 @@ impl AdminClient {
     ) -> Result<ApiResponse<DnsPreferencesDto>, AdminError> {
         let url = self.path(&["tailnet", tailnet, "dns", "preferences"], &[])?;
         self.json(Endpoint::DnsPreferences, token, url, None).await
+    }
+
+    pub async fn set_dns_preferences(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        magic_dns: bool,
+    ) -> Result<MutationResponse<DnsPreferencesDto>, AdminError> {
+        let url = self.path(&["tailnet", tailnet, "dns", "preferences"], &[])?;
+        self.mutation_json(
+            Endpoint::DnsPreferencesSet,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"magicDNS": magic_dns})),
+        )
+        .await
     }
 
     pub async fn get_search_paths(
@@ -287,6 +548,23 @@ impl AdminClient {
         self.json(Endpoint::SearchPaths, token, url, None).await
     }
 
+    pub async fn set_search_paths(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        search_paths: &[String],
+    ) -> Result<MutationResponse<SearchPathsDto>, AdminError> {
+        let url = self.path(&["tailnet", tailnet, "dns", "searchpaths"], &[])?;
+        self.mutation_json(
+            Endpoint::SearchPathsSet,
+            Method::POST,
+            token,
+            url,
+            Some(serde_json::json!({"searchPaths": search_paths})),
+        )
+        .await
+    }
+
     pub async fn get_split_dns(
         &self,
         token: &AccessToken,
@@ -294,6 +572,23 @@ impl AdminClient {
     ) -> Result<ApiResponse<serde_json::Map<String, serde_json::Value>>, AdminError> {
         let url = self.path(&["tailnet", tailnet, "dns", "split-dns"], &[])?;
         self.json(Endpoint::SplitDns, token, url, None).await
+    }
+
+    pub async fn patch_split_dns(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        body: serde_json::Value,
+    ) -> Result<MutationResponse<serde_json::Map<String, serde_json::Value>>, AdminError> {
+        let url = self.path(&["tailnet", tailnet, "dns", "split-dns"], &[])?;
+        self.mutation_json(
+            Endpoint::SplitDnsPatch,
+            Method::PATCH,
+            token,
+            url,
+            Some(body),
+        )
+        .await
     }
 
     pub async fn get_policy(
@@ -407,6 +702,124 @@ impl AdminClient {
                 operation: endpoint.operation().to_owned(),
                 detail: bounded_detail(&error.to_string()),
             })
+    }
+
+    async fn user_empty(
+        &self,
+        endpoint: Endpoint,
+        token: &AccessToken,
+        user_id: &str,
+        operation: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let url = self.path(&["users", user_id, operation], &[])?;
+        self.mutation_empty(endpoint, Method::POST, token, url, None)
+            .await
+    }
+
+    async fn mutation_json<T: DeserializeOwned>(
+        &self,
+        endpoint: Endpoint,
+        method: Method,
+        token: &AccessToken,
+        url: Url,
+        body: Option<serde_json::Value>,
+    ) -> Result<MutationResponse<T>, AdminError> {
+        let response = self
+            .mutation_bytes(endpoint, method, token, url, body)
+            .await?;
+        if !json_content_type(&response.value.content_type) {
+            return Err(AdminError::DecodeFailed {
+                operation: endpoint.operation().to_owned(),
+                detail: "the mutation response did not use a JSON content type".to_owned(),
+            });
+        }
+        serde_json::from_slice::<T>(&response.value.source_bytes)
+            .map(|value| ApiResponse {
+                value,
+                meta: response.meta,
+            })
+            .map_err(|error| AdminError::DecodeFailed {
+                operation: endpoint.operation().to_owned(),
+                detail: bounded_detail(&error.to_string()),
+            })
+    }
+
+    async fn mutation_empty(
+        &self,
+        endpoint: Endpoint,
+        method: Method,
+        token: &AccessToken,
+        url: Url,
+        body: Option<serde_json::Value>,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        let response = self
+            .mutation_bytes(endpoint, method, token, url, body)
+            .await?;
+        if !response.value.source_bytes.is_empty() {
+            return Err(AdminError::DecodeFailed {
+                operation: endpoint.operation().to_owned(),
+                detail: "the mutation response was documented as empty but returned bytes"
+                    .to_owned(),
+            });
+        }
+        Ok(ApiResponse {
+            value: (),
+            meta: response.meta,
+        })
+    }
+
+    async fn mutation_bytes(
+        &self,
+        endpoint: Endpoint,
+        method: Method,
+        token: &AccessToken,
+        url: Url,
+        body: Option<serde_json::Value>,
+    ) -> Result<ApiResponse<MutationBody>, AdminError> {
+        let mut request = self
+            .http
+            .request(method, url)
+            .header(AUTHORIZATION, format!("Bearer {}", token.as_str()))
+            .header(USER_AGENT, crate::VERSION_USER_AGENT)
+            .header(ACCEPT, "application/json");
+        if let Some(body) = body {
+            let bytes = serde_json::to_vec(&body).map_err(|error| AdminError::DecodeFailed {
+                operation: endpoint.operation().to_owned(),
+                detail: bounded_detail(&error.to_string()),
+            })?;
+            request = request.header(CONTENT_TYPE, "application/json").body(bytes);
+        }
+        let response = request.send().await.map_err(|error| {
+            if error.is_timeout() {
+                AdminError::TimedOut {
+                    operation: endpoint.operation().to_owned(),
+                }
+            } else {
+                AdminError::Transport {
+                    operation: endpoint.operation().to_owned(),
+                    detail: bounded_detail(&error.to_string()),
+                }
+            }
+        })?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = read_bounded(response, endpoint.operation(), MAX_BODY_BYTES, token).await?;
+        if status == StatusCode::OK {
+            return Ok(ApiResponse {
+                value: MutationBody {
+                    source_bytes: body,
+                    content_type: header_text(&headers, CONTENT_TYPE),
+                },
+                meta: response_meta(status, &headers),
+            });
+        }
+        let detail = bounded_detail(&redact_body(&body, token.as_str()));
+        Err(classify_status(
+            endpoint,
+            status,
+            retry_after_seconds(&headers),
+            detail,
+        ))
     }
 
     async fn bytes(

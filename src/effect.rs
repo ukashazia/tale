@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::admin::AdminRefreshResource;
 use crate::admin::auth::SecretValue;
+use crate::admin::mutation::AdminMutationRequest;
 use crate::domain::mutation::LocalMutation;
 use crate::domain::service::ServiceActionRequest;
 use crate::domain::source::LocalExecutable;
@@ -49,6 +50,21 @@ pub enum Effect {
         environment_token: Option<Arc<SecretValue>>,
         generation: u64,
         device_id: String,
+        timeout: Duration,
+    },
+    StartAdminPreflight {
+        request: AdminMutationRequest,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+    },
+    StartAdminMutation {
+        task_id: TaskId,
+        request: AdminMutationRequest,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     CancelAdminRefresh,

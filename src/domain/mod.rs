@@ -1,5 +1,6 @@
 pub mod account;
 pub mod activity;
+pub mod admin_mutation;
 pub mod certificate;
 pub mod credential;
 pub mod device;

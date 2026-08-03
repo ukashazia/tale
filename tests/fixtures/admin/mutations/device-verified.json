@@ -1,0 +1,19 @@
+{
+  "id": "legacy-fictional-001",
+  "nodeId": "node-fictional-001",
+  "addresses": ["192.0.2.10", "2001:db8:100::10"],
+  "user": "user-fictional-001",
+  "name": "workstation.example.test",
+  "hostname": "laptop",
+  "clientVersion": "1.84.0",
+  "os": "linux",
+  "created": "2026-08-02T12:00:00Z",
+  "connectedToControl": true,
+  "lastSeen": "2026-08-03T10:00:00Z",
+  "expires": "2026-08-10T10:00:00Z",
+  "authorized": true,
+  "advertisedRoutes": ["192.0.2.0/24"],
+  "enabledRoutes": ["192.0.2.0/24"],
+  "tags": ["tag:fictional", "tag:operator"],
+  "sshEnabled": true
+}

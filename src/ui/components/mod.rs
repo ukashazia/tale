@@ -1,4 +1,5 @@
 pub mod action_picker;
+pub mod batch_result;
 pub mod command_palette;
 pub mod confirm;
 pub mod copy_picker;

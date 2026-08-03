@@ -10,6 +10,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
         .mutation
         .as_ref()
         .map(crate::domain::mutation::LocalMutation::risk)
+        .or_else(|| state.admin_mutation.as_ref().map(|mutation| mutation.risk))
         .or_else(|| crate::action::find_action(state.action_id).map(|spec| spec.risk))
         .map_or("unknown", crate::action::Risk::label);
     let phrase = state
@@ -33,12 +34,17 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
         .error
         .as_deref()
         .map_or(String::new(), |value| format!("\nerror: {value}"));
+    let command = if state.redacted_argv.is_empty() {
+        String::new()
+    } else {
+        format!("\nargv: {}", state.redacted_argv.join(" "))
+    };
     let text = format!(
-        "{}{}\n\npreview:\n{}\nargv: {}\n\nconfirmation: {}\n> {}{}\nEsc cancels",
+        "{}{}\n\npreview:\n{}{}\n\nconfirmation: {}\n> {}{}\nEsc cancels",
         state.prompt,
         checkbox,
         state.preview_lines.join("\n"),
-        state.redacted_argv.join(" "),
+        command,
         phrase,
         state.input,
         error

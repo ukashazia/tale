@@ -16,6 +16,27 @@ pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Ope
         crate::action::ActionId::LocalRoutesEditAdvertisements => {
             "routes=10.0.0.0/8,fd00::/8;exit=true;connector=false;relay-port=0;relay-endpoints=203.0.113.1:443"
         }
+        crate::action::ActionId::AdminDeviceRename => "new machine name",
+        crate::action::ActionId::AdminDeviceTagsReplace => {
+            "complete tag set: tag:team-a,tag:prod (empty clears tags)"
+        }
+        crate::action::ActionId::AdminDeviceKeyExpiryConfigure => "key expiry: on/off",
+        crate::action::ActionId::AdminRoutesReplaceApprovals => {
+            "complete approved CIDR set: 10.0.0.0/8,2001:db8::/32"
+        }
+        crate::action::ActionId::AdminDnsPreferencesEdit => "MagicDNS: on/off",
+        crate::action::ActionId::AdminDnsNameserversReplace => {
+            "complete ordered IP list: 1.1.1.1,9.9.9.9 (empty clears)"
+        }
+        crate::action::ActionId::AdminDnsSearchPathsReplace => {
+            "complete ordered suffix list: example.com,corp.example.com (empty clears)"
+        }
+        crate::action::ActionId::AdminDnsSplitCreate
+        | crate::action::ActionId::AdminDnsSplitEdit => "suffix=resolver[,resolver...]",
+        crate::action::ActionId::AdminDnsSplitRemove => "suffix to remove",
+        crate::action::ActionId::AdminUserRoleChange => {
+            "documented role: owner/member/admin/it-admin/network-admin/billing-admin/auditor"
+        }
         _ => "enter a typed local operator request",
     };
     let preference_status = if state.action_id == crate::action::ActionId::LocalPreferencesEdit {
@@ -69,21 +90,47 @@ pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Ope
     } else {
         String::new()
     };
+    let ordered = state.ordered_items.as_ref().map_or_else(
+        String::new,
+        |items| {
+            let entries = if items.is_empty() {
+                "  (empty)".to_owned()
+            } else {
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        format!(
+                            "{} {}",
+                            if index == state.ordered_selected { ">" } else { " " },
+                            if value.is_empty() { "(empty)" } else { value }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            format!(
+                "\n\nordered entries:\n{entries}\nitem editor: {}\nUp/Down select · Ctrl+Up/Ctrl+Down move · Ctrl+i insert · Ctrl+x remove",
+                state.ordered_editor
+            )
+        },
+    );
     let error = state
         .error
         .as_deref()
         .map_or(String::new(), |value| format!("\nerror: {value}"));
+    let title = if state.ordered_items.is_some() {
+        "admin ordered form"
+    } else {
+        "operator form"
+    };
     frame.render_widget(
         Paragraph::new(format!(
-            "{hint}{preference_status}{candidates}\n\n> {}{}\nEnter previews   Esc cancels",
+            "{hint}{preference_status}{candidates}{ordered}\n\nreplacement: {}{}\nEnter previews   Esc cancels",
             state.input, error
         ))
         .style(theme::normal(app))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("local operator form"),
-        ),
+        .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }

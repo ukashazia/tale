@@ -14,6 +14,10 @@ use crate::action::ActionId;
 use crate::admin;
 use crate::admin::auth::{CredentialStore, OsCredentialStore, TokenManager};
 use crate::admin::client::{AdminClient, AdminError};
+use crate::admin::mutation::{
+    AdminMutationOutcome, AdminMutationRequest, AdminSnapshotFields, device_fields,
+    dns_preferences_fields, nameserver_fields, search_path_fields, split_dns_fields, user_fields,
+};
 use crate::app::App;
 use crate::domain::account::LocalAccount;
 use crate::domain::mutation::{LocalMutation, MutationResult};
@@ -49,6 +53,8 @@ use crate::ui;
 
 const EVENT_CAPACITY: usize = 256;
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
+const ADMIN_VERIFICATION_DEADLINE: Duration = Duration::from_secs(30);
+const ADMIN_VERIFICATION_POLL: Duration = Duration::from_millis(250);
 
 pub trait TerminalDriver {
     fn draw(&mut self, app: &App) -> Result<(), TaleError>;
@@ -571,6 +577,49 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             };
             tasks.spawn(async move {
                 run_admin_device_enrichment(context, device_id, timeout).await;
+            });
+        }
+        Effect::StartAdminPreflight {
+            request,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+        } => {
+            let token_manager =
+                token_manager_for(admin_token_managers, &request.profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_admin_preflight(queue, token_manager, request, tailnet, credential, timeout)
+                    .await;
+            });
+        }
+        Effect::StartAdminMutation {
+            task_id,
+            request,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+        } => {
+            let token_manager =
+                token_manager_for(admin_token_managers, &request.profile, environment_token);
+            let queue = queue.clone();
+            let cancellation = Cancellation::new();
+            mutation_cancellations.insert(request.mutation_id, cancellation.clone());
+            cancellations.insert(task_id, cancellation.clone());
+            tasks.spawn(async move {
+                run_admin_mutation(AdminMutationTask {
+                    queue,
+                    token_manager,
+                    task_id,
+                    request,
+                    tailnet,
+                    credential,
+                    timeout,
+                    cancellation,
+                })
+                .await;
             });
         }
         Effect::DropAdminToken { profile } => {
@@ -1402,6 +1451,31 @@ async fn run_admin_resource_refresh(
                     .map_err(|_| decode_failure("devices"))
                 }))
             }
+            admin::AdminRefreshResource::DeviceRoutes(device_id) => {
+                let client = Arc::clone(&client);
+                let device_id = device_id.clone();
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let device_id = device_id.clone();
+                        Box::pin(async move { client.get_routes(token, &device_id).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::DeviceRoutes(response.and_then(|response| {
+                    admin::routes::decode_routes(
+                        device_id,
+                        response.value,
+                        response.meta.observed_at,
+                    )
+                    .map_err(|_| decode_failure("device routes"))
+                }))
+            }
             admin::AdminRefreshResource::Users => {
                 let client = Arc::clone(&client);
                 let tailnet = Arc::clone(&tailnet);
@@ -1820,6 +1894,1432 @@ async fn run_admin_device_enrichment(
             },
         )))
         .await;
+}
+
+async fn run_admin_preflight(
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    request: AdminMutationRequest,
+    tailnet: String,
+    credential: String,
+    timeout: Duration,
+) {
+    let profile = request.profile.clone();
+    let cancellation = Cancellation::new();
+    let token = tokio::select! {
+        result = token_manager.access_token(&profile, &credential) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => Err(crate::admin::auth::AuthError::Cancelled),
+    };
+    let result = match token {
+        Ok(token) => match AdminClient::new(timeout) {
+            Ok(client) => {
+                let context = AdminReadContext {
+                    client: &client,
+                    token_manager: &token_manager,
+                    profile: &profile,
+                    credential: &credential,
+                    token: &token,
+                    tailnet: &tailnet,
+                    cancellation,
+                };
+                fetch_admin_preflight(&context, &request).await
+            }
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(admin_refresh_error(error, "preflight admin mutation")),
+    };
+    let (result, observed_at, owned_device_context) = match result {
+        Ok((fields, observed_at, owned_device_context)) => {
+            (Ok(fields), observed_at, owned_device_context)
+        }
+        Err(error) => (Err(error), crate::local::now(), Vec::new()),
+    };
+    queue
+        .send(Event::Admin(Box::new(AdminEvent::PreflightFinished {
+            request: Box::new(request),
+            result,
+            observed_at,
+            owned_device_context,
+        })))
+        .await;
+}
+
+struct AdminReadContext<'a> {
+    client: &'a AdminClient,
+    token_manager: &'a TokenManager,
+    profile: &'a str,
+    credential: &'a str,
+    token: &'a crate::admin::auth::AccessToken,
+    tailnet: &'a str,
+    cancellation: Cancellation,
+}
+
+async fn fetch_admin_preflight(
+    context: &AdminReadContext<'_>,
+    request: &AdminMutationRequest,
+) -> Result<(AdminSnapshotFields, crate::domain::Timestamp, Vec<String>), AdminError> {
+    let client = context.client;
+    let token_manager = context.token_manager;
+    let profile = context.profile;
+    let credential = context.credential;
+    let token = context.token;
+    let tailnet = context.tailnet;
+    let cancellation = context.cancellation.clone();
+    match &request.change {
+        crate::domain::admin_mutation::AdminChange::DeviceRoutes { .. } => {
+            let device_id = request.target_id.clone();
+            let response = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation,
+                |token| {
+                    let client = client.clone();
+                    let device_id = device_id.clone();
+                    Box::pin(async move { client.get_routes(token, &device_id).await })
+                },
+            )
+            .await?;
+            let routes = admin::routes::decode_routes(
+                request.target_id.clone(),
+                response.value,
+                response.meta.observed_at,
+            )
+            .map_err(|_| decode_failure("device routes"))?;
+            Ok((
+                crate::admin::mutation::route_fields(&routes.advertised, &routes.enabled),
+                routes.observed_at,
+                Vec::new(),
+            ))
+        }
+        crate::domain::admin_mutation::AdminChange::DeviceRename { .. }
+        | crate::domain::admin_mutation::AdminChange::DeviceTags { .. }
+        | crate::domain::admin_mutation::AdminChange::DeviceApproval { .. }
+        | crate::domain::admin_mutation::AdminChange::DeviceKeyExpiry { .. }
+        | crate::domain::admin_mutation::AdminChange::DeviceExpireNow
+        | crate::domain::admin_mutation::AdminChange::DeviceDelete => {
+            let device_id = request.target_id.clone();
+            let response = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation.clone(),
+                |token| {
+                    let client = client.clone();
+                    let device_id = device_id.clone();
+                    Box::pin(async move { client.get_device(token, &device_id).await })
+                },
+            )
+            .await?;
+            let device = admin::devices::decode_device(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("device detail"))?;
+            let mut fields = device_fields(&device);
+            if matches!(
+                &request.change,
+                crate::domain::admin_mutation::AdminChange::DeviceDelete
+            ) {
+                let routes = admin_read_with_replay(
+                    token_manager,
+                    profile,
+                    credential,
+                    token,
+                    cancellation,
+                    |token| {
+                        let client = client.clone();
+                        let device_id = request.target_id.clone();
+                        Box::pin(async move { client.get_routes(token, &device_id).await })
+                    },
+                )
+                .await?;
+                let routes = admin::routes::decode_routes(
+                    request.target_id.clone(),
+                    routes.value,
+                    routes.meta.observed_at,
+                )
+                .map_err(|_| decode_failure("device routes"))?;
+                fields
+                    .values
+                    .insert("advertisedRoutes".to_owned(), routes.advertised.join(","));
+                fields
+                    .values
+                    .insert("enabledRoutes".to_owned(), routes.enabled.join(","));
+            }
+            Ok((fields, response.meta.observed_at, Vec::new()))
+        }
+        crate::domain::admin_mutation::AdminChange::UserApproval
+        | crate::domain::admin_mutation::AdminChange::UserRole { .. }
+        | crate::domain::admin_mutation::AdminChange::UserSuspend
+        | crate::domain::admin_mutation::AdminChange::UserRestore
+        | crate::domain::admin_mutation::AdminChange::UserDelete => {
+            let user_id = request.target_id.clone();
+            let response = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation.clone(),
+                |token| {
+                    let client = client.clone();
+                    let user_id = user_id.clone();
+                    Box::pin(async move { client.get_user(token, &user_id).await })
+                },
+            )
+            .await?;
+            let user = admin::users::decode_user(response.value)
+                .map_err(|_| decode_failure("user detail"))?;
+            let devices = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation,
+                |token| {
+                    let client = client.clone();
+                    let tailnet = tailnet.to_owned();
+                    Box::pin(async move { client.list_devices(token, &tailnet).await })
+                },
+            )
+            .await?;
+            let devices =
+                admin::devices::decode_devices(devices.value.devices, devices.meta.observed_at)
+                    .map_err(|_| decode_failure("devices for user preflight"))?;
+            Ok((
+                user_fields(&user),
+                response.meta.observed_at.max(user.created_at.unwrap_or(0)),
+                crate::admin::user_mutations::owned_device_context(&user, &devices),
+            ))
+        }
+        crate::domain::admin_mutation::AdminChange::DnsNameservers { .. } => {
+            let response = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation,
+                |token| {
+                    let client = client.clone();
+                    let tailnet = tailnet.to_owned();
+                    Box::pin(async move { client.get_nameservers(token, &tailnet).await })
+                },
+            )
+            .await?;
+            let value = admin::dns::decode_nameservers(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("DNS nameservers"))?;
+            Ok((nameserver_fields(&value), value.observed_at, Vec::new()))
+        }
+        crate::domain::admin_mutation::AdminChange::DnsPreferences { .. } => {
+            let response = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation,
+                |token| {
+                    let client = client.clone();
+                    let tailnet = tailnet.to_owned();
+                    Box::pin(async move { client.get_dns_preferences(token, &tailnet).await })
+                },
+            )
+            .await?;
+            let value = admin::dns::decode_preferences(response.value, response.meta.observed_at);
+            Ok((
+                dns_preferences_fields(&value),
+                value.observed_at,
+                Vec::new(),
+            ))
+        }
+        crate::domain::admin_mutation::AdminChange::DnsSearchPaths { .. } => {
+            let response = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation,
+                |token| {
+                    let client = client.clone();
+                    let tailnet = tailnet.to_owned();
+                    Box::pin(async move { client.get_search_paths(token, &tailnet).await })
+                },
+            )
+            .await?;
+            let value = admin::dns::decode_search_paths(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("DNS search paths"))?;
+            Ok((search_path_fields(&value), value.observed_at, Vec::new()))
+        }
+        crate::domain::admin_mutation::AdminChange::DnsSplitMapping { .. } => {
+            let response = admin_read_with_replay(
+                token_manager,
+                profile,
+                credential,
+                token,
+                cancellation,
+                |token| {
+                    let client = client.clone();
+                    let tailnet = tailnet.to_owned();
+                    Box::pin(async move { client.get_split_dns(token, &tailnet).await })
+                },
+            )
+            .await?;
+            let value = admin::dns::decode_split_dns(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("split DNS"))?;
+            Ok((split_dns_fields(&value), value.observed_at, Vec::new()))
+        }
+    }
+}
+
+struct AdminMutationTask {
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    task_id: TaskId,
+    request: AdminMutationRequest,
+    tailnet: String,
+    credential: String,
+    timeout: Duration,
+    cancellation: Cancellation,
+}
+
+async fn run_admin_mutation(task: AdminMutationTask) {
+    let AdminMutationTask {
+        queue,
+        token_manager,
+        task_id,
+        request,
+        tailnet,
+        credential,
+        timeout,
+        cancellation,
+    } = task;
+    let profile = request.profile.clone();
+    let mutation_id = request.mutation_id;
+    queue
+        .send(Event::Task(Box::new(TaskEvent::Started { task_id })))
+        .await;
+    let token = tokio::select! {
+        result = token_manager.access_token(&profile, &credential) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => Err(crate::admin::auth::AuthError::Cancelled),
+    };
+    let token = match token {
+        Ok(token) => token,
+        Err(error) => {
+            let outcome = AdminMutationOutcome {
+                mutation_id,
+                state: crate::domain::admin_mutation::AdminMutationState::Failed,
+                detail: error.to_string(),
+                verification: "not attempted; mutation was not dispatched".to_owned(),
+                audit: crate::domain::admin_mutation::AuditCorrelation::none(),
+            };
+            send_admin_mutation_finished(queue, task_id, request, outcome, false).await;
+            return;
+        }
+    };
+    let client = match AdminClient::new(timeout) {
+        Ok(client) => client,
+        Err(error) => {
+            let outcome = AdminMutationOutcome {
+                mutation_id,
+                state: crate::domain::admin_mutation::AdminMutationState::Failed,
+                detail: error.to_string(),
+                verification: "not attempted; mutation was not dispatched".to_owned(),
+                audit: crate::domain::admin_mutation::AuditCorrelation::none(),
+            };
+            send_admin_mutation_finished(queue, task_id, request, outcome, false).await;
+            return;
+        }
+    };
+    let dispatched_at = crate::local::now();
+    let mutation_result = tokio::select! {
+        result = dispatch_admin_change(&client, &token, &request, &tailnet) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => Err(AdminError::Cancelled {
+            operation: request.action_id.as_str().to_owned(),
+        }),
+    };
+    let read_context = AdminReadContext {
+        client: &client,
+        token_manager: &token_manager,
+        profile: &profile,
+        credential: &credential,
+        token: &token,
+        tailnet: &tailnet,
+        cancellation: cancellation.clone(),
+    };
+    let verification = verify_admin_change_until(&read_context, &request).await;
+    let uncertain_request = mutation_result
+        .as_ref()
+        .err()
+        .is_some_and(uncertain_admin_error);
+    let (state, detail, verification_text) = match (&mutation_result, &verification) {
+        (Ok(_), Ok(VerificationResult::Verified(detail))) => (
+            crate::domain::admin_mutation::AdminMutationState::Succeeded,
+            "mutation returned success".to_owned(),
+            detail.clone(),
+        ),
+        (Err(error), Ok(VerificationResult::Verified(detail))) if uncertain_request => (
+            crate::domain::admin_mutation::AdminMutationState::Succeeded,
+            format!(
+                "mutation response was uncertain after {}; read matches",
+                error
+            ),
+            detail.clone(),
+        ),
+        (Err(error), Ok(VerificationResult::Verified(detail))) => (
+            crate::domain::admin_mutation::AdminMutationState::Failed,
+            format!("mutation was rejected; authoritative state already matched: {error}"),
+            detail.clone(),
+        ),
+        (Ok(_), Ok(VerificationResult::Mismatch(detail))) => (
+            crate::domain::admin_mutation::AdminMutationState::Failed,
+            "authoritative verification returned a mismatch".to_owned(),
+            detail.clone(),
+        ),
+        (Ok(_), Err(error)) => (
+            crate::domain::admin_mutation::AdminMutationState::SucceededUnverified,
+            "mutation returned success but the authoritative read failed".to_owned(),
+            error.to_string(),
+        ),
+        (Err(error), Ok(VerificationResult::Mismatch(detail))) if uncertain_request => (
+            crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown,
+            format!("mutation outcome is unknown after {}", error),
+            detail.clone(),
+        ),
+        (Err(error), Err(verification_error)) if uncertain_request => (
+            crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown,
+            format!(
+                "mutation outcome is unknown after {}; verification failed",
+                error
+            ),
+            verification_error.to_string(),
+        ),
+        (Err(error), Ok(VerificationResult::Mismatch(detail))) => (
+            crate::domain::admin_mutation::AdminMutationState::Failed,
+            error.to_string(),
+            detail.clone(),
+        ),
+        (Err(error), Err(verification_error)) => (
+            crate::domain::admin_mutation::AdminMutationState::Failed,
+            error.to_string(),
+            verification_error.to_string(),
+        ),
+    };
+    let should_correlate = state == crate::domain::admin_mutation::AdminMutationState::Succeeded;
+    let outcome = AdminMutationOutcome {
+        mutation_id,
+        state,
+        detail,
+        verification: verification_text,
+        audit: crate::domain::admin_mutation::AuditCorrelation::none(),
+    };
+    let audit_job = should_correlate.then(|| {
+        (
+            queue.clone(),
+            token_manager.clone(),
+            client.clone(),
+            profile.clone(),
+            credential.clone(),
+            request.clone(),
+            tailnet.clone(),
+            cancellation.clone(),
+        )
+    });
+    send_admin_mutation_finished(
+        queue,
+        task_id,
+        request,
+        outcome,
+        state == crate::domain::admin_mutation::AdminMutationState::Succeeded,
+    )
+    .await;
+    if let Some((
+        audit_queue,
+        audit_token_manager,
+        audit_client,
+        audit_profile,
+        audit_credential,
+        audit_request,
+        audit_tailnet,
+        audit_cancellation,
+    )) = audit_job
+    {
+        tokio::spawn(async move {
+            run_admin_audit_correlation(AdminAuditJob {
+                queue: audit_queue,
+                token_manager: audit_token_manager,
+                client: audit_client,
+                profile: audit_profile,
+                credential: audit_credential,
+                task_id,
+                request: audit_request,
+                tailnet: audit_tailnet,
+                dispatched_at,
+                cancellation: audit_cancellation,
+            })
+            .await;
+        });
+    }
+}
+
+async fn dispatch_admin_change(
+    client: &AdminClient,
+    token: &crate::admin::auth::AccessToken,
+    request: &AdminMutationRequest,
+    tailnet: &str,
+) -> Result<(), AdminError> {
+    use crate::domain::admin_mutation::AdminChange;
+    match &request.change {
+        AdminChange::DeviceRename { name } => {
+            crate::admin::device_mutations::validate_machine_name(name).map_err(|detail| {
+                AdminError::ValidationFailed {
+                    operation: request.action_id.as_str().to_owned(),
+                    detail,
+                }
+            })?;
+            client
+                .set_device_name(token, &request.target_id, name)
+                .await
+                .map(|_| ())
+        }
+        AdminChange::DeviceTags { tags } => {
+            let tags = crate::admin::device_mutations::canonical_tags(tags).map_err(|detail| {
+                AdminError::ValidationFailed {
+                    operation: request.action_id.as_str().to_owned(),
+                    detail,
+                }
+            })?;
+            client
+                .set_device_tags(token, &request.target_id, &tags)
+                .await
+                .map(|_| ())
+        }
+        AdminChange::DeviceApproval { authorized } => client
+            .set_device_authorized(token, &request.target_id, *authorized)
+            .await
+            .map(|_| ()),
+        AdminChange::DeviceKeyExpiry { disabled } => client
+            .set_device_key_expiry(token, &request.target_id, *disabled)
+            .await
+            .map(|_| ()),
+        AdminChange::DeviceExpireNow => client
+            .expire_device_key(token, &request.target_id)
+            .await
+            .map(|_| ()),
+        AdminChange::DeviceDelete => client
+            .delete_device(token, &request.target_id)
+            .await
+            .map(|_| ()),
+        AdminChange::DeviceRoutes { routes } => {
+            let routes = crate::admin::route_mutations::canonical_enabled_routes(routes).map_err(
+                |detail| AdminError::ValidationFailed {
+                    operation: request.action_id.as_str().to_owned(),
+                    detail,
+                },
+            )?;
+            let advertised = request
+                .preflight
+                .as_ref()
+                .and_then(|preflight| preflight.fields.get("advertisedRoutes"))
+                .map_or_else(Vec::new, |value| {
+                    value.split(',').map(str::to_owned).collect::<Vec<_>>()
+                });
+            let currently_enabled = request
+                .preflight
+                .as_ref()
+                .and_then(|preflight| preflight.fields.get("enabledRoutes"))
+                .map_or_else(Vec::new, |value| {
+                    value.split(',').map(str::to_owned).collect::<Vec<_>>()
+                });
+            let routes = crate::admin::route_mutations::validate_replacement(
+                &advertised,
+                &currently_enabled,
+                &routes,
+            )
+            .map_err(|detail| AdminError::ValidationFailed {
+                operation: request.action_id.as_str().to_owned(),
+                detail,
+            })?;
+            client
+                .set_device_routes(token, &request.target_id, &routes)
+                .await
+                .map(|_| ())
+        }
+        AdminChange::DnsNameservers { values } => {
+            let values = crate::admin::dns_mutations::canonical_resolvers(values, "nameserver")
+                .map_err(|detail| AdminError::ValidationFailed {
+                    operation: request.action_id.as_str().to_owned(),
+                    detail,
+                })?;
+            client
+                .set_nameservers(token, tailnet, &values)
+                .await
+                .map(|_| ())
+        }
+        AdminChange::DnsPreferences { magic_dns } => client
+            .set_dns_preferences(token, tailnet, *magic_dns)
+            .await
+            .map(|_| ()),
+        AdminChange::DnsSearchPaths { values } => {
+            let values =
+                crate::admin::dns_mutations::canonical_ordered_values(values, "search path")
+                    .map_err(|detail| AdminError::ValidationFailed {
+                        operation: request.action_id.as_str().to_owned(),
+                        detail,
+                    })?;
+            for value in &values {
+                crate::admin::dns_mutations::validate_domain(value).map_err(|detail| {
+                    AdminError::ValidationFailed {
+                        operation: request.action_id.as_str().to_owned(),
+                        detail,
+                    }
+                })?;
+            }
+            client
+                .set_search_paths(token, tailnet, &values)
+                .await
+                .map(|_| ())
+        }
+        AdminChange::DnsSplitMapping {
+            domain, resolvers, ..
+        } => {
+            let body =
+                crate::admin::dns_mutations::split_mapping_body(domain, resolvers.as_deref())
+                    .map_err(|detail| AdminError::ValidationFailed {
+                        operation: request.action_id.as_str().to_owned(),
+                        detail,
+                    })?;
+            client
+                .patch_split_dns(token, tailnet, body)
+                .await
+                .map(|_| ())
+        }
+        AdminChange::UserApproval => client
+            .approve_user(token, &request.target_id)
+            .await
+            .map(|_| ()),
+        AdminChange::UserRole { role } => {
+            let role = crate::admin::user_mutations::validate_role(role).map_err(|detail| {
+                AdminError::ValidationFailed {
+                    operation: request.action_id.as_str().to_owned(),
+                    detail,
+                }
+            })?;
+            client
+                .set_user_role(token, &request.target_id, &role)
+                .await
+                .map(|_| ())
+        }
+        AdminChange::UserSuspend => client
+            .suspend_user(token, &request.target_id)
+            .await
+            .map(|_| ()),
+        AdminChange::UserRestore => client
+            .restore_user(token, &request.target_id)
+            .await
+            .map(|_| ()),
+        AdminChange::UserDelete => client
+            .delete_user(token, &request.target_id)
+            .await
+            .map(|_| ()),
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum VerificationResult {
+    Verified(String),
+    Mismatch(String),
+}
+
+async fn verify_admin_change_until(
+    context: &AdminReadContext<'_>,
+    request: &AdminMutationRequest,
+) -> Result<VerificationResult, AdminError> {
+    let deadline = Instant::now() + ADMIN_VERIFICATION_DEADLINE;
+    loop {
+        match verify_admin_change(context, request).await {
+            Ok(VerificationResult::Verified(detail)) => {
+                return Ok(VerificationResult::Verified(detail));
+            }
+            Ok(VerificationResult::Mismatch(detail)) => {
+                if Instant::now() >= deadline {
+                    return Ok(VerificationResult::Mismatch(detail));
+                }
+            }
+            Err(error) if retryable_verification_error(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            continue;
+        }
+        let wait = remaining.min(ADMIN_VERIFICATION_POLL);
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = wait_for_cancellation(context.cancellation.clone()) => {
+                return Err(AdminError::Cancelled {
+                    operation: "verify admin mutation".to_owned(),
+                });
+            }
+        }
+    }
+}
+
+fn retryable_verification_error(error: &AdminError) -> bool {
+    matches!(
+        error,
+        AdminError::Transport { .. }
+            | AdminError::TimedOut { .. }
+            | AdminError::RateLimited { .. }
+            | AdminError::ServerFailure { .. }
+    )
+}
+
+async fn verify_admin_change(
+    context: &AdminReadContext<'_>,
+    request: &AdminMutationRequest,
+) -> Result<VerificationResult, AdminError> {
+    let client = context.client;
+    let token_manager = context.token_manager;
+    let profile = context.profile;
+    let credential = context.credential;
+    let token = context.token;
+    let tailnet = context.tailnet;
+    let cancellation = context.cancellation.clone();
+    use crate::domain::admin_mutation::AdminChange;
+    match &request.change {
+        AdminChange::DeviceDelete => match admin_read_with_replay(
+            token_manager,
+            profile,
+            credential,
+            token,
+            cancellation,
+            |token| {
+                let client = client.clone();
+                let device_id = request.target_id.clone();
+                Box::pin(async move { client.get_device(token, &device_id).await })
+            },
+        )
+        .await
+        {
+            Err(AdminError::NotFound { .. }) => Ok(VerificationResult::Verified(
+                "GET device returned not found; deletion is authoritative".to_owned(),
+            )),
+            Ok(_) => Ok(VerificationResult::Mismatch(
+                "device still exists after delete".to_owned(),
+            )),
+            Err(error) => Err(error),
+        },
+        AdminChange::DeviceRename { name } => {
+            let device = read_device(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                request,
+                cancellation,
+            )
+            .await?;
+            let device = admin::devices::decode_device(device.value, device.meta.observed_at)
+                .map_err(|_| decode_failure("device verification"))?;
+            Ok(
+                match crate::admin::device_mutations::verify_name(&device, name) {
+                    Ok(()) => VerificationResult::Verified(format!(
+                        "canonical name: {}",
+                        device.display_name()
+                    )),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DeviceTags { tags } => {
+            let device = read_device(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                request,
+                cancellation,
+            )
+            .await?;
+            let device = admin::devices::decode_device(device.value, device.meta.observed_at)
+                .map_err(|_| decode_failure("device verification"))?;
+            Ok(
+                match crate::admin::device_mutations::verify_tags(&device, tags) {
+                    Ok(()) => {
+                        VerificationResult::Verified("complete returned tag set matches".to_owned())
+                    }
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DeviceApproval { authorized } => {
+            let device = read_device(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                request,
+                cancellation,
+            )
+            .await?;
+            let device = admin::devices::decode_device(device.value, device.meta.observed_at)
+                .map_err(|_| decode_failure("device verification"))?;
+            Ok(
+                match crate::admin::device_mutations::verify_approval(&device, *authorized) {
+                    Ok(()) => VerificationResult::Verified(format!("approval: {authorized}")),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DeviceKeyExpiry { disabled } => {
+            let device = read_device(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                request,
+                cancellation,
+            )
+            .await?;
+            let device = admin::devices::decode_device(device.value, device.meta.observed_at)
+                .map_err(|_| decode_failure("device verification"))?;
+            Ok(
+                match crate::admin::device_mutations::verify_key_expiry(&device, *disabled) {
+                    Ok(()) => VerificationResult::Verified(format!(
+                        "key expiry disabled: {disabled}; server expiry timestamp: {:?}",
+                        device.expires_at
+                    )),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DeviceExpireNow => {
+            let device = read_device(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                request,
+                cancellation,
+            )
+            .await?;
+            let observed_at = device.meta.observed_at;
+            let device = admin::devices::decode_device(device.value, observed_at)
+                .map_err(|_| decode_failure("device verification"))?;
+            Ok(
+                match crate::admin::device_mutations::verify_expire_now(&device, observed_at) {
+                    Ok(()) => VerificationResult::Verified(format!(
+                        "server expiry timestamp: {:?}",
+                        device.expires_at
+                    )),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DeviceRoutes { routes } => {
+            let routes_response = read_routes(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                request,
+                cancellation,
+            )
+            .await?;
+            let observation = admin::routes::decode_routes(
+                request.target_id.clone(),
+                routes_response.value,
+                routes_response.meta.observed_at,
+            )
+            .map_err(|_| decode_failure("route verification"))?;
+            Ok(
+                match crate::admin::route_mutations::verify_enabled_routes(&observation, routes) {
+                    Ok(()) => VerificationResult::Verified(
+                        "complete enabled route set matches".to_owned(),
+                    ),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DnsNameservers { values } => {
+            let response = read_dns_nameservers(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                tailnet,
+                cancellation,
+            )
+            .await?;
+            let value = admin::dns::decode_nameservers(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("DNS nameserver verification"))?;
+            Ok(
+                match crate::admin::dns_mutations::verify_nameservers(&value, values) {
+                    Ok(()) => VerificationResult::Verified(
+                        "complete ordered nameserver list matches".to_owned(),
+                    ),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DnsPreferences { magic_dns } => {
+            let response = read_dns_preferences(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                tailnet,
+                cancellation,
+            )
+            .await?;
+            let value = admin::dns::decode_preferences(response.value, response.meta.observed_at);
+            Ok(
+                match crate::admin::dns_mutations::verify_preferences(&value, *magic_dns) {
+                    Ok(()) => VerificationResult::Verified(format!("MagicDNS: {magic_dns}")),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DnsSearchPaths { values } => {
+            let response = read_search_paths(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                tailnet,
+                cancellation,
+            )
+            .await?;
+            let value = admin::dns::decode_search_paths(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("DNS search-path verification"))?;
+            Ok(
+                match crate::admin::dns_mutations::verify_search_paths(&value, values) {
+                    Ok(()) => VerificationResult::Verified(
+                        "complete ordered search-path list matches".to_owned(),
+                    ),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::DnsSplitMapping {
+            domain, resolvers, ..
+        } => {
+            let response = read_split_dns(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                tailnet,
+                cancellation,
+            )
+            .await?;
+            let value = admin::dns::decode_split_dns(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("split-DNS verification"))?;
+            Ok(
+                match crate::admin::dns_mutations::verify_split_mapping(
+                    &value,
+                    domain,
+                    resolvers.as_deref(),
+                ) {
+                    Ok(()) => VerificationResult::Verified(format!(
+                        "split-DNS mapping verified for {domain}"
+                    )),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+        AdminChange::UserDelete => match read_user(
+            client,
+            token_manager,
+            profile,
+            credential,
+            token,
+            request,
+            cancellation,
+        )
+        .await
+        {
+            Err(AdminError::NotFound { .. }) => Ok(VerificationResult::Verified(
+                "GET user returned not found; deletion is authoritative".to_owned(),
+            )),
+            Ok(_) => Ok(VerificationResult::Mismatch(
+                "user still exists after delete".to_owned(),
+            )),
+            Err(error) => Err(error),
+        },
+        AdminChange::UserApproval => {
+            verify_user_status(context, request, &["approved", "active"]).await
+        }
+        AdminChange::UserSuspend => verify_user_status(context, request, &["suspended"]).await,
+        AdminChange::UserRestore => {
+            verify_user_status(context, request, &["active", "approved"]).await
+        }
+        AdminChange::UserRole { role } => {
+            let user = read_user(
+                client,
+                token_manager,
+                profile,
+                credential,
+                token,
+                request,
+                cancellation,
+            )
+            .await?;
+            let user = admin::users::decode_user(user.value)
+                .map_err(|_| decode_failure("user verification"))?;
+            Ok(
+                match crate::admin::user_mutations::verify_role(&user, role) {
+                    Ok(()) => VerificationResult::Verified(format!("role: {role}")),
+                    Err(detail) => VerificationResult::Mismatch(detail),
+                },
+            )
+        }
+    }
+}
+
+async fn read_device(
+    client: &AdminClient,
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    request: &AdminMutationRequest,
+    cancellation: Cancellation,
+) -> Result<crate::admin::client::ApiResponse<crate::admin::dto::DeviceDto>, AdminError> {
+    let device_id = request.target_id.clone();
+    admin_read_with_replay(
+        token_manager,
+        profile,
+        credential,
+        token,
+        cancellation,
+        |token| {
+            let client = client.clone();
+            let device_id = device_id.clone();
+            Box::pin(async move { client.get_device(token, &device_id).await })
+        },
+    )
+    .await
+}
+
+async fn read_routes(
+    client: &AdminClient,
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    request: &AdminMutationRequest,
+    cancellation: Cancellation,
+) -> Result<crate::admin::client::ApiResponse<crate::admin::dto::DeviceRoutesDto>, AdminError> {
+    let device_id = request.target_id.clone();
+    admin_read_with_replay(
+        token_manager,
+        profile,
+        credential,
+        token,
+        cancellation,
+        |token| {
+            let client = client.clone();
+            let device_id = device_id.clone();
+            Box::pin(async move { client.get_routes(token, &device_id).await })
+        },
+    )
+    .await
+}
+
+async fn read_user(
+    client: &AdminClient,
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    request: &AdminMutationRequest,
+    cancellation: Cancellation,
+) -> Result<crate::admin::client::ApiResponse<crate::admin::dto::UserDto>, AdminError> {
+    let user_id = request.target_id.clone();
+    admin_read_with_replay(
+        token_manager,
+        profile,
+        credential,
+        token,
+        cancellation,
+        |token| {
+            let client = client.clone();
+            let user_id = user_id.clone();
+            Box::pin(async move { client.get_user(token, &user_id).await })
+        },
+    )
+    .await
+}
+
+async fn verify_user_status(
+    context: &AdminReadContext<'_>,
+    request: &AdminMutationRequest,
+    expected: &[&str],
+) -> Result<VerificationResult, AdminError> {
+    let user = read_user(
+        context.client,
+        context.token_manager,
+        context.profile,
+        context.credential,
+        context.token,
+        request,
+        context.cancellation.clone(),
+    )
+    .await?;
+    let user =
+        admin::users::decode_user(user.value).map_err(|_| decode_failure("user verification"))?;
+    Ok(
+        match crate::admin::user_mutations::verify_status(&user, expected) {
+            Ok(()) => VerificationResult::Verified(format!(
+                "status: {}",
+                user.status.as_deref().unwrap_or("unknown")
+            )),
+            Err(detail) => VerificationResult::Mismatch(detail),
+        },
+    )
+}
+
+async fn read_dns_nameservers(
+    client: &AdminClient,
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    cancellation: Cancellation,
+) -> Result<crate::admin::client::ApiResponse<crate::admin::dto::NameserversResponse>, AdminError> {
+    let tailnet = tailnet.to_owned();
+    admin_read_with_replay(
+        token_manager,
+        profile,
+        credential,
+        token,
+        cancellation,
+        |token| {
+            let client = client.clone();
+            let tailnet = tailnet.clone();
+            Box::pin(async move { client.get_nameservers(token, &tailnet).await })
+        },
+    )
+    .await
+}
+
+async fn read_dns_preferences(
+    client: &AdminClient,
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    cancellation: Cancellation,
+) -> Result<crate::admin::client::ApiResponse<crate::admin::dto::DnsPreferencesDto>, AdminError> {
+    let tailnet = tailnet.to_owned();
+    admin_read_with_replay(
+        token_manager,
+        profile,
+        credential,
+        token,
+        cancellation,
+        |token| {
+            let client = client.clone();
+            let tailnet = tailnet.clone();
+            Box::pin(async move { client.get_dns_preferences(token, &tailnet).await })
+        },
+    )
+    .await
+}
+
+async fn read_search_paths(
+    client: &AdminClient,
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    cancellation: Cancellation,
+) -> Result<crate::admin::client::ApiResponse<crate::admin::dto::SearchPathsDto>, AdminError> {
+    let tailnet = tailnet.to_owned();
+    admin_read_with_replay(
+        token_manager,
+        profile,
+        credential,
+        token,
+        cancellation,
+        |token| {
+            let client = client.clone();
+            let tailnet = tailnet.clone();
+            Box::pin(async move { client.get_search_paths(token, &tailnet).await })
+        },
+    )
+    .await
+}
+
+async fn read_split_dns(
+    client: &AdminClient,
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    cancellation: Cancellation,
+) -> Result<crate::admin::client::ApiResponse<serde_json::Map<String, serde_json::Value>>, AdminError>
+{
+    let tailnet = tailnet.to_owned();
+    admin_read_with_replay(
+        token_manager,
+        profile,
+        credential,
+        token,
+        cancellation,
+        |token| {
+            let client = client.clone();
+            let tailnet = tailnet.clone();
+            Box::pin(async move { client.get_split_dns(token, &tailnet).await })
+        },
+    )
+    .await
+}
+
+fn uncertain_admin_error(error: &AdminError) -> bool {
+    matches!(
+        error,
+        AdminError::Transport { .. }
+            | AdminError::TimedOut { .. }
+            | AdminError::ServerFailure { .. }
+            | AdminError::RateLimited { .. }
+            | AdminError::Cancelled { .. }
+    )
+}
+
+struct AdminAuditJob {
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    client: AdminClient,
+    profile: String,
+    credential: String,
+    task_id: TaskId,
+    request: AdminMutationRequest,
+    tailnet: String,
+    dispatched_at: crate::domain::Timestamp,
+    cancellation: Cancellation,
+}
+
+async fn run_admin_audit_correlation(job: AdminAuditJob) {
+    let AdminAuditJob {
+        queue,
+        token_manager,
+        client,
+        profile,
+        credential,
+        task_id,
+        request,
+        tailnet,
+        dispatched_at,
+        cancellation,
+    } = job;
+    let token = tokio::select! {
+        result = token_manager.access_token(&profile, &credential) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => Err(crate::admin::auth::AuthError::Cancelled),
+    };
+    let correlation = match token {
+        Ok(token) => {
+            let context = AdminReadContext {
+                client: &client,
+                token_manager: &token_manager,
+                profile: &profile,
+                credential: &credential,
+                token: &token,
+                tailnet: &tailnet,
+                cancellation,
+            };
+            correlate_admin_audit(&context, &request, dispatched_at).await
+        }
+        Err(_) => crate::domain::admin_mutation::AuditCorrelation::none(),
+    };
+    queue
+        .send(Event::Admin(Box::new(
+            AdminEvent::AuditCorrelationFinished {
+                task_id,
+                mutation_id: request.mutation_id,
+                correlation,
+            },
+        )))
+        .await;
+}
+
+async fn correlate_admin_audit(
+    context: &AdminReadContext<'_>,
+    request: &AdminMutationRequest,
+    dispatched_at: crate::domain::Timestamp,
+) -> crate::domain::admin_mutation::AuditCorrelation {
+    let deadline = dispatched_at.saturating_add(120);
+    let start = match format_utc(dispatched_at.saturating_sub(5)) {
+        Some(value) => value,
+        None => return crate::domain::admin_mutation::AuditCorrelation::none(),
+    };
+    loop {
+        if context.cancellation.is_cancelled() {
+            return crate::domain::admin_mutation::AuditCorrelation {
+                candidate_event_ids: Vec::new(),
+                polling_stopped: true,
+            };
+        }
+        let now = crate::local::now();
+        let end = match format_utc(now) {
+            Some(value) => value,
+            None => return crate::domain::admin_mutation::AuditCorrelation::none(),
+        };
+        let response = read_audit(context, &start, &end).await;
+        let Ok(response) = response else {
+            return crate::domain::admin_mutation::AuditCorrelation::none();
+        };
+        let snapshot = match admin::audit::decode_audit_with_token(
+            response.value.logs,
+            response.meta.observed_at,
+            None,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(_) => return crate::domain::admin_mutation::AuditCorrelation::none(),
+        };
+        let correlation = crate::admin::mutation::correlate_audit(
+            &snapshot.events,
+            &request.target_id,
+            request.change.audit_action_class(),
+            None,
+            dispatched_at,
+            now,
+        );
+        if !correlation.candidate_event_ids.is_empty() || now >= deadline {
+            return correlation;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn read_audit(
+    context: &AdminReadContext<'_>,
+    start: &str,
+    end: &str,
+) -> Result<crate::admin::client::ApiResponse<crate::admin::dto::AuditResponse>, AdminError> {
+    let tailnet = context.tailnet.to_owned();
+    let start = start.to_owned();
+    let end = end.to_owned();
+    admin_read_with_replay(
+        context.token_manager,
+        context.profile,
+        context.credential,
+        context.token,
+        context.cancellation.clone(),
+        |token| {
+            let client = context.client.clone();
+            let tailnet = tailnet.clone();
+            let start = start.clone();
+            let end = end.clone();
+            Box::pin(async move { client.get_audit(token, &tailnet, &start, &end).await })
+        },
+    )
+    .await
+}
+
+async fn send_admin_mutation_finished(
+    queue: EventQueue,
+    task_id: TaskId,
+    request: AdminMutationRequest,
+    outcome: AdminMutationOutcome,
+    verified: bool,
+) {
+    let summary = match outcome.state {
+        crate::domain::admin_mutation::AdminMutationState::Succeeded => "admin mutation verified",
+        crate::domain::admin_mutation::AdminMutationState::SucceededUnverified => {
+            "admin mutation succeeded but is unverified"
+        }
+        crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown => {
+            "admin mutation outcome is unknown"
+        }
+        _ => "admin mutation failed",
+    };
+    queue
+        .send(Event::Task(Box::new(if verified {
+            TaskEvent::Succeeded {
+                task_id,
+                finished_at: crate::local::now(),
+                summary: summary.to_owned(),
+                detail: outcome.verification.clone(),
+            }
+        } else {
+            TaskEvent::Failed {
+                task_id,
+                finished_at: crate::local::now(),
+                summary: summary.to_owned(),
+                detail: format!("{}; {}", outcome.detail, outcome.verification),
+            }
+        })))
+        .await;
+    let refresh_resources = refresh_resources_for_change(&request.change, &request.target_id);
+    let refresh_local_dns = matches!(
+        request.change,
+        crate::domain::admin_mutation::AdminChange::DnsNameservers { .. }
+            | crate::domain::admin_mutation::AdminChange::DnsPreferences { .. }
+            | crate::domain::admin_mutation::AdminChange::DnsSearchPaths { .. }
+            | crate::domain::admin_mutation::AdminChange::DnsSplitMapping { .. }
+    );
+    queue
+        .send(Event::Admin(Box::new(AdminEvent::MutationFinished {
+            task_id,
+            request: Box::new(request),
+            outcome: Box::new(outcome),
+            refresh_resources,
+            refresh_local_dns,
+        })))
+        .await;
+}
+
+fn refresh_resources_for_change(
+    change: &crate::domain::admin_mutation::AdminChange,
+    target_id: &str,
+) -> Vec<admin::AdminRefreshResource> {
+    use crate::domain::admin_mutation::AdminChange;
+    match change {
+        AdminChange::DeviceRoutes { .. } => vec![
+            admin::AdminRefreshResource::Devices,
+            admin::AdminRefreshResource::DeviceRoutes(target_id.to_owned()),
+        ],
+        AdminChange::DeviceRename { .. }
+        | AdminChange::DeviceTags { .. }
+        | AdminChange::DeviceApproval { .. }
+        | AdminChange::DeviceKeyExpiry { .. }
+        | AdminChange::DeviceExpireNow
+        | AdminChange::DeviceDelete => vec![admin::AdminRefreshResource::Devices],
+        AdminChange::UserApproval
+        | AdminChange::UserRole { .. }
+        | AdminChange::UserSuspend
+        | AdminChange::UserRestore
+        | AdminChange::UserDelete => vec![
+            admin::AdminRefreshResource::Users,
+            admin::AdminRefreshResource::Devices,
+            admin::AdminRefreshResource::Credentials,
+        ],
+        AdminChange::DnsNameservers { .. } => vec![
+            admin::AdminRefreshResource::Nameservers,
+            admin::AdminRefreshResource::DnsPreferences,
+        ],
+        AdminChange::DnsPreferences { .. } => vec![admin::AdminRefreshResource::DnsPreferences],
+        AdminChange::DnsSearchPaths { .. } => vec![admin::AdminRefreshResource::SearchPaths],
+        AdminChange::DnsSplitMapping { .. } => vec![admin::AdminRefreshResource::SplitDns],
+    }
 }
 
 async fn wait_for_cancellation(cancellation: Cancellation) {

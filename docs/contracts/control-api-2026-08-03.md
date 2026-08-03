@@ -2,8 +2,10 @@
 
 This ledger records only contracts checked against Tailscale's current public
 documentation and the interactive OpenAPI document returned by
-`https://api.tailscale.com/api/v2?outputOpenapiSchema=true` on 2026-08-03.
-It is not generated client code. Tale sends no mutation request in Phase 5.
+`https://api.tailscale.com/api/v2?outputOpenapiSchema=true` on 2026-08-03 and
+rechecked on 2026-08-04 before Phase 6 adoption. It is not generated client
+code. The Phase 5 entries are read-only; the Phase 6 entries below are the
+complete set of mutation contracts Tale adopts.
 
 The fixed production origin is `https://api.tailscale.com`. Every path segment
 and query value is encoded structurally. Requests use `Authorization: Bearer`
@@ -19,10 +21,15 @@ and `Accept`/`Content-Type` only where an entry below requires them.
 - [Tailnet policy file](https://tailscale.com/docs/features/tailnet-policy-file)
 - [OpenAPI schema](https://api.tailscale.com/api/v2?outputOpenapiSchema=true)
 
-The current OpenAPI schema and trust-scope page disagree about the user-detail
-path (`/users/{userId}` versus `/user/{userID}`). Tale therefore does not adopt
-that method. The collection remains supported because both sources agree on
-`/tailnet/{tailnet}/users` and `users:read`.
+The current OpenAPI schema and trust-scope page disagree about user paths
+(`/users/{userId}` and `/users/{userId}/...` in the interactive schema versus
+`/user/{userID}` and `/user/{userID}/...` in the trust-scope page). The current
+interactive operation definitions provide the request, response, and error
+contracts for the plural paths, while the trust-scope page provides the
+`users` permission. Tale records the discrepancy and adopts only the plural
+paths from the current interactive schema; it does not silently fall back to
+the singular spelling. If a future interactive schema removes the plural
+paths, these actions become unsupported until the ledger is re-reviewed.
 
 ## Common contract
 
@@ -62,7 +69,7 @@ available, with no name/address/user fallback.
 | Operation | Method and path | Scope | Request | Success and response | Errors | Consumed fields |
 | --- | --- | --- | --- | --- | --- | --- |
 | list users | `GET /api/v2/tailnet/{tailnet}/users` | `users:read` | no query | 200 `application/json`; object `{users: User[]}` | 400, 403, 404, 500 | `id`, `displayName`, `loginName`, `tailnetId`, `created`, `type`, `role`, `status`, `deviceCount`, `lastSeen`, `currentlyConnected` |
-| user detail | **unsupported** | unresolved scope/path disagreement | not sent | not implemented | current OpenAPI says `/users/{userId}`; trust-scope documentation says `/user/{userID}` | no detail fields consumed |
+| user detail | `GET /api/v2/users/{userId}` | `users:read` | no query; bearer header | 200 `application/json`; `User` object | 400, 403, 404, 500; common JSON error body | exact `id`, status, role, login/display name, and device count; the plural path is adopted from the current interactive schema and the singular trust-scope spelling is not used as a fallback |
 
 ### DNS
 
@@ -94,6 +101,97 @@ HuJSON bytes, comments, line endings, and the trailing newline exactly.
 
 The API documents `all` as the broad listing switch. Tale sends `all=false`
 and never requests the `all` or `all:read` scope automatically.
+
+## Adopted Phase 6 mutation methods
+
+These entries were added before the corresponding adapter methods. The
+interactive schema describes the common error response as JSON
+`{"message": "..."}`. The endpoint-specific error statuses below are the
+statuses documented by the schema; an undocumented status is still classified
+and displayed as an error, never treated as success.
+
+No entry documents an idempotency key or an idempotency guarantee. Tale sends
+one request, never automatically retries a mutation after transport failure,
+timeout, `429`, or `5xx`, and performs only the listed safe verification read
+when the outcome may be unknown.
+
+### Devices
+
+| Operation | Method and path | Scope | Request | Success and response | Documented errors | Verification read and predicate |
+| --- | --- | --- | --- | --- | --- | --- |
+| delete device | `DELETE /api/v2/device/{deviceId}` | `devices:core` | no body; bearer header; no query | `200`; empty response body | `400`, `500`, `501` for a device not owned by the tailnet, `504`; common JSON error body | `GET /api/v2/device/{deviceId}?fields=all`; `404` verifies absence. A present device is not reported as deleted. |
+| set device approval | `POST /api/v2/device/{deviceId}/authorized` | `devices:core` | `Content-Type: application/json`; `{"authorized": true|false}`; required field | `200`; empty response body | `404`, `500`, `504`; common JSON error body | `GET /api/v2/device/{deviceId}?fields=all`; compare `authorized` exactly. |
+| configure key expiry | `POST /api/v2/device/{deviceId}/key` | `devices:core` | `Content-Type: application/json`; `{"keyExpiryDisabled": true|false}`; required field | `200`; empty response body | `404`, `500`, `504`; common JSON error body | `GET /api/v2/device/{deviceId}?fields=all`; compare `keyExpiryDisabled` and retain the returned `expires` value. |
+| expire current key | `POST /api/v2/device/{deviceId}/expire` | `devices:core` | no body; no query | `200`; empty response body | `404`, `500`, `504`; common JSON error body | `GET /api/v2/device/{deviceId}?fields=all`; require the server-returned expiry state/timestamp to show the key is expired. No reauthentication is attempted. |
+| set device name | `POST /api/v2/device/{deviceId}/name` | `devices:core` | `Content-Type: application/json`; `{"name": "..."}`; required field; empty resets to hostname-generated name | `200`; empty response body | `404`, `500`, `504`; common JSON error body | `GET /api/v2/device/{deviceId}?fields=all`; compare the canonical returned `name` and use that value for labels. |
+| set device tags | `POST /api/v2/device/{deviceId}/tags` | `devices:core` | `Content-Type: application/json`; `{"tags": ["tag:..."]}`; complete replacement list | `200`; empty response body | `400`, `500`, `504`; common JSON error body | `GET /api/v2/device/{deviceId}?fields=all`; compare the complete returned `tags` set. |
+
+The device name contract says that a name may be a base name or fully
+qualified MagicDNS name and that changing it immediately invalidates existing
+MagicDNS URLs using the old name. The tags documentation says that tags become
+the device owner identity and that applying tags removes a user identity; Tale
+shows that consequence as observed ownership context, never as a policy
+reachability prediction.
+
+### Routes
+
+| Operation | Method and path | Scope | Request | Success and response | Documented errors | Verification read and predicate |
+| --- | --- | --- | --- | --- | --- | --- |
+| replace enabled routes for one advertiser | `POST /api/v2/device/{deviceId}/routes` | `devices:routes` | `Content-Type: application/json`; `{"routes": ["CIDR", ...]}`; complete replacement list | `200` `application/json`; `DeviceRoutes` with `advertisedRoutes` and `enabledRoutes` | `404`, `500`, `504`; common JSON error body | `GET /api/v2/device/{deviceId}/routes`; compare the complete `enabledRoutes` set and retain `advertisedRoutes`. Only advertised routes may be newly enabled. |
+
+The public operation explicitly says advertised routes cannot be set through
+the API and that routes must be both advertised and enabled to be usable. A
+route containing `0.0.0.0/0` or `::/0` is displayed as exit-node capability
+according to the returned route data; this action never advertises a route
+locally.
+
+### DNS
+
+| Operation | Method and path | Scope | Request | Success and response | Documented errors | Verification read and predicate |
+| --- | --- | --- | --- | --- | --- | --- |
+| replace nameservers | `POST /api/v2/tailnet/{tailnet}/dns/nameservers` | `dns` | `Content-Type: application/json`; `{"dns": ["resolver", ...]}`; complete ordered replacement list | `200` `application/json`; object `{ "dns": string[], "magicDNS": boolean }` | `404`, `500`; common JSON error body | `GET /api/v2/tailnet/{tailnet}/dns/nameservers`; compare the complete ordered `dns` list. Also refresh preferences because an empty list disables MagicDNS. |
+| set DNS preferences | `POST /api/v2/tailnet/{tailnet}/dns/preferences` | `dns` | `Content-Type: application/json`; `{"magicDNS": true|false}` | `200` `application/json`; `DnsPreferences` `{ "magicDNS": boolean }` | `404`, `500`; common JSON error body; enabling without a nameserver is rejected by the documented operation | `GET /api/v2/tailnet/{tailnet}/dns/preferences`; compare `magicDNS`. |
+| replace search paths | `POST /api/v2/tailnet/{tailnet}/dns/searchpaths` | `dns` | `Content-Type: application/json`; `{"searchPaths": ["domain", ...]}`; complete ordered replacement list | `200` `application/json`; `DnsSearchPaths` `{ "searchPaths": string[] }` | `404`, `500`; common JSON error body | `GET /api/v2/tailnet/{tailnet}/dns/searchpaths`; compare the complete ordered list. |
+| update one split-DNS mapping | `PATCH /api/v2/tailnet/{tailnet}/dns/split-dns` | `dns` | `Content-Type: application/json`; `{"suffix.example": ["resolver", ...]}` to create/replace, or `{"suffix.example": null}` to remove; only named mappings are changed | `200` `application/json`; complete `SplitDns` mapping | `404`, `500`; common JSON error body | `GET /api/v2/tailnet/{tailnet}/dns/split-dns`; compare the complete returned mapping. The shared DNS lock prevents concurrent subresource writes. |
+
+The interactive schema also documents `PUT` for full split-DNS replacement.
+Tale deliberately adopts `PATCH` for the three mapping actions because their
+intended semantics are one create/edit/remove mapping while preserving other
+freshly observed mappings; it does not use `PUT` as a fallback.
+
+### Users
+
+| Operation | Method and path | Scope | Request | Success and response | Documented errors | Verification read and predicate |
+| --- | --- | --- | --- | --- | --- | --- |
+| approve user | `POST /api/v2/users/{userId}/approve` | `users` | no body | `200`; empty response body | `400`, `403`, `404`, `500`; common JSON error body; user access tokens cannot approve themselves | `GET /api/v2/users/{userId}`; require the exact user status to be no longer `needs-approval`. |
+| change user role | `POST /api/v2/users/{userId}/role` | `users` | `Content-Type: application/json`; `{"role": "owner|member|admin|it-admin|network-admin|billing-admin|auditor"}` | `200`; empty response body | `400`, `403`, `404`, `500`; common JSON error body; user access tokens cannot change their own role | `GET /api/v2/users/{userId}`; compare the exact returned `role`. |
+| suspend user | `POST /api/v2/users/{userId}/suspend` | `users` | no body | `200`; empty response body | `400`, `403`, `404`, `500`; common JSON error body; user access tokens cannot suspend themselves | `GET /api/v2/users/{userId}`; require `status = suspended`. |
+| restore user | `POST /api/v2/users/{userId}/restore` | `users` | no body | `200`; empty response body | `400`, `403`, `404`, `500`; common JSON error body; user access tokens cannot restore themselves | `GET /api/v2/users/{userId}`; require a documented non-suspended status. |
+| delete user | `POST /api/v2/users/{userId}/delete` | `users` | no body | `200`; empty response body | `400`, `403`, `404`, `500`; common JSON error body; user access tokens cannot delete themselves | `GET /api/v2/users/{userId}`; exact `id` must be absent. Owned devices and local records are refreshed separately and are never locally deleted as a side effect. |
+
+User role values are the enum in the current `User` schema; Tale does not
+invent a hierarchy. The user-roles documentation supplies the role meanings and
+the role-management limitations. The audit documentation confirms that these
+successful operations are logged, while secondary node/key effects of user
+suspension or deletion are not guaranteed to appear as individual audit events.
+
+### Mutation evidence
+
+The exact request/response/error definitions above are from the current
+interactive schema:
+`https://api.tailscale.com/api/v2?outputOpenapiSchema=true` (rechecked
+2026-08-04). Public explanatory sources used for semantics and consequences:
+
+- [Tailscale API](https://tailscale.com/docs/reference/tailscale-api)
+- [Trust credential scopes](https://tailscale.com/docs/reference/trust-credentials)
+- [Device approval](https://tailscale.com/docs/features/access-control/device-management/device-approval)
+- [Remove a device](https://tailscale.com/docs/features/access-control/device-management/how-to/remove)
+- [Tags](https://tailscale.com/docs/features/tags)
+- [Auth keys and key expiry](https://tailscale.com/docs/features/access-control/auth-keys)
+- [User roles](https://tailscale.com/docs/reference/user-roles)
+- [User approval](https://tailscale.com/docs/features/access-control/user-approval)
+- [DNS in Tailscale](https://tailscale.com/docs/reference/dns-in-tailscale)
+- [Configuration audit logging](https://tailscale.com/docs/features/logging/audit-logging)
 
 ### Settings and contacts
 

@@ -1,0 +1,20 @@
+{
+  "version": "1",
+  "tailnet": "example.test",
+  "logs": [
+    {
+      "eventTime": "2026-08-03T10:00:01Z",
+      "eventGroupID": "event-fictional-a",
+      "actor": "operator@example.test",
+      "target": "node-fictional-001",
+      "action": "Update name for node"
+    },
+    {
+      "eventTime": "2026-08-03T10:00:02Z",
+      "eventGroupID": "event-fictional-b",
+      "actor": "operator@example.test",
+      "target": "node-fictional-001",
+      "action": "Update name for node"
+    }
+  ]
+}

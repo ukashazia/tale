@@ -116,7 +116,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )));
         }
         lines.push(Line::from(
-            "Admin DNS is read-only; exact resolver strings and source states are preserved.",
+            "Admin DNS edits replace only the selected server subresource; local DNS remains separate.",
         ));
     }
     frame.render_widget(

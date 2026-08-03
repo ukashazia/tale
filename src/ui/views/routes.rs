@@ -126,7 +126,7 @@ pub fn render_admin(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(lines).style(theme::normal(app)).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("routes · admin · read-only"),
+                .title("routes · admin"),
         ),
         area,
     );

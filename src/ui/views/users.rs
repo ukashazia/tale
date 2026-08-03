@@ -56,7 +56,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         List::new(items).style(theme::normal(app)).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("users · read-only"),
+                .title("users · admin"),
         ),
         area,
     );

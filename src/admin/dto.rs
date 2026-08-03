@@ -115,6 +115,8 @@ pub struct UserDto {
 #[derive(Debug, Deserialize)]
 pub struct NameserversResponse {
     pub dns: Option<Vec<String>>,
+    #[serde(rename = "magicDNS")]
+    pub magic_dns: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -2,11 +2,16 @@ pub mod audit;
 pub mod auth;
 pub mod client;
 pub mod credentials;
+pub mod device_mutations;
 pub mod devices;
 pub mod dns;
+pub mod dns_mutations;
 pub mod dto;
+pub mod mutation;
 pub mod policy;
+pub mod route_mutations;
 pub mod routes;
+pub mod user_mutations;
 pub mod users;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -222,9 +227,10 @@ pub struct AdminRefreshReport {
     pub activity: Result<AuditSnapshot, AdminError>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum AdminRefreshResource {
     Devices,
+    DeviceRoutes(String),
     Users,
     Nameservers,
     DnsPreferences,
@@ -240,6 +246,7 @@ pub enum AdminRefreshResource {
 #[derive(Debug, Clone)]
 pub enum AdminResourceResult {
     Devices(Result<Vec<AdminDevice>, AdminError>),
+    DeviceRoutes(Result<routes::AdminRouteObservation, AdminError>),
     Users(Result<Vec<AdminUser>, AdminError>),
     Nameservers(Result<AdminNameservers, AdminError>),
     DnsPreferences(Result<AdminDnsPreferences, AdminError>),

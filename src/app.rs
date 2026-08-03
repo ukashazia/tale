@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -8,12 +8,19 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::action::{self, ActionContext, ActionId, Capability};
 use crate::admin::auth::SecretValue;
 use crate::admin::client::AdminError;
+use crate::admin::mutation::{
+    AdminBatchConfirmation, AdminMutationRequest, AdminSnapshotFields, batch_target, parse_change,
+};
 use crate::admin::{
     self, AdminRefreshResource, AdminResource, AdminResourceResult, AdminResourceState,
     AdminSnapshot,
 };
 use crate::config::ResolvedConfig;
 use crate::domain::account::LocalAccount;
+use crate::domain::admin_mutation::{
+    AdminChange, AdminMutationState, AdminResourceLocks, AuditCorrelation, BatchMutation,
+    BatchTarget, transition,
+};
 use crate::domain::certificate::{BugReportRequest, CertificateRequest};
 use crate::domain::device::{
     ComposedDevice, Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec,
@@ -180,6 +187,8 @@ pub struct DiagnosticInputState {
 pub struct ConfirmationState {
     pub action_id: ActionId,
     pub mutation: Option<LocalMutation>,
+    pub admin_mutation: Option<AdminMutationRequest>,
+    pub admin_batch: Option<AdminBatchConfirmation>,
     pub service_request: Option<ServiceActionRequest>,
     pub handoff: Option<HandoffCommand>,
     pub prompt: String,
@@ -191,11 +200,157 @@ pub struct ConfirmationState {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingAdminBatch {
+    action_id: ActionId,
+    requests: BTreeMap<u64, AdminMutationRequest>,
+    ready: BTreeMap<u64, AdminMutationRequest>,
+}
+
+#[derive(Debug, Clone)]
+struct AdminBatchInFlight {
+    batch: BatchMutation,
+    parent_task_id: TaskId,
+    child_tasks: BTreeMap<u64, TaskId>,
+    pending_requests: Vec<AdminMutationRequest>,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct OperatorFormState {
     pub action_id: ActionId,
     pub input: String,
     pub error: Option<String>,
+    pub ordered_items: Option<Vec<String>>,
+    pub ordered_selected: usize,
+    pub ordered_editor: String,
+    pub ordered_prefix: Option<String>,
+}
+
+impl OperatorFormState {
+    pub fn new(action_id: ActionId, input: String, error: Option<String>) -> Self {
+        Self {
+            action_id,
+            input,
+            error,
+            ordered_items: None,
+            ordered_selected: 0,
+            ordered_editor: String::new(),
+            ordered_prefix: None,
+        }
+    }
+
+    pub fn ordered(
+        action_id: ActionId,
+        items: Vec<String>,
+        prefix: Option<String>,
+        error: Option<String>,
+    ) -> Self {
+        let editor = items.first().cloned().unwrap_or_default();
+        let input = format_ordered_input(prefix.as_deref(), &items);
+        Self {
+            action_id,
+            input,
+            error,
+            ordered_items: Some(items),
+            ordered_selected: 0,
+            ordered_editor: editor,
+            ordered_prefix: prefix,
+        }
+    }
+
+    fn sync_ordered_input(&mut self) {
+        let Some(items) = self.ordered_items.as_mut() else {
+            return;
+        };
+        if items.is_empty() {
+            if !self.ordered_editor.is_empty() {
+                items.push(self.ordered_editor.clone());
+                self.ordered_selected = 0;
+            }
+        } else if let Some(item) = items.get_mut(self.ordered_selected) {
+            *item = self.ordered_editor.clone();
+        }
+        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
+    }
+
+    fn select_ordered(&mut self, offset: isize) {
+        self.sync_ordered_input();
+        let Some(items) = self.ordered_items.as_ref() else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        self.ordered_selected = move_bounded_index(self.ordered_selected, items.len(), offset);
+        self.ordered_editor = items
+            .get(self.ordered_selected)
+            .cloned()
+            .unwrap_or_default();
+    }
+
+    fn move_ordered_item(&mut self, offset: isize) {
+        self.sync_ordered_input();
+        let Some(items) = self.ordered_items.as_mut() else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        let target = if offset.is_negative() {
+            self.ordered_selected.saturating_sub(offset.unsigned_abs())
+        } else {
+            self.ordered_selected.saturating_add(offset as usize)
+        };
+        if target >= items.len() || target == self.ordered_selected {
+            return;
+        }
+        items.swap(self.ordered_selected, target);
+        self.ordered_selected = target;
+        self.ordered_editor = items
+            .get(self.ordered_selected)
+            .cloned()
+            .unwrap_or_default();
+        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
+    }
+
+    fn insert_ordered_item(&mut self) {
+        self.sync_ordered_input();
+        let Some(items) = self.ordered_items.as_mut() else {
+            return;
+        };
+        let position = self.ordered_selected.saturating_add(1).min(items.len());
+        items.insert(position, String::new());
+        self.ordered_selected = position;
+        self.ordered_editor.clear();
+        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
+    }
+
+    fn remove_ordered_item(&mut self) {
+        self.sync_ordered_input();
+        let Some(items) = self.ordered_items.as_mut() else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        items.remove(self.ordered_selected.min(items.len().saturating_sub(1)));
+        self.ordered_selected = self.ordered_selected.min(items.len().saturating_sub(1));
+        self.ordered_editor = items
+            .get(self.ordered_selected)
+            .cloned()
+            .unwrap_or_default();
+        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
+    }
+
+    fn append_ordered_text(&mut self, text: &str) {
+        if self.ordered_items.is_none() {
+            self.input.push_str(text);
+            return;
+        }
+        self.ordered_editor.push_str(text);
+        self.error = None;
+        self.sync_ordered_input();
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -400,6 +555,10 @@ pub struct App {
     pub copied_value: Option<String>,
     pub mutation_lock: MutationLock,
     pub mutation_in_flight: Option<u64>,
+    pub admin_resource_locks: AdminResourceLocks,
+    pub admin_mutations_in_flight: BTreeMap<u64, TaskId>,
+    pub admin_batch_results: BTreeMap<TaskId, BatchMutation>,
+    pub admin_audit_correlations: BTreeMap<u64, AuditCorrelation>,
     pub interactive_handoff_active: bool,
     render_invalidated: bool,
     local_discovery_in_flight: bool,
@@ -410,6 +569,12 @@ pub struct App {
     admin_refresh_in_flight: bool,
     admin_next_refresh: Option<Instant>,
     admin_generation: u64,
+    admin_batch_preflights: BTreeMap<u64, PendingAdminBatch>,
+    aborted_admin_batch_children: BTreeSet<u64>,
+    admin_batches_in_flight: BTreeMap<u64, AdminBatchInFlight>,
+    admin_preflight_locks: BTreeSet<u64>,
+    admin_read_locks: BTreeMap<String, u64>,
+    pending_batch_retry: Option<Vec<BatchTarget>>,
     next_mutation_id: u64,
 }
 
@@ -495,6 +660,10 @@ impl App {
             copied_value: None,
             mutation_lock: MutationLock::new(),
             mutation_in_flight: None,
+            admin_resource_locks: AdminResourceLocks::new(),
+            admin_mutations_in_flight: BTreeMap::new(),
+            admin_batch_results: BTreeMap::new(),
+            admin_audit_correlations: BTreeMap::new(),
             interactive_handoff_active: false,
             render_invalidated: true,
             local_discovery_in_flight: false,
@@ -505,6 +674,12 @@ impl App {
             admin_refresh_in_flight: false,
             admin_next_refresh: None,
             admin_generation: 0,
+            admin_batch_preflights: BTreeMap::new(),
+            aborted_admin_batch_children: BTreeSet::new(),
+            admin_batches_in_flight: BTreeMap::new(),
+            admin_preflight_locks: BTreeSet::new(),
+            admin_read_locks: BTreeMap::new(),
+            pending_batch_retry: None,
             next_mutation_id: 1,
         }
     }
@@ -625,7 +800,7 @@ impl App {
             Overlay::Help(state) if state.searchable => state.query.push_str(text),
             Overlay::DiagnosticInput(state) => state.input.push_str(text),
             Overlay::OperatorForm(state) => {
-                state.input.push_str(text);
+                state.append_ordered_text(text);
                 state.error = None;
             }
             Overlay::ServiceForm(state) => {
@@ -654,8 +829,9 @@ impl App {
             return Vec::new();
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            if let Some(effect) = self.cancel_focused_task() {
-                return vec![effect];
+            let effects = self.cancel_focused_task();
+            if !effects.is_empty() {
+                return effects;
             }
             return self.request_shutdown(ShutdownReason::UserQuit);
         }
@@ -771,16 +947,60 @@ impl App {
                 Some(Vec::new())
             }
             Overlay::OperatorForm(state) => {
+                if state.ordered_items.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Up, modifiers) if modifiers.is_empty() => {
+                            state.select_ordered(-1);
+                            return Some(Vec::new());
+                        }
+                        (KeyCode::Down, modifiers) if modifiers.is_empty() => {
+                            state.select_ordered(1);
+                            return Some(Vec::new());
+                        }
+                        (KeyCode::Up, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                            state.move_ordered_item(-1);
+                            return Some(Vec::new());
+                        }
+                        (KeyCode::Down, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                            state.move_ordered_item(1);
+                            return Some(Vec::new());
+                        }
+                        (KeyCode::Char('i'), modifiers)
+                            if modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            state.insert_ordered_item();
+                            return Some(Vec::new());
+                        }
+                        (KeyCode::Char('x'), modifiers)
+                            if modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            state.remove_ordered_item();
+                            return Some(Vec::new());
+                        }
+                        _ => {}
+                    }
+                }
                 match key.code {
                     KeyCode::Char(character) if key.modifiers.is_empty() => {
-                        state.input.push(character);
+                        if state.ordered_items.is_some() {
+                            state.ordered_editor.push(character);
+                            state.sync_ordered_input();
+                        } else {
+                            state.input.push(character);
+                        }
                         state.error = None;
                     }
                     KeyCode::Backspace => {
-                        let _ = state.input.pop();
+                        if state.ordered_items.is_some() {
+                            let _ = state.ordered_editor.pop();
+                            state.sync_ordered_input();
+                        } else {
+                            let _ = state.input.pop();
+                        }
                         state.error = None;
                     }
                     KeyCode::Enter => {
+                        state.sync_ordered_input();
                         let state = state.clone();
                         return Some(self.accept_operator_form(state));
                     }
@@ -1191,6 +1411,8 @@ impl App {
                         ConfirmationState {
                             action_id,
                             mutation: None,
+                            admin_mutation: None,
+                            admin_batch: None,
                             service_request: None,
                             handoff: None,
                             prompt: "The full policy source may contain sensitive access rules. Copy it to the clipboard?"
@@ -1383,6 +1605,35 @@ impl App {
             ActionId::ResourceActions => {
                 let actions = if self.current_route() == Route::Services {
                     self.service_actions_for_section()
+                } else if self.admin.profile.is_some() && self.current_route() == Route::Devices {
+                    vec![
+                        ActionId::AdminDeviceRename,
+                        ActionId::AdminDeviceTagsReplace,
+                        ActionId::AdminDeviceApprove,
+                        ActionId::AdminDeviceRevokeApproval,
+                        ActionId::AdminDeviceKeyExpiryConfigure,
+                        ActionId::AdminDeviceKeyExpireNow,
+                        ActionId::AdminDeviceDelete,
+                    ]
+                } else if self.admin.profile.is_some() && self.current_route() == Route::Users {
+                    vec![
+                        ActionId::AdminUserApprove,
+                        ActionId::AdminUserRoleChange,
+                        ActionId::AdminUserSuspend,
+                        ActionId::AdminUserRestore,
+                        ActionId::AdminUserDelete,
+                    ]
+                } else if self.admin.profile.is_some() && self.current_route() == Route::Routes {
+                    vec![ActionId::AdminRoutesReplaceApprovals]
+                } else if self.admin.profile.is_some() && self.current_route() == Route::Dns {
+                    vec![
+                        ActionId::AdminDnsPreferencesEdit,
+                        ActionId::AdminDnsNameserversReplace,
+                        ActionId::AdminDnsSearchPathsReplace,
+                        ActionId::AdminDnsSplitCreate,
+                        ActionId::AdminDnsSplitEdit,
+                        ActionId::AdminDnsSplitRemove,
+                    ]
                 } else if self.source_mode == SourceMode::Mock {
                     vec![
                         ActionId::MockSuccess,
@@ -1445,7 +1696,7 @@ impl App {
                 }));
                 Vec::new()
             }
-            ActionId::TaskCancel => self.cancel_focused_task().into_iter().collect(),
+            ActionId::TaskCancel => self.cancel_focused_task(),
             ActionId::MockSuccess => self.start_task(
                 ActionId::MockSuccess,
                 MockTaskBehavior::DelayedSuccess,
@@ -1541,6 +1792,27 @@ impl App {
                 self.alpha_local_features = true;
                 self.start_services_refresh()
             }
+            ActionId::AdminDeviceRename
+            | ActionId::AdminDeviceTagsReplace
+            | ActionId::AdminDeviceApprove
+            | ActionId::AdminDeviceRevokeApproval
+            | ActionId::AdminDeviceKeyExpiryConfigure
+            | ActionId::AdminDeviceKeyExpireNow
+            | ActionId::AdminDeviceDelete
+            | ActionId::AdminRoutesReplaceApprovals
+            | ActionId::AdminDnsPreferencesEdit
+            | ActionId::AdminDnsNameserversReplace
+            | ActionId::AdminDnsSearchPathsReplace
+            | ActionId::AdminDnsSplitCreate
+            | ActionId::AdminDnsSplitEdit
+            | ActionId::AdminDnsSplitRemove
+            | ActionId::AdminUserApprove
+            | ActionId::AdminUserRoleChange
+            | ActionId::AdminUserSuspend
+            | ActionId::AdminUserRestore
+            | ActionId::AdminUserDelete => self.open_admin_form(action_id),
+            ActionId::BatchReviewOutcomes => self.open_selected_batch_result(),
+            ActionId::BatchRetrySelected => self.retry_selected_batch(),
         }
     }
 
@@ -1575,8 +1847,85 @@ impl App {
             | ActionId::ActivityOpenActor
             | ActionId::ActivityOpenTarget => self.admin.profile.is_some(),
             ActionId::SettingsInspectCapabilities => self.admin.profile.is_some(),
+            action_id if is_admin_mutation_action(action_id) => {
+                self.admin_mutation_available(action_id)
+            }
+            ActionId::BatchReviewOutcomes => self
+                .tasks
+                .selected
+                .is_some_and(|task_id| self.admin_batch_results.contains_key(&task_id)),
+            ActionId::BatchRetrySelected => self.tasks.selected.is_some_and(|task_id| {
+                self.admin_batch_results.get(&task_id).is_some_and(|batch| {
+                    batch.child_outcomes.values().any(|outcome| {
+                        !matches!(
+                            outcome,
+                            crate::domain::admin_mutation::BatchChildOutcome::VerifiedSuccess
+                        )
+                    })
+                })
+            }),
             _ => false,
         }
+    }
+
+    fn admin_mutation_available(&self, action_id: ActionId) -> bool {
+        if self.admin.profile.is_none()
+            || self.admin.profile_read_only
+            || self.resolved_config.read_only
+        {
+            return false;
+        }
+        let scope = match action_id {
+            ActionId::AdminRoutesReplaceApprovals => "devices:routes",
+            action_id if is_admin_dns_action(action_id) => "dns",
+            action_id if is_admin_user_action(action_id) => "users",
+            _ => "devices:core",
+        };
+        if !self.admin_scope_allowed(scope) {
+            return false;
+        }
+        match action_id {
+            ActionId::AdminRoutesReplaceApprovals => {
+                self.admin.routes.state == AdminResourceState::Ready
+                    && self
+                        .admin
+                        .route_observations()
+                        .iter()
+                        .any(|route| route.complete)
+            }
+            action_id if is_admin_device_action(action_id) => {
+                self.admin.devices.state == AdminResourceState::Ready
+                    && self.selected_admin_device().is_some()
+            }
+            action_id if is_admin_user_action(action_id) => {
+                self.admin.users.state == AdminResourceState::Ready
+                    && self.selected_admin_user().is_some()
+            }
+            ActionId::AdminDnsPreferencesEdit => {
+                self.admin.dns_preferences.state == AdminResourceState::Ready
+            }
+            ActionId::AdminDnsNameserversReplace => {
+                self.admin.nameservers.state == AdminResourceState::Ready
+            }
+            ActionId::AdminDnsSearchPathsReplace => {
+                self.admin.search_paths.state == AdminResourceState::Ready
+            }
+            ActionId::AdminDnsSplitCreate
+            | ActionId::AdminDnsSplitEdit
+            | ActionId::AdminDnsSplitRemove => {
+                self.admin.split_dns.state == AdminResourceState::Ready
+            }
+            _ => false,
+        }
+    }
+
+    fn admin_scope_allowed(&self, scope: &str) -> bool {
+        self.admin.requested_scopes.is_empty()
+            || self.admin.requested_scopes.iter().any(|value| {
+                value == scope
+                    || value == "*"
+                    || value.ends_with(":*") && scope.starts_with(value.trim_end_matches('*'))
+            })
     }
 
     pub fn action_is_available(&self, action_id: ActionId) -> bool {
@@ -1608,6 +1957,14 @@ impl App {
         }
         if self.resolved_config.read_only && is_mutating_action(action_id) {
             return Some("read-only mode blocks local mutations".to_owned());
+        }
+        if is_admin_mutation_action(action_id)
+            && (self.resolved_config.read_only || self.admin.profile_read_only)
+        {
+            return Some("read-only mode blocks admin mutations".to_owned());
+        }
+        if is_admin_mutation_action(action_id) && self.admin.profile.is_none() {
+            return Some("an authenticated admin profile is required".to_owned());
         }
         if is_service_write_action(action_id) && self.resolved_config.read_only {
             return Some("read-only mode blocks local service mutations".to_owned());
@@ -1677,6 +2034,9 @@ impl App {
             ActionId::LocalSshOpen => "Tailscale SSH is unavailable for this client",
             ActionId::LocalNcOpen => "Tailscale netcat is unavailable for this client",
             ActionId::LocalSyspolicyReload => "system policy reload is unavailable for this client",
+            action_id if is_admin_mutation_action(action_id) => {
+                "the selected admin resource or mutation scope is unavailable"
+            }
             _ => "capability unavailable",
         };
         Some(reason.to_owned())
@@ -1801,12 +2161,219 @@ impl App {
             ActionId::LocalRoutesEditAdvertisements => String::new(),
             _ => String::new(),
         };
-        self.overlays.push(Overlay::OperatorForm(OperatorFormState {
-            action_id,
-            input,
-            error: None,
-        }));
+        self.overlays
+            .push(Overlay::OperatorForm(OperatorFormState::new(
+                action_id, input, None,
+            )));
         Vec::new()
+    }
+
+    fn open_admin_form(&mut self, action_id: ActionId) -> Vec<Effect> {
+        let input = match action_id {
+            ActionId::AdminDeviceRename => self
+                .selected_admin_device()
+                .and_then(|device| device.name.clone().or_else(|| device.hostname.clone()))
+                .unwrap_or_default(),
+            ActionId::AdminDeviceTagsReplace => self
+                .selected_admin_device()
+                .map_or_else(String::new, |device| device.tags.join(",")),
+            ActionId::AdminDeviceKeyExpiryConfigure => self
+                .selected_admin_device()
+                .and_then(|device| device.key_expiry_disabled)
+                .map_or_else(
+                    || "on".to_owned(),
+                    |value| if value { "on" } else { "off" }.to_owned(),
+                ),
+            ActionId::AdminRoutesReplaceApprovals => self
+                .selected_admin_route()
+                .or_else(|| {
+                    self.admin
+                        .route_observations()
+                        .into_iter()
+                        .find(|route| route.complete)
+                })
+                .map_or_else(String::new, |route| route.enabled.join(",")),
+            ActionId::AdminDnsPreferencesEdit => self
+                .admin
+                .dns_preferences
+                .snapshot
+                .as_ref()
+                .and_then(|value| value.magic_dns)
+                .map_or_else(
+                    || "off".to_owned(),
+                    |value| if value { "on" } else { "off" }.to_owned(),
+                ),
+            ActionId::AdminDnsNameserversReplace => self
+                .admin
+                .nameservers
+                .snapshot
+                .as_ref()
+                .map_or_else(String::new, |value| value.values.join(",")),
+            ActionId::AdminDnsSearchPathsReplace => self
+                .admin
+                .search_paths
+                .snapshot
+                .as_ref()
+                .map_or_else(String::new, |value| value.values.join(",")),
+            ActionId::AdminDnsSplitEdit | ActionId::AdminDnsSplitRemove => self
+                .admin
+                .split_dns
+                .snapshot
+                .as_ref()
+                .and_then(|value| value.entries.first())
+                .map_or_else(String::new, |(domain, resolvers)| {
+                    if action_id == ActionId::AdminDnsSplitRemove {
+                        domain.clone()
+                    } else {
+                        format!(
+                            "{domain}={}",
+                            resolvers
+                                .as_ref()
+                                .map_or_else(String::new, |values| values.join(","))
+                        )
+                    }
+                }),
+            ActionId::AdminUserRoleChange => self
+                .selected_admin_user()
+                .and_then(|user| user.role.clone())
+                .unwrap_or_else(|| "member".to_owned()),
+            _ => String::new(),
+        };
+        self.overlays
+            .push(Overlay::OperatorForm(admin_operator_form_state(
+                action_id, input, None,
+            )));
+        Vec::new()
+    }
+
+    fn admin_base_snapshot(
+        &self,
+        change: &AdminChange,
+    ) -> Result<(String, AdminSnapshotFields), String> {
+        match change {
+            AdminChange::DeviceRoutes { .. } => {
+                let route = self.selected_admin_route().ok_or_else(|| {
+                    "select a route advertiser before editing approvals".to_owned()
+                })?;
+                Ok((
+                    route.device_id.clone(),
+                    crate::admin::mutation::route_fields(&route.advertised, &route.enabled),
+                ))
+            }
+            AdminChange::DeviceRename { .. }
+            | AdminChange::DeviceTags { .. }
+            | AdminChange::DeviceApproval { .. }
+            | AdminChange::DeviceKeyExpiry { .. }
+            | AdminChange::DeviceExpireNow
+            | AdminChange::DeviceDelete => {
+                let device = self
+                    .selected_admin_device()
+                    .ok_or_else(|| "select a verified admin device before editing it".to_owned())?;
+                Ok((
+                    device.stable_id.clone(),
+                    crate::admin::mutation::device_fields(device),
+                ))
+            }
+            AdminChange::UserApproval
+            | AdminChange::UserRole { .. }
+            | AdminChange::UserSuspend
+            | AdminChange::UserRestore
+            | AdminChange::UserDelete => {
+                let user = self
+                    .selected_admin_user()
+                    .ok_or_else(|| "select a verified admin user before editing it".to_owned())?;
+                Ok((user.id.clone(), crate::admin::mutation::user_fields(user)))
+            }
+            AdminChange::DnsNameservers { .. } => Ok((
+                "tailnet".to_owned(),
+                crate::admin::mutation::nameserver_fields(
+                    self.admin
+                        .nameservers
+                        .snapshot
+                        .as_ref()
+                        .ok_or_else(|| "DNS nameservers are not verified".to_owned())?,
+                ),
+            )),
+            AdminChange::DnsPreferences { .. } => Ok((
+                "tailnet".to_owned(),
+                crate::admin::mutation::dns_preferences_fields(
+                    self.admin
+                        .dns_preferences
+                        .snapshot
+                        .as_ref()
+                        .ok_or_else(|| "DNS preferences are not verified".to_owned())?,
+                ),
+            )),
+            AdminChange::DnsSearchPaths { .. } => Ok((
+                "tailnet".to_owned(),
+                crate::admin::mutation::search_path_fields(
+                    self.admin
+                        .search_paths
+                        .snapshot
+                        .as_ref()
+                        .ok_or_else(|| "DNS search paths are not verified".to_owned())?,
+                ),
+            )),
+            AdminChange::DnsSplitMapping { .. } => Ok((
+                "tailnet".to_owned(),
+                crate::admin::mutation::split_dns_fields(
+                    self.admin
+                        .split_dns
+                        .snapshot
+                        .as_ref()
+                        .ok_or_else(|| "split DNS is not verified".to_owned())?,
+                ),
+            )),
+        }
+    }
+
+    fn start_admin_preflight(&mut self, request: AdminMutationRequest) -> Vec<Effect> {
+        if !self.admin_resource_locks.try_hold(
+            request.mutation_id,
+            request
+                .change
+                .lock_keys(&request.profile, &request.target_id),
+        ) {
+            self.runtime_error =
+                Some("a conflicting admin mutation or read is running for this target".to_owned());
+            return Vec::new();
+        }
+        self.admin_preflight_locks.insert(request.mutation_id);
+        let Some(profile_config) = self.resolved_config.profiles.get(&request.profile) else {
+            self.release_admin_preflight_lock(request.mutation_id);
+            return Vec::new();
+        };
+        let Some(tailnet) = self.admin.tailnet.clone() else {
+            self.release_admin_preflight_lock(request.mutation_id);
+            return Vec::new();
+        };
+        vec![Effect::StartAdminPreflight {
+            request,
+            tailnet,
+            credential: profile_config.credential.clone(),
+            environment_token: self.admin_environment_token.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+        }]
+    }
+
+    fn release_admin_preflight_lock(&mut self, mutation_id: u64) {
+        if self.admin_preflight_locks.remove(&mutation_id) {
+            self.admin_resource_locks.release(mutation_id);
+        }
+    }
+
+    fn release_admin_read_lock(&mut self, device_id: &str) {
+        if let Some(owner) = self.admin_read_locks.remove(device_id) {
+            self.admin_resource_locks.release(owner);
+        }
+    }
+
+    fn release_all_admin_read_locks(&mut self) {
+        let owners = self.admin_read_locks.values().copied().collect::<Vec<_>>();
+        self.admin_read_locks.clear();
+        for owner in owners {
+            self.admin_resource_locks.release(owner);
+        }
     }
 
     fn open_account_picker(&mut self, action_id: ActionId) -> Vec<Effect> {
@@ -1836,6 +2403,8 @@ impl App {
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::LocalAccountLogin,
                 mutation: None,
+                admin_mutation: None,
+                admin_batch: None,
                 service_request: None,
                 handoff: Some(handoff::login_command(&executable.path)),
                 prompt: "Open Tailscale login in the terminal; Tale will not collect credentials."
@@ -1858,6 +2427,8 @@ impl App {
         self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::LocalAccountLogout,
             mutation: None,
+            admin_mutation: None,
+            admin_batch: None,
             service_request: None,
             handoff: Some(handoff::logout_command(&executable.path)),
             prompt: "Log out this local account; the node key will be invalidated and reauthentication will be required.".to_owned(),
@@ -1968,6 +2539,8 @@ impl App {
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: mutation.action_id(),
                 mutation: Some(mutation),
+                admin_mutation: None,
+                admin_batch: None,
                 service_request: None,
                 handoff: None,
                 prompt,
@@ -2078,6 +2651,9 @@ impl App {
     }
 
     fn accept_operator_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        if is_admin_mutation_action(state.action_id) {
+            return self.accept_admin_form(state);
+        }
         let result = match state.action_id {
             ActionId::LocalPreferencesEdit => {
                 parse_preference_request(&state.input).map(LocalMutation::Preferences)
@@ -2102,6 +2678,299 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    fn accept_admin_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        let change = match parse_change(state.action_id, &state.input) {
+            Ok(change) => change,
+            Err(error) => {
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                return Vec::new();
+            }
+        };
+        if let AdminChange::DnsSplitMapping {
+            domain,
+            resolvers,
+            create,
+        } = &change
+            && let Some(entries) = self.admin.split_dns.snapshot.as_ref()
+        {
+            let exists = entries
+                .entries
+                .iter()
+                .any(|(value, _)| value.eq_ignore_ascii_case(domain));
+            let valid_operation = matches!(
+                (create, resolvers.is_some(), exists),
+                (true, true, false) | (false, true, true) | (false, false, true)
+            );
+            if !valid_operation {
+                let error = if *create {
+                    "split-DNS create requires a suffix that is not already present"
+                } else if resolvers.is_some() {
+                    "split-DNS edit requires an existing suffix"
+                } else {
+                    "split-DNS remove requires an existing suffix"
+                };
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error.to_owned());
+                }
+                return Vec::new();
+            }
+        }
+        if !self.admin_mutation_available(state.action_id) {
+            let reason = self
+                .action_unavailable_reason(state.action_id)
+                .unwrap_or_else(|| "admin mutation is unavailable".to_owned());
+            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                current.error = Some(reason);
+            }
+            return Vec::new();
+        }
+        if state.action_id == ActionId::AdminRoutesReplaceApprovals {
+            return self.accept_admin_batch_form(state, change);
+        }
+        let Some(profile) = self.admin.profile.clone() else {
+            return Vec::new();
+        };
+        let (target_id, base_snapshot) = match self.admin_base_snapshot(&change) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                return Vec::new();
+            }
+        };
+        let mutation_id = self.next_mutation_id;
+        self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+        let mut request = crate::domain::admin_mutation::AdminMutation::new(
+            mutation_id,
+            profile,
+            target_id,
+            base_snapshot,
+            change.clone(),
+            state.action_id,
+            change.risk(),
+        );
+        if let Err(error) = request.begin_preflight() {
+            self.runtime_error = Some(error.to_string());
+            return Vec::new();
+        }
+        let effects = self.start_admin_preflight(request);
+        if effects.is_empty() {
+            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                current.error = Some(
+                    "a conflicting admin mutation or read is running; preview again".to_owned(),
+                );
+            }
+            return Vec::new();
+        }
+        self.overlays.pop();
+        effects
+    }
+
+    fn accept_admin_batch_form(
+        &mut self,
+        state: OperatorFormState,
+        change: AdminChange,
+    ) -> Vec<Effect> {
+        let AdminChange::DeviceRoutes { routes } = change else {
+            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                current.error = Some("this batch action only supports route approvals".to_owned());
+            }
+            return Vec::new();
+        };
+        let Some(profile) = self.admin.profile.clone() else {
+            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                current.error = Some("an authenticated admin profile is required".to_owned());
+            }
+            return Vec::new();
+        };
+        if !self.resolved_config.profiles.contains_key(&profile) {
+            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                current.error = Some("admin profile configuration is unavailable".to_owned());
+            }
+            return Vec::new();
+        }
+        if self.admin.tailnet.is_none() {
+            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                current.error = Some("admin tailnet is not selected".to_owned());
+            }
+            return Vec::new();
+        }
+        let observations = self
+            .admin
+            .route_observations()
+            .into_iter()
+            .filter(|route| route.complete)
+            .collect::<Vec<_>>();
+        if observations.is_empty() {
+            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                current.error = Some("no complete route advertisers are available".to_owned());
+            }
+            return Vec::new();
+        }
+        let parent_id = self.next_mutation_id;
+        self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+        let action_id = state.action_id;
+        let mut requests: BTreeMap<u64, AdminMutationRequest> = BTreeMap::new();
+        let mut effects = Vec::new();
+        for observation in observations {
+            let requested = match crate::admin::route_mutations::validate_replacement(
+                &observation.advertised,
+                &observation.enabled,
+                &routes,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                        current.error = Some(format!(
+                            "{} cannot receive the same replacement: {error}",
+                            observation.device_id
+                        ));
+                    }
+                    return Vec::new();
+                }
+            };
+            let mutation_id = self.next_mutation_id;
+            self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+            let mut request = crate::domain::admin_mutation::AdminMutation::new(
+                mutation_id,
+                profile.clone(),
+                observation.device_id.clone(),
+                crate::admin::mutation::route_fields(&observation.advertised, &observation.enabled),
+                AdminChange::DeviceRoutes { routes: requested },
+                action_id,
+                AdminChange::DeviceRoutes { routes: Vec::new() }.risk(),
+            );
+            if let Err(error) = request.begin_preflight() {
+                self.runtime_error = Some(error.to_string());
+                return Vec::new();
+            }
+            let preflight_effects = self.start_admin_preflight(request.clone());
+            if preflight_effects.is_empty() {
+                for previous in requests.values() {
+                    self.release_admin_preflight_lock(previous.mutation_id);
+                }
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(
+                        "a route advertiser is already being read or changed; preview again"
+                            .to_owned(),
+                    );
+                }
+                return Vec::new();
+            }
+            effects.extend(preflight_effects);
+            requests.insert(mutation_id, request);
+        }
+        self.admin_batch_preflights.insert(
+            parent_id,
+            PendingAdminBatch {
+                action_id,
+                requests,
+                ready: BTreeMap::new(),
+            },
+        );
+        self.overlays.pop();
+        effects
+    }
+
+    fn begin_retry_batch_preflight(&mut self, targets: Vec<BatchTarget>) -> Vec<Effect> {
+        let Some(profile) = self.admin.profile.clone() else {
+            self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+            return Vec::new();
+        };
+        if !self.resolved_config.profiles.contains_key(&profile) || self.admin.tailnet.is_none() {
+            self.runtime_error = Some("admin profile or tailnet is no longer available".to_owned());
+            return Vec::new();
+        }
+        let observations = self.admin.route_observations();
+        let parent_id = self.next_mutation_id;
+        self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+        let mut requests: BTreeMap<u64, AdminMutationRequest> = BTreeMap::new();
+        let mut effects = Vec::new();
+        for target in targets {
+            let Some(observation) = observations
+                .iter()
+                .find(|observation| observation.device_id == target.target_id)
+            else {
+                self.runtime_error = Some(format!(
+                    "failed target {} is no longer in fresh route state",
+                    target.target_id
+                ));
+                return Vec::new();
+            };
+            let Some(route_text) = target.requested_change.strip_prefix("routes=") else {
+                self.runtime_error = Some(format!(
+                    "failed target {} has no reconstructable route request",
+                    target.target_id
+                ));
+                return Vec::new();
+            };
+            let requested = crate::admin::route_mutations::canonical_enabled_routes(
+                &route_text
+                    .split(',')
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+            .and_then(|requested| {
+                crate::admin::route_mutations::validate_replacement(
+                    &observation.advertised,
+                    &observation.enabled,
+                    &requested,
+                )
+            });
+            let requested = match requested {
+                Ok(requested) => requested,
+                Err(error) => {
+                    self.runtime_error = Some(format!(
+                        "fresh route preflight for {} rejected the old request: {error}",
+                        target.target_id
+                    ));
+                    return Vec::new();
+                }
+            };
+            let mutation_id = self.next_mutation_id;
+            self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+            let mut request = crate::domain::admin_mutation::AdminMutation::new(
+                mutation_id,
+                profile.clone(),
+                target.target_id,
+                crate::admin::mutation::route_fields(&observation.advertised, &observation.enabled),
+                AdminChange::DeviceRoutes { routes: requested },
+                ActionId::AdminRoutesReplaceApprovals,
+                AdminChange::DeviceRoutes { routes: Vec::new() }.risk(),
+            );
+            if request.begin_preflight().is_err() {
+                self.runtime_error = Some("could not begin retry preflight".to_owned());
+                return Vec::new();
+            }
+            let preflight_effects = self.start_admin_preflight(request.clone());
+            if preflight_effects.is_empty() {
+                for previous in requests.values() {
+                    self.release_admin_preflight_lock(previous.mutation_id);
+                }
+                self.runtime_error = Some(
+                    "a failed target is already being read or changed; no retry was started"
+                        .to_owned(),
+                );
+                return Vec::new();
+            }
+            effects.extend(preflight_effects);
+            requests.insert(mutation_id, request);
+        }
+        self.admin_batch_preflights.insert(
+            parent_id,
+            PendingAdminBatch {
+                action_id: ActionId::AdminRoutesReplaceApprovals,
+                requests,
+                ready: BTreeMap::new(),
+            },
+        );
+        effects
     }
 
     fn mutation_preview_lines(&self, mutation: &LocalMutation) -> Vec<String> {
@@ -2431,6 +3300,8 @@ impl App {
                             HandoffInputKind::Nc => ActionId::LocalNcOpen,
                         },
                         mutation: None,
+                        admin_mutation: None,
+                        admin_batch: None,
                         service_request: None,
                         handoff: Some(command),
                         prompt: "Pause Tale and open the selected interactive terminal session."
@@ -2456,6 +3327,233 @@ impl App {
         }
     }
 
+    fn accept_admin_batch_confirmation(
+        &mut self,
+        confirmation: AdminBatchConfirmation,
+    ) -> Vec<Effect> {
+        let Some(profile_config) = self
+            .admin
+            .profile
+            .as_ref()
+            .and_then(|profile| self.resolved_config.profiles.get(profile))
+        else {
+            self.set_confirmation_error("admin profile configuration is unavailable");
+            return Vec::new();
+        };
+        let Some(tailnet) = self.admin.tailnet.clone() else {
+            self.set_confirmation_error("admin tailnet is no longer selected");
+            return Vec::new();
+        };
+        if !self.admin_mutation_available(confirmation.batch.action_id) {
+            let reason = self
+                .action_unavailable_reason(confirmation.batch.action_id)
+                .unwrap_or_else(|| "admin batch mutation is no longer available".to_owned());
+            self.set_confirmation_error(&reason);
+            return Vec::new();
+        }
+        let target_ids = confirmation
+            .requests
+            .iter()
+            .map(|request| request.target_id.clone())
+            .collect::<Vec<_>>();
+        if !confirmation.batch.target_list_is_unchanged(&target_ids) {
+            self.set_confirmation_error("the immutable batch target list changed; preview again");
+            return Vec::new();
+        }
+        for request in &confirmation.requests {
+            let Some(preflight) = request.preflight.as_ref() else {
+                self.set_confirmation_error("every batch target requires a fresh preflight");
+                return Vec::new();
+            };
+            if !preflight.is_fresh_at(self.now, request.risk) {
+                self.set_confirmation_error("a batch preflight expired; preview again");
+                return Vec::new();
+            }
+        }
+        let mut held = Vec::new();
+        for request in &confirmation.requests {
+            if self.admin_resource_locks.try_hold(
+                request.mutation_id,
+                request
+                    .change
+                    .lock_keys(&request.profile, &request.target_id),
+            ) {
+                held.push(request.mutation_id);
+            } else {
+                for mutation_id in held {
+                    self.admin_resource_locks.release(mutation_id);
+                }
+                self.set_confirmation_error(
+                    "a conflicting admin mutation or read is running for a batch target",
+                );
+                return Vec::new();
+            }
+        }
+        let mut requests = confirmation.requests;
+        let concurrency = confirmation.batch.max_concurrency.clamp(1, 4);
+        for request in requests.iter_mut().take(concurrency) {
+            if let Err(error) = transition(&mut request.state, AdminMutationState::Dispatching) {
+                for mutation_id in &held {
+                    self.admin_resource_locks.release(*mutation_id);
+                }
+                self.runtime_error = Some(error.to_string());
+                return Vec::new();
+            }
+        }
+        let parent_task_id = self.tasks.create(
+            confirmation.batch.action_id,
+            format!("{} route advertisers", requests.len()),
+            self.now,
+            true,
+        );
+        let _ = self.tasks.set_local_metadata(
+            parent_task_id,
+            vec!["batch parent".to_owned()],
+            Vec::new(),
+        );
+        let mut batch = confirmation.batch;
+        batch.parent_task_id = parent_task_id.0;
+        let mut child_tasks = BTreeMap::new();
+        let mut effects = Vec::new();
+        let pending_requests = requests.split_off(requests.len().min(concurrency));
+        for request in requests {
+            let task_id = self.tasks.create(
+                request.action_id,
+                format!("route advertiser {}", request.target_id),
+                self.now,
+                true,
+            );
+            let _ = self.tasks.set_local_metadata(
+                task_id,
+                vec![request.change.audit_action_class().to_owned()],
+                Vec::new(),
+            );
+            self.admin_mutations_in_flight
+                .insert(request.mutation_id, task_id);
+            child_tasks.insert(request.mutation_id, task_id);
+            effects.push(Effect::StartAdminMutation {
+                task_id,
+                request,
+                tailnet: tailnet.clone(),
+                credential: profile_config.credential.clone(),
+                environment_token: self.admin_environment_token.clone(),
+                timeout: self.resolved_config.admin.request_timeout,
+            });
+        }
+        let _ = self.tasks.start(parent_task_id);
+        self.admin_batches_in_flight.insert(
+            parent_task_id.0,
+            AdminBatchInFlight {
+                batch,
+                parent_task_id,
+                child_tasks,
+                pending_requests,
+            },
+        );
+        self.overlays.pop();
+        effects
+    }
+
+    fn set_confirmation_error(&mut self, error: &str) {
+        if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+            current.error = Some(error.to_owned());
+        }
+    }
+
+    fn extend_admin_refresh_for_owned_devices(
+        &self,
+        request: &AdminMutationRequest,
+        mut resources: Vec<AdminRefreshResource>,
+    ) -> Vec<AdminRefreshResource> {
+        if !matches!(
+            request.change.resource_kind(),
+            crate::domain::admin_mutation::AdminResourceKind::User
+        ) {
+            return resources;
+        }
+        if let Some(devices) = self.admin.devices.snapshot.as_ref() {
+            for device in devices
+                .iter()
+                .filter(|device| device.user_id.as_deref() == Some(request.target_id.as_str()))
+            {
+                let resource = AdminRefreshResource::DeviceRoutes(device.stable_id.clone());
+                if !resources.contains(&resource) {
+                    resources.push(resource);
+                }
+            }
+        }
+        resources
+    }
+
+    fn admin_mutation_target_is_current(&self, request: &AdminMutationRequest) -> bool {
+        match request.change.resource_kind() {
+            crate::domain::admin_mutation::AdminResourceKind::Device => self
+                .selected_admin_device()
+                .is_some_and(|device| device.stable_id == request.target_id),
+            crate::domain::admin_mutation::AdminResourceKind::DeviceRoutes => self
+                .admin
+                .route_observations()
+                .iter()
+                .any(|route| route.device_id == request.target_id),
+            crate::domain::admin_mutation::AdminResourceKind::User => self
+                .selected_admin_user()
+                .is_some_and(|user| user.id == request.target_id),
+            crate::domain::admin_mutation::AdminResourceKind::TailnetDns => {
+                request.target_id == "tailnet"
+            }
+        }
+    }
+
+    fn open_selected_batch_result(&mut self) -> Vec<Effect> {
+        let Some(task_id) = self.tasks.selected else {
+            self.runtime_error = Some("select a completed batch task first".to_owned());
+            return Vec::new();
+        };
+        if !self.admin_batch_results.contains_key(&task_id) {
+            self.runtime_error = Some("the selected task has no batch outcomes".to_owned());
+            return Vec::new();
+        }
+        self.overlays.push(Overlay::TaskInspector(task_id));
+        Vec::new()
+    }
+
+    fn retry_selected_batch(&mut self) -> Vec<Effect> {
+        let Some(task_id) = self.tasks.selected else {
+            self.runtime_error = Some("select a completed batch task first".to_owned());
+            return Vec::new();
+        };
+        let Some(batch) = self.admin_batch_results.get(&task_id) else {
+            self.runtime_error = Some("the selected task has no batch outcomes".to_owned());
+            return Vec::new();
+        };
+        let failed = batch
+            .targets
+            .iter()
+            .filter(|target| {
+                batch
+                    .child_outcomes
+                    .get(&target.target_id)
+                    .is_some_and(|outcome| {
+                        !matches!(
+                            outcome,
+                            crate::domain::admin_mutation::BatchChildOutcome::VerifiedSuccess
+                        )
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if failed.is_empty() {
+            self.runtime_error = Some("there are no failed targets to retry".to_owned());
+            return Vec::new();
+        }
+        self.pending_batch_retry = Some(failed);
+        self.navigate(Route::Routes);
+        self.runtime_error = Some(
+            "fetching fresh route state for the failed targets before a new preview".to_owned(),
+        );
+        self.start_admin_resource_refresh(vec![AdminRefreshResource::Devices])
+    }
+
     fn accept_confirmation(&mut self, state: ConfirmationState) -> Vec<Effect> {
         if let Some(required) = state.required_phrase.as_deref()
             && state.input != required
@@ -2464,6 +3562,9 @@ impl App {
                 current.error = Some(format!("type {required} exactly to confirm"));
             }
             return Vec::new();
+        }
+        if let Some(batch) = state.admin_batch.clone() {
+            return self.accept_admin_batch_confirmation(batch);
         }
         if state.action_id == ActionId::AccessCopySource {
             if let Some(source) = self
@@ -2482,6 +3583,95 @@ impl App {
             }
             self.overlays.pop();
             return Vec::new();
+        }
+        if let Some(mut request) = state.admin_mutation {
+            if !self.admin_mutation_available(request.action_id) {
+                let reason = self
+                    .action_unavailable_reason(request.action_id)
+                    .unwrap_or_else(|| "admin mutation is no longer available".to_owned());
+                if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+                    current.error = Some(reason);
+                }
+                return Vec::new();
+            }
+            if !self.admin_mutation_target_is_current(&request) {
+                if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+                    current.error = Some(
+                        "the selected admin target changed; discard this preview and start again"
+                            .to_owned(),
+                    );
+                }
+                return Vec::new();
+            }
+            let Some(preflight) = request.preflight.as_ref() else {
+                if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+                    current.error = Some("fresh preflight is required before dispatch".to_owned());
+                }
+                return Vec::new();
+            };
+            if !preflight.is_fresh_at(self.now, request.risk) {
+                if let Err(error) = transition(&mut request.state, AdminMutationState::Preflighting)
+                {
+                    self.runtime_error = Some(error.to_string());
+                    return Vec::new();
+                }
+                self.overlays.pop();
+                return self.start_admin_preflight(request);
+            }
+            let lock_keys = request
+                .change
+                .lock_keys(&request.profile, &request.target_id);
+            if !self
+                .admin_resource_locks
+                .try_hold(request.mutation_id, lock_keys)
+            {
+                if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+                    current.error =
+                        Some("a conflicting admin mutation or read is running".to_owned());
+                }
+                return Vec::new();
+            }
+            if let Err(error) = transition(&mut request.state, AdminMutationState::Dispatching) {
+                self.admin_resource_locks.release(request.mutation_id);
+                self.runtime_error = Some(error.to_string());
+                return Vec::new();
+            }
+            let Some(profile_config) = self.resolved_config.profiles.get(&request.profile) else {
+                self.admin_resource_locks.release(request.mutation_id);
+                self.runtime_error = Some("admin profile configuration disappeared".to_owned());
+                return Vec::new();
+            };
+            let Some(tailnet) = self.admin.tailnet.clone() else {
+                self.admin_resource_locks.release(request.mutation_id);
+                self.runtime_error = Some("admin tailnet is no longer selected".to_owned());
+                return Vec::new();
+            };
+            let task_id = self.tasks.create(
+                request.action_id,
+                format!(
+                    "{} {}",
+                    request.change.resource_kind().label(),
+                    request.target_id
+                ),
+                self.now,
+                true,
+            );
+            let _ = self.tasks.set_local_metadata(
+                task_id,
+                vec![request.change.audit_action_class().to_owned()],
+                Vec::new(),
+            );
+            self.admin_mutations_in_flight
+                .insert(request.mutation_id, task_id);
+            self.overlays.pop();
+            return vec![Effect::StartAdminMutation {
+                task_id,
+                request,
+                tailnet,
+                credential: profile_config.credential.clone(),
+                environment_token: self.admin_environment_token.clone(),
+                timeout: self.resolved_config.admin.request_timeout,
+            }];
         }
         if let Some(mut request) = state.service_request {
             if self.resolved_config.read_only && is_service_write_action(request.action_id()) {
@@ -2740,6 +3930,24 @@ impl App {
         if self.resolved_config.profile == profile {
             return Vec::new();
         }
+        if !self.admin_mutations_in_flight.is_empty()
+            || !self.admin_batches_in_flight.is_empty()
+            || !self.admin_batch_preflights.is_empty()
+        {
+            self.runtime_error = Some(
+                "finish or cancel the active admin mutation before switching profiles".to_owned(),
+            );
+            return Vec::new();
+        }
+        let preflight_locks = self
+            .admin_preflight_locks
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for mutation_id in preflight_locks {
+            self.release_admin_preflight_lock(mutation_id);
+        }
+        self.release_all_admin_read_locks();
         let previous_profile = self.resolved_config.profile.clone();
         if let Some(previous) = previous_profile.as_ref() {
             self.admin_profile_snapshots
@@ -2785,6 +3993,7 @@ impl App {
     }
 
     fn start_admin_refresh(&mut self) -> Vec<Effect> {
+        self.release_all_admin_read_locks();
         let Some(profile) = self.admin.profile.clone() else {
             return Vec::new();
         };
@@ -2918,6 +4127,7 @@ impl App {
         &mut self,
         resources: Vec<AdminRefreshResource>,
     ) -> Vec<Effect> {
+        self.release_all_admin_read_locks();
         let Some(profile) = self.admin.profile.clone() else {
             return Vec::new();
         };
@@ -2937,6 +4147,7 @@ impl App {
         for resource in &resources {
             match resource {
                 AdminRefreshResource::Devices => self.admin.devices.begin(generation),
+                AdminRefreshResource::DeviceRoutes(_) => self.admin.routes.begin(generation),
                 AdminRefreshResource::Users => self.admin.users.begin(generation),
                 AdminRefreshResource::Nameservers => self.admin.nameservers.begin(generation),
                 AdminRefreshResource::DnsPreferences => {
@@ -2963,7 +4174,7 @@ impl App {
         }]
     }
 
-    fn start_admin_device_enrichment(&self, selected_id: Option<String>) -> Option<Effect> {
+    fn start_admin_device_enrichment(&mut self, selected_id: Option<String>) -> Option<Effect> {
         let profile = self.admin.profile.clone()?;
         let device_id = selected_id?;
         let profile_config = self.resolved_config.profiles.get(&profile)?;
@@ -2976,12 +4187,29 @@ impl App {
             .find(|device| {
                 device.stable_id == device_id || device.exact_node_id() == Some(device_id.as_str())
             })?;
+        let stable_id = admin_device.stable_id.clone();
+        if self.admin_read_locks.contains_key(&stable_id) {
+            return None;
+        }
+        let owner = self.next_mutation_id;
+        self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+        if !self.admin_resource_locks.try_hold(
+            owner,
+            [crate::domain::admin_mutation::AdminResourceLockKey::new(
+                profile.clone(),
+                crate::domain::admin_mutation::AdminResourceKind::Device,
+                stable_id.clone(),
+            )],
+        ) {
+            return None;
+        }
+        self.admin_read_locks.insert(stable_id.clone(), owner);
         Some(Effect::StartAdminDeviceEnrichment {
             profile,
             credential: profile_config.credential.clone(),
             environment_token: self.admin_environment_token.clone(),
             generation: self.admin_generation,
-            device_id: admin_device.stable_id.clone(),
+            device_id: stable_id,
             timeout: self.resolved_config.admin.request_timeout,
         })
     }
@@ -3094,12 +4322,64 @@ impl App {
                 ));
                 for resource in report.resources {
                     match resource {
-                        AdminResourceResult::Devices(result) => apply_admin_result(
-                            &mut self.admin.devices,
-                            report.generation,
-                            report.observed_at,
-                            result,
-                        ),
+                        AdminResourceResult::Devices(result) => {
+                            apply_admin_result(
+                                &mut self.admin.devices,
+                                report.generation,
+                                report.observed_at,
+                                result,
+                            );
+                            if self.admin.devices.state == AdminResourceState::Ready {
+                                self.admin.routes.generation = report.generation;
+                                self.admin.routes.observed_at = Some(report.observed_at);
+                                self.admin.routes.state = AdminResourceState::Ready;
+                                self.admin.routes.snapshot = None;
+                            }
+                        }
+                        AdminResourceResult::DeviceRoutes(result) => match result {
+                            Ok(routes) => {
+                                let device_id = routes.device_id.clone();
+                                let advertised = routes.advertised.clone();
+                                let enabled = routes.enabled.clone();
+                                let routes_observed_at = routes.observed_at;
+                                if let Some(existing) =
+                                    self.admin.routes.snapshot.as_mut().and_then(|values| {
+                                        values.iter_mut().find(|value| value.device_id == device_id)
+                                    })
+                                {
+                                    *existing = routes;
+                                } else {
+                                    self.admin
+                                        .routes
+                                        .snapshot
+                                        .get_or_insert_with(Vec::new)
+                                        .push(routes);
+                                }
+                                if let Some(device) =
+                                    self.admin.devices.snapshot.as_mut().and_then(|values| {
+                                        values.iter_mut().find(|value| value.stable_id == device_id)
+                                    })
+                                {
+                                    device.advertised_routes_returned = true;
+                                    device.advertised_routes = advertised;
+                                    device.enabled_routes_returned = true;
+                                    device.enabled_routes = enabled;
+                                }
+                                self.admin.routes.generation = report.generation;
+                                self.admin.routes.observed_at = Some(routes_observed_at);
+                                self.admin.routes.state = AdminResourceState::Ready;
+                                self.admin.routes.error = None;
+                            }
+                            Err(error) => {
+                                self.admin.routes.generation = report.generation;
+                                self.admin.routes.state = if self.admin.routes.snapshot.is_some() {
+                                    AdminResourceState::Stale
+                                } else {
+                                    admin_state_for_error(&error)
+                                };
+                                self.admin.routes.error = Some(error.to_string());
+                            }
+                        },
                         AdminResourceResult::Users(result) => apply_admin_result(
                             &mut self.admin.users,
                             report.generation,
@@ -3165,6 +4445,16 @@ impl App {
                 self.refresh_admin_capabilities();
                 self.sync_admin_display_devices();
                 self.update_composed_devices();
+                if let Some(targets) = self.pending_batch_retry.take() {
+                    if self.admin.devices.state != AdminResourceState::Ready {
+                        self.runtime_error = Some(
+                            "fresh device state for failed targets was not available; no retry was started"
+                                .to_owned(),
+                        );
+                    } else {
+                        return self.begin_retry_batch_preflight(targets);
+                    }
+                }
             }
             AdminEvent::AuthenticationFailed {
                 profile,
@@ -3215,6 +4505,7 @@ impl App {
                 posture_present,
                 posture_error,
             } => {
+                self.release_admin_read_lock(&device.stable_id);
                 if self.admin.profile.as_deref() != Some(profile.as_str())
                     || generation != self.admin_generation
                 {
@@ -3276,6 +4567,7 @@ impl App {
                 device_id,
                 detail,
             } => {
+                self.release_admin_read_lock(&device_id);
                 if self.admin.profile.as_deref() != Some(profile.as_str())
                     || generation != self.admin_generation
                 {
@@ -3297,6 +4589,205 @@ impl App {
                 };
                 self.admin.posture.error = Some(format!("device {device_id}: {detail}"));
                 self.refresh_admin_capabilities();
+            }
+            AdminEvent::PreflightFinished {
+                mut request,
+                result,
+                observed_at,
+                owned_device_context,
+            } => {
+                self.release_admin_preflight_lock(request.mutation_id);
+                if self
+                    .aborted_admin_batch_children
+                    .remove(&request.mutation_id)
+                {
+                    return Vec::new();
+                }
+                if let Some(parent_id) =
+                    self.admin_batch_preflights
+                        .iter()
+                        .find_map(|(parent_id, pending)| {
+                            pending
+                                .requests
+                                .contains_key(&request.mutation_id)
+                                .then_some(*parent_id)
+                        })
+                {
+                    return self.finish_admin_batch_preflight(
+                        parent_id,
+                        *request,
+                        result,
+                        observed_at,
+                        owned_device_context,
+                    );
+                }
+                if self.admin.profile.as_deref() != Some(request.profile.as_str()) {
+                    return Vec::new();
+                }
+                let fresh = match result {
+                    Ok(fresh) => fresh,
+                    Err(error) => {
+                        self.runtime_error = Some(format!(
+                            "fresh preflight for {} failed: {error}",
+                            request.action_id.as_str()
+                        ));
+                        self.overlays
+                            .push(Overlay::OperatorForm(admin_operator_form_state(
+                                request.action_id,
+                                admin_change_input(&request.change),
+                                Some(error.to_string()),
+                            )));
+                        return Vec::new();
+                    }
+                };
+                if let Some(conflict) = crate::admin::mutation::preflight_conflict(
+                    &request.base_snapshot,
+                    &fresh,
+                    &request.change,
+                ) {
+                    let detail = conflict
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            format!(
+                                "{}: base=[{}] fresh=[{}] requested=[{}]",
+                                field.field, field.base, field.fresh, field.requested
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let _ = transition(&mut request.state, AdminMutationState::ConflictDetected);
+                    self.runtime_error = Some(format!("admin preflight conflict:\n{detail}"));
+                    self.overlays
+                        .push(Overlay::OperatorForm(admin_operator_form_state(
+                            request.action_id,
+                            admin_change_input(&request.change),
+                            Some(detail),
+                        )));
+                    return Vec::new();
+                }
+                let preflight = crate::domain::admin_mutation::AdminPreflight {
+                    observed_at,
+                    snapshot: fresh.clone(),
+                    fields: fresh.values.clone(),
+                };
+                if let Err(error) = request.set_preflight(preflight) {
+                    self.runtime_error = Some(error.to_string());
+                    return Vec::new();
+                }
+                let mut preview = crate::admin::mutation::preview_lines(
+                    &request.base_snapshot,
+                    &fresh,
+                    &request.change,
+                );
+                preview.extend(admin_preview_context(&request, &fresh));
+                preview.extend(owned_device_context);
+                let (prompt, required_phrase) = admin_confirmation_text(&request, &fresh);
+                self.overlays
+                    .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                        action_id: request.action_id,
+                        mutation: None,
+                        admin_mutation: Some(*request),
+                        admin_batch: None,
+                        service_request: None,
+                        handoff: None,
+                        prompt,
+                        required_phrase,
+                        input: String::new(),
+                        lose_ssh_checked: false,
+                        preview_lines: preview,
+                        redacted_argv: Vec::new(),
+                        error: None,
+                    })));
+            }
+            AdminEvent::MutationFinished {
+                task_id,
+                request,
+                outcome,
+                refresh_resources,
+                refresh_local_dns,
+            } => {
+                if let Some(parent_id) =
+                    self.admin_batches_in_flight
+                        .iter()
+                        .find_map(|(parent_id, batch)| {
+                            batch
+                                .child_tasks
+                                .contains_key(&request.mutation_id)
+                                .then_some(*parent_id)
+                        })
+                {
+                    return self.finish_admin_batch_child(
+                        parent_id,
+                        *request,
+                        *outcome,
+                        refresh_resources,
+                        refresh_local_dns,
+                    );
+                }
+                self.admin_resource_locks.release(request.mutation_id);
+                self.admin_mutations_in_flight.remove(&request.mutation_id);
+                let _ = self.tasks.set_verification(
+                    task_id,
+                    format!(
+                        "{}; audit candidates: {}",
+                        outcome.verification,
+                        outcome.audit.candidate_event_ids.len()
+                    ),
+                );
+                let task_succeeded = self
+                    .tasks
+                    .get(task_id)
+                    .is_some_and(|task| task.state == TaskState::Succeeded);
+                if task_succeeded {
+                    self.add_notification(
+                        task_id,
+                        crate::task::TaskResultKind::Success,
+                        "admin mutation verified",
+                    );
+                } else {
+                    self.add_notification(
+                        task_id,
+                        crate::task::TaskResultKind::Failure,
+                        &outcome.detail,
+                    );
+                }
+                let refresh_resources =
+                    self.extend_admin_refresh_for_owned_devices(&request, refresh_resources);
+                let mut effects = if refresh_resources.is_empty() {
+                    Vec::new()
+                } else {
+                    self.start_admin_resource_refresh(refresh_resources)
+                };
+                if refresh_local_dns && self.source_mode == SourceMode::Local {
+                    effects.extend(self.start_local_diagnostic(DiagnosticRequest::DnsStatus));
+                }
+                return effects;
+            }
+            AdminEvent::AuditCorrelationFinished {
+                task_id,
+                mutation_id,
+                correlation,
+            } => {
+                self.admin_audit_correlations
+                    .insert(mutation_id, correlation.clone());
+                let detail = if correlation.candidate_event_ids.is_empty() {
+                    format!("mutation {mutation_id}: no matching audit event observed")
+                } else if correlation.is_ambiguous() {
+                    format!(
+                        "mutation {mutation_id}: ambiguous audit candidates [{}]",
+                        correlation.candidate_event_ids.join(", ")
+                    )
+                } else {
+                    format!(
+                        "mutation {mutation_id}: audit candidate {}",
+                        correlation
+                            .candidate_event_ids
+                            .first()
+                            .map_or("not returned", String::as_str)
+                    )
+                };
+                let _ = self.tasks.set_verification(task_id, detail);
             }
             AdminEvent::Failed {
                 profile,
@@ -3331,6 +4822,308 @@ impl App {
             }
         }
         Vec::new()
+    }
+
+    fn finish_admin_batch_preflight(
+        &mut self,
+        parent_id: u64,
+        mut request: AdminMutationRequest,
+        result: Result<AdminSnapshotFields, AdminError>,
+        observed_at: Timestamp,
+        owned_device_context: Vec<String>,
+    ) -> Vec<Effect> {
+        let Some(mut pending) = self.admin_batch_preflights.remove(&parent_id) else {
+            return Vec::new();
+        };
+        if self.admin.profile.as_deref() != Some(request.profile.as_str()) {
+            return Vec::new();
+        }
+        let fresh = match result {
+            Ok(fresh) => fresh,
+            Err(error) => {
+                self.aborted_admin_batch_children
+                    .extend(pending.requests.keys().copied());
+                self.runtime_error = Some(format!(
+                    "batch preflight for {} failed: {error}",
+                    request.target_id
+                ));
+                self.overlays
+                    .push(Overlay::OperatorForm(admin_operator_form_state(
+                        pending.action_id,
+                        admin_change_input(&request.change),
+                        Some(error.to_string()),
+                    )));
+                return Vec::new();
+            }
+        };
+        if let Some(conflict) = crate::admin::mutation::preflight_conflict(
+            &request.base_snapshot,
+            &fresh,
+            &request.change,
+        ) {
+            self.aborted_admin_batch_children
+                .extend(pending.requests.keys().copied());
+            let detail = conflict
+                .fields
+                .iter()
+                .map(|field| {
+                    format!(
+                        "{}: base=[{}] fresh=[{}] requested=[{}]",
+                        field.field, field.base, field.fresh, field.requested
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.runtime_error = Some(format!(
+                "batch preflight conflict for {}:\n{detail}",
+                request.target_id
+            ));
+            self.overlays
+                .push(Overlay::OperatorForm(admin_operator_form_state(
+                    pending.action_id,
+                    admin_change_input(&request.change),
+                    Some(detail),
+                )));
+            return Vec::new();
+        }
+        let preflight = crate::domain::admin_mutation::AdminPreflight {
+            observed_at,
+            snapshot: fresh.clone(),
+            fields: fresh.values.clone(),
+        };
+        if let Err(error) = request.set_preflight(preflight) {
+            self.aborted_admin_batch_children
+                .extend(pending.requests.keys().copied());
+            self.runtime_error = Some(error.to_string());
+            return Vec::new();
+        }
+        pending.ready.insert(request.mutation_id, request);
+        if pending.ready.len() != pending.requests.len() {
+            self.admin_batch_preflights.insert(parent_id, pending);
+            return Vec::new();
+        }
+        let requests = pending.ready.into_values().collect::<Vec<_>>();
+        let mut targets = requests
+            .iter()
+            .map(batch_target)
+            .collect::<Vec<BatchTarget>>();
+        if let Some(devices) = self.admin.devices.snapshot.as_ref() {
+            for target in &mut targets {
+                if let Some(device) = devices
+                    .iter()
+                    .find(|device| device.stable_id == target.target_id)
+                {
+                    target.target_label = device.display_name().to_owned();
+                }
+            }
+        }
+        let batch = BatchMutation::new(parent_id, pending.action_id, targets, 4);
+        let mut preview = vec![format!(
+            "immutable target list: {} route advertisers",
+            requests.len()
+        )];
+        for request in &requests {
+            preview.push(format!("target: {}", request.target_id));
+            if let Some(preflight) = request.preflight.as_ref() {
+                preview.extend(
+                    crate::admin::mutation::preview_lines(
+                        &request.base_snapshot,
+                        &preflight.snapshot,
+                        &request.change,
+                    )
+                    .into_iter()
+                    .map(|line| format!("  {line}")),
+                );
+                preview.extend(
+                    admin_preview_context(request, &preflight.snapshot)
+                        .into_iter()
+                        .map(|line| format!("  {line}")),
+                );
+            }
+        }
+        preview.extend(owned_device_context);
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: pending.action_id,
+                mutation: None,
+                admin_mutation: None,
+                admin_batch: Some(AdminBatchConfirmation { batch, requests }),
+                service_request: None,
+                handoff: None,
+                prompt: "Apply this immutable route-approval batch? Each advertiser is verified independently; failures remain per-target."
+                    .to_owned(),
+                required_phrase: None,
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines: preview,
+                redacted_argv: Vec::new(),
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn finish_admin_batch_child(
+        &mut self,
+        parent_id: u64,
+        request: AdminMutationRequest,
+        outcome: crate::admin::mutation::AdminMutationOutcome,
+        refresh_resources: Vec<AdminRefreshResource>,
+        refresh_local_dns: bool,
+    ) -> Vec<Effect> {
+        let Some(mut in_flight) = self.admin_batches_in_flight.remove(&parent_id) else {
+            return Vec::new();
+        };
+        self.admin_resource_locks.release(request.mutation_id);
+        self.admin_mutations_in_flight.remove(&request.mutation_id);
+        let child_outcome = match outcome.state {
+            AdminMutationState::Succeeded => {
+                crate::domain::admin_mutation::BatchChildOutcome::VerifiedSuccess
+            }
+            AdminMutationState::SucceededUnverified => {
+                crate::domain::admin_mutation::BatchChildOutcome::SucceededUnverified
+            }
+            AdminMutationState::OutcomeUnknown => {
+                crate::domain::admin_mutation::BatchChildOutcome::OutcomeUnknown
+            }
+            AdminMutationState::Failed
+                if outcome.detail.contains("not dispatched")
+                    || outcome.verification.contains("not dispatched") =>
+            {
+                crate::domain::admin_mutation::BatchChildOutcome::FailedBeforeDispatch
+            }
+            _ => crate::domain::admin_mutation::BatchChildOutcome::Failed,
+        };
+        in_flight.batch.record(request.target_id, child_outcome);
+        let is_route_batch = in_flight.batch.action_id == ActionId::AdminRoutesReplaceApprovals;
+        let mut effects = if is_route_batch || refresh_resources.is_empty() {
+            Vec::new()
+        } else {
+            self.start_admin_resource_refresh(refresh_resources)
+        };
+        if refresh_local_dns && self.source_mode == SourceMode::Local {
+            effects.extend(self.start_local_diagnostic(DiagnosticRequest::DnsStatus));
+        }
+        if !in_flight.pending_requests.is_empty()
+            && self
+                .tasks
+                .get(in_flight.parent_task_id)
+                .is_some_and(|task| task.state != TaskState::Cancelling)
+        {
+            let mut next = in_flight.pending_requests.remove(0);
+            let Some(profile_config) = self.resolved_config.profiles.get(&next.profile) else {
+                in_flight.batch.record(
+                    next.target_id,
+                    crate::domain::admin_mutation::BatchChildOutcome::CancelledBeforeDispatch,
+                );
+                self.admin_resource_locks.release(next.mutation_id);
+                self.admin_batches_in_flight.insert(parent_id, in_flight);
+                return effects;
+            };
+            let Some(tailnet) = self.admin.tailnet.clone() else {
+                in_flight.batch.record(
+                    next.target_id,
+                    crate::domain::admin_mutation::BatchChildOutcome::CancelledBeforeDispatch,
+                );
+                self.admin_resource_locks.release(next.mutation_id);
+                self.admin_batches_in_flight.insert(parent_id, in_flight);
+                return effects;
+            };
+            if transition(&mut next.state, AdminMutationState::Dispatching).is_err() {
+                in_flight.batch.record(
+                    next.target_id,
+                    crate::domain::admin_mutation::BatchChildOutcome::FailedBeforeDispatch,
+                );
+                self.admin_resource_locks.release(next.mutation_id);
+                self.admin_batches_in_flight.insert(parent_id, in_flight);
+                return effects;
+            }
+            let next_task_id = self.tasks.create(
+                next.action_id,
+                format!("route advertiser {}", next.target_id),
+                self.now,
+                true,
+            );
+            let _ = self.tasks.set_local_metadata(
+                next_task_id,
+                vec![next.change.audit_action_class().to_owned()],
+                Vec::new(),
+            );
+            self.admin_mutations_in_flight
+                .insert(next.mutation_id, next_task_id);
+            in_flight.child_tasks.insert(next.mutation_id, next_task_id);
+            effects.push(Effect::StartAdminMutation {
+                task_id: next_task_id,
+                request: next,
+                tailnet,
+                credential: profile_config.credential.clone(),
+                environment_token: self.admin_environment_token.clone(),
+                timeout: self.resolved_config.admin.request_timeout,
+            });
+        }
+        let complete = in_flight.pending_requests.is_empty()
+            && in_flight.batch.child_outcomes.len() == in_flight.batch.targets.len();
+        if !complete {
+            self.admin_batches_in_flight.insert(parent_id, in_flight);
+            return effects;
+        }
+        let has_failure = in_flight.batch.child_outcomes.values().any(|outcome| {
+            !matches!(
+                outcome,
+                crate::domain::admin_mutation::BatchChildOutcome::VerifiedSuccess
+            )
+        });
+        let parent_cancelling = self
+            .tasks
+            .get(in_flight.parent_task_id)
+            .is_some_and(|task| task.state == TaskState::Cancelling);
+        let summary = if parent_cancelling {
+            "admin batch cancelled; review per-target outcomes"
+        } else if has_failure && in_flight.batch.verified_count() > 0 {
+            "admin batch partially succeeded; review per-target outcomes"
+        } else if has_failure {
+            "admin batch failed; review per-target outcomes"
+        } else {
+            "admin batch verified for every target"
+        };
+        let detail = format!(
+            "{} of {} targets verified",
+            in_flight
+                .batch
+                .child_outcomes
+                .values()
+                .filter(|outcome| {
+                    **outcome == crate::domain::admin_mutation::BatchChildOutcome::VerifiedSuccess
+                })
+                .count(),
+            in_flight.batch.targets.len()
+        );
+        if parent_cancelling {
+            let _ = self
+                .tasks
+                .cancel(in_flight.parent_task_id, self.now, &detail);
+        } else if has_failure {
+            let _ = self
+                .tasks
+                .fail(in_flight.parent_task_id, self.now, summary, &detail);
+        } else {
+            let _ = self
+                .tasks
+                .succeed(in_flight.parent_task_id, self.now, summary, &detail);
+        }
+        self.admin_batch_results
+            .insert(in_flight.parent_task_id, in_flight.batch);
+        if is_route_batch {
+            let mut resources = vec![AdminRefreshResource::Devices];
+            resources.extend(
+                self.admin_batch_results
+                    .get(&in_flight.parent_task_id)
+                    .into_iter()
+                    .flat_map(|batch| batch.targets.iter())
+                    .map(|target| AdminRefreshResource::DeviceRoutes(target.target_id.clone())),
+            );
+            effects.extend(self.start_admin_resource_refresh(resources));
+        }
+        effects
     }
 
     fn refresh_admin_capabilities(&mut self) {
@@ -4034,6 +5827,8 @@ impl App {
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: request.action_id(),
                 mutation: None,
+                admin_mutation: None,
+                admin_batch: None,
                 service_request: Some(request),
                 handoff: None,
                 prompt,
@@ -4677,13 +6472,31 @@ impl App {
         self.copied_value = Some(redact_diagnostic_report(&input).text);
     }
 
-    fn cancel_focused_task(&mut self) -> Option<Effect> {
-        let id = self.tasks.selected?;
-        if self.tasks.request_cancel(id) {
-            Some(Effect::CancelTask { task_id: id })
-        } else {
-            None
+    fn cancel_focused_task(&mut self) -> Vec<Effect> {
+        let Some(id) = self.tasks.selected else {
+            return Vec::new();
+        };
+        if !self.tasks.request_cancel(id) {
+            return Vec::new();
         }
+        let mut effects = vec![Effect::CancelTask { task_id: id }];
+        if let Some(batch) = self.admin_batches_in_flight.get_mut(&id.0) {
+            let pending = std::mem::take(&mut batch.pending_requests);
+            for request in pending {
+                batch.batch.record(
+                    request.target_id,
+                    crate::domain::admin_mutation::BatchChildOutcome::CancelledBeforeDispatch,
+                );
+                self.admin_resource_locks.release(request.mutation_id);
+            }
+            let children = batch.child_tasks.values().copied().collect::<Vec<_>>();
+            for child in children {
+                if self.tasks.request_cancel(child) {
+                    effects.push(Effect::CancelTask { task_id: child });
+                }
+            }
+        }
+        effects
     }
 
     fn request_shutdown(&mut self, reason: ShutdownReason) -> Vec<Effect> {
@@ -5815,6 +7628,16 @@ impl App {
             .and_then(|users| users.get(self.admin_user_selected))
     }
 
+    fn selected_admin_device(&self) -> Option<&crate::domain::device::AdminDevice> {
+        let selected = self.views.devices.selected_id.as_ref()?.0.as_str();
+        self.admin
+            .devices
+            .snapshot
+            .as_ref()?
+            .iter()
+            .find(|device| device.stable_id == selected || device.exact_node_id() == Some(selected))
+    }
+
     fn selected_admin_route(&self) -> Option<crate::admin::routes::AdminRouteObservation> {
         self.admin
             .route_observations()
@@ -6494,7 +8317,384 @@ fn is_admin_action(action_id: ActionId) -> bool {
             | ActionId::ActivityOpenActor
             | ActionId::ActivityOpenTarget
             | ActionId::SettingsInspectCapabilities
+            | ActionId::AdminDeviceRename
+            | ActionId::AdminDeviceTagsReplace
+            | ActionId::AdminDeviceApprove
+            | ActionId::AdminDeviceRevokeApproval
+            | ActionId::AdminDeviceKeyExpiryConfigure
+            | ActionId::AdminDeviceKeyExpireNow
+            | ActionId::AdminDeviceDelete
+            | ActionId::AdminRoutesReplaceApprovals
+            | ActionId::AdminDnsPreferencesEdit
+            | ActionId::AdminDnsNameserversReplace
+            | ActionId::AdminDnsSearchPathsReplace
+            | ActionId::AdminDnsSplitCreate
+            | ActionId::AdminDnsSplitEdit
+            | ActionId::AdminDnsSplitRemove
+            | ActionId::AdminUserApprove
+            | ActionId::AdminUserRoleChange
+            | ActionId::AdminUserSuspend
+            | ActionId::AdminUserRestore
+            | ActionId::AdminUserDelete
+            | ActionId::BatchReviewOutcomes
+            | ActionId::BatchRetrySelected
     )
+}
+
+fn is_admin_mutation_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::AdminDeviceRename
+            | ActionId::AdminDeviceTagsReplace
+            | ActionId::AdminDeviceApprove
+            | ActionId::AdminDeviceRevokeApproval
+            | ActionId::AdminDeviceKeyExpiryConfigure
+            | ActionId::AdminDeviceKeyExpireNow
+            | ActionId::AdminDeviceDelete
+            | ActionId::AdminRoutesReplaceApprovals
+            | ActionId::AdminDnsPreferencesEdit
+            | ActionId::AdminDnsNameserversReplace
+            | ActionId::AdminDnsSearchPathsReplace
+            | ActionId::AdminDnsSplitCreate
+            | ActionId::AdminDnsSplitEdit
+            | ActionId::AdminDnsSplitRemove
+            | ActionId::AdminUserApprove
+            | ActionId::AdminUserRoleChange
+            | ActionId::AdminUserSuspend
+            | ActionId::AdminUserRestore
+            | ActionId::AdminUserDelete
+    )
+}
+
+fn is_admin_device_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::AdminDeviceRename
+            | ActionId::AdminDeviceTagsReplace
+            | ActionId::AdminDeviceApprove
+            | ActionId::AdminDeviceRevokeApproval
+            | ActionId::AdminDeviceKeyExpiryConfigure
+            | ActionId::AdminDeviceKeyExpireNow
+            | ActionId::AdminDeviceDelete
+    )
+}
+
+fn is_admin_dns_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::AdminDnsPreferencesEdit
+            | ActionId::AdminDnsNameserversReplace
+            | ActionId::AdminDnsSearchPathsReplace
+            | ActionId::AdminDnsSplitCreate
+            | ActionId::AdminDnsSplitEdit
+            | ActionId::AdminDnsSplitRemove
+    )
+}
+
+fn is_admin_user_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::AdminUserApprove
+            | ActionId::AdminUserRoleChange
+            | ActionId::AdminUserSuspend
+            | ActionId::AdminUserRestore
+            | ActionId::AdminUserDelete
+    )
+}
+
+fn admin_change_input(change: &AdminChange) -> String {
+    match change {
+        AdminChange::DeviceRename { name } => name.clone(),
+        AdminChange::DeviceTags { tags } => tags.join(","),
+        AdminChange::DeviceApproval { .. }
+        | AdminChange::DeviceExpireNow
+        | AdminChange::DeviceDelete
+        | AdminChange::UserApproval
+        | AdminChange::UserSuspend
+        | AdminChange::UserRestore
+        | AdminChange::UserDelete => String::new(),
+        AdminChange::DeviceKeyExpiry { disabled } => {
+            if *disabled { "on" } else { "off" }.to_owned()
+        }
+        AdminChange::DeviceRoutes { routes } => routes.join(","),
+        AdminChange::DnsNameservers { values } => values.join(","),
+        AdminChange::DnsPreferences { magic_dns } => {
+            if *magic_dns { "on" } else { "off" }.to_owned()
+        }
+        AdminChange::DnsSearchPaths { values } => values.join(","),
+        AdminChange::DnsSplitMapping {
+            domain, resolvers, ..
+        } => resolvers.as_ref().map_or_else(
+            || domain.clone(),
+            |values| format!("{domain}={}", values.join(",")),
+        ),
+        AdminChange::UserRole { role } => role.clone(),
+    }
+}
+
+fn admin_operator_form_state(
+    action_id: ActionId,
+    input: String,
+    error: Option<String>,
+) -> OperatorFormState {
+    match action_id {
+        ActionId::AdminDnsNameserversReplace | ActionId::AdminDnsSearchPathsReplace => {
+            OperatorFormState::ordered(
+                action_id,
+                input
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+                None,
+                error,
+            )
+        }
+        ActionId::AdminDnsSplitCreate | ActionId::AdminDnsSplitEdit => {
+            let (prefix, values) = input.split_once('=').map_or_else(
+                || (None, Vec::new()),
+                |(domain, values)| {
+                    (
+                        Some(format!("{domain}=")),
+                        values
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_owned)
+                            .collect(),
+                    )
+                },
+            );
+            OperatorFormState::ordered(action_id, values, prefix, error)
+        }
+        _ => OperatorFormState::new(action_id, input, error),
+    }
+}
+
+fn format_ordered_input(prefix: Option<&str>, values: &[String]) -> String {
+    let values = values.join(",");
+    match prefix {
+        Some(prefix) => format!("{prefix}{values}"),
+        None => values,
+    }
+}
+
+fn admin_preview_context(
+    request: &AdminMutationRequest,
+    fields: &AdminSnapshotFields,
+) -> Vec<String> {
+    let change = &request.change;
+    match change {
+        AdminChange::DeviceRename { .. }
+        | AdminChange::DeviceTags { .. }
+        | AdminChange::DeviceApproval { .. }
+        | AdminChange::DeviceKeyExpiry { .. }
+        | AdminChange::DeviceExpireNow
+        | AdminChange::DeviceDelete => {
+            let mut lines = vec![format!("stable device ID: {}", request.target_id)];
+            lines.extend([
+                format!(
+                    "owner: {}",
+                    fields
+                        .values
+                        .get("owner")
+                        .filter(|value| !value.is_empty())
+                        .map_or("not returned", String::as_str)
+                ),
+                format!(
+                    "tags: {}",
+                    fields
+                        .values
+                        .get("tags")
+                        .filter(|value| !value.is_empty())
+                        .map_or("none", String::as_str)
+                ),
+                format!(
+                    "approval: {}",
+                    fields
+                        .values
+                        .get("authorized")
+                        .filter(|value| !value.is_empty())
+                        .map_or("unknown", String::as_str)
+                ),
+                format!(
+                    "online observation: {}",
+                    fields
+                        .values
+                        .get("connectedToControl")
+                        .filter(|value| !value.is_empty())
+                        .map_or("unknown", String::as_str)
+                ),
+                format!(
+                    "key expiry disabled: {}",
+                    fields
+                        .values
+                        .get("keyExpiryDisabled")
+                        .filter(|value| !value.is_empty())
+                        .map_or("unknown", String::as_str)
+                ),
+                format!(
+                    "key expiry timestamp: {}",
+                    fields
+                        .values
+                        .get("expires")
+                        .filter(|value| !value.is_empty())
+                        .map_or("not returned", String::as_str)
+                ),
+                format!(
+                    "advertised routes: {}",
+                    fields
+                        .values
+                        .get("advertisedRoutes")
+                        .filter(|value| !value.is_empty())
+                        .map_or("none", String::as_str)
+                ),
+                format!(
+                    "approved routes: {}",
+                    fields
+                        .values
+                        .get("enabledRoutes")
+                        .filter(|value| !value.is_empty())
+                        .map_or("none", String::as_str)
+                ),
+            ]);
+            if matches!(change, AdminChange::DeviceRename { .. }) {
+                lines.push(format!(
+                    "current MagicDNS/hostname: {}",
+                    fields
+                        .values
+                        .get("hostname")
+                        .filter(|value| !value.is_empty())
+                        .map_or("not returned", String::as_str)
+                ));
+            }
+            if matches!(change, AdminChange::DeviceTags { .. }) {
+                lines.push(
+                    "tag replacement may change device ownership identity; resulting identity is shown only after verification"
+                        .to_owned(),
+                );
+            }
+            if matches!(change, AdminChange::DeviceApproval { .. }) {
+                lines.push("device approval is independent of Tailnet Lock signing".to_owned());
+            }
+            lines
+        }
+        AdminChange::DeviceRoutes { .. } => vec![
+            format!("advertiser: {}", request.target_id),
+            format!(
+                "advertised: {}",
+                fields
+                    .values
+                    .get("advertisedRoutes")
+                    .filter(|value| !value.is_empty())
+                    .map_or("none", String::as_str)
+            ),
+            format!(
+                "currently approved: {}",
+                fields
+                    .values
+                    .get("enabledRoutes")
+                    .filter(|value| !value.is_empty())
+                    .map_or("none", String::as_str)
+            ),
+            "admin route approval does not advertise routes on the device".to_owned(),
+        ],
+        AdminChange::UserApproval
+        | AdminChange::UserRole { .. }
+        | AdminChange::UserSuspend
+        | AdminChange::UserRestore
+        | AdminChange::UserDelete => vec![
+            format!(
+                "user ID: {}",
+                fields
+                    .values
+                    .get("id")
+                    .filter(|value| !value.is_empty())
+                    .map_or(request.target_id.as_str(), String::as_str)
+            ),
+            format!(
+                "login: {}",
+                fields
+                    .values
+                    .get("loginName")
+                    .filter(|value| !value.is_empty())
+                    .map_or("not returned", String::as_str)
+            ),
+            format!(
+                "status: {}",
+                fields
+                    .values
+                    .get("status")
+                    .filter(|value| !value.is_empty())
+                    .map_or("unknown", String::as_str)
+            ),
+            format!(
+                "role: {}",
+                fields
+                    .values
+                    .get("role")
+                    .filter(|value| !value.is_empty())
+                    .map_or("unknown", String::as_str)
+            ),
+            format!(
+                "owned device count: {}",
+                fields
+                    .values
+                    .get("deviceCount")
+                    .filter(|value| !value.is_empty())
+                    .map_or("unknown", String::as_str)
+            ),
+            "role meanings and access enforcement remain server authoritative".to_owned(),
+        ],
+        AdminChange::DnsNameservers { .. }
+        | AdminChange::DnsPreferences { .. }
+        | AdminChange::DnsSearchPaths { .. }
+        | AdminChange::DnsSplitMapping { .. } => {
+            vec!["configuration changes are not claimed to have reached every client".to_owned()]
+        }
+    }
+}
+
+fn admin_confirmation_text(
+    request: &AdminMutationRequest,
+    fields: &AdminSnapshotFields,
+) -> (String, Option<String>) {
+    let phrase = match request.change {
+        AdminChange::DeviceApproval { authorized: false }
+        | AdminChange::DeviceExpireNow
+        | AdminChange::DeviceDelete => fields
+            .values
+            .get("name")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .or_else(|| fields.values.get("hostname").cloned()),
+        AdminChange::UserSuspend | AdminChange::UserDelete => fields
+            .values
+            .get("loginName")
+            .filter(|value| !value.is_empty())
+            .cloned(),
+        _ => None,
+    };
+    let prompt = match request.change {
+        AdminChange::DeviceApproval { authorized: false } => {
+            "Revoke approval for this device? This does not create or remove a Tailnet Lock signature."
+        }
+        AdminChange::DeviceExpireNow => {
+            "Expire the current device key now? The device may disconnect and must reauthenticate."
+        }
+        AdminChange::DeviceDelete => {
+            "Delete this device from the tailnet? Local profiles, users, and other route advertisers remain unchanged."
+        }
+        AdminChange::UserSuspend => {
+            "Suspend this user? Review the complete owned-device context before dispatch."
+        }
+        AdminChange::UserDelete => {
+            "Delete this user? Local Tale profiles and keyring records remain unchanged."
+        }
+        _ => "Apply this verified admin change exactly once?",
+    };
+    (prompt.to_owned(), phrase)
 }
 
 fn is_service_write_action(action_id: ActionId) -> bool {

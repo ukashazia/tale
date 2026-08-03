@@ -4,7 +4,7 @@ use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
 use crate::ui::components::{
-    action_picker, command_palette, confirm, copy_picker, filter, form, help,
+    action_picker, batch_result, command_palette, confirm, copy_picker, filter, form, help,
 };
 use crate::ui::theme;
 
@@ -24,6 +24,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
             area,
         ),
         Overlay::TaskInspector(task_id) => {
+            if let Some(batch) = app.admin_batch_results.get(task_id) {
+                batch_result::render(frame, app, area, batch);
+                return;
+            }
             let detail = app.tasks.get(*task_id).map_or_else(
                 || "task no longer available".to_owned(),
                 |task| format!("{}\n{}\n{}", task.state.label(), task.summary, task.detail),

@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind};
 
+use crate::admin::mutation::{AdminMutationOutcome, AdminMutationRequest, AdminSnapshotFields};
 use crate::admin::routes::AdminRouteObservation;
 use crate::admin::{AdminRefreshReport, AdminResourceReport};
 use crate::domain::Timestamp;
@@ -60,6 +61,24 @@ pub enum AdminEvent {
         generation: u64,
         device_id: String,
         detail: String,
+    },
+    PreflightFinished {
+        request: Box<AdminMutationRequest>,
+        result: Result<AdminSnapshotFields, crate::admin::client::AdminError>,
+        observed_at: Timestamp,
+        owned_device_context: Vec<String>,
+    },
+    MutationFinished {
+        task_id: TaskId,
+        request: Box<AdminMutationRequest>,
+        outcome: Box<AdminMutationOutcome>,
+        refresh_resources: Vec<crate::admin::AdminRefreshResource>,
+        refresh_local_dns: bool,
+    },
+    AuditCorrelationFinished {
+        task_id: TaskId,
+        mutation_id: u64,
+        correlation: crate::domain::admin_mutation::AuditCorrelation,
     },
     Failed {
         profile: String,
