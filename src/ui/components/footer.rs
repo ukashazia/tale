@@ -15,6 +15,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Route::Activity => ActionContext::Activity,
         Route::Devices if app.focus == Focus::Inspector => ActionContext::Detail,
         Route::Devices => ActionContext::Collection,
+        Route::Users | Route::Routes | Route::Credentials => ActionContext::Collection,
+        Route::Access | Route::Dns | Route::Settings => ActionContext::Root,
         Route::Services if app.focus == Focus::Inspector => ActionContext::Detail,
         Route::Services => ActionContext::Collection,
         _ => ActionContext::Root,

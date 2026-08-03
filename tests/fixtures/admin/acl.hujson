@@ -1,0 +1,4 @@
+{
+  // Fixture-only comments and trailing whitespace are intentionally preserved.
+  "acls": [{"action": "accept", "src": ["tag:fictional"], "dst": ["*:*"]}]
+}

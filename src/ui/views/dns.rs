@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Some(DiagnosticResult::DnsQuery(value)) => Some(value),
                 _ => None,
             });
-    let lines = vec![
+    let mut lines = vec![
         Line::from("DNS · local diagnostics"),
         Line::from(format!(
             "source      local · {}",
@@ -76,6 +76,49 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::from("Use a → actions → DNS query to run a read-only query."),
     ];
+    if app.admin.profile.is_some() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "admin DNS   nameservers:{} · preferences:{} · search paths:{} · split:{}",
+            app.admin.nameservers.state.label(),
+            app.admin.dns_preferences.state.label(),
+            app.admin.search_paths.state.label(),
+            app.admin.split_dns.state.label()
+        )));
+        if let Some(nameservers) = app.admin.nameservers.snapshot.as_ref() {
+            lines.push(Line::from(format!(
+                "nameservers  {}",
+                nameservers.values.join(", ")
+            )));
+        }
+        if let Some(preferences) = app.admin.dns_preferences.snapshot.as_ref() {
+            lines.push(Line::from(format!(
+                "MagicDNS     {}",
+                preferences
+                    .magic_dns
+                    .map_or("not returned", |value| if value {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    })
+            )));
+        }
+        if let Some(paths) = app.admin.search_paths.snapshot.as_ref() {
+            lines.push(Line::from(format!(
+                "search paths  {}",
+                paths.values.join(", ")
+            )));
+        }
+        if let Some(split) = app.admin.split_dns.snapshot.as_ref() {
+            lines.push(Line::from(format!(
+                "split DNS     {} mappings",
+                split.entries.len()
+            )));
+        }
+        lines.push(Line::from(
+            "Admin DNS is read-only; exact resolver strings and source states are preserved.",
+        ));
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::normal(app))

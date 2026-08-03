@@ -1,19 +1,28 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{self, ActionContext, ActionId, Capability};
+use crate::admin::auth::SecretValue;
+use crate::admin::client::AdminError;
+use crate::admin::{
+    self, AdminRefreshResource, AdminResource, AdminResourceResult, AdminResourceState,
+    AdminSnapshot,
+};
 use crate::config::ResolvedConfig;
 use crate::domain::account::LocalAccount;
 use crate::domain::certificate::{BugReportRequest, CertificateRequest};
 use crate::domain::device::{
-    Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec, compare_devices,
+    ComposedDevice, Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec,
+    compare_devices, compose_exact_id,
 };
 use crate::domain::diagnostic::{DiagnosticResult, DiagnosticState};
-use crate::domain::filter::{self, FilterExpression};
+use crate::domain::filter::{self, FilterExpression, FilterField, FilterTerm};
 use crate::domain::mutation::{LocalMutation, MutationLock};
+use crate::domain::policy::PolicySnapshot;
 use crate::domain::preference::{
     LocalPreferences, ObservedPreference, PreferenceEditability, PreferenceField, PreferenceRequest,
 };
@@ -38,7 +47,8 @@ use crate::domain::transfer::{
 use crate::domain::{SourceHealth, Timestamp};
 use crate::effect::{Effect, Resource};
 use crate::event::{
-    Event, InputEvent, LocalEvent, ServicesEvent, ShutdownReason, SourceEvent, TaskEvent,
+    AdminEvent, Event, InputEvent, LocalEvent, ServicesEvent, ShutdownReason, SourceEvent,
+    TaskEvent,
 };
 use crate::local::client::{ExecutableResolution, HostPlatform};
 use crate::local::diagnostics::{self, DiagnosticRequest};
@@ -70,7 +80,11 @@ pub enum Route {
     Overview,
     Local,
     Devices,
+    Users,
+    Routes,
     Dns,
+    Access,
+    Credentials,
     Activity,
     Settings,
     Services,
@@ -82,7 +96,11 @@ impl Route {
             Self::Overview => "overview",
             Self::Local => "local",
             Self::Devices => "devices",
+            Self::Users => "users",
+            Self::Routes => "routes",
             Self::Dns => "dns",
+            Self::Access => "access",
+            Self::Credentials => "credentials",
             Self::Activity => "activity",
             Self::Settings => "settings",
             Self::Services => "services",
@@ -94,7 +112,11 @@ impl Route {
             "overview" | "ov" | "home" => Some(Self::Overview),
             "local" | "self" => Some(Self::Local),
             "devices" | "device" | "dev" | "nodes" => Some(Self::Devices),
+            "users" | "user" => Some(Self::Users),
+            "routes" | "route" => Some(Self::Routes),
             "dns" => Some(Self::Dns),
+            "access" | "policy" => Some(Self::Access),
+            "credentials" | "credential" | "keys" => Some(Self::Credentials),
             "activity" | "tasks" => Some(Self::Activity),
             "settings" | "config" => Some(Self::Settings),
             "services" | "service" | "serve" | "funnel" => Some(Self::Services),
@@ -343,6 +365,14 @@ pub struct App {
     pub overlays: Vec<Overlay>,
     pub views: Views,
     pub devices_resource: DeviceResource,
+    pub admin: AdminSnapshot,
+    pub admin_profile_snapshots: BTreeMap<String, AdminSnapshot>,
+    admin_environment_token: Option<Arc<SecretValue>>,
+    pub admin_user_selected: usize,
+    pub admin_route_selected: usize,
+    pub admin_activity_selected: usize,
+    pub admin_audit_window_days: u64,
+    pub composed_devices: Vec<ComposedDevice>,
     pub local_resource: LocalResource,
     pub local_state: LocalState,
     pub local_executable: Option<LocalExecutable>,
@@ -377,6 +407,9 @@ pub struct App {
     local_services_refresh_in_flight: bool,
     local_next_refresh: Option<Instant>,
     local_last_tick: Option<Instant>,
+    admin_refresh_in_flight: bool,
+    admin_next_refresh: Option<Instant>,
+    admin_generation: u64,
     next_mutation_id: u64,
 }
 
@@ -398,6 +431,22 @@ impl App {
                 detail: "local client discovery pending".to_owned(),
             }
         };
+        let selected_profile = config.profile.clone();
+        let (tailnet, profile_read_only) = selected_profile
+            .as_deref()
+            .and_then(|profile| config.profiles.get(profile))
+            .map_or((None, true), |profile| {
+                (Some(profile.tailnet.clone()), profile.read_only)
+            });
+        let admin = AdminSnapshot::new(
+            selected_profile,
+            tailnet,
+            profile_read_only || config.read_only,
+            Vec::new(),
+        );
+        let admin_environment_token = std::env::var("TALE_ACCESS_TOKEN")
+            .ok()
+            .map(|value| Arc::new(SecretValue::new(value)));
         Self {
             route_stack: vec![Route::Overview],
             focus: Focus::Collection,
@@ -407,6 +456,14 @@ impl App {
                 services: ServiceViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
+            admin,
+            admin_profile_snapshots: BTreeMap::new(),
+            admin_environment_token,
+            admin_user_selected: 0,
+            admin_route_selected: 0,
+            admin_activity_selected: 0,
+            admin_audit_window_days: 1,
+            composed_devices: Vec::new(),
             local_resource: LocalResource::new(),
             local_state,
             local_executable: None,
@@ -445,20 +502,25 @@ impl App {
             local_services_refresh_in_flight: false,
             local_next_refresh: None,
             local_last_tick: None,
+            admin_refresh_in_flight: false,
+            admin_next_refresh: None,
+            admin_generation: 0,
             next_mutation_id: 1,
         }
     }
 
     pub fn bootstrap_effects(&mut self) -> Vec<Effect> {
+        let mut effects = self.start_admin_refresh();
         match self.source_mode {
-            SourceMode::Unavailable => return Vec::new(),
+            SourceMode::Unavailable => return effects,
             SourceMode::Mock => {
                 self.devices_resource.generation = 1;
-                return vec![Effect::StartMockLoad {
+                effects.push(Effect::StartMockLoad {
                     resource: Resource::Devices,
                     generation: 1,
                     scenario: MockLoadScenario::Initial,
-                }];
+                });
+                return effects;
             }
             SourceMode::Local => {}
         }
@@ -469,11 +531,12 @@ impl App {
             Instant::now(),
             self.resolved_config.local.refresh_interval,
         ));
-        vec![Effect::StartLocalDiscovery {
+        effects.push(Effect::StartLocalDiscovery {
             generation: 1,
             resolution: local_resolution(&self.resolved_config),
             timeout: self.resolved_config.local.command_timeout,
-        }]
+        });
+        effects
     }
 
     pub fn update(&mut self, event: Event) -> Vec<Effect> {
@@ -492,6 +555,7 @@ impl App {
             Event::Source(source) => self.update_source(source),
             Event::Local(local) => self.update_local(*local),
             Event::Services(services) => self.update_services(*services),
+            Event::Admin(admin) => self.update_admin(*admin),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         }
     }
@@ -509,6 +573,14 @@ impl App {
         if self.tasks.has_active() {
             self.render_invalidated = true;
         }
+        let mut effects = Vec::new();
+        if self.admin.profile.is_some()
+            && !self.admin_refresh_in_flight
+            && self.overlays.is_empty()
+            && self.admin_next_refresh.is_some_and(|due| tick >= due)
+        {
+            effects.extend(self.start_admin_refresh());
+        }
         if self.source_mode == SourceMode::Local
             && !self.interactive_handoff_active
             && !self.local_discovery_in_flight
@@ -516,9 +588,9 @@ impl App {
             && self.overlays.is_empty()
             && self.local_next_refresh.is_some_and(|due| tick >= due)
         {
-            return self.start_refresh(false);
+            effects.extend(self.start_refresh(false));
         }
-        Vec::new()
+        effects
     }
 
     fn update_input(&mut self, input: InputEvent) -> Vec<Effect> {
@@ -599,6 +671,7 @@ impl App {
             Route::Activity => ActionContext::Activity,
             Route::Devices if self.focus == Focus::Inspector => ActionContext::Detail,
             Route::Devices => ActionContext::Collection,
+            Route::Users | Route::Routes | Route::Credentials => ActionContext::Collection,
             Route::Services if self.focus == Focus::Inspector => ActionContext::Detail,
             Route::Services => ActionContext::Collection,
             _ => ActionContext::Root,
@@ -1029,9 +1102,20 @@ impl App {
             );
             return Vec::new();
         }
+        let activity_selection_required = matches!(
+            action_id,
+            ActionId::ActivityOpenActor | ActionId::ActivityOpenTarget
+        );
         if matches!(spec.selection_rule, action::SelectionRule::One)
             && ((self.current_route() == Route::Devices && self.selected_device().is_none())
-                || (self.current_route() == Route::Activity && self.tasks.selected.is_none()))
+                || (self.current_route() == Route::Activity
+                    && if activity_selection_required {
+                        self.selected_admin_activity().is_none()
+                    } else {
+                        self.tasks.selected.is_none()
+                    })
+                || (self.current_route() == Route::Users && self.selected_admin_user().is_none())
+                || (self.current_route() == Route::Routes && self.selected_admin_route().is_none()))
         {
             self.runtime_error = Some("select a resource before running this action".to_owned());
             return Vec::new();
@@ -1071,11 +1155,105 @@ impl App {
                 self.navigate(Route::Services);
                 Vec::new()
             }
+            ActionId::ProfileSelect => self.select_next_profile(),
+            ActionId::ProfileClear => self.clear_admin_profile(),
+            ActionId::AdminRefreshCurrent => self.start_admin_current_view_refresh(),
+            ActionId::AdminRefreshAll => self.start_admin_refresh(),
+            ActionId::ViewUsers => {
+                self.navigate(Route::Users);
+                Vec::new()
+            }
+            ActionId::ViewRoutes => {
+                self.navigate(Route::Routes);
+                Vec::new()
+            }
+            ActionId::ViewDns => {
+                self.navigate(Route::Dns);
+                Vec::new()
+            }
+            ActionId::ViewAccess => {
+                self.navigate(Route::Access);
+                Vec::new()
+            }
+            ActionId::ViewCredentials => {
+                self.navigate(Route::Credentials);
+                Vec::new()
+            }
+            ActionId::UsersOpenDevices => self.open_user_devices(),
+            ActionId::RoutesOpenDevice => self.open_route_device(),
+            ActionId::DnsOpenLocalDiagnostics => {
+                self.navigate(Route::Dns);
+                Vec::new()
+            }
+            ActionId::AccessCopySource => {
+                if let Some(policy) = self.admin.policy.snapshot.as_ref() {
+                    self.overlays.push(Overlay::Confirmation(Box::new(
+                        ConfirmationState {
+                            action_id,
+                            mutation: None,
+                            service_request: None,
+                            handoff: None,
+                            prompt: "The full policy source may contain sensitive access rules. Copy it to the clipboard?"
+                                .to_owned(),
+                            required_phrase: Some("COPY-POLICY".to_owned()),
+                            input: String::new(),
+                            lose_ssh_checked: false,
+                            preview_lines: vec![
+                                format!("{} bytes", policy.source_bytes.len()),
+                                format!("sha256 {}", policy.content_hash),
+                            ],
+                            redacted_argv: Vec::new(),
+                            error: None,
+                        },
+                    )));
+                } else {
+                    self.runtime_error =
+                        Some("policy source is not currently available".to_owned());
+                }
+                Vec::new()
+            }
+            ActionId::ActivitySelectWindow => {
+                self.admin_audit_window_days = match self.admin_audit_window_days {
+                    1 => 7,
+                    7 => 30,
+                    30 => 90,
+                    _ => 1,
+                };
+                self.runtime_error = Some(format!(
+                    "configuration audit window: previous {} day{}",
+                    self.admin_audit_window_days,
+                    if self.admin_audit_window_days == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+                self.start_admin_current_view_refresh()
+            }
+            ActionId::ActivityOpenActor => self.open_audit_reference(false),
+            ActionId::ActivityOpenTarget => self.open_audit_reference(true),
+            ActionId::SettingsInspectCapabilities => {
+                self.runtime_error = Some(format!(
+                    "observed admin capabilities: {}",
+                    self.admin
+                        .capabilities
+                        .iter()
+                        .map(|(name, state)| format!("{name}={}", state.label()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                Vec::new()
+            }
             ActionId::CollectionMoveUp => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(-1);
+                    self.move_admin_activity_selection(-1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-1);
+                } else if self.current_route() == Route::Users {
+                    self.move_admin_user_selection(-1);
+                } else if self.current_route() == Route::Routes {
+                    self.move_admin_route_selection(-1);
                 } else {
                     self.move_selection(-1);
                 }
@@ -1084,8 +1262,13 @@ impl App {
             ActionId::CollectionMoveDown => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(1);
+                    self.move_admin_activity_selection(1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(1);
+                } else if self.current_route() == Route::Users {
+                    self.move_admin_user_selection(1);
+                } else if self.current_route() == Route::Routes {
+                    self.move_admin_route_selection(1);
                 } else {
                     self.move_selection(1);
                 }
@@ -1094,9 +1277,14 @@ impl App {
             ActionId::CollectionFirst => {
                 if self.current_route() == Route::Activity {
                     self.tasks.selected = self.tasks.all().first().map(|task| task.id);
+                    self.admin_activity_selected = 0;
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = 0;
                     self.views.services.scroll = 0;
+                } else if self.current_route() == Route::Users {
+                    self.admin_user_selected = 0;
+                } else if self.current_route() == Route::Routes {
+                    self.admin_route_selected = 0;
                 } else {
                     self.move_selection_to(0);
                 }
@@ -1105,11 +1293,27 @@ impl App {
             ActionId::CollectionLast => {
                 if self.current_route() == Route::Activity {
                     self.tasks.selected = self.tasks.all().last().map(|task| task.id);
+                    self.admin_activity_selected = self
+                        .admin
+                        .activity
+                        .snapshot
+                        .as_ref()
+                        .map_or(0, |snapshot| snapshot.events.len().saturating_sub(1));
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = self.service_row_count().saturating_sub(1);
                     if self.views.services.section == ServiceSection::Metrics {
                         self.views.services.scroll = self.metrics_max_scroll();
                     }
+                } else if self.current_route() == Route::Users {
+                    self.admin_user_selected = self
+                        .admin
+                        .users
+                        .snapshot
+                        .as_ref()
+                        .map_or(0, |users| users.len().saturating_sub(1));
+                } else if self.current_route() == Route::Routes {
+                    self.admin_route_selected =
+                        self.admin.route_observations().len().saturating_sub(1);
                 } else {
                     self.move_selection_to(usize::MAX);
                 }
@@ -1118,8 +1322,13 @@ impl App {
             ActionId::CollectionPageUp => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(-5);
+                    self.move_admin_activity_selection(-5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-5);
+                } else if self.current_route() == Route::Users {
+                    self.move_admin_user_selection(-5);
+                } else if self.current_route() == Route::Routes {
+                    self.move_admin_route_selection(-5);
                 } else {
                     self.move_selection(-5);
                 }
@@ -1128,8 +1337,13 @@ impl App {
             ActionId::CollectionPageDown => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(5);
+                    self.move_admin_activity_selection(5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(5);
+                } else if self.current_route() == Route::Users {
+                    self.move_admin_user_selection(5);
+                } else if self.current_route() == Route::Routes {
+                    self.move_admin_route_selection(5);
                 } else {
                     self.move_selection(5);
                 }
@@ -1148,7 +1362,11 @@ impl App {
                 } else if self.current_route() == Route::Services
                     || self.selected_device().is_some()
                 {
+                    let selected_id = self.selected_device().map(|device| device.id.0.clone());
                     self.focus = Focus::Inspector;
+                    if let Some(effect) = self.start_admin_device_enrichment(selected_id) {
+                        return vec![effect];
+                    }
                 }
                 Vec::new()
             }
@@ -1328,9 +1546,36 @@ impl App {
 
     fn action_available(&self, action_id: ActionId, capability: Capability) -> bool {
         match capability {
+            Capability::Available if is_admin_action(action_id) => {
+                self.admin_action_available(action_id)
+            }
             Capability::Available => self.local_action_available(action_id),
             Capability::MockOnly => self.source_mode == SourceMode::Mock,
             Capability::Disabled(_) => false,
+        }
+    }
+
+    fn admin_action_available(&self, action_id: ActionId) -> bool {
+        match action_id {
+            ActionId::ProfileSelect => !self.resolved_config.profiles.is_empty(),
+            ActionId::ProfileClear => self.admin.profile.is_some(),
+            ActionId::ViewDns => true,
+            ActionId::AdminRefreshCurrent | ActionId::AdminRefreshAll => {
+                self.admin.profile.is_some()
+            }
+            ActionId::ViewUsers
+            | ActionId::ViewRoutes
+            | ActionId::ViewAccess
+            | ActionId::ViewCredentials => self.admin.profile.is_some(),
+            ActionId::UsersOpenDevices => self.admin.users.snapshot.is_some(),
+            ActionId::RoutesOpenDevice => self.admin.routes.snapshot.is_some(),
+            ActionId::DnsOpenLocalDiagnostics => true,
+            ActionId::AccessCopySource => self.admin.policy.snapshot.is_some(),
+            ActionId::ActivitySelectWindow
+            | ActionId::ActivityOpenActor
+            | ActionId::ActivityOpenTarget => self.admin.profile.is_some(),
+            ActionId::SettingsInspectCapabilities => self.admin.profile.is_some(),
+            _ => false,
         }
     }
 
@@ -2220,6 +2465,24 @@ impl App {
             }
             return Vec::new();
         }
+        if state.action_id == ActionId::AccessCopySource {
+            if let Some(source) = self
+                .admin
+                .policy
+                .snapshot
+                .as_ref()
+                .and_then(PolicySnapshot::as_str)
+            {
+                self.copied_value = Some(source.to_owned());
+                self.runtime_error = Some(
+                    "full policy source copied after explicit privacy confirmation".to_owned(),
+                );
+            } else {
+                self.runtime_error = Some("policy source is no longer available".to_owned());
+            }
+            self.overlays.pop();
+            return Vec::new();
+        }
         if let Some(mut request) = state.service_request {
             if self.resolved_config.read_only && is_service_write_action(request.action_id()) {
                 self.runtime_error =
@@ -2371,14 +2634,22 @@ impl App {
         candidates
     }
 
-    fn start_refresh(&mut self, _all: bool) -> Vec<Effect> {
+    fn start_refresh(&mut self, all: bool) -> Vec<Effect> {
+        let mut effects = if all {
+            self.start_admin_refresh()
+        } else {
+            self.start_admin_selected_refresh()
+        };
         if self.current_route() == Route::Services {
-            return self.start_services_refresh();
+            effects.extend(self.start_services_refresh());
+            return effects;
         }
         match self.source_mode {
             SourceMode::Unavailable => {
-                self.runtime_error = Some("local integration is disabled".to_owned());
-                Vec::new()
+                if self.admin.profile.is_none() {
+                    self.runtime_error = Some("local integration is disabled".to_owned());
+                }
+                effects
             }
             SourceMode::Mock => {
                 self.devices_resource.generation =
@@ -2393,15 +2664,15 @@ impl App {
                 } else {
                     MockLoadScenario::Success
                 };
-                vec![Effect::StartMockLoad {
+                effects.push(Effect::StartMockLoad {
                     resource: Resource::Devices,
                     generation,
                     scenario,
-                }]
+                });
+                effects
             }
             SourceMode::Local => {
                 let generation = self.local_resource.generation.saturating_add(1);
-                let mut effects = Vec::new();
                 if self.local_discovery_in_flight {
                     effects.push(Effect::CancelLocalDiscovery);
                 }
@@ -2429,6 +2700,773 @@ impl App {
                 }
                 effects
             }
+        }
+    }
+
+    fn select_next_profile(&mut self) -> Vec<Effect> {
+        let mut profiles = self.resolved_config.profiles.keys();
+        let profile = match self.resolved_config.profile.as_deref() {
+            None => profiles.next().cloned(),
+            Some(current) => {
+                let mut next = false;
+                profiles
+                    .find_map(|candidate| {
+                        if next {
+                            Some(candidate.clone())
+                        } else if candidate == current {
+                            next = true;
+                            None
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| self.resolved_config.profiles.keys().next().cloned())
+            }
+        };
+        match profile {
+            Some(profile) => self.switch_profile(Some(profile)),
+            None => {
+                self.runtime_error = Some("no admin profiles are configured".to_owned());
+                Vec::new()
+            }
+        }
+    }
+
+    fn clear_admin_profile(&mut self) -> Vec<Effect> {
+        self.switch_profile(None)
+    }
+
+    pub fn switch_profile(&mut self, profile: Option<String>) -> Vec<Effect> {
+        if self.resolved_config.profile == profile {
+            return Vec::new();
+        }
+        let previous_profile = self.resolved_config.profile.clone();
+        if let Some(previous) = previous_profile.as_ref() {
+            self.admin_profile_snapshots
+                .insert(previous.clone(), self.admin.clone());
+        }
+        let (tailnet, profile_read_only) = profile
+            .as_deref()
+            .and_then(|name| self.resolved_config.profiles.get(name))
+            .map_or((None, true), |profile| {
+                (Some(profile.tailnet.clone()), profile.read_only)
+            });
+        self.resolved_config.profile = profile.clone();
+        self.admin_environment_token = None;
+        let restored = profile
+            .as_ref()
+            .and_then(|name| self.admin_profile_snapshots.remove(name));
+        self.admin = match restored {
+            Some(snapshot) => snapshot,
+            None => AdminSnapshot::new(
+                profile.clone(),
+                tailnet.clone(),
+                profile_read_only || self.resolved_config.read_only,
+                Vec::new(),
+            ),
+        };
+        self.admin.profile = profile.clone();
+        self.admin.tailnet = tailnet;
+        self.admin.profile_read_only = profile_read_only || self.resolved_config.read_only;
+        self.admin_generation = self.admin_generation.saturating_add(1);
+        self.admin_refresh_in_flight = false;
+        self.admin_next_refresh = None;
+        self.composed_devices.clear();
+        self.admin_user_selected = 0;
+        self.admin_route_selected = 0;
+        self.admin_activity_selected = 0;
+        let mut effects = vec![Effect::CancelAdminRefresh];
+        if let Some(previous) = previous_profile {
+            effects.push(Effect::DropAdminToken { profile: previous });
+        }
+        self.update_composed_devices();
+        effects.extend(self.start_admin_refresh());
+        effects
+    }
+
+    fn start_admin_refresh(&mut self) -> Vec<Effect> {
+        let Some(profile) = self.admin.profile.clone() else {
+            return Vec::new();
+        };
+        let Some(profile_config) = self.resolved_config.profiles.get(&profile) else {
+            return Vec::new();
+        };
+        let Some(tailnet) = self.admin.tailnet.clone() else {
+            return Vec::new();
+        };
+        let mut effects = Vec::new();
+        if self.admin_refresh_in_flight {
+            effects.push(Effect::CancelAdminRefresh);
+        }
+        self.admin_generation = self.admin_generation.saturating_add(1);
+        let generation = self.admin_generation;
+        self.admin_refresh_in_flight = true;
+        self.admin_next_refresh = None;
+        self.admin.devices.begin(generation);
+        self.admin.users.begin(generation);
+        self.admin.routes.generation = generation;
+        self.admin.routes.state = AdminResourceState::Idle;
+        self.admin.posture.generation = generation;
+        self.admin.posture.state = AdminResourceState::Idle;
+        self.admin.posture.error = None;
+        self.admin.nameservers.begin(generation);
+        self.admin.dns_preferences.begin(generation);
+        self.admin.search_paths.begin(generation);
+        self.admin.split_dns.begin(generation);
+        self.admin.policy.begin(generation);
+        self.admin.credentials.begin(generation);
+        self.admin.settings.begin(generation);
+        self.admin.contacts.begin(generation);
+        self.admin.activity.begin(generation);
+        effects.push(Effect::StartAdminRefresh {
+            profile,
+            tailnet,
+            credential: profile_config.credential.clone(),
+            environment_token: self.admin_environment_token.clone(),
+            generation,
+            timeout: self.resolved_config.admin.request_timeout,
+            audit_window_days: self.admin_audit_window_days,
+        });
+        effects
+    }
+
+    fn start_admin_current_view_refresh(&mut self) -> Vec<Effect> {
+        let resources = match self.current_route() {
+            Route::Overview | Route::Services => vec![
+                AdminRefreshResource::Devices,
+                AdminRefreshResource::Users,
+                AdminRefreshResource::Nameservers,
+                AdminRefreshResource::DnsPreferences,
+                AdminRefreshResource::SearchPaths,
+                AdminRefreshResource::SplitDns,
+                AdminRefreshResource::Policy,
+                AdminRefreshResource::Credentials,
+                AdminRefreshResource::Settings,
+                AdminRefreshResource::Contacts,
+                AdminRefreshResource::Activity,
+            ],
+            Route::Devices => vec![AdminRefreshResource::Devices],
+            Route::Users => vec![AdminRefreshResource::Users],
+            Route::Routes => {
+                if let Some(route) = self.selected_admin_route() {
+                    return self
+                        .start_admin_device_enrichment(Some(route.device_id))
+                        .into_iter()
+                        .collect();
+                }
+                vec![AdminRefreshResource::Devices]
+            }
+            Route::Dns => vec![
+                AdminRefreshResource::Nameservers,
+                AdminRefreshResource::DnsPreferences,
+                AdminRefreshResource::SearchPaths,
+                AdminRefreshResource::SplitDns,
+            ],
+            Route::Access => vec![AdminRefreshResource::Policy],
+            Route::Credentials => vec![AdminRefreshResource::Credentials],
+            Route::Activity => vec![AdminRefreshResource::Activity],
+            Route::Settings => vec![
+                AdminRefreshResource::Settings,
+                AdminRefreshResource::Contacts,
+            ],
+            Route::Local => vec![AdminRefreshResource::Devices],
+        };
+        self.start_admin_resource_refresh(resources)
+    }
+
+    fn start_admin_selected_refresh(&mut self) -> Vec<Effect> {
+        match self.current_route() {
+            Route::Devices => self
+                .start_admin_device_enrichment(
+                    self.views
+                        .devices
+                        .selected_id
+                        .as_ref()
+                        .map(|id| id.0.clone()),
+                )
+                .map_or_else(
+                    || self.start_admin_resource_refresh(vec![AdminRefreshResource::Devices]),
+                    |effect| vec![effect],
+                ),
+            Route::Routes => self
+                .selected_admin_route()
+                .map(|route| {
+                    self.start_admin_device_enrichment(Some(route.device_id))
+                        .into_iter()
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    self.start_admin_resource_refresh(vec![AdminRefreshResource::Devices])
+                }),
+            Route::Users => self.start_admin_resource_refresh(vec![AdminRefreshResource::Users]),
+            Route::Dns => self.start_admin_current_view_refresh(),
+            Route::Access => self.start_admin_resource_refresh(vec![AdminRefreshResource::Policy]),
+            Route::Credentials => {
+                self.start_admin_resource_refresh(vec![AdminRefreshResource::Credentials])
+            }
+            Route::Activity => {
+                self.start_admin_resource_refresh(vec![AdminRefreshResource::Activity])
+            }
+            Route::Settings => self.start_admin_current_view_refresh(),
+            Route::Overview | Route::Local | Route::Services => {
+                self.start_admin_current_view_refresh()
+            }
+        }
+    }
+
+    fn start_admin_resource_refresh(
+        &mut self,
+        resources: Vec<AdminRefreshResource>,
+    ) -> Vec<Effect> {
+        let Some(profile) = self.admin.profile.clone() else {
+            return Vec::new();
+        };
+        let Some(profile_config) = self.resolved_config.profiles.get(&profile) else {
+            return Vec::new();
+        };
+        let Some(tailnet) = self.admin.tailnet.clone() else {
+            return Vec::new();
+        };
+        if resources.is_empty() {
+            return Vec::new();
+        }
+        self.admin_generation = self.admin_generation.saturating_add(1);
+        let generation = self.admin_generation;
+        self.admin_refresh_in_flight = true;
+        self.admin_next_refresh = None;
+        for resource in &resources {
+            match resource {
+                AdminRefreshResource::Devices => self.admin.devices.begin(generation),
+                AdminRefreshResource::Users => self.admin.users.begin(generation),
+                AdminRefreshResource::Nameservers => self.admin.nameservers.begin(generation),
+                AdminRefreshResource::DnsPreferences => {
+                    self.admin.dns_preferences.begin(generation)
+                }
+                AdminRefreshResource::SearchPaths => self.admin.search_paths.begin(generation),
+                AdminRefreshResource::SplitDns => self.admin.split_dns.begin(generation),
+                AdminRefreshResource::Policy => self.admin.policy.begin(generation),
+                AdminRefreshResource::Credentials => self.admin.credentials.begin(generation),
+                AdminRefreshResource::Settings => self.admin.settings.begin(generation),
+                AdminRefreshResource::Contacts => self.admin.contacts.begin(generation),
+                AdminRefreshResource::Activity => self.admin.activity.begin(generation),
+            }
+        }
+        vec![Effect::StartAdminResourceRefresh {
+            profile,
+            tailnet,
+            credential: profile_config.credential.clone(),
+            environment_token: self.admin_environment_token.clone(),
+            generation,
+            timeout: self.resolved_config.admin.request_timeout,
+            audit_window_days: self.admin_audit_window_days,
+            resources,
+        }]
+    }
+
+    fn start_admin_device_enrichment(&self, selected_id: Option<String>) -> Option<Effect> {
+        let profile = self.admin.profile.clone()?;
+        let device_id = selected_id?;
+        let profile_config = self.resolved_config.profiles.get(&profile)?;
+        let admin_device = self
+            .admin
+            .devices
+            .snapshot
+            .as_ref()?
+            .iter()
+            .find(|device| {
+                device.stable_id == device_id || device.exact_node_id() == Some(device_id.as_str())
+            })?;
+        Some(Effect::StartAdminDeviceEnrichment {
+            profile,
+            credential: profile_config.credential.clone(),
+            environment_token: self.admin_environment_token.clone(),
+            generation: self.admin_generation,
+            device_id: admin_device.stable_id.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+        })
+    }
+
+    fn update_admin(&mut self, event: AdminEvent) -> Vec<Effect> {
+        match event {
+            AdminEvent::RefreshStarted {
+                profile,
+                generation,
+            } => {
+                if self.admin.profile.as_deref() == Some(profile.as_str())
+                    && generation == self.admin_generation
+                {
+                    self.admin_refresh_in_flight = true;
+                }
+            }
+            AdminEvent::RefreshFinished(report) => {
+                if self.admin.profile.as_deref() != Some(report.profile.as_str())
+                    || report.generation != self.admin_generation
+                {
+                    return Vec::new();
+                }
+                self.admin_refresh_in_flight = false;
+                self.admin.requested_scopes = report.requested_scopes.clone();
+                self.admin_next_refresh = Some(instant_after(
+                    Instant::now(),
+                    self.resolved_config.admin.refresh_interval,
+                ));
+                let generation = report.generation;
+                let observed_at = report.observed_at;
+                apply_admin_result(
+                    &mut self.admin.devices,
+                    generation,
+                    observed_at,
+                    report.devices,
+                );
+                apply_admin_result(&mut self.admin.users, generation, observed_at, report.users);
+                if let Some(routes) = report.routes {
+                    apply_admin_result(&mut self.admin.routes, generation, observed_at, routes);
+                }
+                apply_admin_result(
+                    &mut self.admin.nameservers,
+                    generation,
+                    observed_at,
+                    report.nameservers,
+                );
+                apply_admin_result(
+                    &mut self.admin.dns_preferences,
+                    generation,
+                    observed_at,
+                    report.dns_preferences,
+                );
+                apply_admin_result(
+                    &mut self.admin.search_paths,
+                    generation,
+                    observed_at,
+                    report.search_paths,
+                );
+                apply_admin_result(
+                    &mut self.admin.split_dns,
+                    generation,
+                    observed_at,
+                    report.split_dns,
+                );
+                apply_admin_result(
+                    &mut self.admin.policy,
+                    generation,
+                    observed_at,
+                    report.policy,
+                );
+                apply_admin_result(
+                    &mut self.admin.credentials,
+                    generation,
+                    observed_at,
+                    report.credentials,
+                );
+                apply_admin_result(
+                    &mut self.admin.settings,
+                    generation,
+                    observed_at,
+                    report.settings,
+                );
+                apply_admin_result(
+                    &mut self.admin.contacts,
+                    generation,
+                    observed_at,
+                    report.contacts,
+                );
+                apply_admin_result(
+                    &mut self.admin.activity,
+                    generation,
+                    observed_at,
+                    report.activity,
+                );
+                self.refresh_admin_capabilities();
+                self.sync_admin_display_devices();
+                self.update_composed_devices();
+            }
+            AdminEvent::ResourceRefreshFinished(report) => {
+                if self.admin.profile.as_deref() != Some(report.profile.as_str())
+                    || report.generation != self.admin_generation
+                {
+                    return Vec::new();
+                }
+                self.admin_refresh_in_flight = false;
+                self.admin.requested_scopes = report.requested_scopes;
+                self.admin_next_refresh = Some(instant_after(
+                    Instant::now(),
+                    self.resolved_config.admin.refresh_interval,
+                ));
+                for resource in report.resources {
+                    match resource {
+                        AdminResourceResult::Devices(result) => apply_admin_result(
+                            &mut self.admin.devices,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::Users(result) => apply_admin_result(
+                            &mut self.admin.users,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::Nameservers(result) => apply_admin_result(
+                            &mut self.admin.nameservers,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::DnsPreferences(result) => apply_admin_result(
+                            &mut self.admin.dns_preferences,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::SearchPaths(result) => apply_admin_result(
+                            &mut self.admin.search_paths,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::SplitDns(result) => apply_admin_result(
+                            &mut self.admin.split_dns,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::Policy(result) => apply_admin_result(
+                            &mut self.admin.policy,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::Credentials(result) => apply_admin_result(
+                            &mut self.admin.credentials,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::Settings(result) => apply_admin_result(
+                            &mut self.admin.settings,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::Contacts(result) => apply_admin_result(
+                            &mut self.admin.contacts,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                        AdminResourceResult::Activity(result) => apply_admin_result(
+                            &mut self.admin.activity,
+                            report.generation,
+                            report.observed_at,
+                            result,
+                        ),
+                    }
+                }
+                self.refresh_admin_capabilities();
+                self.sync_admin_display_devices();
+                self.update_composed_devices();
+            }
+            AdminEvent::AuthenticationFailed {
+                profile,
+                generation,
+                detail,
+            } => {
+                if self.admin.profile.as_deref() != Some(profile.as_str())
+                    || generation != self.admin_generation
+                {
+                    return Vec::new();
+                }
+                self.admin_refresh_in_flight = false;
+                self.admin_next_refresh = Some(instant_after(
+                    Instant::now(),
+                    self.resolved_config.admin.refresh_interval,
+                ));
+                mark_admin_unauthenticated(&mut self.admin.devices, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.users, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.routes, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.posture, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.nameservers, generation, detail.clone());
+                mark_admin_unauthenticated(
+                    &mut self.admin.dns_preferences,
+                    generation,
+                    detail.clone(),
+                );
+                mark_admin_unauthenticated(
+                    &mut self.admin.search_paths,
+                    generation,
+                    detail.clone(),
+                );
+                mark_admin_unauthenticated(&mut self.admin.split_dns, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.policy, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.credentials, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.settings, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.contacts, generation, detail.clone());
+                mark_admin_unauthenticated(&mut self.admin.activity, generation, detail);
+                self.refresh_admin_capabilities();
+                self.sync_admin_display_devices();
+                self.update_composed_devices();
+            }
+            AdminEvent::DeviceEnrichmentFinished {
+                profile,
+                generation,
+                device,
+                routes,
+                routes_error,
+                posture_present,
+                posture_error,
+            } => {
+                if self.admin.profile.as_deref() != Some(profile.as_str())
+                    || generation != self.admin_generation
+                {
+                    return Vec::new();
+                }
+                if let Some(devices) = self.admin.devices.snapshot.as_mut()
+                    && let Some(existing) = devices
+                        .iter_mut()
+                        .find(|existing| existing.stable_id == device.stable_id)
+                {
+                    *existing = *device;
+                    existing.posture_present = posture_present;
+                }
+                if let Some(routes) = routes {
+                    self.admin.routes.generation = generation;
+                    let routes_observed_at = routes.observed_at;
+                    if let Some(existing) = self.admin.routes.snapshot.as_mut().and_then(|values| {
+                        values
+                            .iter_mut()
+                            .find(|value| value.device_id == routes.device_id)
+                    }) {
+                        *existing = routes;
+                    } else {
+                        self.admin
+                            .routes
+                            .snapshot
+                            .get_or_insert_with(Vec::new)
+                            .push(routes);
+                    }
+                    self.admin.routes.state = AdminResourceState::Ready;
+                    self.admin.routes.observed_at = Some(routes_observed_at);
+                }
+                if let Some(error) = routes_error {
+                    self.admin.routes.generation = generation;
+                    apply_admin_result(&mut self.admin.routes, generation, self.now, Err(error));
+                }
+                match posture_error {
+                    Some(error) => {
+                        self.admin.posture.generation = generation;
+                        apply_admin_result(
+                            &mut self.admin.posture,
+                            generation,
+                            self.now,
+                            Err(error),
+                        );
+                    }
+                    None if posture_present.is_some() => {
+                        self.admin.posture.generation = generation;
+                        self.admin.posture.succeed(generation, (), self.now);
+                    }
+                    None => {}
+                }
+                self.refresh_admin_capabilities();
+                self.update_composed_devices();
+            }
+            AdminEvent::DeviceEnrichmentFailed {
+                profile,
+                generation,
+                device_id,
+                detail,
+            } => {
+                if self.admin.profile.as_deref() != Some(profile.as_str())
+                    || generation != self.admin_generation
+                {
+                    return Vec::new();
+                }
+                let resource = &mut self.admin.routes;
+                resource.generation = generation;
+                resource.state = if resource.snapshot.is_some() {
+                    AdminResourceState::Stale
+                } else {
+                    AdminResourceState::Failed
+                };
+                resource.error = Some(format!("device {device_id}: {detail}"));
+                self.admin.posture.generation = generation;
+                self.admin.posture.state = if self.admin.posture.snapshot.is_some() {
+                    AdminResourceState::Stale
+                } else {
+                    AdminResourceState::Failed
+                };
+                self.admin.posture.error = Some(format!("device {device_id}: {detail}"));
+                self.refresh_admin_capabilities();
+            }
+            AdminEvent::Failed {
+                profile,
+                generation,
+                detail,
+            } => {
+                if self.admin.profile.as_deref() == Some(profile.as_str())
+                    && generation == self.admin_generation
+                {
+                    self.admin_refresh_in_flight = false;
+                    self.admin_next_refresh = Some(instant_after(
+                        Instant::now(),
+                        self.resolved_config.admin.refresh_interval,
+                    ));
+                    mark_admin_failed(&mut self.admin.devices, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.users, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.routes, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.posture, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.nameservers, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.dns_preferences, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.search_paths, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.split_dns, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.policy, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.credentials, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.settings, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.contacts, generation, detail.clone());
+                    mark_admin_failed(&mut self.admin.activity, generation, detail);
+                    self.refresh_admin_capabilities();
+                    self.sync_admin_display_devices();
+                    self.update_composed_devices();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn refresh_admin_capabilities(&mut self) {
+        let entries = [
+            ("devices", self.admin.devices.state),
+            ("users", self.admin.users.state),
+            ("routes", self.admin.routes.state),
+            ("devices.posture", self.admin.posture.state),
+            ("dns.nameservers", self.admin.nameservers.state),
+            ("dns.preferences", self.admin.dns_preferences.state),
+            ("dns.search_paths", self.admin.search_paths.state),
+            ("dns.split", self.admin.split_dns.state),
+            ("access", self.admin.policy.state),
+            ("credentials", self.admin.credentials.state),
+            ("settings", self.admin.settings.state),
+            ("contacts", self.admin.contacts.state),
+            ("activity", self.admin.activity.state),
+        ];
+        for (name, state) in entries {
+            self.admin
+                .capabilities
+                .insert(name.to_owned(), capability_for_state(state));
+        }
+    }
+
+    fn update_composed_devices(&mut self) {
+        let local = self.local_resource.snapshot.as_ref().map(|snapshot| {
+            let mut devices = Vec::with_capacity(snapshot.peers.len().saturating_add(1));
+            devices.push(snapshot.self_node.clone());
+            devices.extend(snapshot.peers.clone());
+            devices
+        });
+        let admin = self.admin.devices.snapshot.clone();
+        self.composed_devices = match (local.as_deref(), admin.as_deref()) {
+            (Some(local), Some(admin)) => compose_exact_id(local, admin),
+            (Some(local), None) => local
+                .iter()
+                .cloned()
+                .map(|device| ComposedDevice {
+                    id: device.id.0.clone(),
+                    local: Some(device),
+                    admin: None,
+                })
+                .collect(),
+            (None, Some(admin)) => admin
+                .iter()
+                .cloned()
+                .map(|device| ComposedDevice {
+                    id: device.stable_id.clone(),
+                    local: None,
+                    admin: Some(device),
+                })
+                .collect(),
+            (None, None) => Vec::new(),
+        };
+        if self.source_mode == SourceMode::Local && self.admin.profile.is_some() {
+            let display = self
+                .composed_devices
+                .iter()
+                .map(Self::display_device_from_composed)
+                .collect::<Vec<_>>();
+            self.reconcile_selection(Some(&display));
+            self.devices_resource.snapshot = display;
+            self.devices_resource.observed_at = self.local_resource.last_success_at;
+            self.devices_resource.health = match self.local_resource.status {
+                LocalResourceStatus::NeverLoaded => SourceHealth::Unavailable,
+                LocalResourceStatus::Loading => SourceHealth::Loading,
+                LocalResourceStatus::Fresh => SourceHealth::Healthy,
+                LocalResourceStatus::Stale => SourceHealth::Stale,
+                LocalResourceStatus::Failed => SourceHealth::Error,
+            };
+            self.devices_resource.error = self
+                .local_resource
+                .failure
+                .as_ref()
+                .map(|failure| failure.detail.clone());
+            self.reconcile_selection(None);
+        }
+    }
+
+    fn display_device_from_composed(composed: &ComposedDevice) -> Device {
+        match (&composed.local, &composed.admin) {
+            (Some(local), _) => local.to_display_device(),
+            (None, Some(admin)) => admin.to_display_device(),
+            (None, None) => Device {
+                id: DeviceId::new(composed.id.clone()),
+                display_name: "not returned".to_owned(),
+                hostname: "not returned".to_owned(),
+                owner: None,
+                owner_label: None,
+                os: crate::domain::device::OperatingSystem::Unknown("not returned".to_owned()),
+                version: "not returned".to_owned(),
+                liveness: crate::domain::device::Liveness::Unknown,
+                path: crate::domain::device::ConnectionPath::Unknown(
+                    "no source snapshot".to_owned(),
+                ),
+                addresses: Vec::new(),
+                advertised_routes: Vec::new(),
+                tags: Vec::new(),
+                last_seen: None,
+                created_at: None,
+                rx_bytes: None,
+                tx_bytes: None,
+                capabilities: crate::domain::device::DeviceCapabilities {
+                    exit_node: false,
+                    exit_node_option: false,
+                    subnet_router: false,
+                    ssh: false,
+                    funnel: false,
+                    shared: false,
+                    expired: false,
+                    approved: true,
+                },
+            },
+        }
+    }
+
+    fn sync_admin_display_devices(&mut self) {
+        if self.source_mode == SourceMode::Local && self.local_resource.snapshot.is_some() {
+            return;
+        }
+        if let Some(devices) = self.admin.devices.snapshot.as_ref() {
+            let display = devices
+                .iter()
+                .map(|device| device.to_display_device())
+                .collect::<Vec<_>>();
+            self.reconcile_selection(Some(&display));
+            self.devices_resource.snapshot = display;
+            self.devices_resource.generation = self.admin.devices.generation;
+            self.devices_resource.observed_at = self.admin.devices.observed_at;
+            self.devices_resource.health = SourceHealth::from_admin_state(self.admin.devices.state);
+            self.devices_resource.error = self.admin.devices.error.clone();
+            self.reconcile_selection(None);
+        } else if self.admin.profile.is_some() {
+            self.devices_resource.health = SourceHealth::from_admin_state(self.admin.devices.state);
+            self.devices_resource.error = self.admin.devices.error.clone();
         }
     }
 
@@ -3652,6 +4690,7 @@ impl App {
         if matches!(self.shutdown_state, ShutdownState::Running) {
             self.shutdown_state = ShutdownState::Requested(reason);
             self.overlays.clear();
+            self.admin_environment_token = None;
             self.render_invalidated = true;
         }
         self.tasks
@@ -3776,6 +4815,7 @@ impl App {
                 };
                 self.devices_resource.error = None;
                 self.reconcile_selection(None);
+                self.update_composed_devices();
             }
             SourceEvent::LoadFailed { generation, detail } => {
                 if generation < self.devices_resource.generation {
@@ -3836,6 +4876,7 @@ impl App {
                     SourceHealth::Error
                 };
                 self.devices_resource.error = Some(failure.detail);
+                self.update_composed_devices();
                 self.services_snapshot
                     .certificate_domains
                     .fail(self.services_snapshot.generation, service_failure);
@@ -3868,6 +4909,7 @@ impl App {
                     snapshot.cert_domains.clone(),
                 );
                 self.local_resource.succeed(generation, snapshot);
+                self.update_composed_devices();
                 self.local_capabilities.status_json = true;
                 self.local_next_refresh = self
                     .local_last_tick
@@ -3925,6 +4967,7 @@ impl App {
                     SourceHealth::Error
                 };
                 self.devices_resource.error = Some(failure.detail);
+                self.update_composed_devices();
                 self.services_snapshot
                     .certificate_domains
                     .fail(self.services_snapshot.generation, service_failure);
@@ -4486,6 +5529,7 @@ impl App {
         self.devices_resource.health = SourceHealth::Healthy;
         self.devices_resource.error = None;
         self.reconcile_selection(None);
+        self.update_composed_devices();
     }
 
     fn apply_fresh_snapshot(&mut self, snapshot: LocalSnapshot) {
@@ -4494,6 +5538,7 @@ impl App {
         self.local_state = snapshot.backend_state.clone();
         self.apply_local_snapshot(&snapshot);
         let _ = self.local_resource.succeed(generation, snapshot);
+        self.update_composed_devices();
         self.local_next_refresh = Some(instant_after(
             Instant::now(),
             self.resolved_config.local.refresh_interval,
@@ -4518,6 +5563,7 @@ impl App {
         self.local_preferences = LocalPreferences::empty(self.now);
         self.system_policy.clear();
         self.system_policy_failure = None;
+        self.update_composed_devices();
     }
 
     fn start_account_rediscovery(&mut self) -> Vec<Effect> {
@@ -4598,6 +5644,7 @@ impl App {
     }
 
     fn visible_indices_for(&self, devices: &[Device]) -> Vec<usize> {
+        let requires_admin_data = self.views.devices.applied_filter.requires_admin_data();
         let mut indices: Vec<usize> = devices
             .iter()
             .enumerate()
@@ -4607,10 +5654,31 @@ impl App {
                 } else {
                     None
                 };
-                self.views
+                let common_matches = self
+                    .views
                     .devices
                     .applied_filter
-                    .matches_with_dns(device, dns_name, self.now)
+                    .matches_with_dns(device, dns_name, self.now);
+                let admin_matches = if requires_admin_data {
+                    self.admin
+                        .devices
+                        .snapshot
+                        .as_ref()
+                        .and_then(|admin_devices| {
+                            admin_devices
+                                .iter()
+                                .find(|admin| admin.stable_id == device.id.0)
+                        })
+                        .is_some_and(|admin| {
+                            self.views
+                                .devices
+                                .applied_filter
+                                .matches_admin(admin, self.now)
+                        })
+                } else {
+                    true
+                };
+                common_matches && admin_matches
             })
             .map(|(index, _)| index)
             .collect();
@@ -4727,6 +5795,156 @@ impl App {
             .and_then(|value| self.devices_resource.snapshot.get(*value))
             .map(|device| device.id.clone());
         self.views.devices.scroll = index;
+    }
+
+    fn move_admin_user_selection(&mut self, offset: isize) {
+        let length = self.admin.users.snapshot.as_ref().map_or(0, Vec::len);
+        self.admin_user_selected = move_bounded_index(self.admin_user_selected, length, offset);
+    }
+
+    fn move_admin_route_selection(&mut self, offset: isize) {
+        let length = self.admin.route_observations().len();
+        self.admin_route_selected = move_bounded_index(self.admin_route_selected, length, offset);
+    }
+
+    fn selected_admin_user(&self) -> Option<&crate::domain::user::AdminUser> {
+        self.admin
+            .users
+            .snapshot
+            .as_ref()
+            .and_then(|users| users.get(self.admin_user_selected))
+    }
+
+    fn selected_admin_route(&self) -> Option<crate::admin::routes::AdminRouteObservation> {
+        self.admin
+            .route_observations()
+            .into_iter()
+            .nth(self.admin_route_selected)
+    }
+
+    fn move_admin_activity_selection(&mut self, offset: isize) {
+        let length = self
+            .admin
+            .activity
+            .snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.events.len());
+        self.admin_activity_selected =
+            move_bounded_index(self.admin_activity_selected, length, offset);
+    }
+
+    fn selected_admin_activity(&self) -> Option<&crate::domain::activity::AuditEvent> {
+        self.admin
+            .activity
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.events.get(self.admin_activity_selected))
+    }
+
+    fn open_audit_reference(&mut self, target: bool) -> Vec<Effect> {
+        let id = self.selected_admin_activity().and_then(|event| {
+            if target {
+                event.target.as_ref().and_then(|value| value.id.clone())
+            } else {
+                event.actor.as_ref().and_then(|value| value.id.clone())
+            }
+        });
+        let Some(id) = id else {
+            self.runtime_error =
+                Some("the selected audit record has no exact reference ID".to_owned());
+            return Vec::new();
+        };
+        if let Some(index) = self
+            .admin
+            .users
+            .snapshot
+            .as_ref()
+            .and_then(|users| users.iter().position(|user| user.id == id))
+        {
+            self.admin_user_selected = index;
+            self.navigate(Route::Users);
+            return Vec::new();
+        }
+        if let Some(index) = self
+            .admin
+            .devices
+            .snapshot
+            .as_ref()
+            .and_then(|devices| devices.iter().position(|device| device.stable_id == id))
+        {
+            let device_id = self
+                .admin
+                .devices
+                .snapshot
+                .as_ref()
+                .and_then(|devices| devices.get(index))
+                .map(|device| device.stable_id.clone());
+            self.views.devices.selected_id = device_id.map(DeviceId::new);
+            self.navigate(Route::Devices);
+            self.focus = Focus::Inspector;
+            return self
+                .views
+                .devices
+                .selected_id
+                .as_ref()
+                .map(|device_id| device_id.0.clone())
+                .and_then(|device_id| self.start_admin_device_enrichment(Some(device_id)))
+                .into_iter()
+                .collect();
+        }
+        self.runtime_error =
+            Some("the exact audit reference is not in the current snapshot".to_owned());
+        Vec::new()
+    }
+
+    fn open_user_devices(&mut self) -> Vec<Effect> {
+        let Some(user_id) = self.selected_admin_user().map(|user| user.id.clone()) else {
+            return Vec::new();
+        };
+        self.views.devices.filter_draft = format!("owner:{user_id}");
+        self.views.devices.applied_filter = FilterExpression {
+            terms: vec![FilterTerm::Field {
+                field: FilterField::Owner,
+                negated: false,
+                values: vec![user_id],
+                comparison: None,
+            }],
+        };
+        self.views.devices.selected_id = None;
+        self.navigate(Route::Devices);
+        self.reconcile_selection(None);
+        Vec::new()
+    }
+
+    fn open_route_device(&mut self) -> Vec<Effect> {
+        let Some(route) = self.selected_admin_route() else {
+            return Vec::new();
+        };
+        let device_id = DeviceId::new(route.device_id);
+        if !self
+            .devices_resource
+            .snapshot
+            .iter()
+            .any(|device| device.id == device_id)
+        {
+            self.runtime_error =
+                Some("route advertiser is not in the current device snapshot".to_owned());
+            return Vec::new();
+        }
+        self.views.devices.selected_id = Some(device_id);
+        self.views.devices.filter_draft.clear();
+        self.views.devices.applied_filter = FilterExpression::empty();
+        self.navigate(Route::Devices);
+        self.focus = Focus::Inspector;
+        let selected = self
+            .views
+            .devices
+            .selected_id
+            .as_ref()
+            .map(|id| id.0.clone());
+        self.start_admin_device_enrichment(selected)
+            .into_iter()
+            .collect()
     }
 
     fn apply_sort_choice(&mut self, choice: usize) {
@@ -4968,7 +6186,11 @@ fn route_candidates(input: &str) -> Vec<Route> {
         Route::Overview,
         Route::Local,
         Route::Devices,
+        Route::Users,
+        Route::Routes,
         Route::Dns,
+        Route::Access,
+        Route::Credentials,
         Route::Activity,
         Route::Settings,
         Route::Services,
@@ -5249,6 +6471,29 @@ fn is_mutating_action(action_id: ActionId) -> bool {
             | ActionId::ServicesDriveUnshare
             | ActionId::ServicesCertificateObtain
             | ActionId::ServicesBugReportCreate
+    )
+}
+
+fn is_admin_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::ProfileSelect
+            | ActionId::ProfileClear
+            | ActionId::AdminRefreshCurrent
+            | ActionId::AdminRefreshAll
+            | ActionId::ViewUsers
+            | ActionId::ViewRoutes
+            | ActionId::ViewDns
+            | ActionId::ViewAccess
+            | ActionId::ViewCredentials
+            | ActionId::UsersOpenDevices
+            | ActionId::RoutesOpenDevice
+            | ActionId::DnsOpenLocalDiagnostics
+            | ActionId::AccessCopySource
+            | ActionId::ActivitySelectWindow
+            | ActionId::ActivityOpenActor
+            | ActionId::ActivityOpenTarget
+            | ActionId::SettingsInspectCapabilities
     )
 }
 
@@ -5576,10 +6821,99 @@ fn route_aliases(route: Route) -> &'static [&'static str] {
         Route::Overview => &["ov", "home"],
         Route::Local => &["self"],
         Route::Devices => &["device", "dev", "nodes"],
+        Route::Users => &["user"],
+        Route::Routes => &["route"],
         Route::Dns => &[],
+        Route::Access => &["policy"],
+        Route::Credentials => &["credential", "keys"],
         Route::Activity => &["tasks"],
         Route::Settings => &["config"],
         Route::Services => &["service", "serve", "funnel"],
+    }
+}
+
+fn apply_admin_result<T>(
+    resource: &mut AdminResource<T>,
+    generation: u64,
+    observed_at: Timestamp,
+    result: Result<T, AdminError>,
+) {
+    match result {
+        Ok(snapshot) => resource.succeed(generation, snapshot, observed_at),
+        Err(error) => {
+            let state = if resource.snapshot.is_some()
+                && matches!(
+                    error,
+                    AdminError::Transport { .. }
+                        | AdminError::TimedOut { .. }
+                        | AdminError::Cancelled { .. }
+                        | AdminError::UnexpectedStatus { .. }
+                        | AdminError::DecodeFailed { .. }
+                        | AdminError::BodyTooLarge { .. }
+                        | AdminError::NotFound { .. }
+                        | AdminError::ValidationFailed { .. }
+                        | AdminError::Conflict { .. }
+                        | AdminError::RateLimited { .. }
+                        | AdminError::ServerFailure { .. }
+                ) {
+                AdminResourceState::Stale
+            } else {
+                admin_state_for_error(&error)
+            };
+            resource.generation = generation;
+            resource.state = state;
+            resource.error = Some(error.to_string());
+        }
+    }
+}
+
+fn mark_admin_unauthenticated<T>(resource: &mut AdminResource<T>, generation: u64, detail: String) {
+    resource.generation = generation;
+    resource.state = AdminResourceState::Unauthenticated;
+    resource.error = Some(detail);
+}
+
+fn mark_admin_failed<T>(resource: &mut AdminResource<T>, generation: u64, detail: String) {
+    resource.generation = generation;
+    resource.state = if resource.snapshot.is_some() {
+        AdminResourceState::Stale
+    } else {
+        AdminResourceState::Failed
+    };
+    resource.error = Some(detail);
+}
+
+fn admin_state_for_error(error: &AdminError) -> AdminResourceState {
+    match error {
+        AdminError::Unauthenticated => AdminResourceState::Unauthenticated,
+        AdminError::Forbidden { .. } => AdminResourceState::Forbidden,
+        AdminError::PlanRestricted { .. } => AdminResourceState::PlanRestricted,
+        AdminError::Unsupported { .. } => AdminResourceState::Unsupported,
+        AdminError::Transport { .. }
+        | AdminError::TimedOut { .. }
+        | AdminError::Cancelled { .. }
+        | AdminError::UnexpectedStatus { .. }
+        | AdminError::DecodeFailed { .. }
+        | AdminError::BodyTooLarge { .. }
+        | AdminError::NotFound { .. }
+        | AdminError::ValidationFailed { .. }
+        | AdminError::Conflict { .. }
+        | AdminError::RateLimited { .. }
+        | AdminError::ServerFailure { .. } => AdminResourceState::Failed,
+    }
+}
+
+fn capability_for_state(state: AdminResourceState) -> admin::CapabilityState {
+    match state {
+        AdminResourceState::Idle | AdminResourceState::Loading => {
+            admin::CapabilityState::Configured
+        }
+        AdminResourceState::Ready => admin::CapabilityState::Available,
+        AdminResourceState::Stale | AdminResourceState::Failed => admin::CapabilityState::Failed,
+        AdminResourceState::Forbidden => admin::CapabilityState::Forbidden,
+        AdminResourceState::PlanRestricted => admin::CapabilityState::PlanRestricted,
+        AdminResourceState::Unsupported => admin::CapabilityState::Unsupported,
+        AdminResourceState::Unauthenticated => admin::CapabilityState::Unauthenticated,
     }
 }
 
@@ -5588,6 +6922,20 @@ fn online_rank(value: Option<bool>) -> u8 {
         Some(true) => 0,
         Some(false) => 1,
         None => 2,
+    }
+}
+
+fn move_bounded_index(current: usize, length: usize, offset: isize) -> usize {
+    if length == 0 {
+        return 0;
+    }
+    let current = current.min(length.saturating_sub(1));
+    if offset.is_negative() {
+        current.saturating_sub(offset.unsigned_abs())
+    } else {
+        current
+            .saturating_add(offset as usize)
+            .min(length.saturating_sub(1))
     }
 }
 

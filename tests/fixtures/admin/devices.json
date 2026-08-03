@@ -1,0 +1,48 @@
+{
+  "devices": [
+    {
+      "id": "legacy-fictional-001",
+      "nodeId": "node-fictional-001",
+      "addresses": ["192.0.2.10", "2001:db8:100::10"],
+      "user": "user-fictional-001",
+      "name": "laptop.example.test",
+      "hostname": "laptop",
+      "clientVersion": "1.84.0",
+      "updateAvailable": true,
+      "os": "linux",
+      "created": "2026-08-02T12:00:00Z",
+      "connectedToControl": true,
+      "lastSeen": "2026-08-03T10:00:00Z",
+      "keyExpiryDisabled": false,
+      "expires": "2026-08-10T10:00:00Z",
+      "authorized": true,
+      "isExternal": false,
+      "multipleConnections": false,
+      "advertisedRoutes": ["192.0.2.0/24"],
+      "enabledRoutes": [],
+      "tags": ["tag:fictional"],
+      "isEphemeral": false,
+      "sshEnabled": true
+    },
+    {
+      "id": "legacy-fictional-002",
+      "nodeId": "node-fictional-002",
+      "addresses": ["192.0.2.11"],
+      "user": "user-fictional-002",
+      "name": "pending.example.test",
+      "hostname": "pending",
+      "clientVersion": "1.83.1",
+      "os": "darwin",
+      "created": "2026-07-01T00:00:00Z",
+      "connectedToControl": false,
+      "lastSeen": "2026-08-01T10:00:00Z",
+      "expires": "2026-08-02T10:00:00Z",
+      "authorized": false,
+      "isExternal": true,
+      "advertisedRoutes": ["198.51.100.0/24", "0.0.0.0/0"],
+      "enabledRoutes": ["198.51.100.0/24"],
+      "tags": ["tag:pending"],
+      "isEphemeral": true
+    }
+  ]
+}

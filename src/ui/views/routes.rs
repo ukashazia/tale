@@ -73,6 +73,81 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+pub fn render_admin(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let resource = &app.admin.routes;
+    let observations = app.admin.route_observations();
+    let mut lines = vec![Line::from(format!("state: {}", resource.state.label()))];
+    match observations.as_slice() {
+        [] => {
+            lines.push(Line::from("route details load when a device is inspected"));
+        }
+        routes => {
+            for (index, route) in routes.iter().enumerate() {
+                lines.push(Line::from(format!(
+                    "{}{} · {} · advertised:{} enabled:{} · role:{}",
+                    if index == app.admin_route_selected {
+                        "> "
+                    } else {
+                        "  "
+                    },
+                    route.device_id,
+                    if route.complete {
+                        "complete"
+                    } else {
+                        "partial"
+                    },
+                    if route.advertised.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        route.advertised.join(", ")
+                    },
+                    if route.enabled.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        route.enabled.join(", ")
+                    },
+                    route_role(route)
+                )));
+            }
+        }
+    }
+    if observations.is_empty() && resource.snapshot.is_none() {
+        lines.push(Line::from(
+            resource
+                .error
+                .as_deref()
+                .map_or("route details have not been loaded", |value| value),
+        ));
+    }
+    lines.push(Line::from(
+        "Advertised and enabled routes are separate server observations; no local approval is inferred.",
+    ));
+    frame.render_widget(
+        Paragraph::new(lines).style(theme::normal(app)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("routes · admin · read-only"),
+        ),
+        area,
+    );
+}
+
+fn route_role(route: &crate::admin::routes::AdminRouteObservation) -> &'static str {
+    if route.advertised_exit_node() {
+        "exit advertisement"
+    } else if !route.advertised.is_empty() {
+        "subnet advertisement"
+    } else if route.enabled_exit_node() {
+        "exit approval"
+    } else if !route.enabled.is_empty() {
+        "subnet approval"
+    } else if route.complete {
+        "none"
+    } else {
+        "unknown"
+    }
+}
+
 fn boolean(value: Option<bool>) -> &'static str {
     match value {
         Some(true) => "on",

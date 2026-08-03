@@ -37,11 +37,32 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
     Doctor(DoctorArgs),
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum AuthCommand {
+    Add(AuthProfileArgs),
+    Remove(AuthProfileArgs),
+    Status(AuthStatusArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AuthProfileArgs {
+    pub profile: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AuthStatusArgs {
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Subcommand)]

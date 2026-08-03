@@ -1,6 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::admin::AdminRefreshResource;
+use crate::admin::auth::SecretValue;
 use crate::domain::mutation::LocalMutation;
 use crate::domain::service::ServiceActionRequest;
 use crate::domain::source::LocalExecutable;
@@ -20,6 +23,37 @@ pub enum Effect {
     StartMockTask {
         task_id: TaskId,
         behavior: MockTaskBehavior,
+    },
+    StartAdminRefresh {
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        generation: u64,
+        timeout: Duration,
+        audit_window_days: u64,
+    },
+    StartAdminResourceRefresh {
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        generation: u64,
+        timeout: Duration,
+        audit_window_days: u64,
+        resources: Vec<AdminRefreshResource>,
+    },
+    StartAdminDeviceEnrichment {
+        profile: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        generation: u64,
+        device_id: String,
+        timeout: Duration,
+    },
+    CancelAdminRefresh,
+    DropAdminToken {
+        profile: String,
     },
     StartLocalDiscovery {
         generation: u64,

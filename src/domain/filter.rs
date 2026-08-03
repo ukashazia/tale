@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::Timestamp;
-use super::device::{Device, Liveness};
+use super::device::{AdminDevice, Device, Liveness};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FilterExpression {
@@ -27,6 +27,29 @@ impl FilterExpression {
             .iter()
             .all(|term| term.matches(device, dns_name, now))
     }
+
+    pub fn requires_admin_data(&self) -> bool {
+        self.terms.iter().any(|term| {
+            matches!(
+                term,
+                FilterTerm::Field {
+                    field: FilterField::Approval
+                        | FilterField::KeyExpiry
+                        | FilterField::ClientVersion
+                        | FilterField::Sharing
+                        | FilterField::Posture
+                        | FilterField::RouteRole,
+                    ..
+                }
+            )
+        })
+    }
+
+    pub fn matches_admin(&self, device: &AdminDevice, now: Timestamp) -> bool {
+        self.terms
+            .iter()
+            .all(|term| term.matches_admin(device, now))
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -49,6 +72,12 @@ pub enum FilterField {
     Tag,
     LastSeen,
     Property,
+    Approval,
+    KeyExpiry,
+    ClientVersion,
+    Sharing,
+    Posture,
+    RouteRole,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -205,6 +234,65 @@ fn parse_term((token, position): &(String, usize)) -> Result<FilterTerm, FilterE
             }
         }
     }
+    if field == FilterField::Approval {
+        for value in &values {
+            if !matches!(
+                value.as_str(),
+                "true" | "false" | "approved" | "pending" | "unknown"
+            ) {
+                return Err(error(
+                    *position + colon + 1,
+                    "approval expects approved, pending, or unknown",
+                ));
+            }
+        }
+    }
+    if field == FilterField::KeyExpiry {
+        for value in &values {
+            if !matches!(value.as_str(), "expired" | "soon" | "disabled" | "unknown") {
+                return Err(error(
+                    *position + colon + 1,
+                    "key-expiry expects expired, soon, disabled, or unknown",
+                ));
+            }
+        }
+    }
+    if field == FilterField::Sharing {
+        for value in &values {
+            if !matches!(
+                value.as_str(),
+                "true" | "false" | "external" | "internal" | "unknown"
+            ) {
+                return Err(error(
+                    *position + colon + 1,
+                    "sharing expects external, internal, or unknown",
+                ));
+            }
+        }
+    }
+    if field == FilterField::Posture {
+        for value in &values {
+            if !matches!(value.as_str(), "present" | "empty" | "unknown") {
+                return Err(error(
+                    *position + colon + 1,
+                    "posture expects present, empty, or unknown",
+                ));
+            }
+        }
+    }
+    if field == FilterField::RouteRole {
+        for value in &values {
+            if !matches!(
+                value.as_str(),
+                "subnet-router" | "exit-node" | "exit-node-option" | "none" | "unknown"
+            ) {
+                return Err(error(
+                    *position + colon + 1,
+                    "route-role expects subnet-router, exit-node, exit-node-option, none, or unknown",
+                ));
+            }
+        }
+    }
     Ok(FilterTerm::Field {
         field,
         negated,
@@ -259,6 +347,12 @@ fn parse_field(value: &str) -> Option<FilterField> {
         "tag" => Some(FilterField::Tag),
         "lastseen" => Some(FilterField::LastSeen),
         "property" => Some(FilterField::Property),
+        "approval" | "authorized" => Some(FilterField::Approval),
+        "keyexpiry" | "key-expiry" => Some(FilterField::KeyExpiry),
+        "version" | "clientversion" | "client-version" => Some(FilterField::ClientVersion),
+        "sharing" | "shared" => Some(FilterField::Sharing),
+        "posture" => Some(FilterField::Posture),
+        "routerole" | "route-role" | "role" => Some(FilterField::RouteRole),
         _ => None,
     }
 }
@@ -348,6 +442,12 @@ impl FilterTerm {
                         FilterField::Path => device.path.label().eq_ignore_ascii_case(value),
                         FilterField::Tag => device.tag_matches(value),
                         FilterField::Property => device.property_matches(value),
+                        FilterField::Approval
+                        | FilterField::KeyExpiry
+                        | FilterField::ClientVersion
+                        | FilterField::Sharing
+                        | FilterField::Posture
+                        | FilterField::RouteRole => false,
                         FilterField::LastSeen => device
                             .last_seen
                             .is_some_and(|last_seen| last_seen.to_string() == *value),
@@ -357,6 +457,148 @@ impl FilterTerm {
             }
         }
     }
+
+    fn matches_admin(&self, device: &AdminDevice, now: Timestamp) -> bool {
+        let matched = match self {
+            Self::Text(value) => {
+                let mut fields = vec![device.stable_id.as_str(), device.display_name()];
+                if let Some(hostname) = device.hostname.as_deref() {
+                    fields.push(hostname);
+                }
+                if let Some(owner) = device.user_id.as_deref() {
+                    fields.push(owner);
+                }
+                fields.extend(device.tags.iter().map(String::as_str));
+                fields.extend(device.addresses.iter().map(String::as_str));
+                fields
+                    .iter()
+                    .any(|field| field.to_ascii_lowercase().contains(value))
+            }
+            Self::Field {
+                field,
+                values,
+                comparison,
+                ..
+            } => {
+                if let Some(comparison) = comparison {
+                    comparison.matches(
+                        device
+                            .last_seen
+                            .map(|last_seen| now.saturating_sub(last_seen)),
+                    )
+                } else {
+                    values
+                        .iter()
+                        .any(|value| admin_field_matches(*field, value, device, now))
+                }
+            }
+        };
+        match self {
+            Self::Field { negated, .. } if *negated => !matched,
+            _ => matched,
+        }
+    }
+}
+
+fn admin_field_matches(
+    field: FilterField,
+    value: &str,
+    device: &AdminDevice,
+    now: Timestamp,
+) -> bool {
+    match field {
+        FilterField::Online => match value {
+            "true" | "online" => device.connected_to_control == Some(true),
+            "false" | "offline" => device.connected_to_control == Some(false),
+            "unknown" => device.connected_to_control.is_none(),
+            _ => false,
+        },
+        FilterField::Owner => device
+            .user_id
+            .as_deref()
+            .is_some_and(|owner| owner.eq_ignore_ascii_case(value)),
+        FilterField::Os => device
+            .os
+            .as_ref()
+            .is_some_and(|os| os.label().eq_ignore_ascii_case(value)),
+        FilterField::Path => "admin observation".eq_ignore_ascii_case(value),
+        FilterField::Tag => device
+            .tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(value)),
+        FilterField::LastSeen => device
+            .last_seen
+            .is_some_and(|last_seen| last_seen.to_string() == value),
+        FilterField::Property => match value {
+            "exit-node" => has_exit_advertisement(device),
+            "exit-node-option" => has_exit_approval(device),
+            "subnet-router" => {
+                device.advertised_routes_returned && !device.advertised_routes.is_empty()
+            }
+            "ssh" => device.ssh_enabled == Some(true),
+            "shared" => device.is_external == Some(true),
+            _ => false,
+        },
+        FilterField::Approval => match value {
+            "true" | "approved" => device.authorized == Some(true),
+            "false" | "pending" => device.authorized == Some(false),
+            "unknown" => device.authorized.is_none(),
+            _ => false,
+        },
+        FilterField::KeyExpiry => match value {
+            "disabled" => device.key_expiry_disabled == Some(true),
+            "expired" => device
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= now),
+            "soon" => device.expires_at.is_some_and(|expires_at| {
+                expires_at > now && expires_at <= now.saturating_add(7 * 24 * 60 * 60)
+            }),
+            "unknown" => device.expires_at.is_none() && device.key_expiry_disabled != Some(true),
+            _ => false,
+        },
+        FilterField::ClientVersion => device
+            .client_version
+            .as_deref()
+            .is_some_and(|version| version.eq_ignore_ascii_case(value)),
+        FilterField::Sharing => match value {
+            "true" | "external" => device.is_external == Some(true),
+            "false" | "internal" => device.is_external == Some(false),
+            "unknown" => device.is_external.is_none(),
+            _ => false,
+        },
+        FilterField::Posture => match value {
+            "present" => device.posture_present == Some(true),
+            "empty" => device.posture_present == Some(false),
+            "unknown" => device.posture_present.is_none(),
+            _ => false,
+        },
+        FilterField::RouteRole => match value {
+            "subnet-router" => {
+                device.advertised_routes_returned && !device.advertised_routes.is_empty()
+            }
+            "exit-node" => has_exit_advertisement(device),
+            "exit-node-option" => has_exit_approval(device),
+            "none" => device.advertised_routes_returned && device.advertised_routes.is_empty(),
+            "unknown" => !device.advertised_routes_returned && !device.enabled_routes_returned,
+            _ => false,
+        },
+    }
+}
+
+fn has_exit_advertisement(device: &AdminDevice) -> bool {
+    device.advertised_routes_returned
+        && device
+            .advertised_routes
+            .iter()
+            .any(|route| route == "0.0.0.0/0" || route == "::/0")
+}
+
+fn has_exit_approval(device: &AdminDevice) -> bool {
+    device.enabled_routes_returned
+        && device
+            .enabled_routes
+            .iter()
+            .any(|route| route == "0.0.0.0/0" || route == "::/0")
 }
 
 fn error(position: usize, message: &str) -> FilterError {

@@ -1,0 +1,18 @@
+{
+  "version": "1",
+  "tailnet": "example.test",
+  "logs": [
+    {
+      "eventTime": "2026-08-03T09:00:00Z",
+      "type": "user",
+      "eventGroupID": "event-group-fictional-001",
+      "origin": "api",
+      "actor": {"id": "user-fictional-001", "displayName": "Fictional Operator", "type": "user"},
+      "target": {"id": "node-fictional-001", "name": "laptop.example.test", "type": "device"},
+      "action": "device.view",
+      "old": null,
+      "new": {"observed": true},
+      "actionDetails": "fictional read-only event"
+    }
+  ]
+}

@@ -153,6 +153,147 @@ pub struct LocalDevice {
     pub capabilities: BTreeMap<String, bool>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AdminDevice {
+    pub stable_id: String,
+    pub legacy_id: Option<String>,
+    pub node_id: Option<String>,
+    pub addresses: Vec<String>,
+    pub user_id: Option<String>,
+    pub name: Option<String>,
+    pub hostname: Option<String>,
+    pub client_version: Option<String>,
+    pub update_available: Option<bool>,
+    pub os: Option<OperatingSystem>,
+    pub created_at: Option<Timestamp>,
+    pub connected_to_control: Option<bool>,
+    pub last_seen: Option<Timestamp>,
+    pub key_expiry_disabled: Option<bool>,
+    pub expires_at: Option<Timestamp>,
+    pub authorized: Option<bool>,
+    pub is_external: Option<bool>,
+    pub multiple_connections: Option<bool>,
+    pub advertised_routes_returned: bool,
+    pub advertised_routes: Vec<String>,
+    pub enabled_routes_returned: bool,
+    pub enabled_routes: Vec<String>,
+    pub tags: Vec<String>,
+    pub is_ephemeral: Option<bool>,
+    pub ssh_enabled: Option<bool>,
+    pub posture_present: Option<bool>,
+    pub source_observed_at: Timestamp,
+}
+
+impl AdminDevice {
+    pub fn display_name(&self) -> &str {
+        match (self.name.as_deref(), self.hostname.as_deref()) {
+            (Some(name), _) => name,
+            (None, Some(hostname)) => hostname,
+            (None, None) => &self.stable_id,
+        }
+    }
+
+    pub fn exact_node_id(&self) -> Option<&str> {
+        self.node_id.as_deref().or(self.legacy_id.as_deref())
+    }
+
+    pub fn to_display_device(&self) -> Device {
+        let os = match self.os.clone() {
+            Some(os) => os,
+            None => OperatingSystem::Unknown("not returned".to_owned()),
+        };
+        Device {
+            id: DeviceId::new(self.stable_id.clone()),
+            display_name: self.display_name().to_owned(),
+            hostname: match self.hostname.clone() {
+                Some(hostname) => hostname,
+                None => self.display_name().to_owned(),
+            },
+            owner: self.user_id.clone(),
+            owner_label: self.user_id.clone(),
+            os,
+            version: match self.client_version.clone() {
+                Some(version) => version,
+                None => "not returned".to_owned(),
+            },
+            liveness: match self.connected_to_control {
+                Some(true) => Liveness::Online,
+                Some(false) => Liveness::Offline,
+                None => Liveness::Unknown,
+            },
+            path: ConnectionPath::Unknown("admin observation".to_owned()),
+            addresses: self.addresses.clone(),
+            advertised_routes: self.advertised_routes.clone(),
+            tags: self.tags.clone(),
+            last_seen: self.last_seen,
+            created_at: self.created_at,
+            rx_bytes: None,
+            tx_bytes: None,
+            capabilities: DeviceCapabilities {
+                exit_node: self
+                    .advertised_routes
+                    .iter()
+                    .any(|route| route == "0.0.0.0/0" || route == "::/0"),
+                exit_node_option: self
+                    .enabled_routes
+                    .iter()
+                    .any(|route| route == "0.0.0.0/0" || route == "::/0"),
+                subnet_router: self.advertised_routes_returned
+                    && !self.advertised_routes.is_empty(),
+                ssh: self.ssh_enabled.is_some_and(|value| value),
+                funnel: false,
+                shared: self.is_external.is_some_and(|value| value),
+                expired: self
+                    .expires_at
+                    .is_some_and(|expiry| expiry <= self.source_observed_at),
+                approved: self.authorized.is_none_or(|value| value),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ComposedDevice {
+    pub id: String,
+    pub local: Option<LocalDevice>,
+    pub admin: Option<AdminDevice>,
+}
+
+pub fn compose_exact_id(local: &[LocalDevice], admin: &[AdminDevice]) -> Vec<ComposedDevice> {
+    let mut composed = Vec::with_capacity(local.len().saturating_add(admin.len()));
+    let mut used_admin = std::collections::BTreeSet::new();
+    for local_device in local {
+        let local_id = local_device.id.0.as_str();
+        let matching = admin.iter().enumerate().find(|(index, device)| {
+            !used_admin.contains(index) && device.exact_node_id() == Some(local_id)
+        });
+        if let Some((index, device)) = matching {
+            used_admin.insert(index);
+            composed.push(ComposedDevice {
+                id: local_id.to_owned(),
+                local: Some(local_device.clone()),
+                admin: Some(device.clone()),
+            });
+        } else {
+            composed.push(ComposedDevice {
+                id: local_id.to_owned(),
+                local: Some(local_device.clone()),
+                admin: None,
+            });
+        }
+    }
+    for (index, device) in admin.iter().enumerate() {
+        if !used_admin.contains(&index) {
+            composed.push(ComposedDevice {
+                id: device.stable_id.clone(),
+                local: None,
+                admin: Some(device.clone()),
+            });
+        }
+    }
+    composed
+}
+
 impl LocalDevice {
     pub fn liveness(&self) -> Liveness {
         match self.online {

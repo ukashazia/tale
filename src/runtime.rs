@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -9,6 +11,9 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
 
 use crate::action::ActionId;
+use crate::admin;
+use crate::admin::auth::{CredentialStore, OsCredentialStore, TokenManager};
+use crate::admin::client::{AdminClient, AdminError};
 use crate::app::App;
 use crate::domain::account::LocalAccount;
 use crate::domain::mutation::{LocalMutation, MutationResult};
@@ -27,7 +32,9 @@ use crate::domain::transfer::{TaildriveShare, TaildropTarget, validate_receive_d
 use crate::effect::{Effect, Resource};
 use crate::error::TaleError;
 use crate::event::LocalEvent;
-use crate::event::{self as app_event, Event, InputEvent, ShutdownReason, SourceEvent, TaskEvent};
+use crate::event::{
+    self as app_event, AdminEvent, Event, InputEvent, ShutdownReason, SourceEvent, TaskEvent,
+};
 use crate::local::client::{self, LocalClient};
 use crate::local::diagnostics;
 use crate::local::process::{
@@ -190,6 +197,8 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     let mut local_status_cancellation: Option<Cancellation> = None;
     let mut local_discovery_cancellation: Option<Cancellation> = None;
     let mut local_services_refresh_cancellation: Option<Cancellation> = None;
+    let mut admin_refresh_cancellation: Option<Cancellation> = None;
+    let mut admin_token_managers: BTreeMap<String, Arc<TokenManager>> = BTreeMap::new();
     let mut mutation_cancellations: HashMap<u64, Cancellation> = HashMap::new();
     let handoff_input_gate = Arc::new(AtomicBool::new(true));
     let mut terminal_suspended = false;
@@ -213,6 +222,8 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             local_status_cancellation: &mut local_status_cancellation,
             local_discovery_cancellation: &mut local_discovery_cancellation,
             local_services_refresh_cancellation: &mut local_services_refresh_cancellation,
+            admin_refresh_cancellation: &mut admin_refresh_cancellation,
+            admin_token_managers: &mut admin_token_managers,
             mutation_cancellations: &mut mutation_cancellations,
             terminal,
             handoff_input_gate: &handoff_input_gate,
@@ -271,6 +282,9 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     if let Some(cancellation) = local_services_refresh_cancellation {
         cancellation.cancel();
     }
+    if let Some(cancellation) = admin_refresh_cancellation {
+        cancellation.cancel();
+    }
     for cancellation in mutation_cancellations.values() {
         cancellation.cancel();
     }
@@ -298,6 +312,8 @@ struct DispatchContext<'a, T: TerminalDriver> {
     local_status_cancellation: &'a mut Option<Cancellation>,
     local_discovery_cancellation: &'a mut Option<Cancellation>,
     local_services_refresh_cancellation: &'a mut Option<Cancellation>,
+    admin_refresh_cancellation: &'a mut Option<Cancellation>,
+    admin_token_managers: &'a mut BTreeMap<String, Arc<TokenManager>>,
     mutation_cancellations: &'a mut HashMap<u64, Cancellation>,
     terminal: &'a mut T,
     handoff_input_gate: &'a Arc<AtomicBool>,
@@ -311,6 +327,8 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
     let local_status_cancellation = &mut *context.local_status_cancellation;
     let local_discovery_cancellation = &mut *context.local_discovery_cancellation;
     let local_services_refresh_cancellation = &mut *context.local_services_refresh_cancellation;
+    let admin_refresh_cancellation = &mut *context.admin_refresh_cancellation;
+    let admin_token_managers = &mut *context.admin_token_managers;
     let mutation_cancellations = &mut *context.mutation_cancellations;
     let terminal = &mut *context.terminal;
     let handoff_input_gate = context.handoff_input_gate;
@@ -445,6 +463,118 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     }
                 }
             });
+        }
+        Effect::StartAdminRefresh {
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            generation,
+            timeout,
+            audit_window_days,
+        } => {
+            if let Some(previous) = admin_refresh_cancellation.take() {
+                previous.cancel();
+            }
+            let queue = queue.clone();
+            let token_manager =
+                token_manager_for(admin_token_managers, &profile, environment_token);
+            let cancellation = Cancellation::new();
+            *admin_refresh_cancellation = Some(cancellation.clone());
+            let context = AdminTaskContext {
+                queue: queue.clone(),
+                profile: profile.clone(),
+                credential,
+                token_manager,
+                generation,
+                cancellation,
+            };
+            tasks.spawn(async move {
+                queue
+                    .send(Event::Admin(Box::new(AdminEvent::RefreshStarted {
+                        profile: profile.clone(),
+                        generation,
+                    })))
+                    .await;
+                run_admin_refresh(
+                    context,
+                    tailnet,
+                    AdminRefreshOptions {
+                        timeout,
+                        audit_window_days,
+                    },
+                )
+                .await;
+            });
+        }
+        Effect::StartAdminResourceRefresh {
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            generation,
+            timeout,
+            audit_window_days,
+            resources,
+        } => {
+            if let Some(previous) = admin_refresh_cancellation.take() {
+                previous.cancel();
+            }
+            let token_manager =
+                token_manager_for(admin_token_managers, &profile, environment_token);
+            let cancellation = Cancellation::new();
+            *admin_refresh_cancellation = Some(cancellation.clone());
+            let context = AdminTaskContext {
+                queue: queue.clone(),
+                profile,
+                credential,
+                token_manager,
+                generation,
+                cancellation,
+            };
+            tasks.spawn(async move {
+                run_admin_resource_refresh(
+                    context,
+                    tailnet,
+                    AdminResourceRefreshOptions {
+                        timeout,
+                        audit_window_days,
+                        resources,
+                    },
+                )
+                .await;
+            });
+        }
+        Effect::StartAdminDeviceEnrichment {
+            profile,
+            credential,
+            environment_token,
+            generation,
+            device_id,
+            timeout,
+        } => {
+            let queue = queue.clone();
+            let token_manager =
+                token_manager_for(admin_token_managers, &profile, environment_token);
+            let cancellation = admin_refresh_cancellation
+                .as_ref()
+                .filter(|value| !value.is_cancelled())
+                .cloned()
+                .unwrap_or_else(Cancellation::new);
+            let context = AdminTaskContext {
+                queue: queue.clone(),
+                profile,
+                credential,
+                token_manager,
+                generation,
+                cancellation,
+            };
+            tasks.spawn(async move {
+                run_admin_device_enrichment(context, device_id, timeout).await;
+            });
+        }
+        Effect::DropAdminToken { profile } => {
+            admin_token_managers.remove(&profile);
         }
         Effect::StartLocalDiscovery {
             generation,
@@ -807,6 +937,11 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 cancellation.cancel();
             }
         }
+        Effect::CancelAdminRefresh => {
+            if let Some(cancellation) = admin_refresh_cancellation.as_ref() {
+                cancellation.cancel();
+            }
+        }
         Effect::CancelTask { task_id } => {
             if let Some(cancellation) = cancellations.get(&task_id) {
                 cancellation.cancel();
@@ -831,6 +966,880 @@ struct ServiceTaskOutcome {
     exit_status: Option<i32>,
     stdout_truncated: bool,
     stderr_truncated: bool,
+}
+
+struct AdminRefreshOptions {
+    timeout: Duration,
+    audit_window_days: u64,
+}
+
+struct AdminResourceRefreshOptions {
+    timeout: Duration,
+    audit_window_days: u64,
+    resources: Vec<admin::AdminRefreshResource>,
+}
+
+struct AdminTaskContext {
+    queue: EventQueue,
+    profile: String,
+    credential: String,
+    token_manager: Arc<TokenManager>,
+    generation: u64,
+    cancellation: Cancellation,
+}
+
+fn token_manager_for(
+    managers: &mut BTreeMap<String, Arc<TokenManager>>,
+    profile: &str,
+    environment_token: Option<Arc<crate::admin::auth::SecretValue>>,
+) -> Arc<TokenManager> {
+    if let Some(manager) = managers.get(profile) {
+        return Arc::clone(manager);
+    }
+    let store: Arc<dyn CredentialStore> = Arc::new(OsCredentialStore);
+    let manager = Arc::new(TokenManager::new_with_override(store, environment_token));
+    managers.insert(profile.to_owned(), Arc::clone(&manager));
+    manager
+}
+
+async fn run_admin_refresh(
+    context: AdminTaskContext,
+    tailnet: String,
+    options: AdminRefreshOptions,
+) {
+    let AdminTaskContext {
+        queue,
+        profile,
+        credential,
+        token_manager,
+        generation,
+        cancellation,
+    } = context;
+    let token = tokio::select! {
+        result = token_manager.access_token(&profile, &credential) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => Err(crate::admin::auth::AuthError::Cancelled),
+    };
+    let token = match token {
+        Ok(token) => token,
+        Err(error) => {
+            if matches!(error, crate::admin::auth::AuthError::Cancelled) {
+                queue
+                    .send(Event::Admin(Box::new(AdminEvent::Failed {
+                        profile,
+                        generation,
+                        detail: "admin refresh cancelled".to_owned(),
+                    })))
+                    .await;
+            } else {
+                queue
+                    .send(Event::Admin(Box::new(AdminEvent::AuthenticationFailed {
+                        profile,
+                        generation,
+                        detail: error.to_string(),
+                    })))
+                    .await;
+            }
+            return;
+        }
+    };
+    let requested_scopes = match token_manager.credential_status(&credential) {
+        Ok(Some(status)) => status.requested_scopes,
+        Ok(None) | Err(_) => Vec::new(),
+    };
+    let client = match AdminClient::new(options.timeout) {
+        Ok(client) => client,
+        Err(error) => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::Failed {
+                    profile,
+                    generation,
+                    detail: error.to_string(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let observed_at = crate::local::now();
+    let end = match format_utc(observed_at) {
+        Some(value) => value,
+        None => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::Failed {
+                    profile,
+                    generation,
+                    detail: "could not construct the audit time window".to_owned(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let window_seconds = options
+        .audit_window_days
+        .clamp(1, 90)
+        .saturating_mul(24 * 60 * 60);
+    let start = match format_utc(observed_at.saturating_sub(window_seconds)) {
+        Some(value) => value,
+        None => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::Failed {
+                    profile,
+                    generation,
+                    detail: "could not construct the audit start time".to_owned(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let client = Arc::new(client);
+    let tailnet = Arc::new(tailnet);
+    let start = Arc::new(start);
+    let end = Arc::new(end);
+    let refresh_cancellation = cancellation.clone();
+    let results = tokio::select! {
+        results = async {
+            tokio::join!(
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.list_devices(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.list_users(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.get_nameservers(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.get_dns_preferences(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.get_search_paths(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.get_split_dns(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.get_policy(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.list_keys(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.get_settings(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    Box::pin(async move { client.get_contacts(token, tailnet.as_str()).await })
+                }),
+                admin_read_with_replay(&token_manager, &profile, &credential, &token, refresh_cancellation.clone(), |token| {
+                    let client = Arc::clone(&client);
+                    let tailnet = Arc::clone(&tailnet);
+                    let start = Arc::clone(&start);
+                    let end = Arc::clone(&end);
+                    Box::pin(async move { client.get_audit(token, tailnet.as_str(), start.as_str(), end.as_str()).await })
+                }),
+            )
+        } => results,
+        _ = wait_for_cancellation(cancellation) => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::Failed {
+                    profile,
+                    generation,
+                    detail: "admin refresh cancelled".to_owned(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let (
+        devices,
+        users,
+        nameservers,
+        dns_preferences,
+        search_paths,
+        split_dns,
+        policy,
+        credentials,
+        settings,
+        contacts,
+        activity,
+    ) = results;
+    let report = admin::AdminRefreshReport {
+        profile,
+        generation,
+        observed_at,
+        requested_scopes,
+        devices: devices.and_then(|response| {
+            admin::devices::decode_devices(response.value.devices, response.meta.observed_at)
+                .map_err(|_| decode_failure("devices"))
+        }),
+        users: users.and_then(|response| {
+            admin::users::decode_users(response.value.users, response.meta.observed_at)
+                .map_err(|_| decode_failure("users"))
+        }),
+        routes: None,
+        nameservers: nameservers.and_then(|response| {
+            admin::dns::decode_nameservers(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("DNS nameservers"))
+        }),
+        dns_preferences: dns_preferences.map(|response| {
+            admin::dns::decode_preferences(response.value, response.meta.observed_at)
+        }),
+        search_paths: search_paths.and_then(|response| {
+            admin::dns::decode_search_paths(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("DNS search paths"))
+        }),
+        split_dns: split_dns.and_then(|response| {
+            admin::dns::decode_split_dns(response.value, response.meta.observed_at)
+                .map_err(|_| decode_failure("split DNS"))
+        }),
+        policy: policy.map(|response| {
+            admin::policy::decode_policy(response.value, response.meta.observed_at)
+        }),
+        credentials: credentials.and_then(|response| {
+            admin::credentials::decode_credentials(response.value.keys, response.meta.observed_at)
+                .map_err(|_| decode_failure("credential metadata"))
+        }),
+        settings: settings.map(|response| admin::decode_settings(response.value)),
+        contacts: contacts.map(|response| admin::decode_contacts(response.value)),
+        activity: activity.and_then(|response| {
+            admin::audit::decode_audit_with_token(
+                response.value.logs,
+                response.meta.observed_at,
+                Some(token.as_str()),
+            )
+            .map(|mut snapshot| {
+                snapshot.version = response.value.version;
+                snapshot.tailnet = response.value.tailnet;
+                snapshot.start = start.as_ref().clone();
+                snapshot.end = end.as_ref().clone();
+                snapshot
+            })
+            .map_err(|_| decode_failure("configuration audit"))
+        }),
+    };
+    queue
+        .send(Event::Admin(Box::new(AdminEvent::RefreshFinished(
+            Box::new(report),
+        ))))
+        .await;
+}
+
+async fn admin_read_with_replay<T, F>(
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+    token: &crate::admin::auth::AccessToken,
+    cancellation: Cancellation,
+    request: F,
+) -> Result<T, AdminError>
+where
+    F: for<'token> Fn(
+        &'token crate::admin::auth::AccessToken,
+    ) -> Pin<Box<dyn Future<Output = Result<T, AdminError>> + Send + 'token>>,
+{
+    let result = tokio::select! {
+        result = request(token) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => Err(AdminError::Cancelled {
+            operation: "admin read".to_owned(),
+        }),
+    };
+    if !matches!(&result, Err(AdminError::Unauthenticated)) {
+        return result;
+    }
+    let refreshed = tokio::select! {
+        refreshed = token_manager.refresh_after_unauthenticated(profile, credential, token) => refreshed,
+        _ = wait_for_cancellation(cancellation.clone()) => {
+            Err(crate::admin::auth::AuthError::Cancelled)
+        }
+    }
+    .map_err(|error| admin_refresh_error(error, "refresh admin token"))?;
+    let Some(refreshed) = refreshed else {
+        return result;
+    };
+    tokio::select! {
+        result = request(&refreshed) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => Err(AdminError::Cancelled {
+            operation: "admin read".to_owned(),
+        }),
+    }
+}
+
+async fn run_admin_resource_refresh(
+    context: AdminTaskContext,
+    tailnet: String,
+    options: AdminResourceRefreshOptions,
+) {
+    let AdminTaskContext {
+        queue,
+        profile,
+        credential,
+        token_manager,
+        generation,
+        cancellation,
+    } = context;
+    let token = tokio::select! {
+        result = token_manager.access_token(&profile, &credential) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => {
+            Err(crate::admin::auth::AuthError::Cancelled)
+        }
+    };
+    let token = match token {
+        Ok(token) => token,
+        Err(error) => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::AuthenticationFailed {
+                    profile,
+                    generation,
+                    detail: error.to_string(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let requested_scopes = match token_manager.credential_status(&credential) {
+        Ok(Some(status)) => status.requested_scopes,
+        Ok(None) | Err(_) => Vec::new(),
+    };
+    let client = match AdminClient::new(options.timeout) {
+        Ok(client) => Arc::new(client),
+        Err(error) => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::Failed {
+                    profile,
+                    generation,
+                    detail: error.to_string(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let observed_at = crate::local::now();
+    let audit_window = if options
+        .resources
+        .contains(&admin::AdminRefreshResource::Activity)
+    {
+        let end = match format_utc(observed_at) {
+            Some(value) => value,
+            None => {
+                queue
+                    .send(Event::Admin(Box::new(AdminEvent::Failed {
+                        profile,
+                        generation,
+                        detail: "could not construct the audit time window".to_owned(),
+                    })))
+                    .await;
+                return;
+            }
+        };
+        let window_seconds = options
+            .audit_window_days
+            .clamp(1, 90)
+            .saturating_mul(24 * 60 * 60);
+        let start = match format_utc(observed_at.saturating_sub(window_seconds)) {
+            Some(value) => value,
+            None => {
+                queue
+                    .send(Event::Admin(Box::new(AdminEvent::Failed {
+                        profile,
+                        generation,
+                        detail: "could not construct the audit start time".to_owned(),
+                    })))
+                    .await;
+                return;
+            }
+        };
+        Some((start, end))
+    } else {
+        None
+    };
+    let tailnet = Arc::new(tailnet);
+    let audit_window = audit_window.map(|(start, end)| (Arc::new(start), Arc::new(end)));
+    let mut results = Vec::with_capacity(options.resources.len());
+    for resource in options.resources {
+        if cancellation.is_cancelled() {
+            return;
+        }
+        let result = match resource {
+            admin::AdminRefreshResource::Devices => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.list_devices(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Devices(response.and_then(|response| {
+                    admin::devices::decode_devices(
+                        response.value.devices,
+                        response.meta.observed_at,
+                    )
+                    .map_err(|_| decode_failure("devices"))
+                }))
+            }
+            admin::AdminRefreshResource::Users => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.list_users(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Users(response.and_then(|response| {
+                    admin::users::decode_users(response.value.users, response.meta.observed_at)
+                        .map_err(|_| decode_failure("users"))
+                }))
+            }
+            admin::AdminRefreshResource::Nameservers => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(
+                            async move { client.get_nameservers(token, tailnet.as_str()).await },
+                        )
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Nameservers(response.and_then(|response| {
+                    admin::dns::decode_nameservers(response.value, response.meta.observed_at)
+                        .map_err(|_| decode_failure("DNS nameservers"))
+                }))
+            }
+            admin::AdminRefreshResource::DnsPreferences => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move {
+                            client.get_dns_preferences(token, tailnet.as_str()).await
+                        })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::DnsPreferences(response.map(|response| {
+                    admin::dns::decode_preferences(response.value, response.meta.observed_at)
+                }))
+            }
+            admin::AdminRefreshResource::SearchPaths => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(
+                            async move { client.get_search_paths(token, tailnet.as_str()).await },
+                        )
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::SearchPaths(response.and_then(|response| {
+                    admin::dns::decode_search_paths(response.value, response.meta.observed_at)
+                        .map_err(|_| decode_failure("DNS search paths"))
+                }))
+            }
+            admin::AdminRefreshResource::SplitDns => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.get_split_dns(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::SplitDns(response.and_then(|response| {
+                    admin::dns::decode_split_dns(response.value, response.meta.observed_at)
+                        .map_err(|_| decode_failure("split DNS"))
+                }))
+            }
+            admin::AdminRefreshResource::Policy => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.get_policy(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Policy(response.map(|response| {
+                    admin::policy::decode_policy(response.value, response.meta.observed_at)
+                }))
+            }
+            admin::AdminRefreshResource::Credentials => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.list_keys(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Credentials(response.and_then(|response| {
+                    admin::credentials::decode_credentials(
+                        response.value.keys,
+                        response.meta.observed_at,
+                    )
+                    .map_err(|_| decode_failure("credential metadata"))
+                }))
+            }
+            admin::AdminRefreshResource::Settings => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.get_settings(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Settings(
+                    response.map(|response| admin::decode_settings(response.value)),
+                )
+            }
+            admin::AdminRefreshResource::Contacts => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.get_contacts(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Contacts(
+                    response.map(|response| admin::decode_contacts(response.value)),
+                )
+            }
+            admin::AdminRefreshResource::Activity => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let result = match audit_window.as_ref() {
+                    Some((start, end)) => admin_read_with_replay(
+                        &token_manager,
+                        &profile,
+                        &credential,
+                        &token,
+                        cancellation.clone(),
+                        |token| {
+                            let client = Arc::clone(&client);
+                            let tailnet = Arc::clone(&tailnet);
+                            let start = Arc::clone(start);
+                            let end = Arc::clone(end);
+                            Box::pin(async move {
+                                client
+                                    .get_audit(
+                                        token,
+                                        tailnet.as_str(),
+                                        start.as_str(),
+                                        end.as_str(),
+                                    )
+                                    .await
+                            })
+                        },
+                    )
+                    .await
+                    .and_then(|response| {
+                        admin::audit::decode_audit_with_token(
+                            response.value.logs,
+                            response.meta.observed_at,
+                            Some(token.as_str()),
+                        )
+                        .map(|mut snapshot| {
+                            snapshot.version = response.value.version;
+                            snapshot.tailnet = response.value.tailnet;
+                            snapshot.start = start.as_ref().clone();
+                            snapshot.end = end.as_ref().clone();
+                            snapshot
+                        })
+                        .map_err(|_| decode_failure("configuration audit"))
+                    }),
+                    None => Err(AdminError::ValidationFailed {
+                        operation: "configuration audit".to_owned(),
+                        detail: "the audit window was not constructed".to_owned(),
+                    }),
+                };
+                admin::AdminResourceResult::Activity(result)
+            }
+        };
+        results.push(result);
+    }
+    queue
+        .send(Event::Admin(Box::new(AdminEvent::ResourceRefreshFinished(
+            Box::new(admin::AdminResourceReport {
+                profile,
+                generation,
+                observed_at,
+                requested_scopes,
+                resources: results,
+            }),
+        ))))
+        .await;
+}
+
+fn admin_refresh_error(error: crate::admin::auth::AuthError, operation: &str) -> AdminError {
+    match error {
+        crate::admin::auth::AuthError::Cancelled => AdminError::Cancelled {
+            operation: operation.to_owned(),
+        },
+        crate::admin::auth::AuthError::TimedOut => AdminError::TimedOut {
+            operation: operation.to_owned(),
+        },
+        crate::admin::auth::AuthError::Unauthenticated => AdminError::Unauthenticated,
+        _ => AdminError::Unauthenticated,
+    }
+}
+
+async fn run_admin_device_enrichment(
+    context: AdminTaskContext,
+    device_id: String,
+    timeout: Duration,
+) {
+    let AdminTaskContext {
+        queue,
+        profile,
+        credential,
+        token_manager,
+        generation,
+        cancellation,
+    } = context;
+    let token = match tokio::select! {
+        result = token_manager.access_token(&profile, &credential) => result,
+        _ = wait_for_cancellation(cancellation.clone()) => {
+            Err(crate::admin::auth::AuthError::Cancelled)
+        }
+    } {
+        Ok(token) => token,
+        Err(error) => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::DeviceEnrichmentFailed {
+                    profile,
+                    generation,
+                    device_id: device_id.clone(),
+                    detail: error.to_string(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let client = match AdminClient::new(timeout) {
+        Ok(client) => client,
+        Err(error) => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::DeviceEnrichmentFailed {
+                    profile,
+                    generation,
+                    device_id: device_id.clone(),
+                    detail: error.to_string(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let client = Arc::new(client);
+    let device_id = Arc::new(device_id);
+    let enrichment_cancellation = cancellation.clone();
+    let (device, routes, posture) = tokio::select! {
+        result = async {
+            tokio::join!(
+                admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    enrichment_cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let device_id = Arc::clone(&device_id);
+                        Box::pin(async move { client.get_device(token, device_id.as_str()).await })
+                    },
+                ),
+                admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    enrichment_cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let device_id = Arc::clone(&device_id);
+                        Box::pin(async move { client.get_routes(token, device_id.as_str()).await })
+                    },
+                ),
+                admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    enrichment_cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let device_id = Arc::clone(&device_id);
+                        Box::pin(async move { client.get_posture(token, device_id.as_str()).await })
+                    },
+                ),
+            )
+        } => result,
+        _ = wait_for_cancellation(cancellation) => {
+            return;
+        }
+    };
+    let observed_at = crate::local::now();
+    let device = match device.and_then(|response| {
+        admin::devices::decode_device(response.value, response.meta.observed_at)
+            .map_err(|_| decode_failure("device detail"))
+    }) {
+        Ok(device) => device,
+        Err(error) => {
+            queue
+                .send(Event::Admin(Box::new(AdminEvent::DeviceEnrichmentFailed {
+                    profile,
+                    generation,
+                    device_id: device_id.as_ref().clone(),
+                    detail: error.to_string(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let (routes, routes_error) = match routes {
+        Ok(response) => match admin::routes::decode_routes(
+            device_id.as_ref().clone(),
+            response.value,
+            response.meta.observed_at,
+        ) {
+            Ok(routes) => (Some(routes), None),
+            Err(_) => (None, Some(decode_failure("device routes"))),
+        },
+        Err(error) => (None, Some(error)),
+    };
+    let (posture_present, posture_error) = match posture {
+        Ok(response) => (
+            Some(response.value.attributes.is_some() || response.value.expiries.is_some()),
+            None,
+        ),
+        Err(error) => (None, Some(error)),
+    };
+    let mut device = device;
+    device.source_observed_at = observed_at;
+    queue
+        .send(Event::Admin(Box::new(
+            AdminEvent::DeviceEnrichmentFinished {
+                profile,
+                generation,
+                device: Box::new(device),
+                routes,
+                routes_error,
+                posture_present,
+                posture_error,
+            },
+        )))
+        .await;
+}
+
+async fn wait_for_cancellation(cancellation: Cancellation) {
+    while !cancellation.is_cancelled() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn format_utc(timestamp: crate::domain::Timestamp) -> Option<String> {
+    let seconds = i64::try_from(timestamp).ok()?;
+    let date = time::OffsetDateTime::from_unix_timestamp(seconds).ok()?;
+    date.format(&time::format_description::well_known::Rfc3339)
+        .ok()
+}
+
+fn decode_failure(resource: &str) -> AdminError {
+    AdminError::DecodeFailed {
+        operation: resource.to_owned(),
+        detail: "the response contained invalid documented fields".to_owned(),
+    }
 }
 
 struct ServiceRunError {

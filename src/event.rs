@@ -2,8 +2,11 @@ use std::time::Instant;
 
 use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind};
 
+use crate::admin::routes::AdminRouteObservation;
+use crate::admin::{AdminRefreshReport, AdminResourceReport};
 use crate::domain::Timestamp;
 use crate::domain::account::LocalAccount;
+use crate::domain::device::AdminDevice;
 use crate::domain::device::Device;
 use crate::domain::diagnostic::{DiagnosticResult, NetcheckObservation, PingSample};
 use crate::domain::mutation::{LocalMutation, MutationResult};
@@ -26,7 +29,43 @@ pub enum Event {
     Source(SourceEvent),
     Local(Box<LocalEvent>),
     Services(Box<ServicesEvent>),
+    Admin(Box<AdminEvent>),
     ShutdownRequested(ShutdownReason),
+}
+
+#[derive(Debug, Clone)]
+pub enum AdminEvent {
+    RefreshStarted {
+        profile: String,
+        generation: u64,
+    },
+    RefreshFinished(Box<AdminRefreshReport>),
+    ResourceRefreshFinished(Box<AdminResourceReport>),
+    AuthenticationFailed {
+        profile: String,
+        generation: u64,
+        detail: String,
+    },
+    DeviceEnrichmentFinished {
+        profile: String,
+        generation: u64,
+        device: Box<AdminDevice>,
+        routes: Option<AdminRouteObservation>,
+        routes_error: Option<crate::admin::client::AdminError>,
+        posture_present: Option<bool>,
+        posture_error: Option<crate::admin::client::AdminError>,
+    },
+    DeviceEnrichmentFailed {
+        profile: String,
+        generation: u64,
+        device_id: String,
+        detail: String,
+    },
+    Failed {
+        profile: String,
+        generation: u64,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone)]

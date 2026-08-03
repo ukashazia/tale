@@ -1,0 +1,5 @@
+{
+  "account": {"email": "account@example.test", "needsVerification": false},
+  "support": {"fallbackEmail": "support@example.test", "needsVerification": true},
+  "security": null
+}

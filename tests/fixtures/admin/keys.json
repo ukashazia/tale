@@ -1,0 +1,18 @@
+{
+  "keys": [
+    {
+      "id": "key-fictional-001",
+      "keyType": "api",
+      "created": "2026-07-01T00:00:00Z",
+      "updated": "2026-08-01T00:00:00Z",
+      "expires": "2026-09-01T00:00:00Z",
+      "revoked": null,
+      "scopes": ["devices:core:read"],
+      "tags": ["tag:fictional"],
+      "description": "fictional read-only metadata",
+      "invalid": false,
+      "userId": "user-fictional-001",
+      "capabilities": {"devices": true}
+    }
+  ]
+}

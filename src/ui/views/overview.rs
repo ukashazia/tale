@@ -8,6 +8,10 @@ use crate::domain::device::ConnectionPath;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.admin.profile.is_some() {
+        render_combined(frame, app, area);
+        return;
+    }
     if app.source_mode == crate::app::SourceMode::Local {
         render_local(frame, app, area);
         return;
@@ -49,6 +53,91 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }),
         Line::from("Use : to navigate, / to filter Devices, ? for help."),
     ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(theme::normal(app))
+            .block(Block::default().borders(Borders::ALL).title("overview")),
+        area,
+    );
+}
+
+fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let local_devices = app
+        .local_resource
+        .snapshot
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.peers.len().saturating_add(1));
+    let admin_devices = app.admin.devices.snapshot.as_ref().map_or(0, Vec::len);
+    let queues = app.admin.overview_queues(app.now);
+    let queue_lines = [
+        (
+            "awaiting device approval",
+            queues.devices_awaiting_approval.len(),
+        ),
+        (
+            "awaiting user approval",
+            queues.users_awaiting_approval.len(),
+        ),
+        ("expired device keys", queues.expired_device_keys.len()),
+        ("soon-expiring keys", queues.soon_expiring_device_keys.len()),
+        (
+            "advertised routes not approved",
+            queues.unapproved_routes.len(),
+        ),
+    ];
+    let mut lines = vec![
+        Line::from("Overview · Local + Admin"),
+        Line::from(format!(
+            "profile      {} · tailnet {} · {}",
+            app.admin.profile.as_deref().map_or("none", |value| value),
+            app.admin
+                .tailnet
+                .as_deref()
+                .map_or("unknown", |value| value),
+            if app.admin.profile_read_only {
+                "read-only"
+            } else {
+                "profile lock open"
+            }
+        )),
+        Line::from(format!(
+            "local        {} · {} devices · {}",
+            app.local_state.label(),
+            local_devices,
+            app.local_resource.status.label()
+        )),
+        Line::from(format!(
+            "admin        {} · {} devices · {}",
+            app.admin.devices.state.label(),
+            admin_devices,
+            app.admin.devices.observed_at.map_or_else(
+                || "not observed".to_owned(),
+                |value| format!("observed {value}")
+            )
+        )),
+        Line::from("Admin queues · derived from observed snapshots"),
+    ];
+    for (label, count) in queue_lines {
+        lines.push(Line::from(format!("  {label:<31} {count}")));
+    }
+    if !queues.resource_problems.is_empty() {
+        lines.push(Line::from(format!(
+            "resource states  {}",
+            queues.resource_problems.join(" · ")
+        )));
+    }
+    if !queues.client_versions.is_empty() {
+        let versions = queues
+            .client_versions
+            .iter()
+            .map(|(version, count)| format!("{version} ({count})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(format!("client versions  {versions}")));
+    }
+    lines.push(Line::from(
+        "Use :devices, :users, :routes, :dns, :access, or :credentials for read-only detail.",
+    ));
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::normal(app))

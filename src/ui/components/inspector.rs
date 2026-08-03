@@ -7,6 +7,10 @@ use crate::app::App;
 use crate::ui::{text, theme};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.admin.profile.is_some() && app.local_resource.snapshot.is_some() {
+        render_combined(frame, app, area);
+        return;
+    }
     if app.source_mode == crate::app::SourceMode::Local {
         render_local(frame, app, area);
         return;
@@ -83,6 +87,82 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(lines)
             .style(style)
             .block(Block::default().borders(Borders::ALL).title("inspector")),
+        area,
+    );
+}
+
+fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(device) = app.selected_device() else {
+        frame.render_widget(
+            Paragraph::new("No device selected")
+                .block(Block::default().borders(Borders::ALL).title("inspector")),
+            area,
+        );
+        return;
+    };
+    let admin = app.admin.devices.snapshot.as_ref().and_then(|devices| {
+        devices.iter().find(|candidate| {
+            candidate.stable_id == device.id.0
+                || candidate.exact_node_id() == Some(device.id.0.as_str())
+        })
+    });
+    let lines = vec![
+        Line::from(Span::styled(
+            text::ellipsize(
+                &device.display_name,
+                usize::from(area.width.saturating_sub(4)),
+            ),
+            theme::title(),
+        )),
+        Line::from(format!("id          {}", device.id)),
+        Line::from(format!(
+            "local state {} / {}",
+            device.liveness.label(),
+            device.path.label()
+        )),
+        Line::from(format!(
+            "admin state {}",
+            admin.map_or("not matched", |value| {
+                if value.connected_to_control == Some(true) {
+                    "online"
+                } else if value.connected_to_control == Some(false) {
+                    "offline"
+                } else {
+                    "unknown"
+                }
+            })
+        )),
+        Line::from(format!(
+            "approval    {}",
+            admin.map_or("unknown", |value| match value.authorized {
+                Some(true) => "approved",
+                Some(false) => "awaiting approval",
+                None => "unknown",
+            })
+        )),
+        Line::from(format!(
+            "key expiry  {}",
+            admin.map_or("unknown".to_owned(), |value| value
+                .expires_at
+                .map_or_else(|| "unknown".to_owned(), |expiry| expiry.to_string(),))
+        )),
+        Line::from(format!(
+            "posture     {}",
+            admin.map_or("unknown", |value| match value.posture_present {
+                Some(true) => "present",
+                Some(false) => "empty",
+                None => "not loaded",
+            })
+        )),
+        Line::from(format!("admin source {}", app.admin.devices.state.label())),
+        Line::from("identity composition uses the exact stable node ID only"),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).style(theme::normal(app)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("inspector · combined"),
+        ),
         area,
     );
 }

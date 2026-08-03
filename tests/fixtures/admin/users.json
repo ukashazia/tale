@@ -1,0 +1,29 @@
+{
+  "users": [
+    {
+      "id": "user-fictional-001",
+      "displayName": "Fictional Operator",
+      "loginName": "operator@example.test",
+      "tailnetId": "example.test",
+      "created": "2026-01-01T00:00:00Z",
+      "type": "member",
+      "role": "admin",
+      "status": "active",
+      "deviceCount": 1,
+      "lastSeen": "2026-08-03T09:00:00Z",
+      "currentlyConnected": true
+    },
+    {
+      "id": "user-fictional-002",
+      "displayName": "Pending Observer",
+      "loginName": "observer@example.test",
+      "tailnetId": "example.test",
+      "created": "2026-07-01T00:00:00Z",
+      "type": "member",
+      "role": "member",
+      "status": "pending",
+      "deviceCount": 0,
+      "currentlyConnected": false
+    }
+  ]
+}

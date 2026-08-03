@@ -198,7 +198,7 @@ fn mock_conflicts_with_profile_and_access_token_but_is_not_persisted() {
 }
 
 #[test]
-fn default_profile_is_validated_but_not_activated_in_phase_one() {
+fn default_profile_is_validated_and_activated_for_phase_five() {
     let root = std::env::temp_dir().join(format!("tale-default-profile-{}", std::process::id()));
     let _ = fs::create_dir_all(&root);
     let file = root.join("config.toml");
@@ -213,9 +213,10 @@ fn default_profile_is_validated_but_not_activated_in_phase_one() {
         &environment(),
         &path_environment(Platform::Unix, &root),
     );
-    assert!(active.is_err());
-    if let Err(error) = active {
-        assert!(error.to_string().contains("profile activation"));
+    assert!(active.is_ok());
+    if let Ok(active) = active {
+        assert_eq!(active.profile.as_deref(), Some("ops"));
+        assert_eq!(active.profiles["ops"].tailnet, "-");
     }
 
     let check = Cli::try_parse_from([

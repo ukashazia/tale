@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Command, ConfigCommand};
 use crate::paths::{self, PathEnvironment, PathError, Paths};
 use thiserror::Error;
 
@@ -213,8 +214,12 @@ pub enum ConfigError {
     InvalidToml,
     #[error("configuration file could not be read")]
     ReadFailure,
-    #[error("profile activation is not supported until a later phase")]
-    ProfileUnsupported,
+    #[error("configuration file could not be written")]
+    WriteFailure,
+    #[error("profile does not exist: {0}")]
+    UnknownProfile(String),
+    #[error("TALE_ACCESS_TOKEN requires a selected profile")]
+    AccessTokenWithoutProfile,
     #[error("--mock cannot be combined with a profile or TALE_ACCESS_TOKEN")]
     MockConflict,
     #[error("route name is not available in Phase 1: {0}")]
@@ -275,10 +280,6 @@ pub fn resolve(
     {
         return Err(ConfigError::MockConflict);
     }
-    if cli.profile.is_some() || environment.profile.is_some() {
-        return Err(ConfigError::ProfileUnsupported);
-    }
-
     let mut paths = paths::resolve_paths(path_environment).map_err(path_error)?;
     let config_path = cli.config.as_deref().or(environment.config_file.as_deref());
     if let Some(config_path) = config_path {
@@ -286,12 +287,28 @@ pub fn resolve(
     }
 
     let file = read_file_config(&paths.config_file)?;
-    if cli.mock && file.default_profile.is_some() {
+    let selected_profile = cli
+        .profile
+        .clone()
+        .or_else(|| environment.profile.clone())
+        .or_else(|| file.default_profile.clone());
+    if let Some(profile) = selected_profile.as_deref()
+        && !file.profiles.contains_key(profile)
+    {
+        return Err(ConfigError::UnknownProfile(profile.to_owned()));
+    }
+    if environment.access_token_present && selected_profile.is_none() {
+        return Err(ConfigError::AccessTokenWithoutProfile);
+    }
+    if cli.mock && selected_profile.is_some() {
         return Err(ConfigError::MockConflict);
     }
-    if file.default_profile.is_some() && cli.command.is_none() {
-        return Err(ConfigError::ProfileUnsupported);
-    }
+    let activate_profile = !matches!(
+        cli.command,
+        Some(Command::Config {
+            command: ConfigCommand::Check,
+        })
+    );
 
     let read_only = choose_bool(file.read_only, false, ValueSource::File, cli.read_only);
     let read_only_source = if cli.read_only {
@@ -351,7 +368,11 @@ pub fn resolve(
         mock: cli.mock,
         read_only,
         no_local: cli.no_local,
-        profile: None,
+        profile: if activate_profile {
+            selected_profile
+        } else {
+            None
+        },
         default_profile: file.default_profile,
         profiles: file.profiles,
         read_only_source,
@@ -424,6 +445,123 @@ pub fn resolve_paths_for_cli(
         .map_or(paths.clone(), |config_path| {
             paths::with_config_file(paths, config_path, &path_environment.current_dir)
         }))
+}
+
+pub fn is_valid_profile_name(value: &str) -> bool {
+    valid_profile_name(value)
+}
+
+pub fn write_profile_atomic(
+    path: &Path,
+    profile_name: &str,
+    profile: &ProfileConfig,
+) -> Result<(), ConfigError> {
+    if !valid_profile_name(profile_name) {
+        return Err(ConfigError::InvalidField {
+            field: "profile".to_owned(),
+            expected: "an ASCII profile name containing letters, digits, '_' or '-'",
+        });
+    }
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err(ConfigError::ReadFailure),
+    };
+    if !contents.is_empty() {
+        let _ = parse_file_config(&contents)?;
+    }
+    let mut root = if contents.is_empty() {
+        toml::Table::new()
+    } else {
+        toml::from_str::<toml::Table>(&contents).map_err(|_| ConfigError::InvalidToml)?
+    };
+    let profiles = root
+        .entry("profiles".to_owned())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or(ConfigError::InvalidField {
+            field: "profiles".to_owned(),
+            expected: "a TOML table",
+        })?;
+    let mut profile_table = toml::Table::new();
+    profile_table.insert(
+        "tailnet".to_owned(),
+        toml::Value::String(profile.tailnet.clone()),
+    );
+    profile_table.insert(
+        "read_only".to_owned(),
+        toml::Value::Boolean(profile.read_only),
+    );
+    profile_table.insert(
+        "credential".to_owned(),
+        toml::Value::String(profile.credential.clone()),
+    );
+    profiles.insert(profile_name.to_owned(), toml::Value::Table(profile_table));
+    if !root.contains_key("default_profile") {
+        root.insert(
+            "default_profile".to_owned(),
+            toml::Value::String(profile_name.to_owned()),
+        );
+    }
+    let serialized =
+        toml::to_string_pretty(&toml::Value::Table(root)).map_err(|_| ConfigError::WriteFailure)?;
+    atomic_write(path, serialized.as_bytes())
+}
+
+pub fn remove_profile_atomic(path: &Path, profile_name: &str) -> Result<bool, ConfigError> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(ConfigError::ReadFailure),
+    };
+    let _ = parse_file_config(&contents)?;
+    let mut root =
+        toml::from_str::<toml::Table>(&contents).map_err(|_| ConfigError::InvalidToml)?;
+    let mut removed = false;
+    if let Some(profiles) = root.get_mut("profiles").and_then(toml::Value::as_table_mut) {
+        removed = profiles.remove(profile_name).is_some();
+        if profiles.is_empty() {
+            root.remove("profiles");
+        }
+    }
+    if root
+        .get("default_profile")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| value == profile_name)
+    {
+        root.remove("default_profile");
+    }
+    if removed {
+        let serialized = toml::to_string_pretty(&toml::Value::Table(root))
+            .map_err(|_| ConfigError::WriteFailure)?;
+        atomic_write(path, serialized.as_bytes())?;
+    }
+    Ok(removed)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| ConfigError::WriteFailure)?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(ConfigError::WriteFailure)?;
+    let temporary = path.with_file_name(format!(".{file_name}.tmp-{}", std::process::id()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|_| ConfigError::WriteFailure)?;
+    let write_result = file.write_all(bytes).and_then(|_| file.sync_all());
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(ConfigError::WriteFailure);
+    }
+    fs::rename(&temporary, path).map_err(|_| {
+        let _ = fs::remove_file(&temporary);
+        ConfigError::WriteFailure
+    })
 }
 
 fn choose_bool(file: Option<bool>, default: bool, _file_source: ValueSource, cli: bool) -> bool {

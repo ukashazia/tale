@@ -1,0 +1,11 @@
+{
+  "aclsExternallyManagedOn": false,
+  "devicesApprovalOn": true,
+  "devicesAutoUpdatesOn": true,
+  "devicesKeyDurationDays": 180,
+  "usersApprovalOn": true,
+  "networkFlowLoggingOn": false,
+  "regionalRoutingOn": true,
+  "postureIdentityCollectionOn": true,
+  "httpsEnabled": false
+}

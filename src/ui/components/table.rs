@@ -11,6 +11,8 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let local_extended = app.source_mode == crate::app::SourceMode::Local
         && app.views.devices.wide_columns
         && area.width >= 120;
+    let admin_extended =
+        app.admin.profile.is_some() && app.views.devices.wide_columns && area.width >= 120;
     let local_traffic = local_extended && area.width >= 150;
     let visible = app.visible_indices();
     let rows = visible.into_iter().filter_map(|index| {
@@ -28,6 +30,7 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
             area.width,
             local_extended,
             local_traffic,
+            admin_extended,
         ))
     });
     let header_values = if local_traffic {
@@ -57,6 +60,21 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
             "VER",
             "ROUTES",
             "ROLE",
+        ]
+    } else if admin_extended {
+        vec![
+            "S",
+            "NAME",
+            "OWNER/TAGS",
+            "OS",
+            "PATH",
+            "SEEN",
+            "IP",
+            "VER",
+            "APPROVAL",
+            "KEY",
+            "ROLE",
+            "POSTURE",
         ]
     } else if app.views.devices.wide_columns {
         vec!["S", "NAME", "OWNER/TAGS", "OS", "PATH", "SEEN", "IP", "VER"]
@@ -92,6 +110,21 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ConstraintWidth::Fill(14),
             ConstraintWidth::Fill(10),
         ]
+    } else if admin_extended {
+        vec![
+            ConstraintWidth::Fixed(2),
+            ConstraintWidth::Fill(13),
+            ConstraintWidth::Fill(16),
+            ConstraintWidth::Fill(7),
+            ConstraintWidth::Fill(9),
+            ConstraintWidth::Fill(6),
+            ConstraintWidth::Fill(14),
+            ConstraintWidth::Fill(9),
+            ConstraintWidth::Fill(12),
+            ConstraintWidth::Fill(12),
+            ConstraintWidth::Fill(14),
+            ConstraintWidth::Fill(10),
+        ]
     } else if app.views.devices.wide_columns {
         vec![
             ConstraintWidth::Fixed(2),
@@ -122,7 +155,15 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .header(header)
             .column_spacing(1)
             .style(theme::normal(app))
-            .block(Block::default().borders(Borders::ALL).title("devices")),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(if app.admin.profile.is_some() {
+                        "devices · local + admin"
+                    } else {
+                        "devices"
+                    }),
+            ),
         area,
     );
 }
@@ -149,6 +190,7 @@ fn device_row(
     width: u16,
     local_extended: bool,
     local_traffic: bool,
+    admin_extended: bool,
 ) -> Row<'static> {
     let owner = device
         .owner
@@ -214,6 +256,82 @@ fn device_row(
             roles.push("shared");
         }
         cells.push(Cell::from(text::ellipsize(&roles.join(","), 14)));
+    }
+    if admin_extended {
+        let admin = app.admin.devices.snapshot.as_ref().and_then(|devices| {
+            devices.iter().find(|candidate| {
+                candidate.stable_id == device.id.0
+                    || candidate.exact_node_id() == Some(device.id.0.as_str())
+            })
+        });
+        let approval = admin.map_or_else(
+            || "unknown".to_owned(),
+            |value| match value.authorized {
+                Some(true) => "approved".to_owned(),
+                Some(false) => "pending".to_owned(),
+                None => "unknown".to_owned(),
+            },
+        );
+        let key = admin.map_or_else(
+            || "unknown".to_owned(),
+            |value| {
+                if value.key_expiry_disabled == Some(true) {
+                    "disabled".to_owned()
+                } else {
+                    value.expires_at.map_or_else(
+                        || "unknown".to_owned(),
+                        |expires| {
+                            if expires <= app.now {
+                                "expired".to_owned()
+                            } else {
+                                expires.to_string()
+                            }
+                        },
+                    )
+                }
+            },
+        );
+        let role = admin.map_or_else(
+            || "unknown".to_owned(),
+            |value| {
+                if !value.advertised_routes_returned && !value.enabled_routes_returned {
+                    "unknown".to_owned()
+                } else {
+                    let mut roles = Vec::new();
+                    if value
+                        .advertised_routes
+                        .iter()
+                        .any(|route| route == "0.0.0.0/0" || route == "::/0")
+                    {
+                        roles.push("exit-advert");
+                    }
+                    if value
+                        .enabled_routes
+                        .iter()
+                        .any(|route| route == "0.0.0.0/0" || route == "::/0")
+                    {
+                        roles.push("exit-enabled");
+                    }
+                    if !value.advertised_routes.is_empty() {
+                        roles.push("subnet-advert");
+                    }
+                    if roles.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        roles.join(",")
+                    }
+                }
+            },
+        );
+        let posture = admin.map_or("unknown", |value| match value.posture_present {
+            Some(true) => "present",
+            Some(false) => "empty",
+            None => "not loaded",
+        });
+        cells.push(Cell::from(text::ellipsize(&approval, 12)));
+        cells.push(Cell::from(text::ellipsize(&key, 12)));
+        cells.push(Cell::from(text::ellipsize(&role, 14)));
+        cells.push(Cell::from(posture));
     }
     if local_traffic {
         cells.push(Cell::from(format_optional_bytes(device.rx_bytes)));
