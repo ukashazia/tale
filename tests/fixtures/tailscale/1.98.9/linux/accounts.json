@@ -1,0 +1,16 @@
+[
+  {
+    "id": "profile-work",
+    "tailnet": "example.com",
+    "account": "operator@example.com",
+    "nickname": "work",
+    "selected": true,
+    "FixtureUnknownField": "ignored"
+  },
+  {
+    "id": "profile-personal",
+    "tailnet": "personal.ts.net",
+    "nickname": "personal",
+    "selected": false
+  }
+]

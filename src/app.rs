@@ -6,12 +6,21 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{self, ActionContext, ActionId, Capability};
 use crate::config::ResolvedConfig;
+use crate::domain::account::LocalAccount;
 use crate::domain::device::{
     Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec, compare_devices,
 };
 use crate::domain::diagnostic::{DiagnosticResult, DiagnosticState};
 use crate::domain::filter::{self, FilterExpression};
+use crate::domain::mutation::{LocalMutation, MutationLock};
+use crate::domain::preference::{
+    LocalPreferences, ObservedPreference, PreferenceEditability, PreferenceField, PreferenceRequest,
+};
 use crate::domain::redaction::{DiagnosticReportInput, redact_diagnostic_report};
+use crate::domain::route::{
+    AdvertisementRequest, ExitNodeCandidate, ExitNodeRequest, ExitNodeSelection,
+    overlapping_routes, parse_route_set, parse_static_endpoints,
+};
 use crate::domain::source::{
     LocalCapabilities, LocalExecutable, LocalFailure, LocalFailureKind, LocalResource,
     LocalResourceStatus, LocalSnapshot, LocalState,
@@ -21,6 +30,8 @@ use crate::effect::{Effect, Resource};
 use crate::event::{Event, InputEvent, LocalEvent, ShutdownReason, SourceEvent, TaskEvent};
 use crate::local::client::{ExecutableResolution, HostPlatform};
 use crate::local::diagnostics::{self, DiagnosticRequest};
+use crate::local::handoff::{self, HandoffCommand};
+use crate::local::policy::SystemPolicyEntry;
 use crate::mock::{MOCK_NOW, MockLoadScenario, MockTaskBehavior};
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
 
@@ -127,6 +138,48 @@ pub struct DiagnosticInputState {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ConfirmationState {
+    pub action_id: ActionId,
+    pub mutation: Option<LocalMutation>,
+    pub handoff: Option<HandoffCommand>,
+    pub prompt: String,
+    pub required_phrase: Option<String>,
+    pub input: String,
+    pub lose_ssh_checked: bool,
+    pub preview_lines: Vec<String>,
+    pub redacted_argv: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OperatorFormState {
+    pub action_id: ActionId,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum HandoffInputKind {
+    Ssh,
+    Nc,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct HandoffInputState {
+    pub kind: HandoffInputKind,
+    pub host: String,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AccountPickerState {
+    pub action_id: ActionId,
+    pub accounts: Vec<LocalAccount>,
+    pub selected: usize,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CopyField {
     DeviceId,
@@ -167,6 +220,10 @@ pub enum Overlay {
     TaskInspector(TaskId),
     SortPicker { selected: usize },
     DiagnosticInput(DiagnosticInputState),
+    Confirmation(Box<ConfirmationState>),
+    OperatorForm(OperatorFormState),
+    AccountPicker(AccountPickerState),
+    HandoffInput(HandoffInputState),
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +296,10 @@ pub struct App {
     pub local_state: LocalState,
     pub local_executable: Option<LocalExecutable>,
     pub local_capabilities: LocalCapabilities,
+    pub local_preferences: LocalPreferences,
+    pub local_accounts: Vec<LocalAccount>,
+    pub system_policy: Vec<SystemPolicyEntry>,
+    pub system_policy_failure: Option<LocalFailure>,
     pub local_diagnostics: BTreeMap<TaskId, DiagnosticState>,
     pub local_self_id: Option<DeviceId>,
     pub tasks: TaskStore,
@@ -252,11 +313,15 @@ pub struct App {
     pub tick_count: u64,
     pub runtime_error: Option<String>,
     pub copied_value: Option<String>,
+    pub mutation_lock: MutationLock,
+    pub mutation_in_flight: Option<u64>,
+    pub interactive_handoff_active: bool,
     render_invalidated: bool,
     local_discovery_in_flight: bool,
     local_status_in_flight: bool,
     local_next_refresh: Option<Instant>,
     local_last_tick: Option<Instant>,
+    next_mutation_id: u64,
 }
 
 impl App {
@@ -289,6 +354,10 @@ impl App {
             local_state,
             local_executable: None,
             local_capabilities: LocalCapabilities::default(),
+            local_preferences: LocalPreferences::empty(0),
+            local_accounts: Vec::new(),
+            system_policy: Vec::new(),
+            system_policy_failure: None,
             local_diagnostics: BTreeMap::new(),
             local_self_id: None,
             tasks: TaskStore::new(),
@@ -306,11 +375,15 @@ impl App {
             tick_count: 0,
             runtime_error: None,
             copied_value: None,
+            mutation_lock: MutationLock::new(),
+            mutation_in_flight: None,
+            interactive_handoff_active: false,
             render_invalidated: true,
             local_discovery_in_flight: false,
             local_status_in_flight: false,
             local_next_refresh: None,
             local_last_tick: None,
+            next_mutation_id: 1,
         }
     }
 
@@ -374,6 +447,7 @@ impl App {
             self.render_invalidated = true;
         }
         if self.source_mode == SourceMode::Local
+            && !self.interactive_handoff_active
             && !self.local_discovery_in_flight
             && !self.local_status_in_flight
             && self.overlays.is_empty()
@@ -385,6 +459,9 @@ impl App {
     }
 
     fn update_input(&mut self, input: InputEvent) -> Vec<Effect> {
+        if self.interactive_handoff_active {
+            return Vec::new();
+        }
         match input {
             InputEvent::Resize { width, height } => {
                 self.terminal_width = width;
@@ -412,6 +489,18 @@ impl App {
             }
             Overlay::Help(state) if state.searchable => state.query.push_str(text),
             Overlay::DiagnosticInput(state) => state.input.push_str(text),
+            Overlay::OperatorForm(state) => {
+                state.input.push_str(text);
+                state.error = None;
+            }
+            Overlay::HandoffInput(state) => {
+                state.input.push_str(text);
+                state.error = None;
+            }
+            Overlay::Confirmation(state) => {
+                state.input.push_str(text);
+                state.error = None;
+            }
             _ => {}
         }
         Vec::new()
@@ -516,6 +605,60 @@ impl App {
                         let input = state.input.clone();
                         let kind = state.kind.clone();
                         return Some(self.accept_diagnostic_input(kind, &input));
+                    }
+                    _ => return None,
+                }
+                Some(Vec::new())
+            }
+            Overlay::OperatorForm(state) => {
+                match key.code {
+                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                        state.input.push(character);
+                        state.error = None;
+                    }
+                    KeyCode::Backspace => {
+                        let _ = state.input.pop();
+                        state.error = None;
+                    }
+                    KeyCode::Enter => {
+                        let state = state.clone();
+                        return Some(self.accept_operator_form(state));
+                    }
+                    _ => return None,
+                }
+                Some(Vec::new())
+            }
+            Overlay::HandoffInput(state) => {
+                match key.code {
+                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                        state.input.push(character);
+                        state.error = None;
+                    }
+                    KeyCode::Backspace => {
+                        let _ = state.input.pop();
+                        state.error = None;
+                    }
+                    KeyCode::Enter => {
+                        let state = state.clone();
+                        return Some(self.accept_handoff_input(state));
+                    }
+                    _ => return None,
+                }
+                Some(Vec::new())
+            }
+            Overlay::Confirmation(state) => {
+                match key.code {
+                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                        state.input.push(character);
+                        state.error = None;
+                    }
+                    KeyCode::Backspace => {
+                        let _ = state.input.pop();
+                        state.error = None;
+                    }
+                    KeyCode::Enter => {
+                        let state = (**state).clone();
+                        return Some(self.accept_confirmation(state));
                     }
                     _ => return None,
                 }
@@ -626,6 +769,45 @@ impl App {
             }
             Overlay::DiagnosticInput(state) => {
                 self.overlays.push(Overlay::DiagnosticInput(state));
+                Vec::new()
+            }
+            Overlay::OperatorForm(state) => {
+                self.overlays.push(Overlay::OperatorForm(state));
+                Vec::new()
+            }
+            Overlay::HandoffInput(state) => {
+                self.overlays.push(Overlay::HandoffInput(state));
+                Vec::new()
+            }
+            Overlay::Confirmation(mut state) => {
+                if key.code == KeyCode::Tab
+                    && state.mutation.as_ref().is_some_and(|mutation| {
+                        matches!(mutation, LocalMutation::Disconnect { .. })
+                    })
+                {
+                    state.lose_ssh_checked = !state.lose_ssh_checked;
+                    if state.lose_ssh_checked {
+                        state.required_phrase = Some("LOSE-SSH".to_owned());
+                    } else {
+                        state.required_phrase = Some("DISCONNECT".to_owned());
+                    }
+                }
+                self.overlays.push(Overlay::Confirmation(state));
+                Vec::new()
+            }
+            Overlay::AccountPicker(mut state) => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        state.selected =
+                            (state.selected + 1).min(state.accounts.len().saturating_sub(1));
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        state.selected = state.selected.saturating_sub(1);
+                    }
+                    KeyCode::Enter => return self.accept_account_picker(state),
+                    _ => {}
+                }
+                self.overlays.push(Overlay::AccountPicker(state));
                 Vec::new()
             }
         }
@@ -851,8 +1033,20 @@ impl App {
                     ]
                 } else if self.source_mode == SourceMode::Local {
                     vec![
+                        ActionId::LocalConnect,
+                        ActionId::LocalDisconnect,
+                        ActionId::LocalPreferencesEdit,
+                        ActionId::LocalExitNodeSelect,
+                        ActionId::LocalRoutesEditAdvertisements,
+                        ActionId::LocalAccountSwitch,
+                        ActionId::LocalAccountLogin,
+                        ActionId::LocalAccountLogout,
+                        ActionId::LocalAccountRemove,
+                        ActionId::LocalSyspolicyReload,
                         ActionId::LocalProbeConnection,
                         ActionId::LocalWhois,
+                        ActionId::LocalSshOpen,
+                        ActionId::LocalNcOpen,
                         ActionId::DiagnosticCopy,
                     ]
                 } else {
@@ -928,6 +1122,28 @@ impl App {
                 self.copy_diagnostic_summary();
                 Vec::new()
             }
+            ActionId::LocalConnect => self.open_mutation_confirmation(LocalMutation::Connect),
+            ActionId::LocalDisconnect => {
+                self.open_mutation_confirmation(LocalMutation::Disconnect {
+                    accept_lose_ssh: false,
+                })
+            }
+            ActionId::LocalPreferencesEdit => {
+                self.open_operator_form(ActionId::LocalPreferencesEdit)
+            }
+            ActionId::LocalExitNodeSelect => self.open_operator_form(ActionId::LocalExitNodeSelect),
+            ActionId::LocalRoutesEditAdvertisements => {
+                self.open_operator_form(ActionId::LocalRoutesEditAdvertisements)
+            }
+            ActionId::LocalAccountSwitch => self.open_account_picker(ActionId::LocalAccountSwitch),
+            ActionId::LocalAccountLogin => self.open_login_confirmation(),
+            ActionId::LocalAccountLogout => self.open_logout_confirmation(),
+            ActionId::LocalAccountRemove => self.open_account_picker(ActionId::LocalAccountRemove),
+            ActionId::LocalSshOpen => self.open_handoff_input(HandoffInputKind::Ssh),
+            ActionId::LocalNcOpen => self.open_handoff_input(HandoffInputKind::Nc),
+            ActionId::LocalSyspolicyReload => {
+                self.open_mutation_confirmation(LocalMutation::SyspolicyReload)
+            }
         }
     }
 
@@ -963,6 +1179,12 @@ impl App {
         {
             return Some("local observer is disabled".to_owned());
         }
+        if self.source_mode != SourceMode::Local && is_mutating_action(action_id) {
+            return Some("local operator is disabled".to_owned());
+        }
+        if self.resolved_config.read_only && is_mutating_action(action_id) {
+            return Some("read-only mode blocks local mutations".to_owned());
+        }
         if self.local_executable.is_none()
             && matches!(
                 action_id,
@@ -973,9 +1195,30 @@ impl App {
                     | ActionId::LocalDnsStatus
                     | ActionId::LocalDnsQuery
                     | ActionId::LocalWhois
+                    | ActionId::LocalConnect
+                    | ActionId::LocalDisconnect
+                    | ActionId::LocalPreferencesEdit
+                    | ActionId::LocalExitNodeSelect
+                    | ActionId::LocalRoutesEditAdvertisements
+                    | ActionId::LocalAccountSwitch
+                    | ActionId::LocalAccountLogin
+                    | ActionId::LocalAccountLogout
+                    | ActionId::LocalAccountRemove
+                    | ActionId::LocalSshOpen
+                    | ActionId::LocalNcOpen
+                    | ActionId::LocalSyspolicyReload
             )
         {
             return Some("tailscale executable has not been discovered".to_owned());
+        }
+        if matches!(
+            action_id,
+            ActionId::LocalPreferencesEdit
+                | ActionId::LocalExitNodeSelect
+                | ActionId::LocalRoutesEditAdvertisements
+        ) && !self.local_preferences_ready()
+        {
+            return Some("current preferences are not verified".to_owned());
         }
         let reason = match action_id {
             ActionId::LocalProbeConnection => "ping is unavailable for this client",
@@ -984,12 +1227,60 @@ impl App {
             ActionId::LocalDnsStatus => "DNS status is unavailable for this client",
             ActionId::LocalDnsQuery => "DNS query is unavailable for this client",
             ActionId::LocalWhois => "whois is unavailable for this client",
+            ActionId::LocalConnect => "connect is unavailable for this client",
+            ActionId::LocalDisconnect => "disconnect is unavailable for this client",
+            ActionId::LocalPreferencesEdit => "preference editing is unavailable for this client",
+            ActionId::LocalExitNodeSelect => "exit-node selection is unavailable for this client",
+            ActionId::LocalRoutesEditAdvertisements => {
+                "advertisement editing is unavailable for this client"
+            }
+            ActionId::LocalAccountSwitch => "account switching is unavailable for this client",
+            ActionId::LocalAccountLogin => "account login is unavailable for this client",
+            ActionId::LocalAccountLogout => "account logout is unavailable for this client",
+            ActionId::LocalAccountRemove => "account removal is unavailable for this client",
+            ActionId::LocalSshOpen => "Tailscale SSH is unavailable for this client",
+            ActionId::LocalNcOpen => "Tailscale netcat is unavailable for this client",
+            ActionId::LocalSyspolicyReload => "system policy reload is unavailable for this client",
             _ => "capability unavailable",
         };
         Some(reason.to_owned())
     }
 
     fn local_action_available(&self, action_id: ActionId) -> bool {
+        if is_phase_three_action(action_id) && self.source_mode != SourceMode::Local {
+            return false;
+        }
+        if is_mutating_action(action_id) && self.resolved_config.read_only {
+            return false;
+        }
+        if matches!(
+            action_id,
+            ActionId::LocalPreferencesEdit
+                | ActionId::LocalExitNodeSelect
+                | ActionId::LocalRoutesEditAdvertisements
+        ) && !self.local_preferences_ready()
+        {
+            return false;
+        }
+        let capabilities = self.local_capabilities;
+        match action_id {
+            ActionId::LocalConnect => capabilities.connect,
+            ActionId::LocalDisconnect => capabilities.disconnect,
+            ActionId::LocalPreferencesEdit
+            | ActionId::LocalExitNodeSelect
+            | ActionId::LocalRoutesEditAdvertisements => capabilities.set,
+            ActionId::LocalAccountSwitch => capabilities.accounts,
+            ActionId::LocalAccountLogin => capabilities.account_login,
+            ActionId::LocalAccountLogout => capabilities.account_logout,
+            ActionId::LocalAccountRemove => capabilities.account_remove,
+            ActionId::LocalSshOpen => capabilities.ssh,
+            ActionId::LocalNcOpen => capabilities.nc,
+            ActionId::LocalSyspolicyReload => capabilities.syspolicy,
+            _ => self.local_observer_action_available(action_id),
+        }
+    }
+
+    fn local_observer_action_available(&self, action_id: ActionId) -> bool {
         if !matches!(
             action_id,
             ActionId::LocalDiagnostics
@@ -1023,6 +1314,818 @@ impl App {
             ActionId::DiagnosticCopy => true,
             _ => true,
         }
+    }
+
+    fn local_preferences_ready(&self) -> bool {
+        self.local_preferences.want_running.observed_at != 0
+            && self.local_preferences.accept_dns.value.is_some()
+    }
+
+    pub fn preferences_ready(&self) -> bool {
+        self.local_preferences_ready()
+    }
+
+    fn open_operator_form(&mut self, action_id: ActionId) -> Vec<Effect> {
+        if !self.local_preferences_ready() {
+            self.runtime_error =
+                Some("current preferences are not verified; editing is unavailable".to_owned());
+            return Vec::new();
+        }
+        let input = match action_id {
+            ActionId::LocalPreferencesEdit => String::new(),
+            ActionId::LocalExitNodeSelect => "none".to_owned(),
+            ActionId::LocalRoutesEditAdvertisements => String::new(),
+            _ => String::new(),
+        };
+        self.overlays.push(Overlay::OperatorForm(OperatorFormState {
+            action_id,
+            input,
+            error: None,
+        }));
+        Vec::new()
+    }
+
+    fn open_account_picker(&mut self, action_id: ActionId) -> Vec<Effect> {
+        if self.local_accounts.is_empty() {
+            self.runtime_error = Some("no local account profiles were returned".to_owned());
+            return Vec::new();
+        }
+        self.overlays
+            .push(Overlay::AccountPicker(AccountPickerState {
+                action_id,
+                accounts: self.local_accounts.clone(),
+                selected: self
+                    .local_accounts
+                    .iter()
+                    .position(|account| account.active)
+                    .map_or(0, |value| value),
+            }));
+        Vec::new()
+    }
+
+    fn open_login_confirmation(&mut self) -> Vec<Effect> {
+        let Some(executable) = self.local_executable.as_ref() else {
+            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            return Vec::new();
+        };
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: ActionId::LocalAccountLogin,
+                mutation: None,
+                handoff: Some(handoff::login_command(&executable.path)),
+                prompt: "Open Tailscale login in the terminal; Tale will not collect credentials."
+                    .to_owned(),
+                required_phrase: None,
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines: vec!["login runs in the inherited terminal".to_owned()],
+                redacted_argv: vec!["login".to_owned()],
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn open_logout_confirmation(&mut self) -> Vec<Effect> {
+        let Some(executable) = self.local_executable.as_ref() else {
+            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            return Vec::new();
+        };
+        self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
+            action_id: ActionId::LocalAccountLogout,
+            mutation: None,
+            handoff: Some(handoff::logout_command(&executable.path)),
+            prompt: "Log out this local account; the node key will be invalidated and reauthentication will be required.".to_owned(),
+            required_phrase: Some("LOGOUT".to_owned()),
+            input: String::new(),
+            lose_ssh_checked: false,
+            preview_lines: vec!["logout invalidates the current local node key".to_owned()],
+            redacted_argv: vec!["logout".to_owned()],
+            error: None,
+        })));
+        Vec::new()
+    }
+
+    fn open_handoff_input(&mut self, kind: HandoffInputKind) -> Vec<Effect> {
+        let Some(host) = self
+            .selected_local_device()
+            .and_then(LocalDevice::preferred_target)
+            .map(str::to_owned)
+        else {
+            self.runtime_error = Some("selected device has no DNS name or Tailscale IP".to_owned());
+            return Vec::new();
+        };
+        self.overlays.push(Overlay::HandoffInput(HandoffInputState {
+            kind,
+            host,
+            input: match kind {
+                HandoffInputKind::Ssh => String::new(),
+                HandoffInputKind::Nc => "443".to_owned(),
+            },
+            error: None,
+        }));
+        Vec::new()
+    }
+
+    fn open_mutation_confirmation(&mut self, mutation: LocalMutation) -> Vec<Effect> {
+        if let Err(error) = self.validate_mutation_request(&mutation) {
+            self.runtime_error = Some(error);
+            return Vec::new();
+        }
+        let (prompt, required_phrase, lose_ssh_checked) = match &mutation {
+            LocalMutation::Connect => (
+                "Connect this local node without changing existing preferences.".to_owned(),
+                None,
+                false,
+            ),
+            LocalMutation::Disconnect { .. } => (
+                "Disconnect this local node. Connectivity will stop and may terminate a terminal session over Tailscale.".to_owned(),
+                Some("DISCONNECT".to_owned()),
+                false,
+            ),
+            LocalMutation::SyspolicyReload => (
+                "Reload local system policy and verify it with a fresh policy read.".to_owned(),
+                None,
+                false,
+            ),
+            LocalMutation::Preferences(_) => (
+                "Apply the submitted local preference fields and verify fresh daemon state.".to_owned(),
+                None,
+                false,
+            ),
+            LocalMutation::ExitNode(_) => (
+                "Change the exit-node selection on this local node only.".to_owned(),
+                None,
+                false,
+            ),
+            LocalMutation::Advertisements(_) => (
+                "This device will advertise; a tailnet administrator may still need to approve the route.".to_owned(),
+                match &mutation {
+                    LocalMutation::Advertisements(request)
+                        if request.accept_mac_app_connector_risk =>
+                    {
+                        Some("MAC-APP-CONNECTOR".to_owned())
+                    }
+                    _ => None,
+                },
+                false,
+            ),
+            LocalMutation::AccountSwitch { .. } => (
+                "Switch this local client profile and clear the current tailnet selection.".to_owned(),
+                None,
+                false,
+            ),
+            LocalMutation::AccountRemove { account_id } => {
+                let label = self
+                    .local_accounts
+                    .iter()
+                    .find(|account| account.id == *account_id)
+                    .map_or_else(|| account_id.clone(), |account| account.display_label().to_owned());
+                (
+                    format!("Remove the local account profile {label}. This does not delete the Tailscale account or user."),
+                    Some(label),
+                    false,
+                )
+            }
+        };
+        let preview_lines = self.mutation_preview_lines(&mutation);
+        let redacted_argv = mutation_metadata(
+            self.local_executable
+                .as_ref()
+                .map_or(std::path::Path::new("tailscale"), |value| {
+                    value.path.as_path()
+                }),
+            &mutation,
+            self.resolved_config.local.command_timeout,
+        )
+        .1;
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: mutation.action_id(),
+                mutation: Some(mutation),
+                handoff: None,
+                prompt,
+                required_phrase,
+                input: String::new(),
+                lose_ssh_checked,
+                preview_lines,
+                redacted_argv,
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn validate_mutation_request(&self, mutation: &LocalMutation) -> Result<(), String> {
+        match mutation {
+            LocalMutation::Disconnect { .. }
+                if policy_forces(&self.system_policy, "AlwaysOn.Enabled")
+                    || policy_forces(&self.system_policy, "ForceEnabled") =>
+            {
+                Err("disconnect is blocked by the local always-on system policy".to_owned())
+            }
+            LocalMutation::Preferences(request) => {
+                if request.is_empty() {
+                    return Err("at least one preference field must be changed".to_owned());
+                }
+                for field in request.changed_fields() {
+                    if !preference_field_editable(&self.local_preferences, field) {
+                        return Err(format!(
+                            "{} is unknown, policy managed, or unsupported",
+                            field.label()
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            LocalMutation::ExitNode(_) if policy_disallows_exit_override(&self.system_policy) => {
+                Err("exit-node selection is blocked by the local system policy".to_owned())
+            }
+            LocalMutation::ExitNode(_) => {
+                if !self.local_preferences.exit_node_allow_lan_access.can_edit()
+                    || !self.local_preferences.auto_exit_node.can_edit()
+                    || !self.local_preferences.exit_node_id.can_edit()
+                    || !self.local_preferences.exit_node_ip.can_edit()
+                {
+                    Err("exit-node current state is incomplete or not editable".to_owned())
+                } else {
+                    Ok(())
+                }
+            }
+            LocalMutation::Advertisements(request) => {
+                if request.is_empty() {
+                    return Err("at least one advertisement field must be changed".to_owned());
+                }
+                if request.advertise_connector == Some(true)
+                    && !request.accept_mac_app_connector_risk
+                {
+                    return Err(
+                        "enabling the app connector requires accept-risk=mac-app-connector"
+                            .to_owned(),
+                    );
+                }
+                if request.accept_mac_app_connector_risk
+                    && request.advertise_connector != Some(true)
+                {
+                    return Err(
+                        "mac-app-connector risk acceptance requires connector=true".to_owned()
+                    );
+                }
+                if request.advertise_exit_node.is_some()
+                    && policy_forces(&self.system_policy, "AdvertiseExitNode")
+                {
+                    return Err(
+                        "exit-node advertisement is controlled by the local system policy"
+                            .to_owned(),
+                    );
+                }
+                if request.routes.is_some() && !self.local_preferences.advertised_routes.can_edit()
+                {
+                    return Err("advertised routes are unknown or not editable".to_owned());
+                }
+                if request.advertise_exit_node.is_some()
+                    && !self.local_preferences.advertised_exit_node.can_edit()
+                {
+                    return Err("advertised exit-node state is unknown or not editable".to_owned());
+                }
+                if request.advertise_connector.is_some()
+                    && !self.local_preferences.app_connector.can_edit()
+                {
+                    return Err("app-connector state is unknown or not editable".to_owned());
+                }
+                if request.relay_server_port.is_some()
+                    && !self.local_preferences.relay_server_port_disabled.can_edit()
+                {
+                    return Err("relay-server port state is unknown or not editable".to_owned());
+                }
+                if request.relay_server_static_endpoints.is_some()
+                    && !self
+                        .local_preferences
+                        .relay_server_static_endpoints
+                        .can_edit()
+                {
+                    return Err("relay-server endpoints are unknown or not editable".to_owned());
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn accept_operator_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        let result = match state.action_id {
+            ActionId::LocalPreferencesEdit => {
+                parse_preference_request(&state.input).map(LocalMutation::Preferences)
+            }
+            ActionId::LocalExitNodeSelect => self
+                .parse_exit_node_request(&state.input)
+                .map(LocalMutation::ExitNode),
+            ActionId::LocalRoutesEditAdvertisements => {
+                parse_advertisement_request(&state.input).map(LocalMutation::Advertisements)
+            }
+            _ => Err("this form is not a local operator form".to_owned()),
+        };
+        match result {
+            Ok(mutation) => {
+                self.overlays.pop();
+                self.open_mutation_confirmation(mutation)
+            }
+            Err(error) => {
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn mutation_preview_lines(&self, mutation: &LocalMutation) -> Vec<String> {
+        match mutation {
+            LocalMutation::Connect => vec![format!(
+                "state: {} -> running; existing preferences are preserved",
+                self.local_state.label()
+            )],
+            LocalMutation::Disconnect { accept_lose_ssh } => vec![format!(
+                "state: {} -> stopped; lose-SSH risk accepted: {}",
+                self.local_state.label(),
+                accept_lose_ssh
+            )],
+            LocalMutation::Preferences(request) => {
+                let mut lines = Vec::new();
+                if let Some(value) = request.accept_dns {
+                    lines.push(format!(
+                        "accept DNS: {} -> {value}",
+                        boolean_text(self.local_preferences.accept_dns.value)
+                    ));
+                }
+                if let Some(value) = request.accept_routes {
+                    lines.push(format!(
+                        "accept routes: {} -> {value}",
+                        boolean_text(self.local_preferences.accept_routes.value)
+                    ));
+                }
+                if let Some(value) = request.shields_up {
+                    lines.push(format!(
+                        "shields up: {} -> {value}",
+                        boolean_text(self.local_preferences.shields_up.value)
+                    ));
+                    lines.push("warning: inbound connections will be blocked".to_owned());
+                }
+                if let Some(value) = request.ssh {
+                    lines.push(format!(
+                        "Tailscale SSH: {} -> {value}",
+                        boolean_text(self.local_preferences.ssh.value)
+                    ));
+                }
+                if let Some(value) = request.automatic_update {
+                    lines.push(format!(
+                        "automatic update: {} -> {value}",
+                        boolean_text(self.local_preferences.automatic_update.value)
+                    ));
+                }
+                if let Some(value) = request.update_check {
+                    lines.push(format!(
+                        "update check: {} -> {value}",
+                        boolean_text(self.local_preferences.update_check.value)
+                    ));
+                }
+                if let Some(value) = request.report_posture {
+                    lines.push(format!(
+                        "posture reporting: {} -> {value}",
+                        boolean_text(self.local_preferences.report_posture.value)
+                    ));
+                    lines.push("management-plane posture data reporting changes".to_owned());
+                }
+                if let Some(value) = request.hostname.as_deref() {
+                    lines.push(format!(
+                        "hostname: {} -> {value}",
+                        text_value(self.local_preferences.hostname.value.as_deref())
+                    ));
+                }
+                if let Some(value) = request.nickname.as_deref() {
+                    lines.push(format!(
+                        "nickname: {} -> {value}",
+                        text_value(self.local_preferences.nickname.value.as_deref())
+                    ));
+                    lines.push("nickname is scoped to the active account profile".to_owned());
+                }
+                if let Some(value) = request.web_client {
+                    lines.push(format!(
+                        "web client: {} -> {value}",
+                        boolean_text(self.local_preferences.web_client.value)
+                    ));
+                    lines.push("web client exposes port 5252 to the tailnet".to_owned());
+                }
+                lines
+            }
+            LocalMutation::ExitNode(request) => {
+                let mut lines = vec![format!(
+                    "exit node: {} -> {}; LAN access -> {}",
+                    self.local_preferences.selected_exit_label(),
+                    request.target(),
+                    request.allow_lan_access
+                )];
+                if let crate::domain::route::ExitNodeSelection::Device { device_id, .. } =
+                    &request.selection
+                    && let Some(candidate) = self
+                        .exit_node_candidates()
+                        .into_iter()
+                        .find(|candidate| candidate.device_id == *device_id)
+                {
+                    if candidate.online == Some(false) {
+                        lines.push("warning: selected exit node is offline".to_owned());
+                    }
+                    if candidate.last_probe_ms.is_none() {
+                        lines.push(
+                            "latency: not probed; run the Phase-2 ping action before relying on this choice"
+                                .to_owned(),
+                        );
+                    }
+                }
+                lines
+            }
+            LocalMutation::Advertisements(request) => {
+                let routes = match request.canonical_routes() {
+                    Some(routes) if routes.is_empty() => "none".to_owned(),
+                    Some(routes) => routes
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    None => self
+                        .local_preferences
+                        .advertised_routes
+                        .value
+                        .as_ref()
+                        .map_or_else(
+                            || "not returned".to_owned(),
+                            |routes| {
+                                if routes.is_empty() {
+                                    "none".to_owned()
+                                } else {
+                                    routes.join(",")
+                                }
+                            },
+                        ),
+                };
+                let current_routes = self
+                    .local_preferences
+                    .advertised_routes
+                    .value
+                    .as_ref()
+                    .map_or_else(
+                        || "not returned".to_owned(),
+                        |routes| {
+                            if routes.is_empty() {
+                                "none".to_owned()
+                            } else {
+                                routes.join(",")
+                            }
+                        },
+                    );
+                let mut lines = vec![format!(
+                    "complete advertised route set: {current_routes} -> {routes}"
+                )];
+                if let Some(value) = request.advertise_exit_node {
+                    lines.push(format!(
+                        "exit-node advertisement: {} -> {value}",
+                        boolean_text(self.local_preferences.advertised_exit_node.value)
+                    ));
+                }
+                if let Some(value) = request.advertise_connector {
+                    lines.push(format!(
+                        "app connector: {} -> {value}",
+                        boolean_text(self.local_preferences.app_connector.value)
+                    ));
+                }
+                if let Some(value) = request.relay_server_port {
+                    let current = match (
+                        self.local_preferences.relay_server_port.value,
+                        self.local_preferences.relay_server_port_disabled.value,
+                    ) {
+                        (Some(value), _) => value.to_string(),
+                        (None, Some(true)) => "disabled".to_owned(),
+                        _ => "unknown".to_owned(),
+                    };
+                    let requested =
+                        value.map_or_else(|| "disabled".to_owned(), |value| value.to_string());
+                    lines.push(format!("relay server port: {current} -> {requested}"));
+                }
+                if let Some(value) = request.relay_server_static_endpoints.as_ref() {
+                    let current = self
+                        .local_preferences
+                        .relay_server_static_endpoints
+                        .value
+                        .as_ref()
+                        .map_or_else(|| "unknown".to_owned(), |value| value.join(","));
+                    lines.push(format!(
+                        "relay static endpoints: {current} -> {}",
+                        crate::domain::route::format_static_endpoints(value)
+                    ));
+                }
+                if request.accept_mac_app_connector_risk {
+                    lines.push("explicit mac-app-connector risk acceptance is required".to_owned());
+                }
+                if let Some(routes) = request.canonical_routes() {
+                    for (left, right) in overlapping_routes(&routes) {
+                        lines.push(format!("warning: overlapping routes {left} and {right}"));
+                    }
+                }
+                lines.push("local advertisement does not imply administrator approval".to_owned());
+                lines
+            }
+            LocalMutation::AccountSwitch { account_id } => {
+                let label = self
+                    .local_accounts
+                    .iter()
+                    .find(|account| account.id == *account_id)
+                    .map_or("selected local profile", |account| account.display_label());
+                let current = self
+                    .local_accounts
+                    .iter()
+                    .find(|account| account.active)
+                    .map_or("not returned", |account| account.display_label());
+                vec![format!("active account: {current} -> {label}")]
+            }
+            LocalMutation::AccountRemove { account_id } => {
+                let label = self
+                    .local_accounts
+                    .iter()
+                    .find(|account| account.id == *account_id)
+                    .map_or("selected local profile", |account| account.display_label());
+                vec![format!(
+                    "remove local profile {label}; the Tailscale account or user is not deleted"
+                )]
+            }
+            LocalMutation::SyspolicyReload => {
+                vec!["reload local system policy -> fresh list verification".to_owned()]
+            }
+        }
+    }
+
+    fn parse_exit_node_request(&self, input: &str) -> Result<ExitNodeRequest, String> {
+        let mut parts = input.split_ascii_whitespace();
+        let selection_text = parts.next().map_or("none", |value| value);
+        let mut allow_lan_access = false;
+        if let Some(option) = parts.next() {
+            let (name, value) = option
+                .split_once('=')
+                .ok_or_else(|| "exit-node option must be lan=true or lan=false".to_owned())?;
+            if name != "lan" {
+                return Err("exit-node option must be lan=true or lan=false".to_owned());
+            }
+            allow_lan_access = parse_bool(value)?;
+        }
+        if parts.next().is_some() {
+            return Err("enter an exit target and optional lan=true/false".to_owned());
+        }
+        let selection = if selection_text.is_empty() || selection_text == "none" {
+            ExitNodeSelection::None
+        } else if selection_text == "auto:any" {
+            ExitNodeSelection::AutoAny
+        } else {
+            let candidate = self
+                .exit_node_candidates()
+                .into_iter()
+                .find(|candidate| {
+                    candidate.device_id.0 == selection_text
+                        || candidate.dns_name.as_deref() == Some(selection_text)
+                        || candidate
+                            .tailscale_ips
+                            .iter()
+                            .any(|ip| ip == selection_text)
+                })
+                .ok_or_else(|| {
+                    "exit target must be a current candidate ID, DNS name, or IP".to_owned()
+                })?;
+            let target = candidate
+                .stable_target()
+                .ok_or_else(|| "selected exit candidate has no stable target".to_owned())?;
+            ExitNodeSelection::Device {
+                device_id: candidate.device_id,
+                target,
+            }
+        };
+        if matches!(selection, ExitNodeSelection::None) && allow_lan_access {
+            return Err("LAN access cannot be enabled when no exit node is selected".to_owned());
+        }
+        Ok(ExitNodeRequest {
+            selection,
+            allow_lan_access,
+        })
+    }
+
+    fn accept_account_picker(&mut self, state: AccountPickerState) -> Vec<Effect> {
+        let Some(account) = state.accounts.get(state.selected) else {
+            self.runtime_error = Some("no account is selected".to_owned());
+            return Vec::new();
+        };
+        self.overlays.pop();
+        match state.action_id {
+            ActionId::LocalAccountSwitch => {
+                self.open_mutation_confirmation(LocalMutation::AccountSwitch {
+                    account_id: account.id.clone(),
+                })
+            }
+            ActionId::LocalAccountRemove => {
+                self.open_mutation_confirmation(LocalMutation::AccountRemove {
+                    account_id: account.id.clone(),
+                })
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn accept_handoff_input(&mut self, state: HandoffInputState) -> Vec<Effect> {
+        let Some(executable) = self.local_executable.as_ref() else {
+            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            return Vec::new();
+        };
+        let command = match state.kind {
+            HandoffInputKind::Ssh => handoff::ssh_command(
+                &executable.path,
+                if state.input.is_empty() {
+                    None
+                } else {
+                    Some(state.input.as_str())
+                },
+                &state.host,
+            ),
+            HandoffInputKind::Nc => {
+                handoff::nc_command(&executable.path, &state.host, &state.input)
+            }
+        };
+        match command {
+            Ok(command) => {
+                let redacted_argv = redacted_argv(&command.args());
+                self.overlays.pop();
+                self.overlays
+                    .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                        action_id: match state.kind {
+                            HandoffInputKind::Ssh => ActionId::LocalSshOpen,
+                            HandoffInputKind::Nc => ActionId::LocalNcOpen,
+                        },
+                        mutation: None,
+                        handoff: Some(command),
+                        prompt: "Pause Tale and open the selected interactive terminal session."
+                            .to_owned(),
+                        required_phrase: None,
+                        input: String::new(),
+                        lose_ssh_checked: false,
+                        preview_lines: vec![
+                        "the child receives only the selected host and supplied port or username"
+                            .to_owned(),
+                    ],
+                        redacted_argv,
+                        error: None,
+                    })));
+                Vec::new()
+            }
+            Err(error) => {
+                if let Some(Overlay::HandoffInput(current)) = self.overlays.last_mut() {
+                    current.error = Some(error.to_string());
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn accept_confirmation(&mut self, state: ConfirmationState) -> Vec<Effect> {
+        if let Some(required) = state.required_phrase.as_deref()
+            && state.input != required
+        {
+            if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+                current.error = Some(format!("type {required} exactly to confirm"));
+            }
+            return Vec::new();
+        }
+        if let Some(mut mutation) = state.mutation {
+            if self.resolved_config.read_only {
+                self.runtime_error = Some("read-only mode blocks local mutations".to_owned());
+                return Vec::new();
+            }
+            if self.mutation_in_flight.is_some() {
+                if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+                    current.error = Some("another local mutation is already running".to_owned());
+                }
+                return Vec::new();
+            }
+            if let LocalMutation::Disconnect { accept_lose_ssh } = &mut mutation {
+                *accept_lose_ssh = state.lose_ssh_checked;
+            }
+            let mutation_id = self.next_mutation_id;
+            self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+            if !self.mutation_lock.hold(mutation_id) {
+                self.runtime_error = Some("local mutation lock is held".to_owned());
+                return Vec::new();
+            }
+            let Some(executable) = self.local_executable.clone() else {
+                self.mutation_lock.release(mutation_id);
+                self.runtime_error = Some("local executable has not been discovered".to_owned());
+                return Vec::new();
+            };
+            let task_id = self.tasks.create(
+                mutation.action_id(),
+                mutation_target_label(&mutation),
+                self.now,
+                true,
+            );
+            let (fields, argv) = mutation_metadata(
+                &executable.path,
+                &mutation,
+                self.resolved_config.local.command_timeout,
+            );
+            let _ = self.tasks.set_local_metadata(task_id, fields, argv);
+            self.mutation_in_flight = Some(mutation_id);
+            self.overlays.pop();
+            return vec![Effect::StartLocalMutation {
+                mutation_id,
+                task_id,
+                executable,
+                timeout: self.resolved_config.local.command_timeout,
+                mutation,
+            }];
+        }
+        if let Some(command) = state.handoff {
+            if self.resolved_config.read_only
+                && matches!(
+                    state.action_id,
+                    ActionId::LocalAccountLogin | ActionId::LocalAccountLogout
+                )
+            {
+                self.runtime_error = Some("read-only mode blocks local account changes".to_owned());
+                return Vec::new();
+            }
+            let args = command.args();
+            let task_id = self.tasks.create(
+                state.action_id,
+                match state.action_id {
+                    ActionId::LocalAccountLogin => "tailscale login",
+                    ActionId::LocalAccountLogout => "tailscale logout",
+                    ActionId::LocalSshOpen => "Tailscale SSH",
+                    ActionId::LocalNcOpen => "Tailscale netcat",
+                    _ => "interactive terminal",
+                },
+                self.now,
+                false,
+            );
+            let requested_fields = match state.action_id {
+                ActionId::LocalSshOpen => vec!["host".to_owned(), "username".to_owned()],
+                ActionId::LocalNcOpen => vec!["host".to_owned(), "port".to_owned()],
+                ActionId::LocalAccountLogin | ActionId::LocalAccountLogout => Vec::new(),
+                _ => Vec::new(),
+            };
+            let _ = self
+                .tasks
+                .set_local_metadata(task_id, requested_fields, redacted_argv(&args));
+            self.interactive_handoff_active = true;
+            self.overlays.pop();
+            return vec![Effect::StartTerminalHandoff { task_id, command }];
+        }
+        Vec::new()
+    }
+
+    pub fn exit_node_candidates(&self) -> Vec<ExitNodeCandidate> {
+        let Some(snapshot) = self.local_resource.snapshot.as_ref() else {
+            return Vec::new();
+        };
+        let mut candidates = snapshot
+            .peers
+            .iter()
+            .filter(|device| device.exit_node_option)
+            .map(|device| ExitNodeCandidate {
+                device_id: device.id.clone(),
+                display_name: device.display_name.clone(),
+                dns_name: device.dns_name.clone(),
+                tailscale_ips: device.tailscale_ips.clone(),
+                online: device.online,
+                path: device.path.clone(),
+                last_probe_ms: match &device.path {
+                    crate::domain::device::ConnectionPath::Direct { latency_ms } => *latency_ms,
+                    _ => None,
+                },
+                selected: self.local_preferences.exit_node_id.value.as_ref() == Some(&device.id.0)
+                    || self
+                        .local_preferences
+                        .exit_node_ip
+                        .value
+                        .as_deref()
+                        .is_some_and(|ip| {
+                            device.tailscale_ips.iter().any(|candidate| candidate == ip)
+                        }),
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            online_rank(left.online)
+                .cmp(&online_rank(right.online))
+                .then_with(|| probe_rank(left.last_probe_ms).cmp(&probe_rank(right.last_probe_ms)))
+                .then_with(|| left.path.label().cmp(right.path.label()))
+                .then_with(|| {
+                    left.display_name
+                        .to_ascii_lowercase()
+                        .cmp(&right.display_name.to_ascii_lowercase())
+                })
+                .then_with(|| left.device_id.cmp(&right.device_id))
+        });
+        candidates
     }
 
     fn start_refresh(&mut self, _all: bool) -> Vec<Effect> {
@@ -1545,6 +2648,32 @@ impl App {
                             self.resolved_config.local.refresh_interval,
                         ))
                     });
+                let mut effects = Vec::new();
+                if self.local_capabilities.set
+                    && let Some(executable) = self.local_executable.clone()
+                {
+                    effects.push(Effect::StartLocalPreferences {
+                        executable,
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                }
+                if self.local_capabilities.accounts
+                    && let Some(executable) = self.local_executable.clone()
+                {
+                    effects.push(Effect::StartLocalAccounts {
+                        executable,
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                }
+                if self.local_capabilities.syspolicy
+                    && let Some(executable) = self.local_executable.clone()
+                {
+                    effects.push(Effect::StartLocalPolicy {
+                        executable,
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                }
+                return effects;
             }
             LocalEvent::StatusFailed {
                 generation,
@@ -1563,6 +2692,215 @@ impl App {
                 };
                 self.devices_resource.error = Some(failure.detail);
                 self.schedule_failure_backoff();
+            }
+            LocalEvent::PreferencesSucceeded { preferences } => {
+                self.local_preferences = *preferences;
+                apply_system_policy_editability(&mut self.local_preferences, &self.system_policy);
+            }
+            LocalEvent::PreferencesFailed { failure } => {
+                self.local_preferences = match failure.kind {
+                    crate::domain::source::LocalFailureKind::UnsupportedClient => {
+                        LocalPreferences::unavailable(self.now)
+                    }
+                    crate::domain::source::LocalFailureKind::PermissionDenied => {
+                        LocalPreferences::permission_denied(self.now)
+                    }
+                    _ => LocalPreferences::empty(self.now),
+                };
+                self.devices_resource.error = Some(failure.detail.clone());
+            }
+            LocalEvent::AccountsSucceeded { accounts } => {
+                self.local_accounts = accounts;
+            }
+            LocalEvent::AccountsFailed { failure } => {
+                self.devices_resource.error = Some(failure.detail);
+            }
+            LocalEvent::PolicySucceeded { entries } => {
+                self.system_policy = entries;
+                self.system_policy_failure = None;
+                apply_system_policy_editability(&mut self.local_preferences, &self.system_policy);
+            }
+            LocalEvent::PolicyFailed { failure } => {
+                self.system_policy_failure = Some(failure);
+            }
+            LocalEvent::MutationFinished {
+                mutation_id,
+                task_id,
+                mutation,
+                result,
+                snapshot,
+                preferences,
+                accounts,
+                policy,
+                ..
+            } => {
+                if self.mutation_in_flight != Some(mutation_id) {
+                    return Vec::new();
+                }
+                let needs_login = matches!(&mutation, LocalMutation::Connect)
+                    && snapshot.as_ref().is_some_and(|snapshot| {
+                        matches!(&snapshot.backend_state, LocalState::NeedsLogin { .. })
+                    });
+                let account_changed = matches!(
+                    &mutation,
+                    LocalMutation::AccountSwitch { .. } | LocalMutation::AccountRemove { .. }
+                );
+                let preference_read_required = matches!(
+                    &mutation,
+                    LocalMutation::Preferences(_)
+                        | LocalMutation::ExitNode(_)
+                        | LocalMutation::Advertisements(_)
+                );
+                let preference_read_failed = preference_read_required
+                    && preferences.is_none()
+                    && !matches!(
+                        &result,
+                        crate::domain::mutation::MutationResult::CancelledBeforeDispatch { .. }
+                    );
+                let account_refresh_required = account_changed
+                    && !matches!(
+                        &result,
+                        crate::domain::mutation::MutationResult::CommandFailed { .. }
+                            | crate::domain::mutation::MutationResult::CancelledBeforeDispatch { .. }
+                    );
+                self.mutation_lock.release(mutation_id);
+                self.mutation_in_flight = None;
+                let detail = result.detail().to_owned();
+                let summary = result.summary().to_owned();
+                let cancelled_before_dispatch = matches!(
+                    &result,
+                    crate::domain::mutation::MutationResult::CancelledBeforeDispatch { .. }
+                );
+                let _ = self.tasks.set_exit_status(task_id, result.exit_status());
+                let _ = self.tasks.set_verification(
+                    task_id,
+                    if cancelled_before_dispatch {
+                        "not dispatched"
+                    } else if result.is_success() {
+                        "verified"
+                    } else {
+                        "not verified"
+                    },
+                );
+                if cancelled_before_dispatch {
+                    let _ = self.tasks.cancel(task_id, self.now, &detail);
+                    self.add_notification(
+                        task_id,
+                        crate::task::TaskResultKind::Cancelled,
+                        &summary,
+                    );
+                } else if result.is_success() {
+                    let _ = self.tasks.succeed(task_id, self.now, &summary, &detail);
+                    self.add_notification(task_id, crate::task::TaskResultKind::Success, &summary);
+                } else {
+                    let _ = self.tasks.fail(task_id, self.now, &summary, &detail);
+                    self.add_notification(task_id, crate::task::TaskResultKind::Failure, &summary);
+                }
+                self.tasks
+                    .evict_completed(self.resolved_config.history.max_tasks);
+                if account_refresh_required {
+                    self.invalidate_local_state();
+                }
+                if let Some(snapshot) = snapshot {
+                    self.apply_fresh_snapshot(*snapshot);
+                }
+                if let Some(preferences) = preferences {
+                    self.local_preferences = *preferences;
+                }
+                if preference_read_failed {
+                    self.local_preferences = LocalPreferences::empty(self.now);
+                }
+                if let Some(accounts) = accounts {
+                    self.local_accounts = accounts;
+                }
+                if let Some(policy) = policy {
+                    self.system_policy = policy;
+                    self.system_policy_failure = None;
+                }
+                apply_system_policy_editability(&mut self.local_preferences, &self.system_policy);
+                if needs_login {
+                    return self.open_login_confirmation();
+                }
+                if account_refresh_required {
+                    return self.start_account_rediscovery();
+                }
+            }
+            LocalEvent::HandoffFinished { task_id, result } => {
+                self.interactive_handoff_active = false;
+                let mut effects = vec![Effect::ResumeTerminal];
+                let refresh_after_handoff = self.tasks.get(task_id).is_some_and(|task| {
+                    matches!(
+                        task.action_id,
+                        ActionId::LocalAccountLogin | ActionId::LocalAccountLogout
+                    )
+                });
+                match result {
+                    Ok(result) => {
+                        let summary = format!(
+                            "{} exited with status {}",
+                            result.operation.label(),
+                            result
+                                .exit_status
+                                .map_or_else(|| "signal".to_owned(), |value| value.to_string())
+                        );
+                        let _ = self.tasks.set_exit_status(task_id, result.exit_status);
+                        let _ = self.tasks.set_verification(task_id, "not applicable");
+                        let completed = result.exit_status == Some(0);
+                        if completed {
+                            let _ = self.tasks.succeed(
+                                task_id,
+                                self.now,
+                                &summary,
+                                "interactive terminal handoff completed",
+                            );
+                        } else {
+                            let _ = self.tasks.fail(
+                                task_id,
+                                self.now,
+                                "interactive terminal child returned a non-zero status",
+                                &summary,
+                            );
+                        }
+                        self.add_notification(
+                            task_id,
+                            if completed {
+                                crate::task::TaskResultKind::Success
+                            } else {
+                                crate::task::TaskResultKind::Failure
+                            },
+                            if completed {
+                                &summary
+                            } else {
+                                "interactive terminal handoff failed"
+                            },
+                        );
+                        self.tasks
+                            .evict_completed(self.resolved_config.history.max_tasks);
+                        if refresh_after_handoff {
+                            effects.extend(self.start_refresh(false));
+                        }
+                    }
+                    Err(detail) => {
+                        let _ = self.tasks.fail(
+                            task_id,
+                            self.now,
+                            "interactive handoff failed",
+                            &detail,
+                        );
+                        self.add_notification(
+                            task_id,
+                            crate::task::TaskResultKind::Failure,
+                            "interactive handoff failed",
+                        );
+                        self.tasks
+                            .evict_completed(self.resolved_config.history.max_tasks);
+                    }
+                }
+                return effects;
+            }
+            LocalEvent::TerminalResumeFailed { detail } => {
+                self.runtime_error = Some(format!("could not re-enter Tale terminal: {detail}"));
+                return self.request_shutdown(ShutdownReason::RenderFailure);
             }
             LocalEvent::DiagnosticProgress {
                 task_id,
@@ -1619,6 +2957,52 @@ impl App {
         self.devices_resource.health = SourceHealth::Healthy;
         self.devices_resource.error = None;
         self.reconcile_selection(None);
+    }
+
+    fn apply_fresh_snapshot(&mut self, snapshot: LocalSnapshot) {
+        let generation = self.local_resource.generation.saturating_add(1);
+        self.local_resource.generation = generation;
+        self.local_state = snapshot.backend_state.clone();
+        self.apply_local_snapshot(&snapshot);
+        let _ = self.local_resource.succeed(generation, snapshot);
+        self.local_next_refresh = Some(instant_after(
+            Instant::now(),
+            self.resolved_config.local.refresh_interval,
+        ));
+    }
+
+    fn invalidate_local_state(&mut self) {
+        self.local_resource.snapshot = None;
+        self.local_resource.status = LocalResourceStatus::NeverLoaded;
+        self.local_resource.generation = self.local_resource.generation.saturating_add(1);
+        self.devices_resource.snapshot.clear();
+        self.devices_resource.observed_at = None;
+        self.devices_resource.health = SourceHealth::Loading;
+        self.devices_resource.error = None;
+        self.views.devices.selected_id = None;
+        self.views.devices.scroll = 0;
+        self.local_self_id = None;
+        self.local_capabilities = LocalCapabilities::default();
+        self.local_diagnostics.clear();
+        self.local_preferences = LocalPreferences::empty(self.now);
+        self.system_policy.clear();
+        self.system_policy_failure = None;
+    }
+
+    fn start_account_rediscovery(&mut self) -> Vec<Effect> {
+        if self.local_executable.is_none() {
+            return Vec::new();
+        }
+        let generation = self.local_resource.generation.saturating_add(1);
+        self.local_resource.generation = generation;
+        self.local_discovery_in_flight = true;
+        self.local_status_in_flight = false;
+        self.local_next_refresh = None;
+        vec![Effect::StartLocalDiscovery {
+            generation,
+            resolution: local_resolution(&self.resolved_config),
+            timeout: self.resolved_config.local.command_timeout,
+        }]
     }
 
     fn schedule_failure_backoff(&mut self) {
@@ -1910,6 +3294,10 @@ impl App {
             Overlay::TaskInspector(_) => "task",
             Overlay::SortPicker { .. } => "sort",
             Overlay::DiagnosticInput(_) => "diagnostic input",
+            Overlay::Confirmation(_) => "confirm local action",
+            Overlay::OperatorForm(_) => "local operator form",
+            Overlay::AccountPicker(_) => "local accounts",
+            Overlay::HandoffInput(_) => "terminal handoff",
         })
     }
 
@@ -1936,6 +3324,101 @@ impl App {
     }
 }
 
+fn apply_system_policy_editability(
+    preferences: &mut LocalPreferences,
+    policy: &[SystemPolicyEntry],
+) {
+    if policy_forces_any(policy, &["UseTailscaleDNSSettings"]) {
+        mark_policy_managed(&mut preferences.accept_dns);
+    }
+    if policy_forces_any(policy, &["UseTailscaleSubnets"]) {
+        mark_policy_managed(&mut preferences.accept_routes);
+    }
+    if policy_forces_any(policy, &["AllowIncomingConnections"]) {
+        mark_policy_managed(&mut preferences.shields_up);
+    }
+    if policy_forces_any(policy, &["PostureChecking"]) {
+        mark_policy_managed(&mut preferences.report_posture);
+    }
+    if policy_present_any(policy, &["CheckUpdates", "SUEnableAutomaticChecks"]) {
+        mark_policy_managed(&mut preferences.update_check);
+    }
+    if policy_present_any(
+        policy,
+        &["InstallUpdates", "ApplyUpdates", "SUAutomaticallyUpdate"],
+    ) {
+        mark_policy_managed(&mut preferences.automatic_update);
+    }
+    if policy_present(policy, "Hostname") {
+        mark_policy_managed(&mut preferences.hostname);
+    }
+    if policy_present(policy, "ExitNodeID") {
+        mark_policy_managed(&mut preferences.exit_node_id);
+    }
+    if policy_present(policy, "ExitNodeIP") {
+        mark_policy_managed(&mut preferences.exit_node_ip);
+    }
+    if policy_forces_any(policy, &["ExitNodeAllowLANAccess"]) {
+        mark_policy_managed(&mut preferences.exit_node_allow_lan_access);
+    }
+    if policy_present(policy, "AdvertiseExitNode") {
+        mark_policy_managed(&mut preferences.advertised_exit_node);
+    }
+}
+
+fn mark_policy_managed<T>(preference: &mut ObservedPreference<T>) {
+    if preference.value.is_some() {
+        preference.editability = PreferenceEditability::PolicyManaged;
+    }
+}
+
+fn policy_present(policy: &[SystemPolicyEntry], name: &str) -> bool {
+    policy.iter().any(|entry| {
+        entry.name.eq_ignore_ascii_case(name) && entry.error.is_none() && entry.value.is_some()
+    })
+}
+
+fn policy_present_any(policy: &[SystemPolicyEntry], names: &[&str]) -> bool {
+    names.iter().any(|name| policy_present(policy, name))
+}
+
+fn policy_forces_any(policy: &[SystemPolicyEntry], names: &[&str]) -> bool {
+    policy.iter().any(|entry| {
+        names
+            .iter()
+            .any(|name| entry.name.eq_ignore_ascii_case(name))
+            && entry.error.is_none()
+            && entry.value.as_deref().is_some_and(|value| {
+                value.eq_ignore_ascii_case("always")
+                    || value.eq_ignore_ascii_case("never")
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("false")
+            })
+    })
+}
+
+fn policy_forces(policy: &[SystemPolicyEntry], name: &str) -> bool {
+    policy.iter().any(|entry| {
+        entry.name.eq_ignore_ascii_case(name)
+            && entry.error.is_none()
+            && entry
+                .value
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+    })
+}
+
+fn policy_disallows_exit_override(policy: &[SystemPolicyEntry]) -> bool {
+    policy.iter().any(|entry| {
+        entry.name.eq_ignore_ascii_case("ExitNode.AllowOverride")
+            && entry.error.is_none()
+            && entry
+                .value
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("false"))
+    })
+}
+
 fn route_candidates(input: &str) -> Vec<Route> {
     let value = input.to_ascii_lowercase();
     [
@@ -1956,6 +3439,287 @@ fn route_candidates(input: &str) -> Vec<Route> {
     .collect()
 }
 
+fn is_mutating_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::LocalConnect
+            | ActionId::LocalDisconnect
+            | ActionId::LocalPreferencesEdit
+            | ActionId::LocalExitNodeSelect
+            | ActionId::LocalRoutesEditAdvertisements
+            | ActionId::LocalAccountSwitch
+            | ActionId::LocalAccountLogin
+            | ActionId::LocalAccountLogout
+            | ActionId::LocalAccountRemove
+            | ActionId::LocalSyspolicyReload
+    )
+}
+
+fn is_phase_three_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::LocalConnect
+            | ActionId::LocalDisconnect
+            | ActionId::LocalPreferencesEdit
+            | ActionId::LocalExitNodeSelect
+            | ActionId::LocalRoutesEditAdvertisements
+            | ActionId::LocalAccountSwitch
+            | ActionId::LocalAccountLogin
+            | ActionId::LocalAccountLogout
+            | ActionId::LocalAccountRemove
+            | ActionId::LocalSshOpen
+            | ActionId::LocalNcOpen
+            | ActionId::LocalSyspolicyReload
+    )
+}
+
+fn parse_preference_request(input: &str) -> Result<PreferenceRequest, String> {
+    let mut request = PreferenceRequest::default();
+    if input.trim().is_empty() {
+        return Err("enter at least one field=value pair".to_owned());
+    }
+    for pair in input.split(',') {
+        let (name, value) = pair
+            .trim()
+            .split_once('=')
+            .ok_or_else(|| "preferences use comma-separated field=value pairs".to_owned())?;
+        match name.trim() {
+            "accept-dns" => request.accept_dns = Some(parse_bool(value)?),
+            "accept-routes" => request.accept_routes = Some(parse_bool(value)?),
+            "shields-up" => request.shields_up = Some(parse_bool(value)?),
+            "ssh" => request.ssh = Some(parse_bool(value)?),
+            "auto-update" => request.automatic_update = Some(parse_bool(value)?),
+            "update-check" => request.update_check = Some(parse_bool(value)?),
+            "report-posture" => request.report_posture = Some(parse_bool(value)?),
+            "hostname" => request.hostname = Some(value.to_owned()),
+            "nickname" => request.nickname = Some(value.to_owned()),
+            "webclient" => request.web_client = Some(parse_bool(value)?),
+            _ => return Err(format!("unsupported preference field: {name}")),
+        }
+    }
+    if request.hostname.as_deref().is_some_and(str::is_empty)
+        || request.nickname.as_deref().is_some_and(str::is_empty)
+    {
+        return Err("hostname and nickname must be non-empty".to_owned());
+    }
+    Ok(request)
+}
+
+fn parse_advertisement_request(input: &str) -> Result<AdvertisementRequest, String> {
+    if input.trim().is_empty() {
+        return Err("enter semicolon-separated advertisement fields".to_owned());
+    }
+    let mut request = AdvertisementRequest::default();
+    for pair in input.split(';') {
+        let (name, value) = pair
+            .trim()
+            .split_once('=')
+            .ok_or_else(|| "advertisements use field=value;field=value".to_owned())?;
+        let value = value.trim();
+        match name.trim() {
+            "routes" => {
+                request.routes = Some(if value.trim().is_empty() || value == "empty" {
+                    Vec::new()
+                } else {
+                    parse_route_set(value).map_err(|error| error.to_string())?
+                });
+            }
+            "exit" => request.advertise_exit_node = Some(parse_bool(value)?),
+            "connector" => request.advertise_connector = Some(parse_bool(value)?),
+            "relay-port" => {
+                request.relay_server_port = Some(if value == "empty" || value.is_empty() {
+                    None
+                } else {
+                    Some(
+                        value
+                            .parse::<u16>()
+                            .map_err(|_| "relay-port must be empty, 0, or 1-65535".to_owned())?,
+                    )
+                });
+            }
+            "relay-endpoints" => {
+                request.relay_server_static_endpoints =
+                    Some(if value.trim().is_empty() || value == "empty" {
+                        Vec::new()
+                    } else {
+                        parse_static_endpoints(value).map_err(|error| error.to_string())?
+                    });
+            }
+            "accept-risk" if value == "mac-app-connector" => {
+                request.accept_mac_app_connector_risk = true;
+            }
+            _ => return Err(format!("unsupported advertisement field: {name}")),
+        }
+    }
+    if request.is_empty() {
+        return Err("no advertisement fields were changed".to_owned());
+    }
+    if request.advertise_connector == Some(true) && !request.accept_mac_app_connector_risk {
+        return Err("enabling the app connector requires accept-risk=mac-app-connector".to_owned());
+    }
+    if request.accept_mac_app_connector_risk && request.advertise_connector != Some(true) {
+        return Err("mac-app-connector risk acceptance requires connector=true".to_owned());
+    }
+    Ok(request)
+}
+
+fn parse_bool(value: &str) -> Result<bool, String> {
+    match value.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err("boolean values must be true or false".to_owned()),
+    }
+}
+
+fn boolean_text(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "on",
+        Some(false) => "off",
+        None => "unknown",
+    }
+}
+
+fn preference_field_editable(preferences: &LocalPreferences, field: PreferenceField) -> bool {
+    match field {
+        PreferenceField::AcceptDns => preferences.accept_dns.can_edit(),
+        PreferenceField::AcceptRoutes => preferences.accept_routes.can_edit(),
+        PreferenceField::ShieldsUp => preferences.shields_up.can_edit(),
+        PreferenceField::Ssh => preferences.ssh.can_edit(),
+        PreferenceField::AutomaticUpdate => preferences.automatic_update.can_edit(),
+        PreferenceField::UpdateCheck => preferences.update_check.can_edit(),
+        PreferenceField::ReportPosture => preferences.report_posture.can_edit(),
+        PreferenceField::Hostname => preferences.hostname.can_edit(),
+        PreferenceField::Nickname => preferences.nickname.can_edit(),
+        PreferenceField::WebClient => preferences.web_client.can_edit(),
+    }
+}
+
+fn text_value(value: Option<&str>) -> &str {
+    match value {
+        Some(value) => value,
+        None => "unknown",
+    }
+}
+
+fn mutation_target_label(mutation: &LocalMutation) -> String {
+    match mutation {
+        LocalMutation::Connect => "local node".to_owned(),
+        LocalMutation::Disconnect { .. } => "local node".to_owned(),
+        LocalMutation::Preferences(request) => request
+            .changed_fields()
+            .iter()
+            .map(|field| field.label())
+            .collect::<Vec<_>>()
+            .join(", "),
+        LocalMutation::ExitNode(_) => "exit node selection".to_owned(),
+        LocalMutation::Advertisements(_) => "local advertisements".to_owned(),
+        LocalMutation::AccountSwitch { .. } => "account profile switch".to_owned(),
+        LocalMutation::AccountRemove { .. } => "local account profile removal".to_owned(),
+        LocalMutation::SyspolicyReload => "system policy".to_owned(),
+    }
+}
+
+fn mutation_metadata(
+    path: &std::path::Path,
+    mutation: &LocalMutation,
+    timeout: Duration,
+) -> (Vec<String>, Vec<String>) {
+    let fields = match mutation {
+        LocalMutation::Preferences(request) => request
+            .changed_fields()
+            .iter()
+            .map(|field| field.label().to_owned())
+            .collect(),
+        LocalMutation::ExitNode(_) => vec!["exit node".to_owned(), "LAN access".to_owned()],
+        LocalMutation::Advertisements(request) => {
+            let mut values = Vec::new();
+            if request.routes.is_some() {
+                values.push("advertised routes".to_owned());
+            }
+            if request.advertise_exit_node.is_some() {
+                values.push("advertised exit node".to_owned());
+            }
+            if request.advertise_connector.is_some() {
+                values.push("app connector".to_owned());
+            }
+            if request.relay_server_port.is_some() {
+                values.push("relay server port".to_owned());
+            }
+            if request.relay_server_static_endpoints.is_some() {
+                values.push("relay static endpoints".to_owned());
+            }
+            values
+        }
+        LocalMutation::Connect | LocalMutation::Disconnect { .. } => vec!["state".to_owned()],
+        LocalMutation::AccountSwitch { .. } | LocalMutation::AccountRemove { .. } => {
+            vec!["account_id".to_owned()]
+        }
+        LocalMutation::SyspolicyReload => vec!["system policy".to_owned()],
+    };
+    let command = match mutation {
+        LocalMutation::Connect => Some(crate::local::client::up_command(path, timeout)),
+        LocalMutation::Disconnect { accept_lose_ssh } => Some(crate::local::client::down_command(
+            path,
+            timeout,
+            *accept_lose_ssh,
+        )),
+        LocalMutation::Preferences(request) => {
+            crate::local::preferences::set_command(path, timeout, request).ok()
+        }
+        LocalMutation::ExitNode(request) => Some(crate::local::preferences::exit_node_command(
+            path, timeout, request,
+        )),
+        LocalMutation::Advertisements(request) => {
+            crate::local::preferences::advertisement_command(path, timeout, request).ok()
+        }
+        LocalMutation::AccountSwitch { account_id } => {
+            crate::local::accounts::switch_command(path, timeout, account_id).ok()
+        }
+        LocalMutation::AccountRemove { account_id } => {
+            crate::local::accounts::remove_command(path, timeout, account_id).ok()
+        }
+        LocalMutation::SyspolicyReload => Some(crate::local::policy::reload_command(path, timeout)),
+    };
+    let argv = command.map_or_else(Vec::new, |command| redacted_argv(&command.args));
+    (fields, argv)
+}
+
+fn redacted_argv(args: &[std::ffi::OsString]) -> Vec<String> {
+    let mut redactor = crate::domain::redaction::Redactor::new();
+    args.iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            let value = arg.to_string_lossy();
+            if index > 0
+                && !value.starts_with('-')
+                && !matches!(value.as_ref(), "set" | "switch" | "remove")
+            {
+                return redactor.identity(&value);
+            }
+            if let Some((prefix, raw_value)) = value.split_once('=') {
+                let redacted_value = raw_value
+                    .split(',')
+                    .map(|part| {
+                        if part.is_empty()
+                            || matches!(part, "true" | "false" | "auto:any")
+                            || part.parse::<u16>().is_ok()
+                        {
+                            part.to_owned()
+                        } else if matches!(prefix, "--hostname" | "--nickname" | "--exit-node") {
+                            redactor.identity(part)
+                        } else {
+                            redactor.text(part)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                return format!("{prefix}={redacted_value}");
+            }
+            redactor.text(&value)
+        })
+        .collect()
+}
+
 fn route_aliases(route: Route) -> &'static [&'static str] {
     match route {
         Route::Overview => &["ov", "home"],
@@ -1965,6 +3729,18 @@ fn route_aliases(route: Route) -> &'static [&'static str] {
         Route::Activity => &["tasks"],
         Route::Settings => &["config"],
     }
+}
+
+fn online_rank(value: Option<bool>) -> u8 {
+    match value {
+        Some(true) => 0,
+        Some(false) => 1,
+        None => 2,
+    }
+}
+
+fn probe_rank(value: Option<u16>) -> (u8, u16) {
+    value.map_or((1, u16::MAX), |value| (0, value))
 }
 
 fn local_resolution(config: &ResolvedConfig) -> ExecutableResolution {

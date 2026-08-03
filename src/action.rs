@@ -33,6 +33,18 @@ pub enum ActionId {
     LocalDnsQuery,
     LocalWhois,
     DiagnosticCopy,
+    LocalConnect,
+    LocalDisconnect,
+    LocalPreferencesEdit,
+    LocalExitNodeSelect,
+    LocalRoutesEditAdvertisements,
+    LocalAccountSwitch,
+    LocalAccountLogin,
+    LocalAccountLogout,
+    LocalAccountRemove,
+    LocalSshOpen,
+    LocalNcOpen,
+    LocalSyspolicyReload,
 }
 
 impl ActionId {
@@ -69,6 +81,18 @@ impl ActionId {
             Self::LocalDnsQuery => "local.dns_query",
             Self::LocalWhois => "local.whois",
             Self::DiagnosticCopy => "diagnostic.copy",
+            Self::LocalConnect => "local.connect",
+            Self::LocalDisconnect => "local.disconnect",
+            Self::LocalPreferencesEdit => "local.preferences.edit",
+            Self::LocalExitNodeSelect => "local.exit_node.select",
+            Self::LocalRoutesEditAdvertisements => "local.routes.edit_advertisements",
+            Self::LocalAccountSwitch => "local.account.switch",
+            Self::LocalAccountLogin => "local.account.login",
+            Self::LocalAccountLogout => "local.account.logout",
+            Self::LocalAccountRemove => "local.account.remove",
+            Self::LocalSshOpen => "local.ssh.open",
+            Self::LocalNcOpen => "local.nc.open",
+            Self::LocalSyspolicyReload => "local.syspolicy.reload",
         }
     }
 
@@ -105,6 +129,18 @@ impl ActionId {
             Self::LocalDnsQuery,
             Self::LocalWhois,
             Self::DiagnosticCopy,
+            Self::LocalConnect,
+            Self::LocalDisconnect,
+            Self::LocalPreferencesEdit,
+            Self::LocalExitNodeSelect,
+            Self::LocalRoutesEditAdvertisements,
+            Self::LocalAccountSwitch,
+            Self::LocalAccountLogin,
+            Self::LocalAccountLogout,
+            Self::LocalAccountRemove,
+            Self::LocalSshOpen,
+            Self::LocalNcOpen,
+            Self::LocalSyspolicyReload,
         ]
     }
 }
@@ -148,6 +184,17 @@ pub enum Risk {
     Reversible,
     Disruptive,
     DestructiveOrSecret,
+}
+
+impl Risk {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Observe => "observe",
+            Self::Reversible => "reversible",
+            Self::Disruptive => "disruptive",
+            Self::DestructiveOrSecret => "destructive or secret",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -631,8 +678,174 @@ pub fn phase_two_actions() -> Vec<ActionSpec> {
     ]
 }
 
+pub fn phase_three_actions() -> Vec<ActionSpec> {
+    vec![
+        ActionSpec {
+            id: ActionId::LocalConnect,
+            label: "Connect local node",
+            description: "Connect this node without changing preferences",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Reversible,
+        },
+        ActionSpec {
+            id: ActionId::LocalDisconnect,
+            label: "Disconnect local node",
+            description: "Disconnect this node after explicit confirmation",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
+        },
+        ActionSpec {
+            id: ActionId::LocalPreferencesEdit,
+            label: "Edit local preferences",
+            description: "Edit supported preferences with preview and verification",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Reversible,
+        },
+        ActionSpec {
+            id: ActionId::LocalExitNodeSelect,
+            label: "Select exit node",
+            description: "Choose or clear this node's exit node",
+            contexts: &[
+                ActionContext::Collection,
+                ActionContext::Detail,
+                ActionContext::Root,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Reversible,
+        },
+        ActionSpec {
+            id: ActionId::LocalRoutesEditAdvertisements,
+            label: "Edit advertisements",
+            description: "Edit this node's route, connector, and relay advertisements",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Reversible,
+        },
+        ActionSpec {
+            id: ActionId::LocalAccountSwitch,
+            label: "Switch account",
+            description: "Switch this local client to another account profile",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Reversible,
+        },
+        ActionSpec {
+            id: ActionId::LocalAccountLogin,
+            label: "Add account",
+            description: "Open Tailscale login in the terminal",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Reversible,
+        },
+        ActionSpec {
+            id: ActionId::LocalAccountLogout,
+            label: "Log out account",
+            description: "Log out this local account after confirmation",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
+        },
+        ActionSpec {
+            id: ActionId::LocalAccountRemove,
+            label: "Remove local account",
+            description: "Remove a local account profile after typed confirmation",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::DestructiveOrSecret,
+        },
+        ActionSpec {
+            id: ActionId::LocalSshOpen,
+            label: "Open Tailscale SSH",
+            description: "Open a terminal session to the selected device",
+            contexts: &[ActionContext::Collection, ActionContext::Detail],
+            selection_rule: SelectionRule::One,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
+        },
+        ActionSpec {
+            id: ActionId::LocalNcOpen,
+            label: "Open Tailscale netcat",
+            description: "Open a terminal netcat session to the selected device",
+            contexts: &[ActionContext::Collection, ActionContext::Detail],
+            selection_rule: SelectionRule::One,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
+        },
+        ActionSpec {
+            id: ActionId::LocalSyspolicyReload,
+            label: "Reload system policy",
+            description: "Reload local policy and verify it with a fresh list",
+            contexts: &[
+                ActionContext::Root,
+                ActionContext::Collection,
+                ActionContext::Detail,
+            ],
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Reversible,
+        },
+    ]
+}
+
 pub fn all_actions() -> Vec<ActionSpec> {
     let mut actions = phase_one_actions();
     actions.extend(phase_two_actions());
+    actions.extend(phase_three_actions());
     actions
 }

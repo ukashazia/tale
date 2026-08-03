@@ -69,6 +69,10 @@ pub struct Task {
     pub summary: String,
     pub detail: String,
     pub cancellable: bool,
+    pub requested_fields: Vec<String>,
+    pub redacted_argv: Vec<String>,
+    pub exit_status: Option<i32>,
+    pub verification: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -122,6 +126,10 @@ impl TaskStore {
             summary: "queued".to_owned(),
             detail: String::new(),
             cancellable,
+            requested_fields: Vec::new(),
+            redacted_argv: Vec::new(),
+            exit_status: None,
+            verification: None,
         });
         if self.selected.is_none() {
             self.selected = Some(id);
@@ -135,6 +143,36 @@ impl TaskStore {
 
     pub fn get_mut(&mut self, id: TaskId) -> Option<&mut Task> {
         self.tasks.iter_mut().find(|task| task.id == id)
+    }
+
+    pub fn set_local_metadata(
+        &mut self,
+        id: TaskId,
+        requested_fields: Vec<String>,
+        redacted_argv: Vec<String>,
+    ) -> bool {
+        let Some(task) = self.get_mut(id) else {
+            return false;
+        };
+        task.requested_fields = requested_fields;
+        task.redacted_argv = redacted_argv;
+        true
+    }
+
+    pub fn set_exit_status(&mut self, id: TaskId, exit_status: Option<i32>) -> bool {
+        let Some(task) = self.get_mut(id) else {
+            return false;
+        };
+        task.exit_status = exit_status;
+        true
+    }
+
+    pub fn set_verification(&mut self, id: TaskId, verification: impl Into<String>) -> bool {
+        let Some(task) = self.get_mut(id) else {
+            return false;
+        };
+        task.verification = Some(verification.into());
+        true
     }
 
     pub fn all(&self) -> &[Task] {
@@ -178,6 +216,11 @@ impl TaskStore {
             return false;
         };
         match task.state {
+            TaskState::Queued if task.cancellable => {
+                task.state = TaskState::Cancelling;
+                task.summary = "cancelling".to_owned();
+                true
+            }
             TaskState::Running if task.cancellable => {
                 task.state = TaskState::Cancelling;
                 task.summary = "cancelling".to_owned();

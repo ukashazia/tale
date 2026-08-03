@@ -6,13 +6,21 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::domain::Timestamp;
+use crate::domain::preference::{LocalPreferences, PreferenceRequest};
+use crate::domain::route::{AdvertisementRequest, ExitNodeRequest};
 use crate::domain::source::LocalSnapshot;
 use crate::domain::source::{
     ExecutableSource, LocalCapabilities, LocalExecutable, LocalFailure, LocalFailureKind,
     LocalState,
 };
 
+use super::accounts::AccountError;
 use super::dto;
+use super::policy::PolicyError;
+use super::preferences::{
+    PreferenceClient, PreferenceCommandError, PreferenceError, PreferencePlatform,
+    advertisement_command, exit_node_command, set_command,
+};
 use super::process::{self, Cancellation, LocalCommand, LocalOperation, LocalProcessError};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -67,6 +75,14 @@ pub enum ClientError {
         status: Option<i32>,
         detail: String,
     },
+    #[error("{0}")]
+    Preferences(PreferenceError),
+    #[error("{0}")]
+    PreferenceCommand(PreferenceCommandError),
+    #[error("{0}")]
+    Accounts(AccountError),
+    #[error("{0}")]
+    Policy(PolicyError),
 }
 
 impl ClientError {
@@ -76,6 +92,10 @@ impl ClientError {
             Self::UnsupportedCommand(operation)
             | Self::UnsupportedOutput { operation, .. }
             | Self::NonZero { operation, .. } => operation.clone(),
+            Self::Preferences(error) => error.operation().to_owned(),
+            Self::PreferenceCommand(_) => "preferences".to_owned(),
+            Self::Accounts(_) => "accounts".to_owned(),
+            Self::Policy(_) => "system policy".to_owned(),
         }
     }
 
@@ -158,6 +178,47 @@ impl ClientError {
                     true,
                 )
             }
+            Self::Preferences(error) => LocalFailure::new(
+                match error {
+                    PreferenceError::PermissionDenied => LocalFailureKind::PermissionDenied,
+                    PreferenceError::UnsupportedPlatform { .. }
+                    | PreferenceError::UnsupportedVersion { .. }
+                    | PreferenceError::HttpStatus {
+                        status: 404 | 405 | 501,
+                    } => LocalFailureKind::UnsupportedClient,
+                    PreferenceError::TimedOut => LocalFailureKind::TimedOut,
+                    PreferenceError::Cancelled => LocalFailureKind::Cancelled,
+                    PreferenceError::Connection { .. } => LocalFailureKind::DaemonUnavailable,
+                    PreferenceError::HttpStatus { .. }
+                    | PreferenceError::InvalidResponse { .. }
+                    | PreferenceError::InvalidJson { .. } => LocalFailureKind::InvalidOutput,
+                },
+                operation,
+                "local preferences could not be read",
+                bounded_detail(&error.to_string()),
+                true,
+            ),
+            Self::PreferenceCommand(error) => LocalFailure::new(
+                LocalFailureKind::InvalidOutput,
+                operation,
+                "local preference request was invalid",
+                bounded_detail(&error.to_string()),
+                false,
+            ),
+            Self::Accounts(error) => LocalFailure::new(
+                error.failure_kind(),
+                operation,
+                "local account data was unavailable",
+                bounded_detail(&error.to_string()),
+                error.retryable(),
+            ),
+            Self::Policy(error) => LocalFailure::new(
+                error.failure_kind(),
+                operation,
+                "system policy data was unavailable",
+                bounded_detail(&error.to_string()),
+                error.retryable(),
+            ),
         }
     }
 
@@ -204,6 +265,33 @@ impl ClientError {
             Self::Process(error) => LocalState::DaemonUnavailable {
                 detail: bounded_detail(&error.to_string()),
             },
+            Self::Preferences(error) => match error {
+                PreferenceError::PermissionDenied => LocalState::PermissionDenied {
+                    operation: self.operation(),
+                    detail: "the LocalAPI denied preference access".to_owned(),
+                },
+                PreferenceError::UnsupportedPlatform { .. }
+                | PreferenceError::UnsupportedVersion { .. }
+                | PreferenceError::HttpStatus {
+                    status: 404 | 405 | 501,
+                } => LocalState::UnsupportedClient {
+                    version: version.to_owned(),
+                    reason: self.to_string(),
+                },
+                PreferenceError::InvalidJson { .. } | PreferenceError::InvalidResponse { .. } => {
+                    LocalState::DaemonUnavailable {
+                        detail: self.to_string(),
+                    }
+                }
+                _ => LocalState::DaemonUnavailable {
+                    detail: self.to_string(),
+                },
+            },
+            Self::PreferenceCommand(_) | Self::Accounts(_) | Self::Policy(_) => {
+                LocalState::DaemonUnavailable {
+                    detail: self.to_string(),
+                }
+            }
         }
     }
 }
@@ -288,6 +376,71 @@ impl LocalClient {
         })
     }
 
+    pub async fn preferences(
+        &self,
+        observed_at: Timestamp,
+        cancellation: &Cancellation,
+    ) -> Result<LocalPreferences, ClientError> {
+        PreferenceClient::new(
+            self.executable.version.clone(),
+            PreferencePlatform::current(),
+            self.timeout,
+        )
+        .get_prefs(observed_at, cancellation)
+        .await
+        .map_err(ClientError::Preferences)
+    }
+
+    pub async fn run_command(
+        &self,
+        command: LocalCommand,
+        cancellation: &Cancellation,
+    ) -> Result<process::LocalCommandResult, ClientError> {
+        let result = process::run(command, cancellation)
+            .await
+            .map_err(ClientError::Process)?;
+        if result.exit_status != Some(0) {
+            return Err(ClientError::NonZero {
+                operation: result.operation.label(),
+                status: result.exit_status,
+                detail: bounded_output(&result.stderr),
+            });
+        }
+        Ok(result)
+    }
+
+    pub async fn set_preferences(
+        &self,
+        request: &PreferenceRequest,
+        cancellation: &Cancellation,
+    ) -> Result<process::LocalCommandResult, ClientError> {
+        let command = set_command(&self.executable.path, self.timeout, request)
+            .map_err(ClientError::PreferenceCommand)?;
+        self.run_command(command, cancellation).await
+    }
+
+    pub async fn set_exit_node(
+        &self,
+        request: &ExitNodeRequest,
+        cancellation: &Cancellation,
+    ) -> Result<process::LocalCommandResult, ClientError> {
+        self.run_command(
+            exit_node_command(&self.executable.path, self.timeout, request),
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn set_advertisements(
+        &self,
+        request: &AdvertisementRequest,
+        cancellation: &Cancellation,
+    ) -> Result<process::LocalCommandResult, ClientError> {
+        let command = advertisement_command(&self.executable.path, self.timeout, request)
+            .map_err(ClientError::PreferenceCommand)?;
+        self.run_command(command, cancellation).await
+    }
+
     pub async fn discover(
         resolution: ResolvedExecutable,
         timeout: Duration,
@@ -326,6 +479,24 @@ pub fn status_command(path: &Path, timeout: Duration) -> LocalCommand {
         vec![OsString::from("status"), OsString::from("--json")],
     )
     .with_timeout(timeout)
+}
+
+pub fn up_command(path: &Path, timeout: Duration) -> LocalCommand {
+    LocalCommand::new(
+        path.as_os_str().to_os_string(),
+        LocalOperation::Up,
+        vec![OsString::from("up")],
+    )
+    .with_timeout(timeout)
+}
+
+pub fn down_command(path: &Path, timeout: Duration, accept_lose_ssh: bool) -> LocalCommand {
+    let mut args = vec![OsString::from("down")];
+    if accept_lose_ssh {
+        args.push(OsString::from("--accept-risk=lose-ssh"));
+    }
+    LocalCommand::new(path.as_os_str().to_os_string(), LocalOperation::Down, args)
+        .with_timeout(timeout)
 }
 
 pub fn resolve_executable(
@@ -377,6 +548,16 @@ async fn probe_capabilities(
     let dns_status = help_available(path, "dns status", timeout, cancellation).await;
     let dns_query = help_available(path, "dns query", timeout, cancellation).await;
     let whois = help_available(path, "whois", timeout, cancellation).await;
+    let connect = help_available(path, "up", timeout, cancellation).await;
+    let disconnect = help_available(path, "down", timeout, cancellation).await;
+    let set = help_available(path, "set", timeout, cancellation).await;
+    let accounts = help_available(path, "switch", timeout, cancellation).await;
+    let account_login = help_available(path, "login", timeout, cancellation).await;
+    let account_logout = help_available(path, "logout", timeout, cancellation).await;
+    let account_remove = help_available(path, "switch remove", timeout, cancellation).await;
+    let syspolicy = help_available(path, "syspolicy", timeout, cancellation).await;
+    let ssh = help_available(path, "ssh", timeout, cancellation).await;
+    let nc = help_available(path, "nc", timeout, cancellation).await;
     LocalCapabilities {
         status_json: status,
         ping,
@@ -385,6 +566,16 @@ async fn probe_capabilities(
         dns_status_json: dns_status,
         dns_query_json: dns_query,
         whois_json: whois,
+        connect,
+        disconnect,
+        set,
+        accounts,
+        account_login,
+        account_logout,
+        account_remove,
+        syspolicy,
+        ssh,
+        nc,
     }
 }
 

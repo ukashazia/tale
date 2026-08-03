@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::domain::mutation::LocalMutation;
 use crate::domain::source::LocalExecutable;
 use crate::local::client::ExecutableResolution;
 use crate::local::diagnostics::DiagnosticRequest;
+use crate::local::handoff::HandoffCommand;
 use crate::mock::{MockLoadScenario, MockTaskBehavior};
 use crate::task::TaskId;
 
@@ -28,6 +30,30 @@ pub enum Effect {
         executable: LocalExecutable,
         timeout: Duration,
     },
+    StartLocalPreferences {
+        executable: LocalExecutable,
+        timeout: Duration,
+    },
+    StartLocalAccounts {
+        executable: LocalExecutable,
+        timeout: Duration,
+    },
+    StartLocalPolicy {
+        executable: LocalExecutable,
+        timeout: Duration,
+    },
+    StartLocalMutation {
+        mutation_id: u64,
+        task_id: TaskId,
+        executable: LocalExecutable,
+        timeout: Duration,
+        mutation: LocalMutation,
+    },
+    StartTerminalHandoff {
+        task_id: TaskId,
+        command: HandoffCommand,
+    },
+    ResumeTerminal,
     StartLocalDiagnostic {
         task_id: TaskId,
         executable: LocalExecutable,

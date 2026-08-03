@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
 use crate::action;
 use crate::app::{App, Overlay};
@@ -20,10 +20,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, overlay: &Overlay) {
         let prefix = if index == state.selected { ">" } else { " " };
         ListItem::new(format!("{prefix} {label} - {description}{availability}"))
     });
-    frame.render_widget(
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected));
+    frame.render_stateful_widget(
         List::new(items)
             .style(theme::normal(app))
             .block(Block::default().borders(Borders::ALL).title("actions")),
         area,
+        &mut list_state,
     );
 }

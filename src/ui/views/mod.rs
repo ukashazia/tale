@@ -3,4 +3,5 @@ pub mod devices;
 pub mod dns;
 pub mod local;
 pub mod overview;
+pub mod routes;
 pub mod settings;

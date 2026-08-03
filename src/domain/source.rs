@@ -31,6 +31,16 @@ pub struct LocalCapabilities {
     pub dns_status_json: bool,
     pub dns_query_json: bool,
     pub whois_json: bool,
+    pub connect: bool,
+    pub disconnect: bool,
+    pub set: bool,
+    pub accounts: bool,
+    pub account_login: bool,
+    pub account_logout: bool,
+    pub account_remove: bool,
+    pub syspolicy: bool,
+    pub ssh: bool,
+    pub nc: bool,
 }
 
 impl LocalCapabilities {
@@ -43,6 +53,16 @@ impl LocalCapabilities {
             dns_status_json: true,
             dns_query_json: true,
             whois_json: true,
+            connect: true,
+            disconnect: true,
+            set: true,
+            accounts: true,
+            account_login: true,
+            account_logout: true,
+            account_remove: true,
+            syspolicy: true,
+            ssh: true,
+            nc: true,
         }
     }
 }

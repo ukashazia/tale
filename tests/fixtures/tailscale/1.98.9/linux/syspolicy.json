@@ -1,0 +1,28 @@
+{
+  "Summary": {
+    "Scope": "Device"
+  },
+  "Settings": {
+    "ssh": {
+      "Origin": {
+        "Name": "fixture",
+        "Scope": "Device"
+      },
+      "Value": true
+    },
+    "accept-dns": {
+      "Origin": {
+        "Name": "default",
+        "Scope": "Device"
+      },
+      "Value": true
+    },
+    "fixture-error": {
+      "Origin": {
+        "Name": "fixture",
+        "Scope": "Device"
+      },
+      "Error": "unsupported policy value type"
+    }
+  }
+}

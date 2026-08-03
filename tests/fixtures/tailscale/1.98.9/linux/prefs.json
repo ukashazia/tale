@@ -1,0 +1,29 @@
+{
+  "WantRunning": true,
+  "LoggedOut": false,
+  "CorpDNS": true,
+  "RouteAll": true,
+  "ShieldsUp": false,
+  "RunSSH": true,
+  "RunWebClient": false,
+  "AutoUpdate": {
+    "Check": true
+  },
+  "PostureChecking": true,
+  "Hostname": "tale-operator",
+  "ProfileName": "Example Tailnet",
+  "ExitNodeID": "",
+  "ExitNodeIP": "",
+  "AutoExitNode": "",
+  "ExitNodeAllowLANAccess": false,
+  "AdvertiseRoutes": [
+    "10.20.0.0/16",
+    "fd7a:115c:a1e0::/48"
+  ],
+  "AppConnector": {
+    "Advertise": false
+  },
+  "RelayServerPort": null,
+  "RelayServerStaticEndpoints": [],
+  "FixtureUnknownField": "ignored"
+}

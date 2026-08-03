@@ -89,11 +89,42 @@ impl<C: TerminalControl> TerminalSession<C> {
         Ok(())
     }
 
+    pub fn suspend(&mut self) -> Result<(), TerminalError> {
+        if self.cleaned {
+            return Err(TerminalError::Operation(
+                "terminal session has already been cleaned up".to_owned(),
+            ));
+        }
+        self.release()
+    }
+
+    pub fn resume(&mut self, mouse: bool) -> Result<(), TerminalError> {
+        if self.cleaned {
+            return Err(TerminalError::Operation(
+                "terminal session has already been cleaned up".to_owned(),
+            ));
+        }
+        if self.acquired != AcquiredStates::default() {
+            return Ok(());
+        }
+        match self.acquire(mouse) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = self.release();
+                Err(error)
+            }
+        }
+    }
+
     pub fn cleanup(&mut self) -> Result<(), TerminalError> {
         if self.cleaned {
             return self.cleanup_error.clone().map_or(Ok(()), Err);
         }
         self.cleaned = true;
+        self.release()
+    }
+
+    fn release(&mut self) -> Result<(), TerminalError> {
         let mut errors = Vec::new();
         if self.acquired.cursor_hidden
             && let Err(error) = self.control.show_cursor()
@@ -236,6 +267,21 @@ impl RealTerminal {
     pub fn restore(&mut self) -> Result<(), TaleError> {
         self.session
             .cleanup()
+            .map_err(|error| TaleError::Terminal(error.to_string()))
+    }
+
+    pub fn suspend_for_handoff(&mut self) -> Result<(), TaleError> {
+        self.session
+            .suspend()
+            .map_err(|error| TaleError::Terminal(error.to_string()))
+    }
+
+    pub fn resume_after_handoff(&mut self) -> Result<(), TaleError> {
+        self.session
+            .resume(false)
+            .map_err(|error| TaleError::Terminal(error.to_string()))?;
+        self.terminal
+            .clear()
             .map_err(|error| TaleError::Terminal(error.to_string()))
     }
 }

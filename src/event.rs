@@ -3,9 +3,14 @@ use std::time::Instant;
 use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind};
 
 use crate::domain::Timestamp;
+use crate::domain::account::LocalAccount;
 use crate::domain::device::Device;
 use crate::domain::diagnostic::{DiagnosticResult, NetcheckObservation, PingSample};
+use crate::domain::mutation::{LocalMutation, MutationResult};
+use crate::domain::preference::LocalPreferences;
 use crate::domain::source::{LocalExecutable, LocalFailure, LocalSnapshot};
+use crate::local::handoff::HandoffResult;
+use crate::local::policy::SystemPolicyEntry;
 use crate::mock::MockScenario;
 use crate::task::{Progress, TaskId};
 
@@ -110,6 +115,42 @@ pub enum LocalEvent {
     StatusFailed {
         generation: u64,
         failure: LocalFailure,
+    },
+    PreferencesSucceeded {
+        preferences: Box<LocalPreferences>,
+    },
+    PreferencesFailed {
+        failure: LocalFailure,
+    },
+    AccountsSucceeded {
+        accounts: Vec<LocalAccount>,
+    },
+    AccountsFailed {
+        failure: LocalFailure,
+    },
+    PolicySucceeded {
+        entries: Vec<SystemPolicyEntry>,
+    },
+    PolicyFailed {
+        failure: LocalFailure,
+    },
+    MutationFinished {
+        mutation_id: u64,
+        task_id: TaskId,
+        action_id: crate::action::ActionId,
+        mutation: LocalMutation,
+        result: MutationResult,
+        snapshot: Option<Box<LocalSnapshot>>,
+        preferences: Option<Box<LocalPreferences>>,
+        accounts: Option<Vec<LocalAccount>>,
+        policy: Option<Vec<SystemPolicyEntry>>,
+    },
+    HandoffFinished {
+        task_id: TaskId,
+        result: Result<HandoffResult, String>,
+    },
+    TerminalResumeFailed {
+        detail: String,
     },
     DiagnosticProgress {
         task_id: TaskId,

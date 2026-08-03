@@ -45,6 +45,13 @@ fn app() -> Option<App> {
 fn only_valid_state_transitions_are_accepted_and_cancellation_is_idempotent() {
     let mut store = TaskStore::new();
     let task = store.create(ActionId::MockCancellable, "fictional task", MOCK_NOW, true);
+    assert!(store.request_cancel(task));
+    assert_eq!(
+        store.get(task).map(|value| value.state),
+        Some(TaskState::Cancelling)
+    );
+    assert!(store.cancel(task, MOCK_NOW, "cancelled before dispatch"));
+    let task = store.create(ActionId::MockCancellable, "fictional task", MOCK_NOW, true);
     assert!(!store.succeed(task, MOCK_NOW, "bad", "bad"));
     assert!(store.start(task));
     assert!(store.request_cancel(task));

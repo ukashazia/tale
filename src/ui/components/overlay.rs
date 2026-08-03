@@ -3,7 +3,9 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
-use crate::ui::components::{action_picker, command_palette, copy_picker, filter, help};
+use crate::ui::components::{
+    action_picker, command_palette, confirm, copy_picker, filter, form, help,
+};
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
@@ -95,15 +97,22 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 area,
             );
         }
+        Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
+        Overlay::OperatorForm(state) => form::render_operator(frame, app, area, state),
+        Overlay::AccountPicker(state) => form::render_accounts(frame, app, area, state),
+        Overlay::HandoffInput(state) => form::render_handoff(frame, app, area, state),
     }
 }
 
 fn centered(area: Rect, overlay: &Overlay) -> Rect {
     let width = match overlay {
         Overlay::Help(_) => area.width.saturating_mul(3) / 4,
-        Overlay::CommandPalette(_) | Overlay::FilterEditor(_) | Overlay::DiagnosticInput(_) => {
-            area.width.saturating_mul(2) / 3
-        }
+        Overlay::CommandPalette(_)
+        | Overlay::FilterEditor(_)
+        | Overlay::DiagnosticInput(_)
+        | Overlay::OperatorForm(_)
+        | Overlay::HandoffInput(_)
+        | Overlay::Confirmation(_) => area.width.saturating_mul(2) / 3,
         _ => area.width.saturating_mul(3) / 5,
     }
     .max(20)
