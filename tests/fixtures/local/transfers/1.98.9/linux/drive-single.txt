@@ -1,0 +1,2 @@
+NAME     PATH                    AS
+docs     /srv/tale/docs          alice

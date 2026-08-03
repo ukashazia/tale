@@ -1,0 +1,3 @@
+NAME     PATH                    AS
+docs     /srv/tale/docs          alice
+media    /srv/tale/media         bob

@@ -32,6 +32,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Route::Dns => views::dns::render(frame, app, layout.content),
         Route::Activity => views::activity::render(frame, app, layout.content),
         Route::Settings => views::settings::render(frame, app, layout.content),
+        Route::Services => views::services::render(frame, app, layout.content, layout.inspector),
     }
     components::notification::render(frame, app, layout.notification);
     components::footer::render(frame, app, layout.footer);

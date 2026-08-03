@@ -99,6 +99,31 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         }
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
         Overlay::OperatorForm(state) => form::render_operator(frame, app, area, state),
+        Overlay::ServiceForm(state) => form::render_service(frame, app, area, state),
+        Overlay::ServiceSectionPicker(state) => {
+            let lines = crate::domain::service::ServiceSection::ALL
+                .iter()
+                .enumerate()
+                .map(|(index, section)| {
+                    format!(
+                        "{} {}",
+                        if index == state.selected { ">" } else { " " },
+                        section.label()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            frame.render_widget(
+                Paragraph::new(format!("{lines}\n\nj/k select   Enter apply   Esc cancels"))
+                    .style(theme::normal(app))
+                    .block(
+                        ratatui::widgets::Block::default()
+                            .borders(ratatui::widgets::Borders::ALL)
+                            .title("service section"),
+                    ),
+                area,
+            );
+        }
         Overlay::AccountPicker(state) => form::render_accounts(frame, app, area, state),
         Overlay::HandoffInput(state) => form::render_handoff(frame, app, area, state),
     }
@@ -111,6 +136,8 @@ fn centered(area: Rect, overlay: &Overlay) -> Rect {
         | Overlay::FilterEditor(_)
         | Overlay::DiagnosticInput(_)
         | Overlay::OperatorForm(_)
+        | Overlay::ServiceForm(_)
+        | Overlay::ServiceSectionPicker(_)
         | Overlay::HandoffInput(_)
         | Overlay::Confirmation(_) => area.width.saturating_mul(2) / 3,
         _ => area.width.saturating_mul(3) / 5,

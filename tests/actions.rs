@@ -74,6 +74,65 @@ fn every_required_action_is_registered() {
 }
 
 #[test]
+fn every_phase_four_action_is_registered_with_required_risk_metadata() {
+    let registered: Vec<_> = action::phase_four_actions()
+        .into_iter()
+        .map(|spec| (spec.id, spec.risk))
+        .collect();
+    for id in [
+        ActionId::ViewServices,
+        ActionId::ServicesSectionNext,
+        ActionId::ServicesSectionPrevious,
+        ActionId::ServicesServeRefresh,
+        ActionId::ServicesServeCreate,
+        ActionId::ServicesServeEdit,
+        ActionId::ServicesServeReset,
+        ActionId::ServicesFunnelRefresh,
+        ActionId::ServicesFunnelCreate,
+        ActionId::ServicesFunnelEdit,
+        ActionId::ServicesFunnelReset,
+        ActionId::ServicesTaildropSend,
+        ActionId::ServicesTaildropReceive,
+        ActionId::ServicesDriveRefresh,
+        ActionId::ServicesDriveShare,
+        ActionId::ServicesDriveRename,
+        ActionId::ServicesDriveUnshare,
+        ActionId::ServicesCertificateObtain,
+        ActionId::ServicesMetricsRefresh,
+        ActionId::ServicesBugReportCreate,
+    ] {
+        assert!(
+            registered
+                .iter()
+                .any(|(registered_id, _)| *registered_id == id),
+            "missing {}",
+            id.as_str()
+        );
+    }
+    assert_eq!(
+        registered
+            .iter()
+            .find(|(id, _)| *id == ActionId::ServicesFunnelCreate)
+            .map(|(_, risk)| *risk),
+        Some(tale::action::Risk::Disruptive)
+    );
+    assert_eq!(
+        registered
+            .iter()
+            .find(|(id, _)| *id == ActionId::ServicesServeReset)
+            .map(|(_, risk)| *risk),
+        Some(tale::action::Risk::Disruptive)
+    );
+    assert_eq!(
+        registered
+            .iter()
+            .find(|(id, _)| *id == ActionId::ServicesDriveUnshare)
+            .map(|(_, risk)| *risk),
+        Some(tale::action::Risk::Disruptive)
+    );
+}
+
+#[test]
 fn no_duplicate_active_binding_exists_in_one_context() {
     for context in [
         ActionContext::Root,

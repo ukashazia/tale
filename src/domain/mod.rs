@@ -1,4 +1,5 @@
 pub mod account;
+pub mod certificate;
 pub mod device;
 pub mod diagnostic;
 pub mod filter;
@@ -6,7 +7,9 @@ pub mod mutation;
 pub mod preference;
 pub mod redaction;
 pub mod route;
+pub mod service;
 pub mod source;
+pub mod transfer;
 
 pub type Timestamp = u64;
 

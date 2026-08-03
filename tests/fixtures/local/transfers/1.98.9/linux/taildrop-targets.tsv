@@ -1,0 +1,3 @@
+TARGET	DISPLAY NAME	DEVICE	STATUS	REASON
+100.64.0.2	Office Laptop	office-laptop	online	available
+100.64.0.3	Offline Tablet	offline-tablet	offline	offline

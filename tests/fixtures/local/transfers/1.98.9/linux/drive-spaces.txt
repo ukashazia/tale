@@ -1,0 +1,2 @@
+NAME     PATH                              AS
+shared   /srv/tale/path with spaces/files  alice

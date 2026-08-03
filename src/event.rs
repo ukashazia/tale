@@ -8,7 +8,11 @@ use crate::domain::device::Device;
 use crate::domain::diagnostic::{DiagnosticResult, NetcheckObservation, PingSample};
 use crate::domain::mutation::{LocalMutation, MutationResult};
 use crate::domain::preference::LocalPreferences;
+use crate::domain::service::{
+    FunnelStatus, ServeStatus, ServiceActionRequest, ServiceFailure, ServiceTaskData,
+};
 use crate::domain::source::{LocalExecutable, LocalFailure, LocalSnapshot};
+use crate::domain::transfer::{TaildriveShare, TaildropTarget};
 use crate::local::handoff::HandoffResult;
 use crate::local::policy::SystemPolicyEntry;
 use crate::mock::MockScenario;
@@ -21,6 +25,7 @@ pub enum Event {
     Task(Box<TaskEvent>),
     Source(SourceEvent),
     Local(Box<LocalEvent>),
+    Services(Box<ServicesEvent>),
     ShutdownRequested(ShutdownReason),
 }
 
@@ -162,6 +167,27 @@ pub enum LocalEvent {
     DiagnosticResult {
         task_id: TaskId,
         result: DiagnosticResult,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ServicesEvent {
+    RefreshFinished {
+        generation: u64,
+        observed_at: Timestamp,
+        command_version: String,
+        serve: Result<ServeStatus, ServiceFailure>,
+        funnel: Result<FunnelStatus, ServiceFailure>,
+        taildrop_targets: Result<Vec<TaildropTarget>, ServiceFailure>,
+        taildrive: Result<Vec<TaildriveShare>, ServiceFailure>,
+    },
+    TaskFinished {
+        task_id: TaskId,
+        request: ServiceActionRequest,
+        result: Result<ServiceTaskData, ServiceFailure>,
+        exit_status: Option<i32>,
+        stdout_truncated: bool,
+        stderr_truncated: bool,
     },
 }
 

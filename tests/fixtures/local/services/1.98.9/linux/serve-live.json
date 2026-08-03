@@ -1,0 +1,20 @@
+{
+  "TCP": {
+    "8443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "node.example.ts.net:8443": {
+      "Handlers": {
+        "/": {
+          "Path": "/srv/tale/site",
+          "UnknownHandlerField": "ignored"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "node.example.ts.net:8443": true
+  }
+}

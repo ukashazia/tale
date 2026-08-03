@@ -1,0 +1,1 @@
+{"mappings":[{"exposure":"public","listener":"https","port":443,"path":"/public","backend":"http://127.0.0.1:8080","proxyProtocol":"none","hostname":"public.example.ts.net","UnknownField":"ignored"}]}

@@ -18,15 +18,23 @@ use crate::domain::route::{
     AdvertisementRequest, ExitNodeRequest, ExitNodeSelection, canonical_routes,
     format_static_endpoints, parse_route_set, parse_static_endpoints,
 };
+use crate::domain::service::{
+    FunnelStatus, ServeStatus, ServiceActionRequest, ServiceFailure, ServiceFailureKind,
+    ServiceTaskData,
+};
 use crate::domain::source::{LocalFailure, LocalFailureKind, LocalSnapshot, LocalState};
+use crate::domain::transfer::{TaildriveShare, TaildropTarget, validate_receive_directory};
 use crate::effect::{Effect, Resource};
 use crate::error::TaleError;
 use crate::event::LocalEvent;
 use crate::event::{self as app_event, Event, InputEvent, ShutdownReason, SourceEvent, TaskEvent};
 use crate::local::client::{self, LocalClient};
 use crate::local::diagnostics;
-use crate::local::process::{self, Cancellation, LocalProcessError, OutputStream, ProcessLine};
+use crate::local::process::{
+    self, Cancellation, LocalOperation, LocalProcessError, OutputStream, ProcessLine,
+};
 use crate::local::{accounts, handoff, policy};
+use crate::local::{certificates, services, transfers};
 use crate::mock::{self, MOCK_NOW, MockTaskBehavior};
 use crate::task::{Progress, TaskId, grace_duration};
 use crate::terminal::RealTerminal;
@@ -181,6 +189,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     let mut cancellations: HashMap<TaskId, Cancellation> = HashMap::new();
     let mut local_status_cancellation: Option<Cancellation> = None;
     let mut local_discovery_cancellation: Option<Cancellation> = None;
+    let mut local_services_refresh_cancellation: Option<Cancellation> = None;
     let mut mutation_cancellations: HashMap<u64, Cancellation> = HashMap::new();
     let handoff_input_gate = Arc::new(AtomicBool::new(true));
     let mut terminal_suspended = false;
@@ -203,6 +212,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             cancellations: &mut cancellations,
             local_status_cancellation: &mut local_status_cancellation,
             local_discovery_cancellation: &mut local_discovery_cancellation,
+            local_services_refresh_cancellation: &mut local_services_refresh_cancellation,
             mutation_cancellations: &mut mutation_cancellations,
             terminal,
             handoff_input_gate: &handoff_input_gate,
@@ -258,6 +268,9 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     if let Some(cancellation) = local_discovery_cancellation {
         cancellation.cancel();
     }
+    if let Some(cancellation) = local_services_refresh_cancellation {
+        cancellation.cancel();
+    }
     for cancellation in mutation_cancellations.values() {
         cancellation.cancel();
     }
@@ -284,6 +297,7 @@ struct DispatchContext<'a, T: TerminalDriver> {
     cancellations: &'a mut HashMap<TaskId, Cancellation>,
     local_status_cancellation: &'a mut Option<Cancellation>,
     local_discovery_cancellation: &'a mut Option<Cancellation>,
+    local_services_refresh_cancellation: &'a mut Option<Cancellation>,
     mutation_cancellations: &'a mut HashMap<u64, Cancellation>,
     terminal: &'a mut T,
     handoff_input_gate: &'a Arc<AtomicBool>,
@@ -296,6 +310,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
     let cancellations = &mut *context.cancellations;
     let local_status_cancellation = &mut *context.local_status_cancellation;
     let local_discovery_cancellation = &mut *context.local_discovery_cancellation;
+    let local_services_refresh_cancellation = &mut *context.local_services_refresh_cancellation;
     let mutation_cancellations = &mut *context.mutation_cancellations;
     let terminal = &mut *context.terminal;
     let handoff_input_gate = context.handoff_input_gate;
@@ -722,6 +737,66 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     .await;
             });
         }
+        Effect::StartLocalServicesRefresh {
+            generation,
+            executable,
+            timeout,
+            alpha_enabled,
+        } => {
+            if let Some(previous) = local_services_refresh_cancellation.take() {
+                previous.cancel();
+            }
+            let queue = queue.clone();
+            let cancellation = Cancellation::new();
+            *local_services_refresh_cancellation = Some(cancellation.clone());
+            tasks.spawn(async move {
+                run_services_refresh(
+                    queue,
+                    generation,
+                    executable,
+                    timeout,
+                    alpha_enabled,
+                    cancellation,
+                )
+                .await;
+            });
+        }
+        Effect::StartServiceTask {
+            task_id,
+            executable,
+            timeout,
+            request,
+        } => {
+            let queue = queue.clone();
+            let cancellation = Cancellation::new();
+            cancellations.insert(task_id, cancellation.clone());
+            tasks.spawn(async move {
+                queue
+                    .send(Event::Task(Box::new(TaskEvent::Started { task_id })))
+                    .await;
+                let outcome = run_service_task(
+                    executable,
+                    timeout,
+                    request,
+                    cancellation,
+                    queue.clone(),
+                    task_id,
+                )
+                .await;
+                queue
+                    .send(Event::Services(Box::new(
+                        app_event::ServicesEvent::TaskFinished {
+                            task_id,
+                            request: outcome.request,
+                            result: outcome.result,
+                            exit_status: outcome.exit_status,
+                            stdout_truncated: outcome.stdout_truncated,
+                            stderr_truncated: outcome.stderr_truncated,
+                        },
+                    )))
+                    .await;
+            });
+        }
         Effect::CancelLocalDiscovery => {
             if let Some(cancellation) = local_discovery_cancellation.as_ref() {
                 cancellation.cancel();
@@ -748,6 +823,1049 @@ fn cancelled_event(task_id: TaskId) -> Event {
         finished_at: MOCK_NOW,
         detail: "fictional task cancelled".to_owned(),
     }))
+}
+
+struct ServiceTaskOutcome {
+    request: ServiceActionRequest,
+    result: Result<ServiceTaskData, ServiceFailure>,
+    exit_status: Option<i32>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+struct ServiceRunError {
+    failure: ServiceFailure,
+}
+
+async fn run_services_refresh(
+    queue: EventQueue,
+    generation: u64,
+    executable: crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    alpha_enabled: bool,
+    cancellation: Cancellation,
+) {
+    let serve_future = read_serve_status(&executable, timeout, &cancellation);
+    let funnel_future = read_funnel_status(&executable, timeout, &cancellation);
+    let targets_future = read_taildrop_targets(&executable, timeout, &cancellation);
+    let drive_future = read_taildrive_shares(&executable, timeout, &cancellation, alpha_enabled);
+    let (serve, funnel, taildrop_targets, taildrive) =
+        tokio::join!(serve_future, funnel_future, targets_future, drive_future);
+    queue
+        .send(Event::Services(Box::new(
+            app_event::ServicesEvent::RefreshFinished {
+                generation,
+                observed_at: crate::local::now(),
+                command_version: executable.version,
+                serve,
+                funnel,
+                taildrop_targets,
+                taildrive,
+            },
+        )))
+        .await;
+}
+
+async fn read_serve_status(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+) -> Result<ServeStatus, ServiceFailure> {
+    if !executable.capabilities.serve {
+        return Err(unsupported_service(
+            "serve status",
+            "Serve is not advertised by this CLI",
+        ));
+    }
+    let result = run_service_command(
+        services::serve_status_command(&executable.path, timeout),
+        cancellation,
+    )
+    .await
+    .map_err(|error| error.failure)?;
+    let output = process::decode_utf8(&result.stdout).map_err(|error| {
+        annotate_service_failure(service_failure_from_process("serve status", error), &result)
+    })?;
+    services::parse_serve_status(output).map_err(|error| {
+        annotate_service_failure(
+            ServiceFailure::new(
+                ServiceFailureKind::DecodeFailed,
+                "serve status",
+                "Serve status could not be decoded",
+                format!(
+                    "{} (CLI {})",
+                    bounded_task_detail(&error.to_string()),
+                    executable.version
+                ),
+            ),
+            &result,
+        )
+    })
+}
+
+async fn read_funnel_status(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+) -> Result<FunnelStatus, ServiceFailure> {
+    if !executable.capabilities.funnel {
+        return Err(unsupported_service(
+            "funnel status",
+            "Funnel is not advertised by this CLI",
+        ));
+    }
+    let result = run_service_command(
+        services::funnel_status_command(&executable.path, timeout),
+        cancellation,
+    )
+    .await
+    .map_err(|error| error.failure)?;
+    let output = process::decode_utf8(&result.stdout).map_err(|error| {
+        annotate_service_failure(
+            service_failure_from_process("funnel status", error),
+            &result,
+        )
+    })?;
+    services::parse_funnel_status(output).map_err(|error| {
+        annotate_service_failure(
+            ServiceFailure::new(
+                ServiceFailureKind::DecodeFailed,
+                "funnel status",
+                "Funnel status could not be decoded",
+                format!(
+                    "{} (CLI {})",
+                    bounded_task_detail(&error.to_string()),
+                    executable.version
+                ),
+            ),
+            &result,
+        )
+    })
+}
+
+async fn read_taildrop_targets(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+) -> Result<Vec<TaildropTarget>, ServiceFailure> {
+    if !executable.capabilities.taildrop {
+        return Err(unsupported_service(
+            "file cp --targets",
+            "Taildrop target discovery is not advertised by this CLI",
+        ));
+    }
+    let result = run_service_command(
+        transfers::taildrop_targets_command(&executable.path, timeout),
+        cancellation,
+    )
+    .await
+    .map_err(|error| error.failure)?;
+    let output = process::decode_utf8(&result.stdout).map_err(|error| {
+        annotate_service_failure(
+            service_failure_from_process("file cp --targets", error),
+            &result,
+        )
+    })?;
+    transfers::parse_taildrop_targets(output).map_err(|error| {
+        annotate_service_failure(
+            ServiceFailure::new(
+                ServiceFailureKind::DecodeFailed,
+                "file cp --targets",
+                "Taildrop targets could not be decoded",
+                format!(
+                    "{} (CLI {})",
+                    bounded_task_detail(&error.to_string()),
+                    executable.version
+                ),
+            ),
+            &result,
+        )
+    })
+}
+
+async fn read_taildrive_shares(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    alpha_enabled: bool,
+) -> Result<Vec<TaildriveShare>, ServiceFailure> {
+    if !alpha_enabled {
+        return Err(unsupported_service(
+            "drive list",
+            "Taildrive is alpha and is disabled for this run",
+        ));
+    }
+    if !executable.capabilities.drive {
+        return Err(unsupported_service(
+            "drive list",
+            "Taildrive is not advertised by this CLI",
+        ));
+    }
+    let result = run_service_command(
+        transfers::drive_list_command(&executable.path, timeout),
+        cancellation,
+    )
+    .await
+    .map_err(|error| error.failure)?;
+    let output = process::decode_utf8(&result.stdout).map_err(|error| {
+        annotate_service_failure(service_failure_from_process("drive list", error), &result)
+    })?;
+    transfers::parse_drive_list(output).map_err(|error| {
+        annotate_service_failure(
+            ServiceFailure::new(
+                ServiceFailureKind::DecodeFailed,
+                "drive list",
+                "Taildrive shares could not be decoded",
+                format!(
+                    "{} (CLI {})",
+                    bounded_task_detail(&error.to_string()),
+                    executable.version
+                ),
+            ),
+            &result,
+        )
+    })
+}
+
+async fn run_service_task(
+    executable: crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    request: ServiceActionRequest,
+    cancellation: Cancellation,
+    queue: EventQueue,
+    task_id: TaskId,
+) -> ServiceTaskOutcome {
+    let action_request = request.clone();
+    let mut outcome = ServiceTaskOutcome {
+        request: action_request,
+        result: Err(unsupported_service(
+            "service task",
+            "service task did not run",
+        )),
+        exit_status: None,
+        stdout_truncated: false,
+        stderr_truncated: false,
+    };
+    let result = match request {
+        ServiceActionRequest::Serve { mapping, .. } => {
+            if !executable.capabilities.serve
+                || !executable
+                    .capabilities
+                    .supports_service_listener(&mapping.listener, false)
+            {
+                Err(unsupported_service(
+                    "serve",
+                    "Serve is not advertised by this CLI",
+                ))
+            } else {
+                match services::mapping_command(&executable.path, timeout, &mapping, true) {
+                    Ok(command) => {
+                        let run = run_service_command(command, &cancellation).await;
+                        outcome_from_run(run, |run| async {
+                            verify_serve_mapping(&executable, timeout, &cancellation, mapping, run)
+                                .await
+                        })
+                        .await
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::Unsupported,
+                        "serve",
+                        "Serve request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::ServeReset => {
+            if !executable.capabilities.serve {
+                Err(unsupported_service(
+                    "serve reset",
+                    "Serve is not advertised by this CLI",
+                ))
+            } else {
+                let run = run_service_command(
+                    services::serve_reset_command(&executable.path, timeout),
+                    &cancellation,
+                )
+                .await;
+                outcome_from_run(run, |run| async {
+                    verify_serve_reset(&executable, timeout, &cancellation, run).await
+                })
+                .await
+            }
+        }
+        ServiceActionRequest::Funnel { mapping, .. } => {
+            if !executable.capabilities.funnel
+                || !executable
+                    .capabilities
+                    .supports_service_listener(&mapping.listener, true)
+            {
+                Err(unsupported_service(
+                    "funnel",
+                    "Funnel is not advertised by this CLI",
+                ))
+            } else {
+                match services::mapping_command(&executable.path, timeout, &mapping, true) {
+                    Ok(command) => {
+                        let run = run_service_command(command, &cancellation).await;
+                        outcome_from_run(run, |run| async {
+                            verify_funnel_mapping(&executable, timeout, &cancellation, mapping, run)
+                                .await
+                        })
+                        .await
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::Unsupported,
+                        "funnel",
+                        "Funnel request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::FunnelReset => {
+            if !executable.capabilities.funnel {
+                Err(unsupported_service(
+                    "funnel reset",
+                    "Funnel is not advertised by this CLI",
+                ))
+            } else {
+                let run = run_service_command(
+                    services::funnel_reset_command(&executable.path, timeout),
+                    &cancellation,
+                )
+                .await;
+                outcome_from_run(run, |run| async {
+                    verify_funnel_reset(&executable, timeout, &cancellation, run).await
+                })
+                .await
+            }
+        }
+        ServiceActionRequest::TaildropSend(request) => {
+            if !executable.capabilities.taildrop {
+                Err(unsupported_service(
+                    "file cp",
+                    "Taildrop is not advertised by this CLI",
+                ))
+            } else {
+                let files = request
+                    .files
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>();
+                match transfers::taildrop_send_command(
+                    &executable.path,
+                    timeout,
+                    &files,
+                    &request.target.command_target,
+                ) {
+                    Ok(command) => {
+                        if files.iter().any(|path| {
+                            std::fs::metadata(path)
+                                .map(|metadata| !metadata.is_file())
+                                .unwrap_or(true)
+                        }) {
+                            Err(ServiceFailure::new(
+                                ServiceFailureKind::CommandFailed,
+                                "file cp",
+                                "Taildrop file selection is no longer valid",
+                                "one or more selected files are missing or no longer regular files",
+                            ))
+                        } else {
+                            let (run, filenames) =
+                                run_transfer_command(command, &cancellation, &queue, task_id).await;
+                            match run {
+                                Ok(run) => Ok((
+                                    ServiceTaskData::Transfer {
+                                        summary: format!(
+                                            "Taildrop send completed to {}",
+                                            request.target.display_name
+                                        ),
+                                        filenames: if filenames.is_empty() {
+                                            files
+                                                .iter()
+                                                .filter_map(|path| {
+                                                    path.file_name().map(|name| {
+                                                        name.to_string_lossy().into_owned()
+                                                    })
+                                                })
+                                                .collect()
+                                        } else {
+                                            filenames
+                                        },
+                                    },
+                                    run,
+                                )),
+                                Err(error) => Err(error.failure),
+                            }
+                        }
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::CommandFailed,
+                        "file cp",
+                        "Taildrop send request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::TaildropReceive(request) => {
+            if !executable.capabilities.taildrop {
+                Err(unsupported_service(
+                    "file get",
+                    "Taildrop is not advertised by this CLI",
+                ))
+            } else if let Err(error) = validate_receive_directory(&request.directory) {
+                Err(ServiceFailure::new(
+                    ServiceFailureKind::PermissionDenied,
+                    "file get",
+                    "Taildrop destination is unavailable",
+                    error,
+                ))
+            } else {
+                match transfers::taildrop_receive_command(
+                    &executable.path,
+                    timeout,
+                    &request.directory,
+                    request.conflict,
+                    request.wait,
+                ) {
+                    Ok(command) => {
+                        let (run, filenames) =
+                            run_transfer_command(command, &cancellation, &queue, task_id).await;
+                        match run {
+                            Ok(run) => Ok((
+                                ServiceTaskData::Transfer {
+                                    summary: format!(
+                                        "Taildrop receive completed in {}",
+                                        request.directory.display()
+                                    ),
+                                    filenames,
+                                },
+                                run,
+                            )),
+                            Err(error) => Err(error.failure),
+                        }
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::CommandFailed,
+                        "file get",
+                        "Taildrop receive request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::TaildriveShare {
+            normalized_name,
+            path,
+            ..
+        } => {
+            if !executable.capabilities.drive {
+                Err(unsupported_service(
+                    "drive share",
+                    "Taildrive is not advertised by this CLI",
+                ))
+            } else if !std::fs::metadata(&path)
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false)
+            {
+                Err(ServiceFailure::new(
+                    ServiceFailureKind::CommandFailed,
+                    "drive share",
+                    "Taildrive share directory is unavailable",
+                    "the directory no longer exists or is not a directory",
+                ))
+            } else {
+                match transfers::drive_share_command(
+                    &executable.path,
+                    timeout,
+                    &normalized_name,
+                    &path,
+                ) {
+                    Ok(command) => {
+                        let run = run_service_command(command, &cancellation).await;
+                        outcome_from_run(run, |run| async {
+                            verify_drive_share(
+                                &executable,
+                                timeout,
+                                &cancellation,
+                                normalized_name,
+                                path,
+                                run,
+                            )
+                            .await
+                        })
+                        .await
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::CommandFailed,
+                        "drive share",
+                        "Taildrive share request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::TaildriveRename {
+            old_name,
+            normalized_name,
+            ..
+        } => {
+            if !executable.capabilities.drive {
+                Err(unsupported_service(
+                    "drive rename",
+                    "Taildrive is not advertised by this CLI",
+                ))
+            } else {
+                match transfers::drive_rename_command(
+                    &executable.path,
+                    timeout,
+                    &old_name,
+                    &normalized_name,
+                ) {
+                    Ok(command) => {
+                        let run = run_service_command(command, &cancellation).await;
+                        outcome_from_run(run, |run| async {
+                            verify_drive_rename(
+                                &executable,
+                                timeout,
+                                &cancellation,
+                                old_name,
+                                normalized_name,
+                                run,
+                            )
+                            .await
+                        })
+                        .await
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::CommandFailed,
+                        "drive rename",
+                        "Taildrive rename request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::TaildriveUnshare { name } => {
+            if !executable.capabilities.drive {
+                Err(unsupported_service(
+                    "drive unshare",
+                    "Taildrive is not advertised by this CLI",
+                ))
+            } else {
+                match transfers::drive_unshare_command(&executable.path, timeout, &name) {
+                    Ok(command) => {
+                        let run = run_service_command(command, &cancellation).await;
+                        outcome_from_run(run, |run| async {
+                            verify_drive_unshare(&executable, timeout, &cancellation, name, run)
+                                .await
+                        })
+                        .await
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::CommandFailed,
+                        "drive unshare",
+                        "Taildrive unshare request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::Certificate(request) => {
+            if !executable.capabilities.certificate {
+                Err(unsupported_service(
+                    "cert",
+                    "certificate acquisition is not advertised",
+                ))
+            } else {
+                match certificates::certificate_command(&executable.path, timeout, &request) {
+                    Ok(command) => match run_service_command(command, &cancellation).await {
+                        Ok(run) => match certificates::verify_certificate_outputs(
+                            &request,
+                            crate::local::now(),
+                        ) {
+                            Ok(value) => Ok((ServiceTaskData::Certificate(value), run)),
+                            Err(error) => Err(annotate_service_failure(
+                                ServiceFailure::new(
+                                    ServiceFailureKind::CommandFailed,
+                                    "cert",
+                                    "certificate outputs could not be verified",
+                                    error.to_string(),
+                                ),
+                                &run,
+                            )),
+                        },
+                        Err(error) => Err(error.failure),
+                    },
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::CommandFailed,
+                        "cert",
+                        "certificate request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::Metrics => {
+            if !executable.capabilities.metrics {
+                Err(unsupported_service(
+                    "metrics print",
+                    "metrics are not advertised by this CLI",
+                ))
+            } else {
+                match run_service_command(
+                    services::metrics_command(&executable.path, timeout, 256 * 1024),
+                    &cancellation,
+                )
+                .await
+                {
+                    Ok(run) => Ok((
+                        ServiceTaskData::Metrics(crate::domain::service::MetricsOutput {
+                            text: services::redacted_metrics(&run.stdout),
+                            captured_at: crate::local::now(),
+                            truncated: run.truncated_stdout,
+                        }),
+                        run,
+                    )),
+                    Err(error) => Err(error.failure),
+                }
+            }
+        }
+        ServiceActionRequest::BugReport(request) => {
+            if !executable.capabilities.bugreport {
+                Err(unsupported_service(
+                    "bugreport",
+                    "bug reports are not advertised by this CLI",
+                ))
+            } else {
+                match services::bugreport_command(
+                    &executable.path,
+                    timeout,
+                    request.note.as_deref(),
+                    request.diagnose,
+                ) {
+                    Ok(command) => match run_service_command(command, &cancellation).await {
+                        Ok(run) => match process::decode_utf8(&run.stdout)
+                            .map_err(|error| {
+                                annotate_service_failure(
+                                    service_failure_from_process("bugreport", error),
+                                    &run,
+                                )
+                            })
+                            .and_then(|output| {
+                                services::parse_bugreport_identifier(output).map_err(|error| {
+                                    annotate_service_failure(
+                                        ServiceFailure::new(
+                                            ServiceFailureKind::DecodeFailed,
+                                            "bugreport",
+                                            "bug-report identifier could not be decoded",
+                                            bounded_task_detail(&error.to_string()),
+                                        ),
+                                        &run,
+                                    )
+                                })
+                            }) {
+                            Ok(identifier) => Ok((
+                                ServiceTaskData::BugReport(
+                                    crate::domain::service::BugReportResult {
+                                        identifier,
+                                        observed_at: crate::local::now(),
+                                    },
+                                ),
+                                run,
+                            )),
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error.failure),
+                    },
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::CommandFailed,
+                        "bugreport",
+                        "bug-report request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+    };
+    match result {
+        Ok((data, run)) => {
+            outcome.result = Ok(data);
+            outcome.exit_status = run.exit_status;
+            outcome.stdout_truncated = run.truncated_stdout;
+            outcome.stderr_truncated = run.truncated_stderr;
+        }
+        Err(failure) => {
+            outcome.exit_status = failure.exit_status;
+            outcome.stdout_truncated = failure.stdout_truncated;
+            outcome.stderr_truncated = failure.stderr_truncated;
+            outcome.result = Err(failure);
+        }
+    }
+    outcome
+}
+
+async fn outcome_from_run<F, Fut>(
+    run: Result<crate::local::process::LocalCommandResult, ServiceRunError>,
+    verify: F,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure>
+where
+    F: FnOnce(crate::local::process::LocalCommandResult) -> Fut,
+    Fut: std::future::Future<
+            Output = Result<
+                (ServiceTaskData, crate::local::process::LocalCommandResult),
+                ServiceFailure,
+            >,
+        >,
+{
+    match run {
+        Ok(run) => {
+            let exit_status = run.exit_status;
+            let stdout_truncated = run.truncated_stdout;
+            let stderr_truncated = run.truncated_stderr;
+            verify(run).await.map_err(|mut failure| {
+                if failure.exit_status.is_none() {
+                    failure.exit_status = exit_status;
+                }
+                failure.stdout_truncated |= stdout_truncated;
+                failure.stderr_truncated |= stderr_truncated;
+                failure
+            })
+        }
+        Err(error) => Err(error.failure),
+    }
+}
+
+async fn verify_serve_mapping(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    requested: crate::domain::service::ServiceMapping,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let status = read_serve_status(executable, timeout, cancellation).await?;
+    let verified = status.mappings.iter().any(|actual| {
+        actual.exact_identity_matches(&requested)
+            && actual.backend == requested.backend
+            && actual.proxy_protocol == requested.proxy_protocol
+    });
+    Ok((
+        ServiceTaskData::Serve {
+            status,
+            verified,
+            summary: if verified {
+                "Serve command completed and state verified".to_owned()
+            } else {
+                "Serve command completed but fresh state did not match".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+async fn verify_serve_reset(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let status = read_serve_status(executable, timeout, cancellation).await?;
+    let verified = status.mappings.is_empty();
+    Ok((
+        ServiceTaskData::Serve {
+            status,
+            verified,
+            summary: if verified {
+                "Serve reset completed and state verified".to_owned()
+            } else {
+                "Serve reset completed but mappings remain".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+async fn verify_funnel_mapping(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    requested: crate::domain::service::ServiceMapping,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let status = read_funnel_status(executable, timeout, cancellation).await?;
+    let verified = status.mappings.iter().any(|actual| {
+        actual.exact_identity_matches(&requested)
+            && actual.backend == requested.backend
+            && actual.proxy_protocol == requested.proxy_protocol
+    });
+    Ok((
+        ServiceTaskData::Funnel {
+            status,
+            verified,
+            summary: if verified {
+                "PUBLIC Funnel command completed and state verified".to_owned()
+            } else {
+                "PUBLIC Funnel command completed but fresh state did not match".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+async fn verify_funnel_reset(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let status = read_funnel_status(executable, timeout, cancellation).await?;
+    let verified = status.mappings.is_empty();
+    Ok((
+        ServiceTaskData::Funnel {
+            status,
+            verified,
+            summary: if verified {
+                "PUBLIC Funnel reset completed and state verified".to_owned()
+            } else {
+                "PUBLIC Funnel reset completed but mappings remain".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+async fn verify_drive_share(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    name: String,
+    path: std::path::PathBuf,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let shares = read_taildrive_shares(executable, timeout, cancellation, true).await?;
+    let verified = shares
+        .iter()
+        .any(|share| share.name == name && share.path == path);
+    Ok((
+        ServiceTaskData::Taildrive {
+            shares,
+            verified,
+            summary: if verified {
+                "Taildrive share completed and state verified".to_owned()
+            } else {
+                "Taildrive share completed but fresh state did not match".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+async fn verify_drive_rename(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    old_name: String,
+    new_name: String,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let shares = read_taildrive_shares(executable, timeout, cancellation, true).await?;
+    let verified = !shares.iter().any(|share| share.name == old_name)
+        && shares.iter().any(|share| share.name == new_name);
+    Ok((
+        ServiceTaskData::Taildrive {
+            shares,
+            verified,
+            summary: if verified {
+                "Taildrive rename completed and state verified".to_owned()
+            } else {
+                "Taildrive rename completed but fresh state did not match".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+async fn verify_drive_unshare(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    name: String,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let shares = read_taildrive_shares(executable, timeout, cancellation, true).await?;
+    let verified = !shares.iter().any(|share| share.name == name);
+    Ok((
+        ServiceTaskData::Taildrive {
+            shares,
+            verified,
+            summary: if verified {
+                "Taildrive unshare completed and state verified".to_owned()
+            } else {
+                "Taildrive unshare completed but the share remains".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+async fn run_transfer_command(
+    command: crate::local::process::LocalCommand,
+    cancellation: &Cancellation,
+    queue: &EventQueue,
+    task_id: TaskId,
+) -> (
+    Result<crate::local::process::LocalCommandResult, ServiceRunError>,
+    Vec<String>,
+) {
+    let (sender, mut receiver) = mpsc::channel(64);
+    let future = process::run_lines(command, cancellation, sender);
+    tokio::pin!(future);
+    let mut lines = Vec::new();
+    let result = loop {
+        tokio::select! {
+            result = &mut future => break result,
+            line = receiver.recv() => {
+                if let Some(line) = line {
+                    let text = String::from_utf8_lossy(&line.bytes).trim().to_owned();
+                    if let Some(progress) = transfers::parse_taildrop_progress(&text, crate::local::now())
+                        && let Some(percent) = progress.percent
+                    {
+                        queue.send(Event::Task(Box::new(TaskEvent::Progress {
+                            task_id,
+                            progress: Progress {
+                                completed: u16::from(percent),
+                                total: 100,
+                            },
+                            detail: text.clone(),
+                        }))).await;
+                    }
+                    if line.stream == OutputStream::Stdout && !text.is_empty() {
+                        lines.push(text);
+                    }
+                }
+            }
+        }
+    };
+    let result = match result {
+        Ok(value) => {
+            if value.result.exit_status == Some(0) {
+                Ok(value.result)
+            } else {
+                Err(ServiceRunError {
+                    failure: service_failure_from_result(&value.result),
+                })
+            }
+        }
+        Err(error) => Err(ServiceRunError {
+            failure: service_failure_from_process("transfer", error),
+        }),
+    };
+    (result, lines)
+}
+
+async fn run_service_command(
+    command: crate::local::process::LocalCommand,
+    cancellation: &Cancellation,
+) -> Result<crate::local::process::LocalCommandResult, ServiceRunError> {
+    let operation = command.operation.label();
+    match process::run(command, cancellation).await {
+        Ok(result) if result.exit_status == Some(0) => Ok(result),
+        Ok(result) => Err(ServiceRunError {
+            failure: service_failure_from_result(&result),
+        }),
+        Err(error) => Err(ServiceRunError {
+            failure: service_failure_from_process(&operation, error),
+        }),
+    }
+}
+
+fn service_failure_from_result(
+    result: &crate::local::process::LocalCommandResult,
+) -> ServiceFailure {
+    let detail = match &result.operation {
+        LocalOperation::Certificate => String::new(),
+        LocalOperation::Metrics => {
+            let redacted = services::redacted_metrics(&result.stderr);
+            safe_operator_detail(&redacted)
+        }
+        _ => safe_operator_detail(&String::from_utf8_lossy(&result.stderr)),
+    };
+    let normalized = detail.to_ascii_lowercase();
+    let kind = if normalized.contains("unknown command") || normalized.contains("unknown flag") {
+        ServiceFailureKind::Unsupported
+    } else if normalized.contains("permission denied") || normalized.contains("not permitted") {
+        ServiceFailureKind::PermissionDenied
+    } else if normalized.contains("policy")
+        || normalized.contains("funnel is not enabled")
+        || normalized.contains("not authorized")
+    {
+        ServiceFailureKind::PolicyDenied
+    } else if normalized.contains("cannot connect")
+        || normalized.contains("daemon")
+        || normalized.contains("not running")
+    {
+        ServiceFailureKind::DaemonUnavailable
+    } else {
+        ServiceFailureKind::CommandFailed
+    };
+    let mut failure = ServiceFailure::new(
+        kind,
+        result.operation.label(),
+        "local service command returned an error",
+        if detail.is_empty() {
+            "the command returned a non-zero status"
+        } else {
+            detail.as_str()
+        },
+    );
+    failure.exit_status = result.exit_status;
+    failure.stdout_truncated = result.truncated_stdout;
+    failure.stderr_truncated = result.truncated_stderr;
+    failure
+}
+
+fn annotate_service_failure(
+    mut failure: ServiceFailure,
+    result: &crate::local::process::LocalCommandResult,
+) -> ServiceFailure {
+    failure.exit_status = result.exit_status;
+    failure.stdout_truncated = result.truncated_stdout;
+    failure.stderr_truncated = result.truncated_stderr;
+    failure
+}
+
+fn service_failure_from_process(operation: &str, error: LocalProcessError) -> ServiceFailure {
+    let kind = match error {
+        LocalProcessError::NotFound => ServiceFailureKind::NotInstalled,
+        LocalProcessError::PermissionDenied => ServiceFailureKind::PermissionDenied,
+        LocalProcessError::TimedOut => ServiceFailureKind::TimedOut,
+        LocalProcessError::Cancelled => ServiceFailureKind::Cancelled,
+        LocalProcessError::OutputNotUtf8(_) => ServiceFailureKind::DecodeFailed,
+        LocalProcessError::Spawn(_) | LocalProcessError::Io(_) => ServiceFailureKind::CommandFailed,
+    };
+    let summary = kind.label().to_owned();
+    let detail = match error {
+        LocalProcessError::OutputNotUtf8(_) => "command output was not valid UTF-8".to_owned(),
+        LocalProcessError::NotFound => "the tailscale executable was not found".to_owned(),
+        LocalProcessError::PermissionDenied => "the operating system denied the command".to_owned(),
+        LocalProcessError::TimedOut => "the command exceeded the configured timeout".to_owned(),
+        LocalProcessError::Cancelled => "the command was cancelled".to_owned(),
+        LocalProcessError::Spawn(_) | LocalProcessError::Io(_) => {
+            "the local command could not be completed".to_owned()
+        }
+    };
+    ServiceFailure::new(kind, operation, format!("local service {summary}"), detail)
+}
+
+fn unsupported_service(operation: &str, detail: &str) -> ServiceFailure {
+    ServiceFailure::new(
+        ServiceFailureKind::Unsupported,
+        operation,
+        "local service capability is unsupported",
+        detail,
+    )
 }
 
 async fn run_local_mutation(

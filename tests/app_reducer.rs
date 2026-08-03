@@ -7,7 +7,12 @@ use tale::app::{App, Overlay, Route, ShutdownState, SourceMode};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{SortDirection, SortField, SortSpec};
-use tale::event::{Event, InputEvent, SourceEvent, TaskEvent};
+use tale::domain::service::{
+    Backend, Exposure, FunnelStatus, Listener, PathMount, Port, ProxyProtocol, ServeStatus,
+    ServiceActionRequest, ServiceFailure, ServiceFailureKind, ServiceMapping, ServiceTaskData,
+};
+use tale::domain::source::{ExecutableSource, LocalCapabilities, LocalExecutable};
+use tale::event::{Event, InputEvent, ServicesEvent, SourceEvent, TaskEvent};
 use tale::mock::{self, MOCK_NOW};
 use tale::paths::{PathEnvironment, Platform};
 use tale::task::{Progress, TaskState};
@@ -263,5 +268,187 @@ fn task_progress_and_terminal_events_update_only_through_reducer() {
             app.tasks.get(task_id).map(|task| task.state),
             Some(TaskState::Succeeded)
         );
+    }
+}
+
+#[test]
+fn service_task_success_verifies_and_failure_preserves_snapshot() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.source_mode = SourceMode::Local;
+        let capabilities = LocalCapabilities::all_supported();
+        app.local_capabilities = capabilities;
+        app.local_executable = Some(LocalExecutable {
+            path: PathBuf::from("/fictional/tailscale"),
+            source: ExecutableSource::Cli,
+            version: "1.98.9".to_owned(),
+            daemon_version: None,
+            build: None,
+            capabilities,
+        });
+        app.services_snapshot.generation = 1;
+        let Some(port_443) = Port::new(443).ok() else {
+            return;
+        };
+        let Some(port_3000) = Port::new(3000).ok() else {
+            return;
+        };
+        let mapping = ServiceMapping {
+            exposure: Exposure::Tailnet,
+            listener: Listener::Https(port_443),
+            mount: PathMount::Root,
+            backend: Backend::Port(port_3000),
+            proxy_protocol: ProxyProtocol::None,
+            hostname: None,
+        };
+        let request = ServiceActionRequest::Serve {
+            mapping: mapping.clone(),
+            edit: false,
+        };
+        let task_id = app
+            .tasks
+            .create(request.action_id(), request.target_label(), MOCK_NOW, true);
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
+        let effects = app.update(Event::Services(Box::new(ServicesEvent::TaskFinished {
+            task_id,
+            request: request.clone(),
+            result: Ok(ServiceTaskData::Serve {
+                status: ServeStatus {
+                    mappings: vec![mapping.clone()],
+                },
+                verified: true,
+                summary: "verified Serve write".to_owned(),
+            }),
+            exit_status: Some(0),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        })));
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            tale::effect::Effect::StartLocalServicesRefresh { .. }
+        )));
+        assert_eq!(
+            app.tasks.get(task_id).map(|task| task.state),
+            Some(TaskState::Succeeded)
+        );
+        assert_eq!(
+            app.tasks.get(task_id).and_then(|task| task.exit_status),
+            Some(0)
+        );
+        assert_eq!(
+            app.services_snapshot
+                .serve
+                .value
+                .as_ref()
+                .map(|status| status.mappings.as_slice()),
+            Some([mapping.clone()].as_slice())
+        );
+
+        let failed_request = ServiceActionRequest::ServeReset;
+        let failed_task = app.tasks.create(
+            failed_request.action_id(),
+            failed_request.target_label(),
+            MOCK_NOW,
+            true,
+        );
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Started {
+            task_id: failed_task,
+        })));
+        let failure = ServiceFailure {
+            kind: ServiceFailureKind::CommandFailed,
+            operation: "serve reset".to_owned(),
+            summary: "local service command returned an error".to_owned(),
+            detail: "fictional failure".to_owned(),
+            exit_status: Some(7),
+            stdout_truncated: false,
+            stderr_truncated: true,
+        };
+        let _ = app.update(Event::Services(Box::new(ServicesEvent::TaskFinished {
+            task_id: failed_task,
+            request: failed_request,
+            result: Err(failure),
+            exit_status: Some(7),
+            stdout_truncated: false,
+            stderr_truncated: true,
+        })));
+        assert_eq!(
+            app.tasks.get(failed_task).map(|task| task.state),
+            Some(TaskState::Failed)
+        );
+        assert_eq!(
+            app.tasks.get(failed_task).and_then(|task| task.exit_status),
+            Some(7)
+        );
+        assert!(
+            app.tasks
+                .get(failed_task)
+                .is_some_and(|task| task.detail.contains("truncated"))
+        );
+        assert_eq!(
+            app.services_snapshot
+                .serve
+                .value
+                .as_ref()
+                .map(|status| status.mappings.as_slice()),
+            Some([mapping].as_slice())
+        );
+    }
+}
+
+#[test]
+fn stale_service_refresh_cannot_replace_newer_data_and_read_only_blocks_dispatch() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.source_mode = SourceMode::Local;
+        let capabilities = LocalCapabilities::all_supported();
+        app.local_capabilities = capabilities;
+        app.local_executable = Some(LocalExecutable {
+            path: PathBuf::from("/fictional/tailscale"),
+            source: ExecutableSource::Cli,
+            version: "1.98.9".to_owned(),
+            daemon_version: None,
+            build: None,
+            capabilities,
+        });
+        app.services_snapshot.generation = 2;
+        let Some(port) = Port::new(443).ok() else {
+            return;
+        };
+        let Some(backend_port) = Port::new(3000).ok() else {
+            return;
+        };
+        app.services_snapshot.funnel.succeed(
+            2,
+            MOCK_NOW,
+            FunnelStatus {
+                mappings: vec![ServiceMapping {
+                    exposure: Exposure::Public,
+                    listener: Listener::Https(port),
+                    mount: PathMount::Root,
+                    backend: Backend::Port(backend_port),
+                    proxy_protocol: ProxyProtocol::None,
+                    hostname: None,
+                }],
+            },
+        );
+        let before = app.services_snapshot.funnel.value.clone();
+        let _ = app.update(Event::Services(Box::new(ServicesEvent::RefreshFinished {
+            generation: 1,
+            observed_at: MOCK_NOW.saturating_sub(10),
+            command_version: "1.0.0".to_owned(),
+            serve: Ok(ServeStatus::default()),
+            funnel: Ok(FunnelStatus::default()),
+            taildrop_targets: Ok(Vec::new()),
+            taildrive: Ok(Vec::new()),
+        })));
+        assert_eq!(app.services_snapshot.funnel.value, before);
+
+        app.resolved_config.read_only = true;
+        app.route_stack = vec![Route::Services];
+        let _ = app.dispatch_action(tale::action::ActionId::ServicesFunnelReset);
+        assert!(app.runtime_error.is_some());
+        assert!(app.tasks.all().is_empty());
     }
 }

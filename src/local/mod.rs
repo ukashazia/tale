@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod certificates;
 pub mod client;
 pub mod diagnostics;
 pub mod dto;
@@ -6,6 +7,8 @@ pub mod handoff;
 pub mod policy;
 pub mod preferences;
 pub mod process;
+pub mod services;
+pub mod transfers;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

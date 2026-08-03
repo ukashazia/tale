@@ -1,0 +1,2 @@
+NAME     PATH                    AS       EXTRA
+docs     /srv/tale/docs          alice    ignored

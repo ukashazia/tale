@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::domain::mutation::LocalMutation;
+use crate::domain::service::ServiceActionRequest;
 use crate::domain::source::LocalExecutable;
 use crate::local::client::ExecutableResolution;
 use crate::local::diagnostics::DiagnosticRequest;
@@ -59,6 +60,18 @@ pub enum Effect {
         executable: LocalExecutable,
         timeout: Duration,
         request: DiagnosticRequest,
+    },
+    StartLocalServicesRefresh {
+        generation: u64,
+        executable: LocalExecutable,
+        timeout: Duration,
+        alpha_enabled: bool,
+    },
+    StartServiceTask {
+        task_id: TaskId,
+        executable: LocalExecutable,
+        timeout: Duration,
+        request: ServiceActionRequest,
     },
     CancelLocalDiscovery,
     CancelLocalStatus,

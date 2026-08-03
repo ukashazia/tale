@@ -11,7 +11,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, overlay: &Overlay) {
         return;
     };
     let query = state.query.to_ascii_lowercase();
-    let items = action::phase_one_actions()
+    let items = action::all_actions()
         .into_iter()
         .filter(|spec| {
             spec.contexts.contains(&ActionContext::Root)

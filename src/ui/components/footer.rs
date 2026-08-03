@@ -15,6 +15,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Route::Activity => ActionContext::Activity,
         Route::Devices if app.focus == Focus::Inspector => ActionContext::Detail,
         Route::Devices => ActionContext::Collection,
+        Route::Services if app.focus == Focus::Inspector => ActionContext::Detail,
+        Route::Services => ActionContext::Collection,
         _ => ActionContext::Root,
     };
     let hints = action::footer_hints(context, area.width);

@@ -41,6 +41,20 @@ pub struct LocalCapabilities {
     pub syspolicy: bool,
     pub ssh: bool,
     pub nc: bool,
+    pub serve: bool,
+    pub serve_https: bool,
+    pub serve_http: bool,
+    pub serve_tcp: bool,
+    pub serve_tls_terminated_tcp: bool,
+    pub funnel: bool,
+    pub funnel_https: bool,
+    pub funnel_tcp: bool,
+    pub funnel_tls_terminated_tcp: bool,
+    pub taildrop: bool,
+    pub drive: bool,
+    pub certificate: bool,
+    pub metrics: bool,
+    pub bugreport: bool,
 }
 
 impl LocalCapabilities {
@@ -63,6 +77,37 @@ impl LocalCapabilities {
             syspolicy: true,
             ssh: true,
             nc: true,
+            serve: true,
+            serve_https: true,
+            serve_http: true,
+            serve_tcp: true,
+            serve_tls_terminated_tcp: true,
+            funnel: true,
+            funnel_https: true,
+            funnel_tcp: true,
+            funnel_tls_terminated_tcp: true,
+            taildrop: true,
+            drive: true,
+            certificate: true,
+            metrics: true,
+            bugreport: true,
+        }
+    }
+
+    pub const fn supports_service_listener(
+        &self,
+        listener: &super::service::Listener,
+        public: bool,
+    ) -> bool {
+        match (public, listener) {
+            (false, super::service::Listener::Https(_)) => self.serve_https,
+            (false, super::service::Listener::Http(_)) => self.serve_http,
+            (false, super::service::Listener::Tcp(_)) => self.serve_tcp,
+            (false, super::service::Listener::TlsTerminatedTcp(_)) => self.serve_tls_terminated_tcp,
+            (true, super::service::Listener::Https(_)) => self.funnel_https,
+            (true, super::service::Listener::Tcp(_)) => self.funnel_tcp,
+            (true, super::service::Listener::TlsTerminatedTcp(_)) => self.funnel_tls_terminated_tcp,
+            (true, super::service::Listener::Http(_)) => false,
         }
     }
 }

@@ -1,0 +1,1 @@
+{"TCP":{},"Web":{"node.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000","UnknownHandlerField":"ignored"}}}},"AllowFunnel":false}

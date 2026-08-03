@@ -7,6 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::action::{self, ActionContext, ActionId, Capability};
 use crate::config::ResolvedConfig;
 use crate::domain::account::LocalAccount;
+use crate::domain::certificate::{BugReportRequest, CertificateRequest};
 use crate::domain::device::{
     Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec, compare_devices,
 };
@@ -21,17 +22,29 @@ use crate::domain::route::{
     AdvertisementRequest, ExitNodeCandidate, ExitNodeRequest, ExitNodeSelection,
     overlapping_routes, parse_route_set, parse_static_endpoints,
 };
+use crate::domain::service::{
+    Backend, CertificateVerification, Exposure, Listener, LocalServicesSnapshot, PathMount, Port,
+    ProxyProtocol, ServiceActionRequest, ServiceCapabilities, ServiceConflictKey,
+    ServiceFailureKind, ServiceMapping, ServiceResourceStatus, ServiceSection, ServiceTaskData,
+};
 use crate::domain::source::{
     LocalCapabilities, LocalExecutable, LocalFailure, LocalFailureKind, LocalResource,
     LocalResourceStatus, LocalSnapshot, LocalState,
 };
+use crate::domain::transfer::{
+    TaildriveShare, TaildropConflict, TaildropReceiveRequest, TaildropSendRequest, TaildropTarget,
+    normalize_share_name, validate_receive_directory, validate_regular_file,
+};
 use crate::domain::{SourceHealth, Timestamp};
 use crate::effect::{Effect, Resource};
-use crate::event::{Event, InputEvent, LocalEvent, ShutdownReason, SourceEvent, TaskEvent};
+use crate::event::{
+    Event, InputEvent, LocalEvent, ServicesEvent, ShutdownReason, SourceEvent, TaskEvent,
+};
 use crate::local::client::{ExecutableResolution, HostPlatform};
 use crate::local::diagnostics::{self, DiagnosticRequest};
 use crate::local::handoff::{self, HandoffCommand};
 use crate::local::policy::SystemPolicyEntry;
+use crate::local::{certificates, services, transfers};
 use crate::mock::{MOCK_NOW, MockLoadScenario, MockTaskBehavior};
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
 
@@ -60,6 +73,7 @@ pub enum Route {
     Dns,
     Activity,
     Settings,
+    Services,
 }
 
 impl Route {
@@ -71,6 +85,7 @@ impl Route {
             Self::Dns => "dns",
             Self::Activity => "activity",
             Self::Settings => "settings",
+            Self::Services => "services",
         }
     }
 
@@ -82,6 +97,7 @@ impl Route {
             "dns" => Some(Self::Dns),
             "activity" | "tasks" => Some(Self::Activity),
             "settings" | "config" => Some(Self::Settings),
+            "services" | "service" | "serve" | "funnel" => Some(Self::Services),
             _ => None,
         }
     }
@@ -142,6 +158,7 @@ pub struct DiagnosticInputState {
 pub struct ConfirmationState {
     pub action_id: ActionId,
     pub mutation: Option<LocalMutation>,
+    pub service_request: Option<ServiceActionRequest>,
     pub handoff: Option<HandoffCommand>,
     pub prompt: String,
     pub required_phrase: Option<String>,
@@ -157,6 +174,18 @@ pub struct OperatorFormState {
     pub action_id: ActionId,
     pub input: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ServiceFormState {
+    pub action_id: ActionId,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ServiceSectionPickerState {
+    pub selected: usize,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -191,6 +220,7 @@ pub enum CopyField {
     PublicKey,
     Endpoint,
     DiagnosticSummary,
+    Metrics,
 }
 
 impl CopyField {
@@ -205,6 +235,7 @@ impl CopyField {
             Self::PublicKey => "public key",
             Self::Endpoint => "endpoint",
             Self::DiagnosticSummary => "diagnostic summary",
+            Self::Metrics => "metrics",
         }
     }
 }
@@ -222,6 +253,8 @@ pub enum Overlay {
     DiagnosticInput(DiagnosticInputState),
     Confirmation(Box<ConfirmationState>),
     OperatorForm(OperatorFormState),
+    ServiceForm(ServiceFormState),
+    ServiceSectionPicker(ServiceSectionPickerState),
     AccountPicker(AccountPickerState),
     HandoffInput(HandoffInputState),
 }
@@ -277,6 +310,24 @@ impl Default for DeviceViewState {
 #[derive(Debug, Clone)]
 pub struct Views {
     pub devices: DeviceViewState,
+    pub services: ServiceViewState,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceViewState {
+    pub section: ServiceSection,
+    pub selected: usize,
+    pub scroll: usize,
+}
+
+impl Default for ServiceViewState {
+    fn default() -> Self {
+        Self {
+            section: ServiceSection::Serve,
+            selected: 0,
+            scroll: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -296,6 +347,10 @@ pub struct App {
     pub local_state: LocalState,
     pub local_executable: Option<LocalExecutable>,
     pub local_capabilities: LocalCapabilities,
+    pub services_snapshot: LocalServicesSnapshot,
+    pub alpha_local_features: bool,
+    pub certificate_verification: Option<CertificateVerification>,
+    pub service_locks: Vec<(ServiceConflictKey, TaskId)>,
     pub local_preferences: LocalPreferences,
     pub local_accounts: Vec<LocalAccount>,
     pub system_policy: Vec<SystemPolicyEntry>,
@@ -319,6 +374,7 @@ pub struct App {
     render_invalidated: bool,
     local_discovery_in_flight: bool,
     local_status_in_flight: bool,
+    local_services_refresh_in_flight: bool,
     local_next_refresh: Option<Instant>,
     local_last_tick: Option<Instant>,
     next_mutation_id: u64,
@@ -348,12 +404,17 @@ impl App {
             overlays: Vec::new(),
             views: Views {
                 devices: DeviceViewState::default(),
+                services: ServiceViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
             local_resource: LocalResource::new(),
             local_state,
             local_executable: None,
             local_capabilities: LocalCapabilities::default(),
+            services_snapshot: LocalServicesSnapshot::new(),
+            alpha_local_features: false,
+            certificate_verification: None,
+            service_locks: Vec::new(),
             local_preferences: LocalPreferences::empty(0),
             local_accounts: Vec::new(),
             system_policy: Vec::new(),
@@ -381,6 +442,7 @@ impl App {
             render_invalidated: true,
             local_discovery_in_flight: false,
             local_status_in_flight: false,
+            local_services_refresh_in_flight: false,
             local_next_refresh: None,
             local_last_tick: None,
             next_mutation_id: 1,
@@ -429,6 +491,7 @@ impl App {
             Event::Task(task) => self.update_task(*task),
             Event::Source(source) => self.update_source(source),
             Event::Local(local) => self.update_local(*local),
+            Event::Services(services) => self.update_services(*services),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         }
     }
@@ -493,6 +556,10 @@ impl App {
                 state.input.push_str(text);
                 state.error = None;
             }
+            Overlay::ServiceForm(state) => {
+                state.input.push_str(text);
+                state.error = None;
+            }
             Overlay::HandoffInput(state) => {
                 state.input.push_str(text);
                 state.error = None;
@@ -532,6 +599,8 @@ impl App {
             Route::Activity => ActionContext::Activity,
             Route::Devices if self.focus == Focus::Inspector => ActionContext::Detail,
             Route::Devices => ActionContext::Collection,
+            Route::Services if self.focus == Focus::Inspector => ActionContext::Detail,
+            Route::Services => ActionContext::Collection,
             _ => ActionContext::Root,
         };
         let Some(action_id) = action::action_for_key(key, context) else {
@@ -556,6 +625,24 @@ impl App {
                     KeyCode::Enter => {
                         let input = state.input.clone();
                         return Some(self.accept_command(&input));
+                    }
+                    _ => return None,
+                }
+                Some(Vec::new())
+            }
+            Overlay::ServiceForm(state) => {
+                match key.code {
+                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                        state.input.push(character);
+                        state.error = None;
+                    }
+                    KeyCode::Backspace => {
+                        let _ = state.input.pop();
+                        state.error = None;
+                    }
+                    KeyCode::Enter => {
+                        let state = state.clone();
+                        return Some(self.accept_service_form(state));
                     }
                     _ => return None,
                 }
@@ -775,6 +862,29 @@ impl App {
                 self.overlays.push(Overlay::OperatorForm(state));
                 Vec::new()
             }
+            Overlay::ServiceForm(state) => {
+                self.overlays.push(Overlay::ServiceForm(state));
+                Vec::new()
+            }
+            Overlay::ServiceSectionPicker(mut state) => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        state.selected =
+                            (state.selected + 1).min(ServiceSection::ALL.len().saturating_sub(1));
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        state.selected = state.selected.saturating_sub(1);
+                    }
+                    KeyCode::Enter => {
+                        self.views.services.section = ServiceSection::from_index(state.selected);
+                        self.views.services.selected = 0;
+                        return Vec::new();
+                    }
+                    _ => {}
+                }
+                self.overlays.push(Overlay::ServiceSectionPicker(state));
+                Vec::new()
+            }
             Overlay::HandoffInput(state) => {
                 self.overlays.push(Overlay::HandoffInput(state));
                 Vec::new()
@@ -852,13 +962,13 @@ impl App {
             trimmed.split_once(' ').map_or((trimmed, ""), |parts| parts);
         let Some(route) = Route::parse(route_text) else {
             if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
-                state.error = Some("unknown Phase-1 route".to_owned());
+                state.error = Some("unknown route".to_owned());
             }
             return Vec::new();
         };
         if !filter_text.trim().is_empty() && route != Route::Devices {
             if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
-                state.error = Some("filters are available for devices in Phase 1".to_owned());
+                state.error = Some("filters are available for devices only".to_owned());
             }
             return Vec::new();
         }
@@ -957,9 +1067,15 @@ impl App {
                 self.navigate(Route::Activity);
                 Vec::new()
             }
+            ActionId::ViewServices => {
+                self.navigate(Route::Services);
+                Vec::new()
+            }
             ActionId::CollectionMoveUp => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(-1);
+                } else if self.current_route() == Route::Services {
+                    self.move_service_selection(-1);
                 } else {
                     self.move_selection(-1);
                 }
@@ -968,6 +1084,8 @@ impl App {
             ActionId::CollectionMoveDown => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(1);
+                } else if self.current_route() == Route::Services {
+                    self.move_service_selection(1);
                 } else {
                     self.move_selection(1);
                 }
@@ -976,6 +1094,9 @@ impl App {
             ActionId::CollectionFirst => {
                 if self.current_route() == Route::Activity {
                     self.tasks.selected = self.tasks.all().first().map(|task| task.id);
+                } else if self.current_route() == Route::Services {
+                    self.views.services.selected = 0;
+                    self.views.services.scroll = 0;
                 } else {
                     self.move_selection_to(0);
                 }
@@ -984,6 +1105,11 @@ impl App {
             ActionId::CollectionLast => {
                 if self.current_route() == Route::Activity {
                     self.tasks.selected = self.tasks.all().last().map(|task| task.id);
+                } else if self.current_route() == Route::Services {
+                    self.views.services.selected = self.service_row_count().saturating_sub(1);
+                    if self.views.services.section == ServiceSection::Metrics {
+                        self.views.services.scroll = self.metrics_max_scroll();
+                    }
                 } else {
                     self.move_selection_to(usize::MAX);
                 }
@@ -992,6 +1118,8 @@ impl App {
             ActionId::CollectionPageUp => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(-5);
+                } else if self.current_route() == Route::Services {
+                    self.move_service_selection(-5);
                 } else {
                     self.move_selection(-5);
                 }
@@ -1000,6 +1128,8 @@ impl App {
             ActionId::CollectionPageDown => {
                 if self.current_route() == Route::Activity {
                     self.tasks.select_next(5);
+                } else if self.current_route() == Route::Services {
+                    self.move_service_selection(5);
                 } else {
                     self.move_selection(5);
                 }
@@ -1010,7 +1140,14 @@ impl App {
                     if let Some(task_id) = self.tasks.selected {
                         self.overlays.push(Overlay::TaskInspector(task_id));
                     }
-                } else if self.selected_device().is_some() {
+                } else if self.current_route() == Route::Services && self.terminal_width < 80 {
+                    self.overlays
+                        .push(Overlay::ServiceSectionPicker(ServiceSectionPickerState {
+                            selected: self.views.services.section.index(),
+                        }));
+                } else if self.current_route() == Route::Services
+                    || self.selected_device().is_some()
+                {
                     self.focus = Focus::Inspector;
                 }
                 Vec::new()
@@ -1020,11 +1157,15 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionWideColumns => {
-                self.views.devices.wide_columns = !self.views.devices.wide_columns;
+                if self.current_route() == Route::Devices {
+                    self.views.devices.wide_columns = !self.views.devices.wide_columns;
+                }
                 Vec::new()
             }
             ActionId::ResourceActions => {
-                let actions = if self.source_mode == SourceMode::Mock {
+                let actions = if self.current_route() == Route::Services {
+                    self.service_actions_for_section()
+                } else if self.source_mode == SourceMode::Mock {
                     vec![
                         ActionId::MockSuccess,
                         ActionId::MockFailure,
@@ -1059,6 +1200,15 @@ impl App {
                 Vec::new()
             }
             ActionId::ResourceCopy => {
+                if self.current_route() == Route::Services
+                    && self.views.services.section == ServiceSection::Metrics
+                {
+                    self.overlays.push(Overlay::CopyPicker(CopyPickerState {
+                        fields: vec![CopyField::Metrics],
+                        selected: 0,
+                    }));
+                    return Vec::new();
+                }
                 let mut fields = vec![
                     CopyField::DeviceId,
                     CopyField::DisplayName,
@@ -1144,6 +1294,35 @@ impl App {
             ActionId::LocalSyspolicyReload => {
                 self.open_mutation_confirmation(LocalMutation::SyspolicyReload)
             }
+            ActionId::ServicesSectionNext => {
+                self.change_service_section(1);
+                Vec::new()
+            }
+            ActionId::ServicesSectionPrevious => {
+                self.change_service_section(-1);
+                Vec::new()
+            }
+            ActionId::ServicesServeRefresh
+            | ActionId::ServicesFunnelRefresh
+            | ActionId::ServicesDriveRefresh
+            | ActionId::ServicesMetricsRefresh => self.start_services_action(action_id),
+            ActionId::ServicesServeCreate
+            | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeReset
+            | ActionId::ServicesFunnelCreate
+            | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelReset
+            | ActionId::ServicesTaildropSend
+            | ActionId::ServicesTaildropReceive
+            | ActionId::ServicesDriveShare
+            | ActionId::ServicesDriveRename
+            | ActionId::ServicesDriveUnshare
+            | ActionId::ServicesCertificateObtain
+            | ActionId::ServicesBugReportCreate => self.open_service_action(action_id),
+            ActionId::ServicesDriveEnableAlpha => {
+                self.alpha_local_features = true;
+                self.start_services_refresh()
+            }
         }
     }
 
@@ -1184,6 +1363,18 @@ impl App {
         }
         if self.resolved_config.read_only && is_mutating_action(action_id) {
             return Some("read-only mode blocks local mutations".to_owned());
+        }
+        if is_service_write_action(action_id) && self.resolved_config.read_only {
+            return Some("read-only mode blocks local service mutations".to_owned());
+        }
+        if is_taildrive_action(action_id)
+            && action_id != ActionId::ServicesDriveEnableAlpha
+            && !self.alpha_local_features
+        {
+            return Some("Taildrive is alpha and disabled until enabled for this run".to_owned());
+        }
+        if is_phase_four_action(action_id) && self.local_executable.is_none() {
+            return Some("tailscale executable has not been discovered".to_owned());
         }
         if self.local_executable.is_none()
             && matches!(
@@ -1247,10 +1438,19 @@ impl App {
     }
 
     fn local_action_available(&self, action_id: ActionId) -> bool {
+        if action_id == ActionId::ViewServices {
+            return true;
+        }
+        if is_phase_four_action(action_id) && self.source_mode != SourceMode::Local {
+            return false;
+        }
         if is_phase_three_action(action_id) && self.source_mode != SourceMode::Local {
             return false;
         }
         if is_mutating_action(action_id) && self.resolved_config.read_only {
+            return false;
+        }
+        if is_service_write_action(action_id) && self.resolved_config.read_only {
             return false;
         }
         if matches!(
@@ -1276,6 +1476,25 @@ impl App {
             ActionId::LocalSshOpen => capabilities.ssh,
             ActionId::LocalNcOpen => capabilities.nc,
             ActionId::LocalSyspolicyReload => capabilities.syspolicy,
+            ActionId::ServicesServeRefresh
+            | ActionId::ServicesServeCreate
+            | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeReset => capabilities.serve,
+            ActionId::ServicesFunnelRefresh
+            | ActionId::ServicesFunnelCreate
+            | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelReset => capabilities.funnel,
+            ActionId::ServicesTaildropSend | ActionId::ServicesTaildropReceive => {
+                capabilities.taildrop
+            }
+            ActionId::ServicesDriveRefresh
+            | ActionId::ServicesDriveShare
+            | ActionId::ServicesDriveRename
+            | ActionId::ServicesDriveUnshare => capabilities.drive && self.alpha_local_features,
+            ActionId::ServicesDriveEnableAlpha => capabilities.drive,
+            ActionId::ServicesCertificateObtain => capabilities.certificate,
+            ActionId::ServicesMetricsRefresh => capabilities.metrics,
+            ActionId::ServicesBugReportCreate => capabilities.bugreport,
             _ => self.local_observer_action_available(action_id),
         }
     }
@@ -1372,6 +1591,7 @@ impl App {
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::LocalAccountLogin,
                 mutation: None,
+                service_request: None,
                 handoff: Some(handoff::login_command(&executable.path)),
                 prompt: "Open Tailscale login in the terminal; Tale will not collect credentials."
                     .to_owned(),
@@ -1393,6 +1613,7 @@ impl App {
         self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::LocalAccountLogout,
             mutation: None,
+            service_request: None,
             handoff: Some(handoff::logout_command(&executable.path)),
             prompt: "Log out this local account; the node key will be invalidated and reauthentication will be required.".to_owned(),
             required_phrase: Some("LOGOUT".to_owned()),
@@ -1502,6 +1723,7 @@ impl App {
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: mutation.action_id(),
                 mutation: Some(mutation),
+                service_request: None,
                 handoff: None,
                 prompt,
                 required_phrase,
@@ -1964,6 +2186,7 @@ impl App {
                             HandoffInputKind::Nc => ActionId::LocalNcOpen,
                         },
                         mutation: None,
+                        service_request: None,
                         handoff: Some(command),
                         prompt: "Pause Tale and open the selected interactive terminal session."
                             .to_owned(),
@@ -1996,6 +2219,26 @@ impl App {
                 current.error = Some(format!("type {required} exactly to confirm"));
             }
             return Vec::new();
+        }
+        if let Some(mut request) = state.service_request {
+            if self.resolved_config.read_only && is_service_write_action(request.action_id()) {
+                self.runtime_error =
+                    Some("read-only mode blocks local service mutations".to_owned());
+                return Vec::new();
+            }
+            if request.action_id() == ActionId::ServicesCertificateObtain
+                && let ServiceActionRequest::Certificate(certificate) = &mut request
+            {
+                let overwrites =
+                    certificate.certificate_path.exists() || certificate.key_path.exists();
+                if overwrites && !certificate.overwrites_existing {
+                    certificate.overwrites_existing = true;
+                    self.overlays.pop();
+                    return self.open_service_confirmation(request);
+                }
+            }
+            self.overlays.pop();
+            return self.start_service_request(request);
         }
         if let Some(mut mutation) = state.mutation {
             if self.resolved_config.read_only {
@@ -2129,6 +2372,9 @@ impl App {
     }
 
     fn start_refresh(&mut self, _all: bool) -> Vec<Effect> {
+        if self.current_route() == Route::Services {
+            return self.start_services_refresh();
+        }
         match self.source_mode {
             SourceMode::Unavailable => {
                 self.runtime_error = Some("local integration is disabled".to_owned());
@@ -2184,6 +2430,980 @@ impl App {
                 effects
             }
         }
+    }
+
+    fn change_service_section(&mut self, offset: isize) {
+        let current = self.views.services.section.index();
+        let length = ServiceSection::ALL.len();
+        let next = if offset.is_negative() {
+            current.saturating_sub(offset.unsigned_abs())
+        } else {
+            current
+                .saturating_add(offset as usize)
+                .min(length.saturating_sub(1))
+        };
+        self.views.services.section = ServiceSection::from_index(next);
+        self.views.services.selected = 0;
+        self.views.services.scroll = 0;
+        self.focus = Focus::Collection;
+    }
+
+    fn move_service_selection(&mut self, offset: isize) {
+        if self.views.services.section == ServiceSection::Metrics {
+            let current = self.views.services.scroll;
+            let next = if offset.is_negative() {
+                current.saturating_sub(offset.unsigned_abs())
+            } else {
+                current.saturating_add(offset as usize)
+            };
+            self.views.services.scroll = next.min(self.metrics_max_scroll());
+            return;
+        }
+        let count = self.service_row_count();
+        if count == 0 {
+            self.views.services.selected = 0;
+            return;
+        }
+        let current = self.views.services.selected;
+        self.views.services.selected = if offset.is_negative() {
+            current.saturating_sub(offset.unsigned_abs())
+        } else {
+            current
+                .saturating_add(offset as usize)
+                .min(count.saturating_sub(1))
+        };
+        self.views.services.scroll = self.views.services.selected;
+    }
+
+    fn service_row_count(&self) -> usize {
+        match self.views.services.section {
+            ServiceSection::Serve => self
+                .services_snapshot
+                .serve
+                .value
+                .as_ref()
+                .map_or(0, |status| status.mappings.len()),
+            ServiceSection::Funnel => self
+                .services_snapshot
+                .funnel
+                .value
+                .as_ref()
+                .map_or(0, |status| status.mappings.len()),
+            ServiceSection::Taildrop => self
+                .services_snapshot
+                .taildrop_targets
+                .value
+                .as_ref()
+                .map_or(0, Vec::len),
+            ServiceSection::Taildrive => self
+                .services_snapshot
+                .taildrive
+                .value
+                .as_ref()
+                .map_or(0, Vec::len),
+            ServiceSection::Certificates => self
+                .services_snapshot
+                .certificate_domains
+                .value
+                .as_ref()
+                .map_or(0, Vec::len),
+            ServiceSection::Metrics => usize::from(self.services_snapshot.metrics.value.is_some()),
+            ServiceSection::BugReport => {
+                usize::from(self.services_snapshot.bug_report.value.is_some())
+            }
+        }
+    }
+
+    pub fn selected_service_mapping(&self) -> Option<ServiceMapping> {
+        let selected = self.views.services.selected;
+        match self.views.services.section {
+            ServiceSection::Serve => self
+                .services_snapshot
+                .serve
+                .value
+                .as_ref()
+                .and_then(|status| status.mappings.get(selected))
+                .cloned(),
+            ServiceSection::Funnel => self
+                .services_snapshot
+                .funnel
+                .value
+                .as_ref()
+                .and_then(|status| status.mappings.get(selected))
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    pub fn selected_taildrop_target(&self) -> Option<TaildropTarget> {
+        self.services_snapshot
+            .taildrop_targets
+            .value
+            .as_ref()
+            .and_then(|targets| targets.get(self.views.services.selected))
+            .cloned()
+    }
+
+    pub fn selected_taildrive_share(&self) -> Option<TaildriveShare> {
+        self.services_snapshot
+            .taildrive
+            .value
+            .as_ref()
+            .and_then(|shares| shares.get(self.views.services.selected))
+            .cloned()
+    }
+
+    fn metrics_max_scroll(&self) -> usize {
+        let line_count = self
+            .services_snapshot
+            .metrics
+            .value
+            .as_ref()
+            .map_or(0, |metrics| metrics.text.lines().count());
+        let viewport = usize::from(self.terminal_height.saturating_sub(8)).max(1);
+        line_count.saturating_sub(viewport)
+    }
+
+    fn service_actions_for_section(&self) -> Vec<ActionId> {
+        match self.views.services.section {
+            ServiceSection::Serve => vec![
+                ActionId::ServicesServeRefresh,
+                ActionId::ServicesServeCreate,
+                ActionId::ServicesServeEdit,
+                ActionId::ServicesServeReset,
+            ],
+            ServiceSection::Funnel => vec![
+                ActionId::ServicesFunnelRefresh,
+                ActionId::ServicesFunnelCreate,
+                ActionId::ServicesFunnelEdit,
+                ActionId::ServicesFunnelReset,
+            ],
+            ServiceSection::Taildrop => vec![
+                ActionId::ServicesTaildropSend,
+                ActionId::ServicesTaildropReceive,
+            ],
+            ServiceSection::Taildrive => {
+                let mut actions = vec![ActionId::ServicesDriveRefresh];
+                if self.alpha_local_features {
+                    actions.extend([
+                        ActionId::ServicesDriveShare,
+                        ActionId::ServicesDriveRename,
+                        ActionId::ServicesDriveUnshare,
+                    ]);
+                } else {
+                    actions.push(ActionId::ServicesDriveEnableAlpha);
+                }
+                actions
+            }
+            ServiceSection::Certificates => vec![ActionId::ServicesCertificateObtain],
+            ServiceSection::Metrics => vec![ActionId::ServicesMetricsRefresh],
+            ServiceSection::BugReport => vec![ActionId::ServicesBugReportCreate],
+        }
+    }
+
+    fn open_service_action(&mut self, action_id: ActionId) -> Vec<Effect> {
+        if !self.action_is_available(action_id) {
+            self.runtime_error = self
+                .action_unavailable_reason(action_id)
+                .or_else(|| Some("service action is unavailable".to_owned()));
+            return Vec::new();
+        }
+        match action_id {
+            ActionId::ServicesServeReset => {
+                self.open_service_confirmation(ServiceActionRequest::ServeReset)
+            }
+            ActionId::ServicesFunnelReset => {
+                self.open_service_confirmation(ServiceActionRequest::FunnelReset)
+            }
+            ActionId::ServicesServeCreate | ActionId::ServicesServeEdit => {
+                let edit = action_id == ActionId::ServicesServeEdit;
+                let input = if edit {
+                    self.selected_service_mapping()
+                        .filter(|mapping| mapping.exposure == Exposure::Tailnet)
+                        .map(|mapping| service_form_mapping(&mapping))
+                        .unwrap_or_default()
+                } else {
+                    "listener=https;port=443;path=/;backend=3000;proxy=none".to_owned()
+                };
+                if edit && input.is_empty() {
+                    self.runtime_error = Some("select a Serve mapping to edit".to_owned());
+                    return Vec::new();
+                }
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input,
+                    error: None,
+                }));
+                Vec::new()
+            }
+            ActionId::ServicesFunnelCreate | ActionId::ServicesFunnelEdit => {
+                let edit = action_id == ActionId::ServicesFunnelEdit;
+                let input = if edit {
+                    self.selected_service_mapping()
+                        .filter(|mapping| mapping.exposure == Exposure::Public)
+                        .map(|mapping| service_form_mapping(&mapping))
+                        .unwrap_or_default()
+                } else {
+                    "listener=https;port=443;path=/;backend=3000;proxy=none".to_owned()
+                };
+                if edit && input.is_empty() {
+                    self.runtime_error = Some("select a PUBLIC Funnel mapping to edit".to_owned());
+                    return Vec::new();
+                }
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input,
+                    error: None,
+                }));
+                Vec::new()
+            }
+            ActionId::ServicesTaildropSend => {
+                let target = self
+                    .selected_taildrop_target()
+                    .filter(TaildropTarget::available)
+                    .map_or_else(String::new, |target| target.command_target);
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input: format!("target={target};files="),
+                    error: None,
+                }));
+                Vec::new()
+            }
+            ActionId::ServicesTaildropReceive => {
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input: "directory=;conflict=rename;wait=false".to_owned(),
+                    error: None,
+                }));
+                Vec::new()
+            }
+            ActionId::ServicesDriveShare => {
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input: "name=;path=".to_owned(),
+                    error: None,
+                }));
+                Vec::new()
+            }
+            ActionId::ServicesDriveRename => {
+                let input = self.selected_taildrive_share().map_or_else(
+                    || "old=;new=".to_owned(),
+                    |share| format!("old={};new={}", share.name, share.name),
+                );
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input,
+                    error: None,
+                }));
+                Vec::new()
+            }
+            ActionId::ServicesDriveUnshare => {
+                let Some(share) = self.selected_taildrive_share() else {
+                    self.runtime_error = Some("select a Taildrive share to unshare".to_owned());
+                    return Vec::new();
+                };
+                self.open_service_confirmation(ServiceActionRequest::TaildriveUnshare {
+                    name: share.name,
+                })
+            }
+            ActionId::ServicesCertificateObtain => {
+                let domain = self
+                    .services_snapshot
+                    .certificate_domains
+                    .value
+                    .as_ref()
+                    .and_then(|domains| domains.first())
+                    .cloned()
+                    .unwrap_or_default();
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input: format!("domain={domain};cert=;key=;min-validity="),
+                    error: None,
+                }));
+                Vec::new()
+            }
+            ActionId::ServicesMetricsRefresh => {
+                self.start_service_request(ServiceActionRequest::Metrics)
+            }
+            ActionId::ServicesBugReportCreate => {
+                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                    action_id,
+                    input: "diagnose=false;note=".to_owned(),
+                    error: None,
+                }));
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn accept_service_form(&mut self, state: ServiceFormState) -> Vec<Effect> {
+        match self.parse_service_form(&state) {
+            Ok(request) => {
+                self.overlays.pop();
+                if request.action_id() == ActionId::ServicesMetricsRefresh {
+                    self.start_service_request(request)
+                } else {
+                    self.open_service_confirmation(request)
+                }
+            }
+            Err(error) => {
+                if let Some(Overlay::ServiceForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn parse_service_form(&self, state: &ServiceFormState) -> Result<ServiceActionRequest, String> {
+        let fields = parse_service_fields(&state.input)?;
+        match state.action_id {
+            ActionId::ServicesServeCreate | ActionId::ServicesServeEdit => {
+                let mapping = self.parse_mapping_form(&fields, Exposure::Tailnet)?;
+                if state.action_id == ActionId::ServicesServeEdit
+                    && !self
+                        .selected_service_mapping()
+                        .is_some_and(|selected| selected.exact_identity_matches(&mapping))
+                {
+                    return Err(
+                        "Serve edit cannot replace a different listener and mount; create a new mapping instead"
+                            .to_owned(),
+                    );
+                }
+                Ok(ServiceActionRequest::Serve {
+                    mapping,
+                    edit: state.action_id == ActionId::ServicesServeEdit,
+                })
+            }
+            ActionId::ServicesFunnelCreate | ActionId::ServicesFunnelEdit => {
+                let mapping = self.parse_mapping_form(&fields, Exposure::Public)?;
+                if state.action_id == ActionId::ServicesFunnelEdit
+                    && !self
+                        .selected_service_mapping()
+                        .is_some_and(|selected| selected.exact_identity_matches(&mapping))
+                {
+                    return Err(
+                        "PUBLIC Funnel edit cannot replace a different listener and mount; create a new mapping instead"
+                            .to_owned(),
+                    );
+                }
+                Ok(ServiceActionRequest::Funnel {
+                    mapping,
+                    edit: state.action_id == ActionId::ServicesFunnelEdit,
+                })
+            }
+            ActionId::ServicesTaildropSend => {
+                let target_name = required_field(&fields, "target")?;
+                let target = self
+                    .services_snapshot
+                    .taildrop_targets
+                    .value
+                    .as_ref()
+                    .and_then(|targets| {
+                        targets
+                            .iter()
+                            .find(|target| target.command_target == target_name)
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        "target must exactly match a discovered Taildrop target".to_owned()
+                    })?;
+                if !target.available() {
+                    return Err("the selected Taildrop target is unavailable".to_owned());
+                }
+                let files = required_field(&fields, "files")?
+                    .split('|')
+                    .filter(|path| !path.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .map(|path| validate_regular_file(&path))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if files.is_empty() {
+                    return Err("select at least one existing regular file".to_owned());
+                }
+                Ok(ServiceActionRequest::TaildropSend(TaildropSendRequest {
+                    files,
+                    target,
+                }))
+            }
+            ActionId::ServicesTaildropReceive => {
+                let directory = std::path::PathBuf::from(required_field(&fields, "directory")?);
+                validate_receive_directory(&directory)?;
+                let conflict = TaildropConflict::parse(required_field(&fields, "conflict")?)
+                    .ok_or_else(|| "conflict must be skip, overwrite, or rename".to_owned())?;
+                let wait = parse_bool_field(&fields, "wait")?;
+                Ok(ServiceActionRequest::TaildropReceive(
+                    TaildropReceiveRequest {
+                        directory,
+                        conflict,
+                        wait,
+                    },
+                ))
+            }
+            ActionId::ServicesDriveShare => {
+                let input_name = required_field(&fields, "name")?.to_owned();
+                let normalized_name = normalize_share_name(&input_name)?;
+                let path = std::path::PathBuf::from(required_field(&fields, "path")?);
+                if !std::fs::metadata(&path)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+                {
+                    return Err("share path must be an existing directory".to_owned());
+                }
+                if self
+                    .services_snapshot
+                    .taildrive
+                    .value
+                    .as_ref()
+                    .is_some_and(|shares| shares.iter().any(|share| share.name == normalized_name))
+                {
+                    return Err("a share with that normalized name already exists".to_owned());
+                }
+                Ok(ServiceActionRequest::TaildriveShare {
+                    input_name,
+                    normalized_name,
+                    path,
+                })
+            }
+            ActionId::ServicesDriveRename => {
+                let old_name = required_field(&fields, "old")?.to_owned();
+                let input_name = required_field(&fields, "new")?.to_owned();
+                let normalized_name = normalize_share_name(&input_name)?;
+                if !self
+                    .services_snapshot
+                    .taildrive
+                    .value
+                    .as_ref()
+                    .is_some_and(|shares| shares.iter().any(|share| share.name == old_name))
+                {
+                    return Err("old share name was not returned by the current list".to_owned());
+                }
+                if self
+                    .services_snapshot
+                    .taildrive
+                    .value
+                    .as_ref()
+                    .is_some_and(|shares| {
+                        shares
+                            .iter()
+                            .any(|share| share.name == normalized_name && share.name != old_name)
+                    })
+                {
+                    return Err("new normalized share name already exists".to_owned());
+                }
+                Ok(ServiceActionRequest::TaildriveRename {
+                    old_name,
+                    input_name,
+                    normalized_name,
+                })
+            }
+            ActionId::ServicesCertificateObtain => {
+                let domain = required_field(&fields, "domain")?.to_owned();
+                let certificate_path = std::path::PathBuf::from(required_field(&fields, "cert")?);
+                let key_path = std::path::PathBuf::from(required_field(&fields, "key")?);
+                let min_validity = optional_field(&fields, "min-validity")
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned);
+                let request = CertificateRequest {
+                    domain,
+                    certificate_path,
+                    key_path,
+                    min_validity,
+                    overwrites_existing: false,
+                };
+                let eligible = self
+                    .services_snapshot
+                    .certificate_domains
+                    .value
+                    .clone()
+                    .unwrap_or_default();
+                request.validate(&eligible)?;
+                let overwrites_existing =
+                    request.certificate_path.exists() || request.key_path.exists();
+                Ok(ServiceActionRequest::Certificate(CertificateRequest {
+                    overwrites_existing,
+                    ..request
+                }))
+            }
+            ActionId::ServicesBugReportCreate => {
+                let diagnose = parse_bool_field(&fields, "diagnose")?;
+                let note = optional_field(&fields, "note")
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned);
+                let request = BugReportRequest { note, diagnose };
+                request.validate()?;
+                Ok(ServiceActionRequest::BugReport(request))
+            }
+            _ => Err("this service action does not accept a form".to_owned()),
+        }
+    }
+
+    fn parse_mapping_form(
+        &self,
+        fields: &BTreeMap<String, String>,
+        exposure: Exposure,
+    ) -> Result<ServiceMapping, String> {
+        let listener_name = required_field(fields, "listener")?;
+        let port = required_field(fields, "port")?
+            .parse::<Port>()
+            .map_err(|error| error.to_string())?;
+        let listener = match listener_name.to_ascii_lowercase().as_str() {
+            "https" => Listener::Https(port),
+            "http" if exposure == Exposure::Tailnet => Listener::Http(port),
+            "tcp" => Listener::Tcp(port),
+            "tls-terminated-tcp" | "tls_terminated_tcp" => Listener::TlsTerminatedTcp(port),
+            _ => return Err("listener is unsupported for this section".to_owned()),
+        };
+        let is_public = exposure == Exposure::Public;
+        let mount = PathMount::parse(optional_field(fields, "path").unwrap_or("/"))
+            .map_err(|error| error.to_string())?;
+        let backend = Backend::parse(required_field(fields, "backend")?)
+            .map_err(|error| error.to_string())?;
+        if matches!(backend, Backend::UnixSocket(_)) && !cfg!(unix) {
+            return Err("Unix socket backends are unavailable on this platform".to_owned());
+        }
+        let proxy_protocol =
+            ProxyProtocol::parse(optional_field(fields, "proxy").unwrap_or("none"))
+                .map_err(|error| error.to_string())?;
+        let mapping = ServiceMapping {
+            exposure,
+            listener,
+            mount,
+            backend,
+            proxy_protocol,
+            hostname: optional_field(fields, "hostname").map(str::to_owned),
+        };
+        if !self
+            .local_capabilities
+            .supports_service_listener(&mapping.listener, is_public)
+        {
+            return Err(format!(
+                "{} listeners are unsupported by this CLI",
+                mapping.listener.label()
+            ));
+        }
+        mapping.validate().map_err(|error| error.to_string())?;
+        Ok(mapping)
+    }
+
+    fn open_service_confirmation(&mut self, request: ServiceActionRequest) -> Vec<Effect> {
+        let Some((preview_lines, redacted_argv)) = self.service_preview(&request) else {
+            self.runtime_error = Some("service command preview is unavailable".to_owned());
+            return Vec::new();
+        };
+        let (prompt, required_phrase) = service_confirmation_text(&request);
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: request.action_id(),
+                mutation: None,
+                service_request: Some(request),
+                handoff: None,
+                prompt,
+                required_phrase,
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines,
+                redacted_argv,
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn service_preview(
+        &self,
+        request: &ServiceActionRequest,
+    ) -> Option<(Vec<String>, Vec<String>)> {
+        let command_path = self
+            .local_executable
+            .as_ref()
+            .map_or(std::path::Path::new("tailscale"), |value| {
+                value.path.as_path()
+            });
+        let timeout = self.resolved_config.local.command_timeout;
+        let command = match request {
+            ServiceActionRequest::Serve { mapping, .. }
+            | ServiceActionRequest::Funnel { mapping, .. } => {
+                services::mapping_command(command_path, timeout, mapping, true).ok()?
+            }
+            ServiceActionRequest::ServeReset => {
+                services::serve_reset_command(command_path, timeout)
+            }
+            ServiceActionRequest::FunnelReset => {
+                services::funnel_reset_command(command_path, timeout)
+            }
+            ServiceActionRequest::TaildropSend(request) => transfers::taildrop_send_command(
+                command_path,
+                timeout,
+                &request
+                    .files
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>(),
+                &request.target.command_target,
+            )
+            .ok()?,
+            ServiceActionRequest::TaildropReceive(request) => transfers::taildrop_receive_command(
+                command_path,
+                timeout,
+                &request.directory,
+                request.conflict,
+                request.wait,
+            )
+            .ok()?,
+            ServiceActionRequest::TaildriveShare {
+                normalized_name,
+                path: share_path,
+                ..
+            } => transfers::drive_share_command(command_path, timeout, normalized_name, share_path)
+                .ok()?,
+            ServiceActionRequest::TaildriveRename {
+                old_name,
+                normalized_name,
+                ..
+            } => transfers::drive_rename_command(command_path, timeout, old_name, normalized_name)
+                .ok()?,
+            ServiceActionRequest::TaildriveUnshare { name } => {
+                transfers::drive_unshare_command(command_path, timeout, name).ok()?
+            }
+            ServiceActionRequest::Certificate(request) => {
+                certificates::certificate_command(command_path, timeout, request).ok()?
+            }
+            ServiceActionRequest::Metrics => {
+                services::metrics_command(command_path, timeout, 256 * 1024)
+            }
+            ServiceActionRequest::BugReport(request) => services::bugreport_command(
+                command_path,
+                timeout,
+                request.note.as_deref(),
+                request.diagnose,
+            )
+            .ok()?,
+        };
+        let argv = command
+            .args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let mut preview = vec!["direct argv (each line is one argument):".to_owned()];
+        preview.extend(
+            argv.iter()
+                .enumerate()
+                .map(|(index, value)| format!("  argv[{index}] = {value:?}")),
+        );
+        if matches!(
+            request,
+            ServiceActionRequest::Funnel { .. } | ServiceActionRequest::FunnelReset
+        ) {
+            preview.insert(0, "PUBLIC: this changes public reachability".to_owned());
+        }
+        if let ServiceActionRequest::TaildriveShare {
+            input_name,
+            normalized_name,
+            ..
+        } = request
+        {
+            preview.push(format!("input share name: {input_name}"));
+            preview.push(format!("normalized share name: {normalized_name}"));
+        }
+        Some((preview, argv))
+    }
+
+    fn start_service_request(&mut self, request: ServiceActionRequest) -> Vec<Effect> {
+        let action_id = request.action_id();
+        if !self.action_is_available(action_id) {
+            self.runtime_error = self
+                .action_unavailable_reason(action_id)
+                .or_else(|| Some("service action is unavailable".to_owned()));
+            return Vec::new();
+        }
+        if let Err(error) = self.revalidate_service_request(&request) {
+            self.runtime_error = Some(error);
+            return Vec::new();
+        }
+        if let Some(key) = request.conflict_key()
+            && self.service_locks.iter().any(|(held, _)| held == &key)
+        {
+            self.runtime_error = Some("another task is changing this service resource".to_owned());
+            return Vec::new();
+        }
+        let Some(executable) = self.local_executable.clone() else {
+            self.runtime_error = Some("tailscale executable has not been discovered".to_owned());
+            return Vec::new();
+        };
+        match &request {
+            ServiceActionRequest::Metrics => {
+                self.services_snapshot
+                    .metrics
+                    .begin(self.services_snapshot.generation);
+            }
+            ServiceActionRequest::BugReport(_) => {
+                self.services_snapshot
+                    .bug_report
+                    .begin(self.services_snapshot.generation);
+            }
+            _ => {}
+        }
+        let task_id = self
+            .tasks
+            .create(action_id, request.target_label(), self.now, true);
+        if let Some(key) = request.conflict_key() {
+            self.service_locks.push((key, task_id));
+        }
+        if let Some((fields, argv)) = self.service_task_metadata(&request) {
+            let _ = self.tasks.set_local_metadata(task_id, fields, argv);
+        }
+        vec![Effect::StartServiceTask {
+            task_id,
+            executable,
+            timeout: self.resolved_config.local.command_timeout,
+            request,
+        }]
+    }
+
+    fn revalidate_service_request(&self, request: &ServiceActionRequest) -> Result<(), String> {
+        match request {
+            ServiceActionRequest::Serve { mapping, edit } => {
+                mapping.validate().map_err(|error| error.to_string())?;
+                if mapping.exposure != Exposure::Tailnet {
+                    return Err("Serve requests must remain tailnet-only".to_owned());
+                }
+                if !self
+                    .local_capabilities
+                    .supports_service_listener(&mapping.listener, false)
+                {
+                    return Err(format!(
+                        "{} Serve listeners are unsupported by this CLI",
+                        mapping.listener.label()
+                    ));
+                }
+                if *edit
+                    && !self
+                        .services_snapshot
+                        .serve
+                        .value
+                        .as_ref()
+                        .is_some_and(|status| {
+                            status
+                                .mappings
+                                .iter()
+                                .any(|actual| actual.exact_identity_matches(mapping))
+                        })
+                {
+                    return Err(
+                        "the selected Serve mapping changed; refresh and create or edit again"
+                            .to_owned(),
+                    );
+                }
+                validate_mapping_backend(mapping)
+            }
+            ServiceActionRequest::ServeReset => Ok(()),
+            ServiceActionRequest::Funnel { mapping, edit } => {
+                mapping.validate().map_err(|error| error.to_string())?;
+                if mapping.exposure != Exposure::Public {
+                    return Err("Funnel requests must remain PUBLIC".to_owned());
+                }
+                if matches!(mapping.listener, Listener::Http(_)) {
+                    return Err("HTTP is not offered as a public Funnel listener".to_owned());
+                }
+                if !self
+                    .local_capabilities
+                    .supports_service_listener(&mapping.listener, true)
+                {
+                    return Err(format!(
+                        "{} Funnel listeners are unsupported by this CLI",
+                        mapping.listener.label()
+                    ));
+                }
+                if *edit
+                    && !self
+                        .services_snapshot
+                        .funnel
+                        .value
+                        .as_ref()
+                        .is_some_and(|status| {
+                            status
+                                .mappings
+                                .iter()
+                                .any(|actual| actual.exact_identity_matches(mapping))
+                        })
+                {
+                    return Err(
+                        "the selected PUBLIC Funnel mapping changed; refresh and edit again"
+                            .to_owned(),
+                    );
+                }
+                validate_mapping_backend(mapping)
+            }
+            ServiceActionRequest::FunnelReset => Ok(()),
+            ServiceActionRequest::TaildropSend(request) => {
+                let target = self
+                    .services_snapshot
+                    .taildrop_targets
+                    .value
+                    .as_ref()
+                    .and_then(|targets| {
+                        targets
+                            .iter()
+                            .find(|target| target.command_target == request.target.command_target)
+                    })
+                    .ok_or_else(|| "the Taildrop target is no longer listed".to_owned())?;
+                if !target.available() {
+                    return Err("the selected Taildrop target is no longer available".to_owned());
+                }
+                for file in &request.files {
+                    validate_regular_file(&file.path)
+                        .map_err(|error| format!("{}: {error}", file.path.display()))?;
+                }
+                Ok(())
+            }
+            ServiceActionRequest::TaildropReceive(request) => {
+                validate_receive_directory(&request.directory)
+            }
+            ServiceActionRequest::TaildriveShare {
+                normalized_name,
+                path,
+                ..
+            } => {
+                if !self.alpha_local_features {
+                    return Err("Taildrive is alpha and disabled for this run".to_owned());
+                }
+                if !std::fs::metadata(path)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+                {
+                    return Err("share path must remain an existing directory".to_owned());
+                }
+                if self
+                    .services_snapshot
+                    .taildrive
+                    .value
+                    .as_ref()
+                    .is_some_and(|shares| shares.iter().any(|share| share.name == *normalized_name))
+                {
+                    return Err("a share with that normalized name now exists".to_owned());
+                }
+                Ok(())
+            }
+            ServiceActionRequest::TaildriveRename {
+                old_name,
+                normalized_name,
+                ..
+            } => {
+                let shares = self
+                    .services_snapshot
+                    .taildrive
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| "Taildrive shares are no longer verified".to_owned())?;
+                if !shares.iter().any(|share| share.name == *old_name) {
+                    return Err("the old Taildrive share no longer exists".to_owned());
+                }
+                if shares
+                    .iter()
+                    .any(|share| share.name == *normalized_name && share.name != *old_name)
+                {
+                    return Err("the new normalized Taildrive name now exists".to_owned());
+                }
+                Ok(())
+            }
+            ServiceActionRequest::TaildriveUnshare { name } => {
+                if !self
+                    .services_snapshot
+                    .taildrive
+                    .value
+                    .as_ref()
+                    .is_some_and(|shares| shares.iter().any(|share| share.name == *name))
+                {
+                    return Err("the selected Taildrive share is no longer listed".to_owned());
+                }
+                Ok(())
+            }
+            ServiceActionRequest::Certificate(request) => {
+                if self.services_snapshot.certificate_domains.status != ServiceResourceStatus::Ready
+                {
+                    return Err("certificate domains are no longer verified".to_owned());
+                }
+                let Some(eligible) = self.services_snapshot.certificate_domains.value.as_deref()
+                else {
+                    return Err("certificate domains are no longer verified".to_owned());
+                };
+                request.validate(eligible)
+            }
+            ServiceActionRequest::Metrics => Ok(()),
+            ServiceActionRequest::BugReport(request) => request.validate(),
+        }
+    }
+
+    fn service_task_metadata(
+        &self,
+        request: &ServiceActionRequest,
+    ) -> Option<(Vec<String>, Vec<String>)> {
+        let (_, argv) = self.service_preview(request)?;
+        let fields = match request {
+            ServiceActionRequest::Serve { mapping, .. }
+            | ServiceActionRequest::Funnel { mapping, .. } => {
+                vec![
+                    "listener".to_owned(),
+                    "mount".to_owned(),
+                    mapping.backend.label().to_owned(),
+                ]
+            }
+            ServiceActionRequest::TaildropSend(request) => {
+                let mut fields = vec!["target".to_owned()];
+                fields.extend((0..request.files.len()).map(|index| format!("file-{index}")));
+                fields
+            }
+            ServiceActionRequest::TaildropReceive(request) => {
+                vec!["directory".to_owned(), request.conflict.label().to_owned()]
+            }
+            ServiceActionRequest::TaildriveShare { .. } => {
+                vec!["share name".to_owned(), "directory".to_owned()]
+            }
+            ServiceActionRequest::TaildriveRename { .. } => {
+                vec!["old name".to_owned(), "new name".to_owned()]
+            }
+            ServiceActionRequest::TaildriveUnshare { .. } => vec!["share name".to_owned()],
+            ServiceActionRequest::Certificate(_) => {
+                vec![
+                    "domain".to_owned(),
+                    "certificate path".to_owned(),
+                    "key path".to_owned(),
+                ]
+            }
+            ServiceActionRequest::Metrics => Vec::new(),
+            ServiceActionRequest::BugReport(_) => vec!["diagnostic note".to_owned()],
+            ServiceActionRequest::ServeReset | ServiceActionRequest::FunnelReset => Vec::new(),
+        };
+        Some((fields, argv))
+    }
+
+    fn start_services_action(&mut self, action_id: ActionId) -> Vec<Effect> {
+        match action_id {
+            ActionId::ServicesMetricsRefresh => {
+                self.open_service_action(ActionId::ServicesMetricsRefresh)
+            }
+            _ => self.start_services_refresh(),
+        }
+    }
+
+    fn start_services_refresh(&mut self) -> Vec<Effect> {
+        if self.source_mode != SourceMode::Local {
+            self.runtime_error = Some("local services require the local source".to_owned());
+            return Vec::new();
+        }
+        let Some(executable) = self.local_executable.clone() else {
+            self.runtime_error = Some("tailscale executable has not been discovered".to_owned());
+            return Vec::new();
+        };
+        let generation = self.services_snapshot.generation.saturating_add(1);
+        self.services_snapshot.begin(generation);
+        self.local_services_refresh_in_flight = true;
+        vec![Effect::StartLocalServicesRefresh {
+            generation,
+            executable,
+            timeout: self.resolved_config.local.command_timeout,
+            alpha_enabled: self.alpha_local_features,
+        }]
     }
 
     fn start_task(
@@ -2609,12 +3829,16 @@ impl App {
                 self.local_status_in_flight = false;
                 self.local_state = state_for_failure(&failure, self.local_executable.as_ref());
                 self.local_resource.fail(generation, failure.clone());
+                let service_failure = service_failure_from_local_failure(&failure);
                 self.devices_resource.health = if self.local_resource.snapshot.is_some() {
                     SourceHealth::Stale
                 } else {
                     SourceHealth::Error
                 };
                 self.devices_resource.error = Some(failure.detail);
+                self.services_snapshot
+                    .certificate_domains
+                    .fail(self.services_snapshot.generation, service_failure);
                 self.schedule_failure_backoff();
             }
             LocalEvent::StatusStarted {
@@ -2637,6 +3861,12 @@ impl App {
                 let snapshot = *snapshot;
                 self.local_state = snapshot.backend_state.clone();
                 self.apply_local_snapshot(&snapshot);
+                self.services_snapshot.command_version = Some(snapshot.client_version.clone());
+                self.services_snapshot.certificate_domains.succeed(
+                    self.services_snapshot.generation,
+                    snapshot.observed_at,
+                    snapshot.cert_domains.clone(),
+                );
                 self.local_resource.succeed(generation, snapshot);
                 self.local_capabilities.status_json = true;
                 self.local_next_refresh = self
@@ -2673,6 +3903,9 @@ impl App {
                         timeout: self.resolved_config.local.command_timeout,
                     });
                 }
+                if self.local_executable.is_some() {
+                    effects.extend(self.start_services_refresh());
+                }
                 return effects;
             }
             LocalEvent::StatusFailed {
@@ -2685,12 +3918,16 @@ impl App {
                 self.local_status_in_flight = false;
                 self.local_state = state_for_failure(&failure, self.local_executable.as_ref());
                 self.local_resource.fail(generation, failure.clone());
+                let service_failure = service_failure_from_local_failure(&failure);
                 self.devices_resource.health = if self.local_resource.snapshot.is_some() {
                     SourceHealth::Stale
                 } else {
                     SourceHealth::Error
                 };
                 self.devices_resource.error = Some(failure.detail);
+                self.services_snapshot
+                    .certificate_domains
+                    .fail(self.services_snapshot.generation, service_failure);
                 self.schedule_failure_backoff();
             }
             LocalEvent::PreferencesSucceeded { preferences } => {
@@ -2945,6 +4182,298 @@ impl App {
         Vec::new()
     }
 
+    fn update_services(&mut self, event: ServicesEvent) -> Vec<Effect> {
+        match event {
+            ServicesEvent::RefreshFinished {
+                generation,
+                observed_at,
+                command_version,
+                serve,
+                funnel,
+                taildrop_targets,
+                taildrive,
+            } => {
+                if generation < self.services_snapshot.generation {
+                    return Vec::new();
+                }
+                self.local_services_refresh_in_flight = false;
+                self.services_snapshot.generation = generation;
+                self.services_snapshot.observed_at = Some(observed_at);
+                self.services_snapshot.command_version = Some(command_version);
+                apply_service_resource(
+                    &mut self.services_snapshot.serve,
+                    generation,
+                    observed_at,
+                    serve,
+                );
+                apply_service_resource(
+                    &mut self.services_snapshot.funnel,
+                    generation,
+                    observed_at,
+                    funnel,
+                );
+                apply_service_resource(
+                    &mut self.services_snapshot.taildrop_targets,
+                    generation,
+                    observed_at,
+                    taildrop_targets,
+                );
+                if self.alpha_local_features {
+                    apply_service_resource(
+                        &mut self.services_snapshot.taildrive,
+                        generation,
+                        observed_at,
+                        taildrive,
+                    );
+                } else {
+                    self.services_snapshot.taildrive.status = ServiceResourceStatus::Unsupported;
+                    self.services_snapshot.taildrive.failure = None;
+                }
+                self.update_service_capabilities();
+            }
+            ServicesEvent::TaskFinished {
+                task_id,
+                request,
+                result,
+                exit_status,
+                stdout_truncated,
+                stderr_truncated,
+            } => {
+                if let Some(key) = request.conflict_key() {
+                    self.service_locks
+                        .retain(|(held, held_task)| held != &key || held_task != &task_id);
+                }
+                let action_id = request.action_id();
+                let mut refresh = matches!(
+                    &request,
+                    ServiceActionRequest::Serve { .. }
+                        | ServiceActionRequest::ServeReset
+                        | ServiceActionRequest::Funnel { .. }
+                        | ServiceActionRequest::FunnelReset
+                        | ServiceActionRequest::TaildriveShare { .. }
+                        | ServiceActionRequest::TaildriveRename { .. }
+                        | ServiceActionRequest::TaildriveUnshare { .. }
+                );
+                match result {
+                    Ok(data) => {
+                        let (summary, detail, verification) = match &data {
+                            ServiceTaskData::Serve {
+                                summary, verified, ..
+                            } => {
+                                refresh = true;
+                                (
+                                    summary.clone(),
+                                    if *verified {
+                                        "fresh Serve status matched the request".to_owned()
+                                    } else {
+                                        "fresh Serve status did not match the request".to_owned()
+                                    },
+                                    if *verified {
+                                        "verified"
+                                    } else {
+                                        "succeeded unverified"
+                                    },
+                                )
+                            }
+                            ServiceTaskData::Funnel {
+                                summary, verified, ..
+                            } => {
+                                refresh = true;
+                                (
+                                    summary.clone(),
+                                    if *verified {
+                                        "fresh PUBLIC Funnel status matched the request"
+                                            .to_owned()
+                                    } else {
+                                        "fresh PUBLIC Funnel status did not match the request"
+                                            .to_owned()
+                                    },
+                                    if *verified {
+                                        "verified"
+                                    } else {
+                                        "succeeded unverified"
+                                    },
+                                )
+                            }
+                            ServiceTaskData::Taildrive {
+                                summary, verified, ..
+                            } => {
+                                refresh = true;
+                                (
+                                    summary.clone(),
+                                    if *verified {
+                                        "fresh Taildrive share list matched the request"
+                                            .to_owned()
+                                    } else {
+                                        "fresh Taildrive share list did not match the request"
+                                            .to_owned()
+                                    },
+                                    if *verified {
+                                        "verified"
+                                    } else {
+                                        "succeeded unverified"
+                                    },
+                                )
+                            }
+                            ServiceTaskData::TaildropTargets(_) => (
+                                "Taildrop targets refreshed".to_owned(),
+                                "target discovery completed".to_owned(),
+                                "not applicable",
+                            ),
+                            ServiceTaskData::Transfer { summary, .. } => (
+                                summary.clone(),
+                                "the CLI reported a successful transfer; remote cleanup is not attempted"
+                                    .to_owned(),
+                                "not applicable",
+                            ),
+                            ServiceTaskData::Certificate(value) => {
+                                self.certificate_verification = Some(value.clone());
+                                (
+                                    "certificate outputs verified".to_owned(),
+                                    format!(
+                                        "certificate and key metadata are non-empty for {}",
+                                        value.domain
+                                    ),
+                                    "verified",
+                                )
+                            }
+                            ServiceTaskData::Metrics(value) => {
+                                self.services_snapshot.metrics.succeed(
+                                    self.services_snapshot.generation,
+                                    value.captured_at,
+                                    value.clone(),
+                                );
+                                self.views.services.scroll = 0;
+                                (
+                                    "metrics captured".to_owned(),
+                                    if value.truncated {
+                                        "metrics output was truncated at the task output cap"
+                                            .to_owned()
+                                    } else {
+                                        "bounded metrics output captured".to_owned()
+                                    },
+                                    "not applicable",
+                                )
+                            }
+                            ServiceTaskData::BugReport(value) => {
+                                self.services_snapshot.bug_report.succeed(
+                                    self.services_snapshot.generation,
+                                    value.observed_at,
+                                    value.clone(),
+                                );
+                                (
+                                    "diagnostic bug report created".to_owned(),
+                                    "Tailscale returned a report identifier; Tale did not upload or share it"
+                                        .to_owned(),
+                                    "not applicable",
+                                )
+                            }
+                        };
+                        if let ServiceTaskData::Serve { status, .. } = &data {
+                            self.services_snapshot.serve.succeed(
+                                self.services_snapshot.generation,
+                                self.now,
+                                status.clone(),
+                            );
+                        }
+                        if let ServiceTaskData::Funnel { status, .. } = &data {
+                            self.services_snapshot.funnel.succeed(
+                                self.services_snapshot.generation,
+                                self.now,
+                                status.clone(),
+                            );
+                        }
+                        if let ServiceTaskData::Taildrive { shares, .. } = &data {
+                            self.services_snapshot.taildrive.succeed(
+                                self.services_snapshot.generation,
+                                self.now,
+                                shares.clone(),
+                            );
+                        }
+                        let _ = self.tasks.set_exit_status(task_id, exit_status);
+                        let _ = self.tasks.set_verification(task_id, verification);
+                        let truncation = if stdout_truncated || stderr_truncated {
+                            "; command output was truncated at the configured cap"
+                        } else {
+                            ""
+                        };
+                        let _ = self.tasks.succeed(
+                            task_id,
+                            self.now,
+                            &summary,
+                            &format!("{detail}{truncation}"),
+                        );
+                        self.add_notification(
+                            task_id,
+                            crate::task::TaskResultKind::Success,
+                            &summary,
+                        );
+                    }
+                    Err(failure) => {
+                        match action_id {
+                            ActionId::ServicesMetricsRefresh => self
+                                .services_snapshot
+                                .metrics
+                                .fail(self.services_snapshot.generation, failure.clone()),
+                            ActionId::ServicesBugReportCreate => self
+                                .services_snapshot
+                                .bug_report
+                                .fail(self.services_snapshot.generation, failure.clone()),
+                            _ => {}
+                        }
+                        let summary = failure.summary.clone();
+                        let mut detail = failure.detail.clone();
+                        if failure.stdout_truncated || failure.stderr_truncated {
+                            detail.push_str("; command output was truncated at the configured cap");
+                        }
+                        let _ = self.tasks.set_exit_status(task_id, exit_status);
+                        let _ = self.tasks.set_verification(task_id, "not verified");
+                        if failure.kind == ServiceFailureKind::Cancelled {
+                            let _ = self.tasks.cancel(task_id, self.now, &detail);
+                            self.add_notification(
+                                task_id,
+                                crate::task::TaskResultKind::Cancelled,
+                                &summary,
+                            );
+                        } else {
+                            let _ = self.tasks.fail(task_id, self.now, &summary, &detail);
+                            self.add_notification(
+                                task_id,
+                                crate::task::TaskResultKind::Failure,
+                                &summary,
+                            );
+                        }
+                    }
+                }
+                self.tasks
+                    .evict_completed(self.resolved_config.history.max_tasks);
+                if refresh {
+                    return self.start_services_refresh();
+                }
+                let _ = action_id;
+            }
+        }
+        Vec::new()
+    }
+
+    fn update_service_capabilities(&mut self) {
+        self.services_snapshot.capabilities = ServiceCapabilities {
+            serve: capability_state(self.local_capabilities.serve, "Serve"),
+            funnel: capability_state(self.local_capabilities.funnel, "Funnel"),
+            taildrop: capability_state(self.local_capabilities.taildrop, "Taildrop"),
+            taildrive: if self.alpha_local_features {
+                capability_state(self.local_capabilities.drive, "Taildrive")
+            } else {
+                crate::domain::service::CapabilityState::unsupported(
+                    "Taildrive is alpha and disabled for this run",
+                )
+            },
+            certificates: capability_state(self.local_capabilities.certificate, "certificates"),
+            metrics: capability_state(self.local_capabilities.metrics, "metrics"),
+            bug_report: capability_state(self.local_capabilities.bugreport, "bug reports"),
+        };
+    }
+
     fn apply_local_snapshot(&mut self, snapshot: &LocalSnapshot) {
         let mut devices = Vec::with_capacity(snapshot.peers.len().saturating_add(1));
         devices.push(snapshot.self_node.to_display_device());
@@ -2983,6 +4512,8 @@ impl App {
         self.views.devices.scroll = 0;
         self.local_self_id = None;
         self.local_capabilities = LocalCapabilities::default();
+        self.services_snapshot = LocalServicesSnapshot::new();
+        self.alpha_local_features = false;
         self.local_diagnostics.clear();
         self.local_preferences = LocalPreferences::empty(self.now);
         self.system_policy.clear();
@@ -3228,6 +4759,16 @@ impl App {
             self.copy_diagnostic_summary();
             return;
         }
+        if field == CopyField::Metrics {
+            self.copied_value = Some(
+                self.services_snapshot
+                    .metrics
+                    .value
+                    .as_ref()
+                    .map_or_else(String::new, |metrics| metrics.text.clone()),
+            );
+            return;
+        }
         if matches!(field, CopyField::PublicKey | CopyField::Endpoint) {
             let value = self.selected_local_device().and_then(|device| match field {
                 CopyField::PublicKey => device.public_key.clone(),
@@ -3254,7 +4795,7 @@ impl App {
             CopyField::Addresses => device.addresses.join(", "),
             CopyField::Tags => device.tags.join(", "),
             CopyField::PublicKey | CopyField::Endpoint => "not returned".to_owned(),
-            CopyField::DiagnosticSummary => "not returned".to_owned(),
+            CopyField::DiagnosticSummary | CopyField::Metrics => "not returned".to_owned(),
         };
         self.copied_value = Some(value);
     }
@@ -3296,6 +4837,8 @@ impl App {
             Overlay::DiagnosticInput(_) => "diagnostic input",
             Overlay::Confirmation(_) => "confirm local action",
             Overlay::OperatorForm(_) => "local operator form",
+            Overlay::ServiceForm(_) => "local service form",
+            Overlay::ServiceSectionPicker(_) => "service section",
             Overlay::AccountPicker(_) => "local accounts",
             Overlay::HandoffInput(_) => "terminal handoff",
         })
@@ -3428,6 +4971,7 @@ fn route_candidates(input: &str) -> Vec<Route> {
         Route::Dns,
         Route::Activity,
         Route::Settings,
+        Route::Services,
     ]
     .into_iter()
     .filter(|route| {
@@ -3437,6 +4981,246 @@ fn route_candidates(input: &str) -> Vec<Route> {
                 .any(|alias| alias.starts_with(&value))
     })
     .collect()
+}
+
+fn parse_service_fields(input: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut fields = BTreeMap::new();
+    let mut remaining = input;
+    while !remaining.is_empty() {
+        let (item, rest) = remaining
+            .split_once(';')
+            .map_or((remaining, ""), |(item, rest)| (item, rest));
+        if item.is_empty() {
+            remaining = rest;
+            continue;
+        }
+        let (key, value) = item
+            .split_once('=')
+            .ok_or_else(|| format!("field {item:?} must use key=value"))?;
+        let key = key.trim().to_ascii_lowercase();
+        if key.is_empty() || key.chars().any(char::is_control) {
+            return Err("form field name is invalid".to_owned());
+        }
+        let allow_note_controls = key == "note";
+        if value.chars().any(|character| {
+            character.is_control()
+                && !(allow_note_controls && (character == '\n' || character == '\t'))
+        }) {
+            return Err(format!("{key} contains a control character"));
+        }
+        if allow_note_controls && !rest.is_empty() {
+            let mut note = value.to_owned();
+            note.push(';');
+            note.push_str(rest);
+            if note
+                .chars()
+                .any(|character| character.is_control() && character != '\n' && character != '\t')
+            {
+                return Err("note contains a disallowed control character".to_owned());
+            }
+            fields.insert(key, note);
+            break;
+        }
+        fields.insert(key, value.to_owned());
+        remaining = rest;
+    }
+    Ok(fields)
+}
+
+fn required_field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> Result<&'a str, String> {
+    fields
+        .get(name)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{name} is required"))
+}
+
+fn optional_field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
+    fields.get(name).map(String::as_str)
+}
+
+fn parse_bool_field(fields: &BTreeMap<String, String>, name: &str) -> Result<bool, String> {
+    match required_field(fields, name)?.to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" => Ok(true),
+        "false" | "no" | "0" => Ok(false),
+        _ => Err(format!("{name} must be true or false")),
+    }
+}
+
+fn service_form_mapping(mapping: &ServiceMapping) -> String {
+    let listener = mapping.listener.label();
+    let proxy = mapping
+        .proxy_protocol
+        .cli_value()
+        .map_or("none", |value| value);
+    format!(
+        "listener={listener};port={};path={};backend={};proxy={}",
+        mapping.listener.port(),
+        mapping.mount.as_path(),
+        mapping.backend.argument(),
+        proxy
+    )
+}
+
+fn service_confirmation_text(request: &ServiceActionRequest) -> (String, Option<String>) {
+    match request {
+        ServiceActionRequest::Funnel { .. } => (
+            "PUBLIC Funnel reachability will change. Tailnet policy or node capability may still deny the operation."
+                .to_owned(),
+            Some("PUBLIC-FUNNEL".to_owned()),
+        ),
+        ServiceActionRequest::FunnelReset => (
+            "PUBLIC Funnel reset removes every public mapping on this node. Tailnet policy or node capability may still deny the operation."
+                .to_owned(),
+            Some("RESET-FUNNEL".to_owned()),
+        ),
+        ServiceActionRequest::ServeReset => (
+            "Reset removes every Serve mapping on this node.".to_owned(),
+            Some("RESET-SERVE".to_owned()),
+        ),
+        ServiceActionRequest::TaildropReceive(request)
+            if request.conflict == TaildropConflict::Overwrite => (
+                format!(
+                    "Taildrop overwrite may replace files in {}.",
+                    request.directory.display()
+                ),
+                Some("OVERWRITE".to_owned()),
+            ),
+        ServiceActionRequest::TaildriveUnshare { name } => (
+            format!("Unsharing {name} removes access for existing Taildrive clients."),
+            Some("UNSHARE".to_owned()),
+        ),
+        ServiceActionRequest::Certificate(request) if request.overwrites_existing => (
+            format!(
+                "Overwrite the certificate file {} and key file {}. Key contents will never be displayed.",
+                request.certificate_path.display(),
+                request.key_path.display()
+            ),
+            Some("OVERWRITE".to_owned()),
+        ),
+        ServiceActionRequest::BugReport(_) => (
+            "Tailscale will receive a diagnostic report. Tale will display only the returned identifier."
+                .to_owned(),
+            None,
+        ),
+        ServiceActionRequest::TaildropReceive(request) => (
+            format!(
+                "Receive one Taildrop batch into {} with conflict behavior {}.",
+                request.directory.display(),
+                request.conflict.label()
+            ),
+            None,
+        ),
+        ServiceActionRequest::Certificate(request) => (
+            format!(
+                "Obtain a certificate for {} at {} and {}. Key contents will never be displayed.",
+                request.domain,
+                request.certificate_path.display(),
+                request.key_path.display()
+            ),
+            None,
+        ),
+        ServiceActionRequest::TaildriveShare {
+            input_name,
+            normalized_name,
+            path,
+        } => (
+            format!(
+                "Create alpha Taildrive share {input_name:?} as {normalized_name:?} for {}.",
+                path.display()
+            ),
+            None,
+        ),
+        ServiceActionRequest::TaildriveRename {
+            old_name,
+            input_name,
+            normalized_name,
+        } => (
+            format!(
+                "Rename alpha Taildrive share {old_name:?} to {input_name:?} ({normalized_name:?})."
+            ),
+            None,
+        ),
+        ServiceActionRequest::Serve { .. } => (
+            "Apply this tailnet-only Serve mapping after reviewing the direct command preview."
+                .to_owned(),
+            None,
+        ),
+        ServiceActionRequest::TaildropSend(request) => (
+            format!(
+                "Send {} file(s) to Taildrop target {}.",
+                request.files.len(),
+                request.target.display_name
+            ),
+            None,
+        ),
+        ServiceActionRequest::Metrics => (
+            "Capture bounded local metrics from the installed CLI.".to_owned(),
+            None,
+        ),
+    }
+}
+
+fn apply_service_resource<T>(
+    resource: &mut crate::domain::service::ServiceResource<T>,
+    generation: u64,
+    observed_at: Timestamp,
+    result: Result<T, crate::domain::service::ServiceFailure>,
+) {
+    match result {
+        Ok(value) => resource.succeed(generation, observed_at, value),
+        Err(failure) => resource.fail(generation, failure),
+    }
+}
+
+fn service_failure_from_local_failure(
+    failure: &LocalFailure,
+) -> crate::domain::service::ServiceFailure {
+    let kind = match failure.kind {
+        LocalFailureKind::ExecutableMissing => ServiceFailureKind::NotInstalled,
+        LocalFailureKind::ExecutableDenied | LocalFailureKind::PermissionDenied => {
+            ServiceFailureKind::PermissionDenied
+        }
+        LocalFailureKind::UnsupportedClient => ServiceFailureKind::Unsupported,
+        LocalFailureKind::DaemonUnavailable | LocalFailureKind::NeedsLogin => {
+            ServiceFailureKind::DaemonUnavailable
+        }
+        LocalFailureKind::InvalidOutput => ServiceFailureKind::DecodeFailed,
+        LocalFailureKind::TimedOut => ServiceFailureKind::TimedOut,
+        LocalFailureKind::Cancelled => ServiceFailureKind::Cancelled,
+        LocalFailureKind::Transport => ServiceFailureKind::CommandFailed,
+    };
+    crate::domain::service::ServiceFailure::new(
+        kind,
+        failure.operation.clone(),
+        failure.summary.clone(),
+        failure.detail.clone(),
+    )
+}
+
+fn validate_mapping_backend(mapping: &ServiceMapping) -> Result<(), String> {
+    let path = match &mapping.backend {
+        Backend::UnixSocket(path) | Backend::FileSystemPath(path) => Some(path),
+        Backend::Port(_) | Backend::HttpUrl(_) | Backend::HttpsInsecureUrl(_) => None,
+    };
+    if let Some(path) = path {
+        std::fs::metadata(path)
+            .map_err(|_| format!("backend path {} no longer exists", path.display()))?;
+    }
+    Ok(())
+}
+
+fn capability_state(
+    supported: bool,
+    label: &'static str,
+) -> crate::domain::service::CapabilityState {
+    if supported {
+        crate::domain::service::CapabilityState::available()
+    } else {
+        crate::domain::service::CapabilityState::unsupported(format!(
+            "{label} is not advertised by the installed CLI"
+        ))
+    }
 }
 
 fn is_mutating_action(action_id: ActionId) -> bool {
@@ -3452,6 +5236,73 @@ fn is_mutating_action(action_id: ActionId) -> bool {
             | ActionId::LocalAccountLogout
             | ActionId::LocalAccountRemove
             | ActionId::LocalSyspolicyReload
+            | ActionId::ServicesServeCreate
+            | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeReset
+            | ActionId::ServicesFunnelCreate
+            | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelReset
+            | ActionId::ServicesTaildropSend
+            | ActionId::ServicesTaildropReceive
+            | ActionId::ServicesDriveShare
+            | ActionId::ServicesDriveRename
+            | ActionId::ServicesDriveUnshare
+            | ActionId::ServicesCertificateObtain
+            | ActionId::ServicesBugReportCreate
+    )
+}
+
+fn is_service_write_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::ServicesServeCreate
+            | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeReset
+            | ActionId::ServicesFunnelCreate
+            | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelReset
+            | ActionId::ServicesTaildropSend
+            | ActionId::ServicesTaildropReceive
+            | ActionId::ServicesDriveShare
+            | ActionId::ServicesDriveRename
+            | ActionId::ServicesDriveUnshare
+            | ActionId::ServicesCertificateObtain
+            | ActionId::ServicesBugReportCreate
+    )
+}
+
+fn is_taildrive_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::ServicesDriveRefresh
+            | ActionId::ServicesDriveShare
+            | ActionId::ServicesDriveRename
+            | ActionId::ServicesDriveUnshare
+            | ActionId::ServicesDriveEnableAlpha
+    )
+}
+
+fn is_phase_four_action(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::ServicesServeRefresh
+            | ActionId::ServicesServeCreate
+            | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeReset
+            | ActionId::ServicesFunnelRefresh
+            | ActionId::ServicesFunnelCreate
+            | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelReset
+            | ActionId::ServicesTaildropSend
+            | ActionId::ServicesTaildropReceive
+            | ActionId::ServicesDriveRefresh
+            | ActionId::ServicesDriveShare
+            | ActionId::ServicesDriveRename
+            | ActionId::ServicesDriveUnshare
+            | ActionId::ServicesCertificateObtain
+            | ActionId::ServicesMetricsRefresh
+            | ActionId::ServicesBugReportCreate
+            | ActionId::ServicesDriveEnableAlpha
     )
 }
 
@@ -3728,6 +5579,7 @@ fn route_aliases(route: Route) -> &'static [&'static str] {
         Route::Dns => &[],
         Route::Activity => &["tasks"],
         Route::Settings => &["config"],
+        Route::Services => &["service", "serve", "funnel"],
     }
 }
 

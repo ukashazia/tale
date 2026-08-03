@@ -1,0 +1,5 @@
+# TYPE tailscale_connections gauge
+tailscale_connections 2
+tailscale_secret_value{secret="do-not-display"} 1
+tailscale_bytes_total 123
+tailscale_output_marker 456

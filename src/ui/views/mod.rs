@@ -1,7 +1,10 @@
 pub mod activity;
 pub mod devices;
+pub mod diagnostics;
 pub mod dns;
 pub mod local;
 pub mod overview;
 pub mod routes;
+pub mod services;
 pub mod settings;
+pub mod transfers;
