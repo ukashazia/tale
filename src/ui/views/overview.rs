@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .filter(|device| device.liveness == crate::domain::device::Liveness::Offline)
         .count();
-    let lines = vec![
+    let mut lines = vec![
         Line::from("Overview"),
         Line::from(format!("source       {}", app.source_mode.label())),
         Line::from(format!(
@@ -53,6 +53,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }),
         Line::from("Use : to navigate, / to filter Devices, ? for help."),
     ];
+    append_health(&mut lines, app);
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::normal(app))
@@ -135,6 +136,7 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .join(", ");
         lines.push(Line::from(format!("client versions  {versions}")));
     }
+    append_health(&mut lines, app);
     lines.push(Line::from(
         "Use :devices, :users, :routes, :dns, :access, or :credentials for read-only detail.",
     ));
@@ -212,7 +214,7 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
         || "not returned".to_owned(),
         |value| format!("{}s ago", app.now.saturating_sub(value)),
     );
-    let lines = vec![
+    let mut lines = vec![
         Line::from("Overview · local source"),
         Line::from(format!(
             "local       {} · {}",
@@ -246,10 +248,20 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(format!("tasks       {} active", app.tasks.active().count())),
         Line::from("Use :local, :devices, :dns, or a → local diagnostics."),
     ];
+    append_health(&mut lines, app);
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme::normal(app))
             .block(Block::default().borders(Borders::ALL).title("overview")),
         area,
+    );
+}
+
+fn append_health(lines: &mut Vec<Line<'static>>, app: &App) {
+    lines.push(Line::from(""));
+    lines.extend(
+        crate::ui::views::health::summary(app)
+            .lines()
+            .map(|line| Line::from(line.to_owned())),
     );
 }

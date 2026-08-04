@@ -23,7 +23,9 @@ use crate::admin::mutation::{
 use crate::admin::policy_mutations::{decode_preview_checked, decode_validation};
 use crate::app::App;
 use crate::domain::account::LocalAccount;
+use crate::domain::flow::aggregate_checked_cancellable;
 use crate::domain::mutation::{LocalMutation, MutationResult};
+use crate::domain::operational::{LogStreamMutationDraft, OperationalMutation};
 use crate::domain::policy_workflow::{PolicyDocument, PolicySelectorType, hash_bytes};
 use crate::domain::preference::{LocalPreferences, PreferenceRequest};
 use crate::domain::redaction::Redactor;
@@ -42,7 +44,7 @@ use crate::error::TaleError;
 use crate::event::LocalEvent;
 use crate::event::{
     self as app_event, AdminEvent, CredentialEvent, CredentialRevocationResult, Event, InputEvent,
-    PolicyApplyResult, PolicyEvent, ShutdownReason, SourceEvent, TaskEvent,
+    OperationalResult, PolicyApplyResult, PolicyEvent, ShutdownReason, SourceEvent, TaskEvent,
 };
 use crate::local::client::{self, LocalClient};
 use crate::local::diagnostics;
@@ -646,6 +648,96 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     cancellation,
                 })
                 .await;
+            });
+        }
+        Effect::StartOperationalMutation {
+            action_id,
+            mutation,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+        } => {
+            let token_manager =
+                token_manager_for(admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_operational_mutation(
+                    queue,
+                    token_manager,
+                    action_id,
+                    mutation,
+                    profile,
+                    tailnet,
+                    credential,
+                    timeout,
+                )
+                .await;
+            });
+        }
+        Effect::StartAccessExplorer {
+            question,
+            policy,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+        } => {
+            let token_manager =
+                token_manager_for(admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_access_explorer(
+                    queue,
+                    token_manager,
+                    question,
+                    policy,
+                    profile,
+                    tailnet,
+                    credential,
+                    timeout,
+                )
+                .await;
+            });
+        }
+        Effect::StartHealthEvaluation {
+            generation,
+            snapshot,
+        } => {
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_health_evaluation(queue, generation, snapshot).await;
+            });
+        }
+        Effect::StartFlowAggregation {
+            generation,
+            messages,
+            filter,
+            dimensions,
+            cancellation,
+        } => {
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                let result = match tokio::task::spawn_blocking(move || {
+                    aggregate_checked_cancellable(
+                        &messages,
+                        &filter,
+                        &dimensions,
+                        Some(cancellation.as_ref()),
+                    )
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(crate::domain::flow::FlowError::Cancelled),
+                };
+                let _ = queue
+                    .send(Event::Admin(Box::new(
+                        AdminEvent::FlowAggregationFinished { generation, result },
+                    )))
+                    .await;
             });
         }
         Effect::StartPolicyRemoteFetch {
@@ -2100,6 +2192,407 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_operational_mutation(
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    action_id: ActionId,
+    mutation: OperationalMutation,
+    profile: String,
+    tailnet: String,
+    credential: String,
+    timeout: Duration,
+) {
+    let token = match token_manager.access_token(&profile, &credential).await {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = queue
+                .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+                    action_id,
+                    mutation,
+                    result: Err(admin_refresh_error(
+                        error,
+                        "authenticate operational mutation",
+                    )),
+                    secret: None,
+                })))
+                .await;
+            return;
+        }
+    };
+    let client = match AdminClient::new(timeout) {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = queue
+                .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+                    action_id,
+                    mutation,
+                    result: Err(error),
+                    secret: None,
+                })))
+                .await;
+            return;
+        }
+    };
+    let (result, secret) = execute_operational_mutation(&client, &token, &tailnet, &mutation).await;
+    let _ = queue
+        .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+            action_id,
+            mutation,
+            result,
+            secret,
+        })))
+        .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_access_explorer(
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    question: crate::domain::access_explorer::AccessQuestion,
+    policy: crate::domain::policy_workflow::PolicyDocument,
+    profile: String,
+    tailnet: String,
+    credential: String,
+    timeout: Duration,
+) {
+    let result = async {
+        let token = token_manager
+            .access_token(&profile, &credential)
+            .await
+            .map_err(|error| admin_refresh_error(error, "authenticate access explorer"))?;
+        let client = AdminClient::new(timeout)?;
+        client
+            .ask_access(&token, &tailnet, &question, &policy, crate::local::now())
+            .await
+    }
+    .await;
+    let _ = queue
+        .send(Event::Admin(Box::new(AdminEvent::AccessExplorerFinished {
+            result,
+        })))
+        .await;
+}
+
+async fn run_health_evaluation(
+    queue: EventQueue,
+    generation: u64,
+    snapshot: crate::domain::health::HealthSnapshot,
+) {
+    let result = tokio::task::spawn_blocking(move || {
+        let findings = snapshot.findings();
+        (snapshot, findings)
+    })
+    .await;
+    let event = match result {
+        Ok((snapshot, findings)) => AdminEvent::HealthEvaluationFinished {
+            generation,
+            snapshot,
+            findings,
+        },
+        Err(error) => AdminEvent::HealthEvaluationFailed {
+            generation,
+            detail: format!("health evaluation worker failed: {error}"),
+        },
+    };
+    let _ = queue.send(Event::Admin(Box::new(event))).await;
+}
+
+async fn execute_operational_mutation(
+    client: &AdminClient,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    mutation: &OperationalMutation,
+) -> (
+    Result<OperationalResult, AdminError>,
+    Option<Arc<crate::domain::secret_result::SecretBuffer>>,
+) {
+    match mutation {
+        OperationalMutation::Webhook(webhook) => {
+            execute_webhook_mutation(client, token, tailnet, webhook).await
+        }
+        OperationalMutation::LogStreamReplace(draft) => {
+            let replacement = replacement_from_draft(draft);
+            let result = match client
+                .replace_log_stream_configuration(token, tailnet, &replacement)
+                .await
+            {
+                Err(error) => Err(error),
+                Ok(_) => {
+                    let configuration = client
+                        .get_log_stream_configuration(token, tailnet, draft.log_type)
+                        .await;
+                    let status = client
+                        .get_log_stream_status(token, tailnet, draft.log_type)
+                        .await;
+                    match (configuration, status) {
+                        (Ok(configuration), Ok(status)) => Ok(OperationalResult::Completed {
+                            detail: format!(
+                                "{} log stream replaced and verified: {} / {}",
+                                draft.log_type.wire_value(),
+                                configuration.value.destination.kind,
+                                status.value.status
+                            ),
+                        }),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    }
+                }
+            };
+            (result, None)
+        }
+        OperationalMutation::LogStreamDelete(log_type) => {
+            let result = match client
+                .delete_log_stream_configuration(token, tailnet, *log_type)
+                .await
+            {
+                Err(error) => Err(error),
+                Ok(_) => {
+                    let configuration = client
+                        .get_log_stream_configuration(token, tailnet, *log_type)
+                        .await;
+                    let status = client
+                        .get_log_stream_status(token, tailnet, *log_type)
+                        .await;
+                    match configuration {
+                        Ok(_) => Err(AdminError::Conflict {
+                            operation: "verify log-stream deletion".to_owned(),
+                            detail: "the configuration is still returned after deletion".to_owned(),
+                        }),
+                        Err(AdminError::NotFound { .. }) => match status {
+                            Ok(_) => Err(AdminError::Conflict {
+                                operation: "verify log-stream deletion".to_owned(),
+                                detail: "the publishing status is still returned after deletion"
+                                    .to_owned(),
+                            }),
+                            Err(AdminError::NotFound { .. }) => Ok(OperationalResult::Completed {
+                                detail: format!(
+                                    "{} log stream deletion verified absent in configuration and status reads",
+                                    log_type.wire_value()
+                                ),
+                            }),
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
+            };
+            (result, None)
+        }
+        OperationalMutation::NetworkLogSetting { enabled } => {
+            let result = match client
+                .set_network_log_setting(token, tailnet, *enabled)
+                .await
+            {
+                Err(error) => Err(error),
+                Ok(_) => match client.get_network_log_setting(token, tailnet).await {
+                    Err(error) => Err(error),
+                    Ok(settings) => {
+                        let observed = settings.value.network_flow_logging_on;
+                        if observed == Some(*enabled) {
+                            Ok(OperationalResult::NetworkLogSettingVerified {
+                                enabled: observed,
+                                detail: format!(
+                                    "network-flow collection setting verified as {}",
+                                    if *enabled { "enabled" } else { "disabled" }
+                                ),
+                            })
+                        } else {
+                            Err(AdminError::Conflict {
+                                operation: "verify network-log setting".to_owned(),
+                                detail: "the verified setting did not match the requested value"
+                                    .to_owned(),
+                            })
+                        }
+                    }
+                },
+            };
+            (result, None)
+        }
+        OperationalMutation::SavedView(_) | OperationalMutation::Export(_) => (
+            Err(AdminError::Unsupported {
+                operation: "operational mutation".to_owned(),
+                detail: "local saved-view and export operations do not use the admin runtime"
+                    .to_owned(),
+            }),
+            None,
+        ),
+    }
+}
+
+async fn execute_webhook_mutation(
+    client: &AdminClient,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    mutation: &crate::domain::webhook::WebhookMutation,
+) -> (
+    Result<OperationalResult, AdminError>,
+    Option<Arc<crate::domain::secret_result::SecretBuffer>>,
+) {
+    use crate::domain::webhook::WebhookMutation;
+    match mutation {
+        WebhookMutation::Create(draft) => {
+            let response = client
+                .create_webhook(
+                    token,
+                    tailnet,
+                    &draft.endpoint_url,
+                    &draft.destination_type,
+                    &draft.subscriptions,
+                )
+                .await;
+            match response {
+                Ok(response) => {
+                    let secret = response.secret.map(Arc::new);
+                    let verified = async {
+                        let _detail = client
+                            .get_webhook(token, &response.endpoint.stable_id)
+                            .await?;
+                        let inventory = client.list_webhooks(token, tailnet).await?;
+                        Ok::<_, AdminError>(OperationalResult::WebhookVerified {
+                            endpoints: inventory.value,
+                            detail: "webhook created; detail and inventory verification completed"
+                                .to_owned(),
+                        })
+                    }
+                    .await;
+                    (verified, secret)
+                }
+                Err(error) => (Err(error), None),
+            }
+        }
+        WebhookMutation::EditSubscriptions {
+            endpoint_id, after, ..
+        } => {
+            let result = match client
+                .edit_webhook_subscriptions(token, endpoint_id, after)
+                .await
+            {
+                Err(error) => Err(error),
+                Ok(_) => {
+                    let detail = client.get_webhook(token, endpoint_id).await;
+                    let inventory = client.list_webhooks(token, tailnet).await;
+                    match (detail, inventory) {
+                        (Ok(_), Ok(inventory)) => Ok(OperationalResult::WebhookVerified {
+                            endpoints: inventory.value,
+                            detail: "webhook subscriptions edited; detail and inventory verification completed".to_owned(),
+                        }),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    }
+                }
+            };
+            (result, None)
+        }
+        WebhookMutation::Test { endpoint_id } => {
+            let result = match client.test_webhook(token, endpoint_id).await {
+                Err(error) => Err(error),
+                Ok(response) => {
+                    let detail = client.get_webhook(token, endpoint_id).await;
+                    let inventory = client.list_webhooks(token, tailnet).await;
+                    match (detail, inventory) {
+                        (Ok(_), Ok(inventory)) => Ok(OperationalResult::WebhookVerified {
+                            endpoints: inventory.value,
+                            detail: format!(
+                                "server acknowledged asynchronous webhook test with HTTP {}; delivery processing is not asserted",
+                                response.meta.status
+                            ),
+                        }),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    }
+                }
+            };
+            (result, None)
+        }
+        WebhookMutation::RotateSecret { endpoint_id } => {
+            let response = client.rotate_webhook_secret(token, endpoint_id).await;
+            match response {
+                Ok(response) => {
+                    let secret = response.secret.map(Arc::new);
+                    let verified = async {
+                        let _detail = client.get_webhook(token, endpoint_id).await?;
+                        let inventory = client.list_webhooks(token, tailnet).await?;
+                        Ok::<_, AdminError>(OperationalResult::WebhookVerified {
+                            endpoints: inventory.value,
+                            detail: "webhook secret rotated; detail and inventory verification completed".to_owned(),
+                        })
+                    }
+                    .await;
+                    (verified, secret)
+                }
+                Err(error) => (Err(error), None),
+            }
+        }
+        WebhookMutation::Delete { endpoint_id, .. } => {
+            let result = match client.delete_webhook(token, endpoint_id).await {
+                Err(error) => Err(error),
+                Ok(_) => {
+                    let detail = client.get_webhook(token, endpoint_id).await;
+                    let inventory = client.list_webhooks(token, tailnet).await;
+                    match detail {
+                        Ok(_) => Err(AdminError::Conflict {
+                            operation: "verify webhook deletion".to_owned(),
+                            detail: "the endpoint is still returned by detail".to_owned(),
+                        }),
+                        Err(AdminError::NotFound { .. }) => match inventory {
+                            Ok(inventory) => {
+                                if inventory
+                                    .value
+                                    .iter()
+                                    .any(|value| value.stable_id.as_str() == endpoint_id.as_str())
+                                {
+                                    Err(AdminError::Conflict {
+                                        operation: "verify webhook deletion".to_owned(),
+                                        detail: "the endpoint is still returned by inventory"
+                                            .to_owned(),
+                                    })
+                                } else {
+                                    Ok(OperationalResult::WebhookVerified {
+                                        endpoints: inventory.value,
+                                        detail: "webhook deletion verified by detail and inventory"
+                                            .to_owned(),
+                                    })
+                                }
+                            }
+                            Err(error) => Err(error),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
+            };
+            (result, None)
+        }
+    }
+}
+
+fn replacement_from_draft(
+    draft: &LogStreamMutationDraft,
+) -> crate::admin::log_streaming::LogStreamReplacement {
+    crate::admin::log_streaming::LogStreamReplacement {
+        log_type: draft.log_type,
+        destination_type: draft.destination_type.clone(),
+        url: draft.url.clone(),
+        user: draft.user.clone(),
+        upload_period_minutes: draft.upload_period_minutes,
+        compression_format: draft.compression_format.clone(),
+        token: draft
+            .token
+            .as_ref()
+            .map(|value| crate::domain::secret_result::SecretBuffer::new(value.as_bytes())),
+        s3_bucket: draft.s3_bucket.clone(),
+        s3_region: draft.s3_region.clone(),
+        s3_key_prefix: draft.s3_key_prefix.clone(),
+        s3_authentication_type: draft.s3_authentication_type.clone(),
+        s3_access_key_id: draft.s3_access_key_id.clone(),
+        s3_role_arn: draft.s3_role_arn.clone(),
+        gcs_bucket: draft.gcs_bucket.clone(),
+        gcs_key_prefix: draft.gcs_key_prefix.clone(),
+        gcs_scopes: draft.gcs_scopes.clone(),
+        gcs_credentials: draft
+            .gcs_credentials
+            .as_ref()
+            .map(|value| crate::domain::secret_result::SecretBuffer::new(value.as_bytes())),
+    }
+}
+
 async fn run_admin_resource_refresh(
     context: AdminTaskContext,
     tailnet: String,
@@ -2437,6 +2930,135 @@ async fn run_admin_resource_refresh(
                 .await;
                 admin::AdminResourceResult::Contacts(
                     response.map(|response| admin::decode_contacts(response.value)),
+                )
+            }
+            admin::AdminRefreshResource::FlowLogs(window) => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let requested_window = window.clone();
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        let window = requested_window.clone();
+                        Box::pin(async move {
+                            client
+                                .get_network_flow_logs(token, tailnet.as_str(), &window)
+                                .await
+                        })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::FlowLogs(Box::new(response.and_then(|response| {
+                    crate::domain::flow::FlowSnapshot::from_messages(
+                        window,
+                        response.value,
+                        crate::domain::flow::FlowMode::Raw,
+                        response.meta.observed_at,
+                    )
+                    .map_err(|error| AdminError::DecodeFailed {
+                        operation: "get network flow logs".to_owned(),
+                        detail: error.to_string(),
+                    })
+                })))
+            }
+            admin::AdminRefreshResource::Webhooks => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move { client.list_webhooks(token, tailnet.as_str()).await })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::Webhooks(
+                    response.map(|response| (response.value, response.meta)),
+                )
+            }
+            admin::AdminRefreshResource::LogStreamConfiguration(log_type) => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move {
+                            client
+                                .get_log_stream_configuration(token, tailnet.as_str(), log_type)
+                                .await
+                        })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::LogStreamConfiguration {
+                    log_type,
+                    result: response.map(|value| value.value),
+                }
+            }
+            admin::AdminRefreshResource::LogStreamStatus(log_type) => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move {
+                            client
+                                .get_log_stream_status(token, tailnet.as_str(), log_type)
+                                .await
+                        })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::LogStreamStatus {
+                    log_type,
+                    result: response.map(|value| value.value),
+                }
+            }
+            admin::AdminRefreshResource::NetworkLogSettings => {
+                let client = Arc::clone(&client);
+                let tailnet = Arc::clone(&tailnet);
+                let response = admin_read_with_replay(
+                    &token_manager,
+                    &profile,
+                    &credential,
+                    &token,
+                    cancellation.clone(),
+                    |token| {
+                        let client = Arc::clone(&client);
+                        let tailnet = Arc::clone(&tailnet);
+                        Box::pin(async move {
+                            client
+                                .get_network_log_setting(token, tailnet.as_str())
+                                .await
+                        })
+                    },
+                )
+                .await;
+                admin::AdminResourceResult::NetworkLogSettings(
+                    response.map(|response| admin::decode_settings(response.value)),
                 )
             }
             admin::AdminRefreshResource::Activity => {

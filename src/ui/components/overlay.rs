@@ -62,6 +62,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 "tx desc",
                 "id asc",
                 "id desc",
+                "version asc",
+                "version desc",
             ];
             let lines = fields
                 .iter()

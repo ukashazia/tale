@@ -36,6 +36,48 @@ impl fmt::Debug for SecretBuffer {
     }
 }
 
+/// Editable write-only secret input used by an ephemeral form.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SecretInput(Zeroizing<String>);
+
+impl SecretInput {
+    pub fn new() -> Self {
+        Self(Zeroizing::new(String::new()))
+    }
+
+    pub fn push(&mut self, value: char) {
+        self.0.push(value);
+    }
+
+    pub fn push_str(&mut self, value: &str) {
+        self.0.push_str(value);
+    }
+
+    pub fn pop(&mut self) {
+        let _ = self.0.pop();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl Default for SecretInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for SecretInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted secret input>")
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SecretMetadata {
     pub result_id: u64,

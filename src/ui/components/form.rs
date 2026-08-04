@@ -40,6 +40,22 @@ pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Ope
         crate::action::ActionId::AdminCredentialAuthKeyCreate => {
             "description=text;expiry=7d;reusable=false;ephemeral=true;preauthorized=false;tags=tag:team-a,tag:prod"
         }
+        crate::action::ActionId::AdminWebhookCreate => {
+            "url=https://host.example/path;provider=slack;categories=nodeCreated;events=nodeNeedsApproval"
+        }
+        crate::action::ActionId::AdminWebhookEdit => {
+            "categories=nodeCreated,nodeNeedsApproval;events=userCreated (unknown events are preserved)"
+        }
+        crate::action::ActionId::AdminLogStreamReplace => {
+            "type=configuration|network;destination=splunk|elastic|panther|cribl|datadog|axiom|s3|gcs;typed fields only;secret=replace · Ctrl+S edits secret; Azure/private/Vector forms are unavailable"
+        }
+        crate::action::ActionId::AdminNetworkLogsSettings => "on or off",
+        crate::action::ActionId::ActivityFlowsSelectWindow => {
+            "start=<RFC3339 UTC>;end=<RFC3339 UTC> · IDs/labels, addresses, protocol, class, ports, min-bytes · inclusive, max 24h, within 30-day retention"
+        }
+        crate::action::ActionId::AccessExplorerAsk => {
+            "source=<selector>;destination=<selector>;port=<number or protocol>;policy=current|candidate"
+        }
         crate::action::ActionId::AdminPolicyPreview => {
             "type=user|ipport;previewFor=<server-supported user or ip:port selector>"
         }
@@ -131,6 +147,26 @@ pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Ope
             )
         },
     );
+    let input = if state.secret_editing {
+        state
+            .secret_input
+            .as_ref()
+            .map_or_else(String::new, |value| {
+                "•".repeat(value.as_str().chars().count())
+            })
+    } else {
+        state.input.clone()
+    };
+    let secret_hint = state.secret_input.as_ref().map_or(String::new(), |_| {
+        format!(
+            "\nwrite-only secret: {} · Ctrl+S toggles secret input",
+            if state.secret_editing {
+                "editing"
+            } else {
+                "unchanged"
+            }
+        )
+    });
     let error = state
         .error
         .as_deref()
@@ -142,8 +178,8 @@ pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Ope
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{hint}{preference_status}{candidates}{ordered}\n\nreplacement: {}{}\nEnter previews   Esc cancels",
-            state.input, error
+            "{hint}{preference_status}{candidates}{ordered}{secret_hint}\n\nreplacement: {}{}\nEnter previews   Esc cancels",
+            input, error
         ))
         .style(theme::normal(app))
         .block(Block::default().borders(Borders::ALL).title(title)),

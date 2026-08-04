@@ -1,0 +1,13 @@
+{
+  "webhooks": [
+    {
+      "endpointId": "webhook-fixture-1",
+      "endpointUrl": "https://hooks.example.test/tale",
+      "providerType": "slack",
+      "subscriptions": [
+        "nodeCreated",
+        "futureEventFromServer"
+      ]
+    }
+  ]
+}

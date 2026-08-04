@@ -34,6 +34,194 @@ pub enum DtoError {
 pub const MAX_RECORDS_PER_REFRESH: usize = 50_000;
 
 #[derive(Debug, Deserialize)]
+pub struct NetworkFlowResponseDto {
+    pub logs: Option<Vec<NetworkFlowLogDto>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NetworkFlowLogDto {
+    pub logged: Option<String>,
+    #[serde(rename = "nodeId")]
+    pub node_id: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    #[serde(rename = "srcNode")]
+    pub source_node: Option<FlowNodeDto>,
+    #[serde(rename = "dstNodes")]
+    pub destination_nodes: Option<Vec<FlowNodeDto>>,
+    #[serde(rename = "virtualTraffic")]
+    pub virtual_traffic: Option<Vec<FlowConnectionDto>>,
+    #[serde(rename = "subnetTraffic")]
+    pub subnet_traffic: Option<Vec<FlowConnectionDto>>,
+    #[serde(rename = "exitTraffic")]
+    pub exit_traffic: Option<Vec<FlowConnectionDto>>,
+    #[serde(rename = "physicalTraffic")]
+    pub physical_traffic: Option<Vec<FlowConnectionDto>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FlowNodeDto {
+    #[serde(rename = "nodeId")]
+    pub node_id: Option<String>,
+    pub name: Option<String>,
+    pub addresses: Option<Vec<String>>,
+    pub os: Option<String>,
+    pub user: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FlowConnectionDto {
+    pub proto: Option<String>,
+    pub src: Option<String>,
+    pub dst: Option<String>,
+    #[serde(rename = "txPkts")]
+    pub tx_packets: Option<u64>,
+    #[serde(rename = "txBytes")]
+    pub tx_bytes: Option<u64>,
+    #[serde(rename = "rxPkts")]
+    pub rx_packets: Option<u64>,
+    #[serde(rename = "rxBytes")]
+    pub rx_bytes: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct WebhooksResponseDto {
+    pub webhooks: Option<Vec<WebhookDto>>,
+}
+
+#[derive(Deserialize)]
+pub struct WebhookDto {
+    #[serde(rename = "endpointId")]
+    pub endpoint_id: Option<String>,
+    #[serde(rename = "endpointUrl")]
+    pub endpoint_url: Option<String>,
+    #[serde(rename = "providerType")]
+    pub provider_type: Option<String>,
+    #[serde(rename = "creatorLoginName")]
+    pub creator_login_name: Option<String>,
+    pub created: Option<String>,
+    #[serde(rename = "lastModified")]
+    pub last_modified: Option<String>,
+    pub status: Option<String>,
+    #[serde(rename = "lastResult")]
+    pub last_result: Option<String>,
+    pub subscriptions: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_secret_field")]
+    pub secret: Option<Zeroizing<String>>,
+}
+
+impl fmt::Debug for WebhookDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebhookDto")
+            .field("endpoint_id", &self.endpoint_id)
+            .field("endpoint_url", &self.endpoint_url)
+            .field("provider_type", &self.provider_type)
+            .field("creator_login_name", &self.creator_login_name)
+            .field("created", &self.created)
+            .field("last_modified", &self.last_modified)
+            .field("status", &self.status)
+            .field("last_result", &self.last_result)
+            .field("subscriptions", &self.subscriptions)
+            .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LogstreamConfigurationDto {
+    #[serde(rename = "logType")]
+    pub log_type: Option<String>,
+    #[serde(rename = "destinationType")]
+    pub destination_type: Option<String>,
+    pub url: Option<String>,
+    pub user: Option<String>,
+    #[serde(rename = "uploadPeriodMinutes")]
+    pub upload_period_minutes: Option<u64>,
+    #[serde(rename = "compressionFormat")]
+    pub compression_format: Option<String>,
+    #[serde(rename = "s3Bucket")]
+    pub s3_bucket: Option<String>,
+    #[serde(rename = "s3Region")]
+    pub s3_region: Option<String>,
+    #[serde(rename = "s3KeyPrefix")]
+    pub s3_key_prefix: Option<String>,
+    #[serde(rename = "s3AuthenticationType")]
+    pub s3_authentication_type: Option<String>,
+    #[serde(rename = "s3AccessKeyId")]
+    pub s3_access_key_id: Option<String>,
+    #[serde(rename = "s3RoleArn")]
+    pub s3_role_arn: Option<String>,
+    #[serde(rename = "s3ExternalId")]
+    pub s3_external_id: Option<String>,
+    #[serde(rename = "gcsBucket")]
+    pub gcs_bucket: Option<String>,
+    #[serde(rename = "gcsKeyPrefix")]
+    pub gcs_key_prefix: Option<String>,
+    #[serde(rename = "gcsScopes")]
+    pub gcs_scopes: Option<Vec<String>>,
+    #[serde(rename = "gcsCredentials")]
+    pub gcs_credentials: Option<String>,
+}
+
+impl fmt::Debug for LogstreamConfigurationDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LogstreamConfigurationDto")
+            .field("log_type", &self.log_type)
+            .field("destination_type", &self.destination_type)
+            .field("url", &self.url)
+            .field("user", &self.user)
+            .field("upload_period_minutes", &self.upload_period_minutes)
+            .field("compression_format", &self.compression_format)
+            .field("s3_bucket", &self.s3_bucket)
+            .field("s3_region", &self.s3_region)
+            .field("s3_key_prefix", &self.s3_key_prefix)
+            .field("s3_authentication_type", &self.s3_authentication_type)
+            .field("s3_access_key_id", &self.s3_access_key_id)
+            .field("s3_role_arn", &self.s3_role_arn)
+            .field("s3_external_id", &self.s3_external_id)
+            .field("gcs_bucket", &self.gcs_bucket)
+            .field("gcs_key_prefix", &self.gcs_key_prefix)
+            .field("gcs_scopes", &self.gcs_scopes)
+            .field(
+                "gcs_credentials",
+                &self.gcs_credentials.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogstreamStatusDto {
+    #[serde(rename = "lastActivity")]
+    pub last_activity: Option<String>,
+    #[serde(rename = "lastError")]
+    pub last_error: Option<String>,
+    #[serde(rename = "maxBodySize")]
+    pub max_body_size: Option<u64>,
+    #[serde(rename = "numBytesSent")]
+    pub num_bytes_sent: Option<u64>,
+    #[serde(rename = "numEntriesSent")]
+    pub num_entries_sent: Option<u64>,
+    #[serde(rename = "numSpoofedEntries")]
+    pub num_spoofed_entries: Option<u64>,
+    #[serde(rename = "numTotalRequests")]
+    pub num_total_requests: Option<u64>,
+    #[serde(rename = "numFailedRequests")]
+    pub num_failed_requests: Option<u64>,
+    #[serde(rename = "rateBytesSent")]
+    pub rate_bytes_sent: Option<f64>,
+    #[serde(rename = "rateEntriesSent")]
+    pub rate_entries_sent: Option<f64>,
+    #[serde(rename = "rateTotalRequests")]
+    pub rate_total_requests: Option<f64>,
+    #[serde(rename = "rateFailedRequests")]
+    pub rate_failed_requests: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DevicesResponse {
     pub devices: Option<Vec<DeviceDto>>,
 }

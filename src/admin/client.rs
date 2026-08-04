@@ -61,6 +61,20 @@ pub enum Endpoint {
     Settings,
     Contacts,
     Audit,
+    NetworkFlowLogs,
+    Webhooks,
+    Webhook,
+    WebhookCreate,
+    WebhookEdit,
+    WebhookTest,
+    WebhookRotate,
+    WebhookDelete,
+    LogStreamConfiguration,
+    LogStreamConfigurationReplace,
+    LogStreamConfigurationDelete,
+    LogStreamStatus,
+    NetworkLogSettings,
+    NetworkLogSettingsUpdate,
 }
 
 impl Endpoint {
@@ -103,6 +117,20 @@ impl Endpoint {
             Self::Settings => "get tailnet settings",
             Self::Contacts => "get tailnet contacts",
             Self::Audit => "get configuration audit",
+            Self::NetworkFlowLogs => "get network flow logs",
+            Self::Webhooks => "list webhooks",
+            Self::Webhook => "get webhook",
+            Self::WebhookCreate => "create webhook",
+            Self::WebhookEdit => "edit webhook subscriptions",
+            Self::WebhookTest => "test webhook",
+            Self::WebhookRotate => "rotate webhook secret",
+            Self::WebhookDelete => "delete webhook",
+            Self::LogStreamConfiguration => "get log-stream configuration",
+            Self::LogStreamConfigurationReplace => "replace log-stream configuration",
+            Self::LogStreamConfigurationDelete => "delete log-stream configuration",
+            Self::LogStreamStatus => "get log-stream publishing status",
+            Self::NetworkLogSettings => "get network-log settings",
+            Self::NetworkLogSettingsUpdate => "update network-log settings",
         }
     }
 
@@ -140,11 +168,33 @@ impl Endpoint {
             Self::Settings => "feature_settings:read",
             Self::Contacts => "account_settings:read",
             Self::Audit => "logs:configuration:read",
+            Self::NetworkFlowLogs | Self::NetworkLogSettings => "logs:network:read",
+            Self::NetworkLogSettingsUpdate => "logs:network",
+            Self::Webhooks | Self::Webhook => "webhooks:read",
+            Self::LogStreamConfiguration | Self::LogStreamStatus => "log_streaming:read",
+            Self::WebhookCreate
+            | Self::WebhookEdit
+            | Self::WebhookTest
+            | Self::WebhookRotate
+            | Self::WebhookDelete => "webhooks",
+            Self::LogStreamConfigurationReplace | Self::LogStreamConfigurationDelete => {
+                "log_streaming"
+            }
         }
     }
 
     const fn retry_safe(self) -> bool {
-        true
+        !matches!(
+            self,
+            Self::WebhookCreate
+                | Self::WebhookEdit
+                | Self::WebhookTest
+                | Self::WebhookRotate
+                | Self::WebhookDelete
+                | Self::LogStreamConfigurationReplace
+                | Self::LogStreamConfigurationDelete
+                | Self::NetworkLogSettingsUpdate
+        )
     }
 }
 
@@ -804,7 +854,11 @@ impl AdminClient {
         self.json(Endpoint::Audit, token, url, None).await
     }
 
-    fn path(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<Url, AdminError> {
+    pub(crate) fn path(
+        &self,
+        segments: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<Url, AdminError> {
         let mut url = self.base_url.clone();
         {
             let mut path = url.path_segments_mut().map_err(|_| AdminError::Transport {
@@ -824,7 +878,7 @@ impl AdminClient {
         Ok(url)
     }
 
-    async fn json<T: DeserializeOwned>(
+    pub(crate) async fn json<T: DeserializeOwned>(
         &self,
         endpoint: Endpoint,
         token: &AccessToken,
@@ -832,6 +886,34 @@ impl AdminClient {
         accept: Option<&str>,
     ) -> Result<ApiResponse<T>, AdminError> {
         let response = self.bytes(endpoint, token, url, accept, false).await?;
+        if !json_content_type(&response.value.content_type) {
+            return Err(AdminError::DecodeFailed {
+                operation: endpoint.operation().to_owned(),
+                detail: "the response did not use a JSON content type".to_owned(),
+            });
+        }
+        serde_json::from_slice::<T>(&response.value.source_bytes)
+            .map(|value| ApiResponse {
+                value,
+                meta: response.meta,
+            })
+            .map_err(|error| AdminError::DecodeFailed {
+                operation: endpoint.operation().to_owned(),
+                detail: bounded_detail(&error.to_string()),
+            })
+    }
+
+    pub(crate) async fn json_with_limit<T: DeserializeOwned>(
+        &self,
+        endpoint: Endpoint,
+        token: &AccessToken,
+        url: Url,
+        accept: Option<&str>,
+        limit: usize,
+    ) -> Result<ApiResponse<T>, AdminError> {
+        let response = self
+            .bytes_with_limit(endpoint, token, url, accept, false, limit)
+            .await?;
         if !json_content_type(&response.value.content_type) {
             return Err(AdminError::DecodeFailed {
                 operation: endpoint.operation().to_owned(),
@@ -861,7 +943,7 @@ impl AdminClient {
             .await
     }
 
-    async fn mutation_json<T: DeserializeOwned>(
+    pub(crate) async fn mutation_json<T: DeserializeOwned>(
         &self,
         endpoint: Endpoint,
         method: Method,
@@ -889,7 +971,7 @@ impl AdminClient {
             })
     }
 
-    async fn mutation_empty(
+    pub(crate) async fn mutation_empty(
         &self,
         endpoint: Endpoint,
         method: Method,
@@ -949,7 +1031,7 @@ impl AdminClient {
         let status = response.status();
         let headers = response.headers().clone();
         let body = read_bounded(response, endpoint.operation(), MAX_BODY_BYTES, token).await?;
-        if status == StatusCode::OK {
+        if mutation_success(endpoint, status) {
             return Ok(ApiResponse {
                 value: MutationBody {
                     source_bytes: body,
@@ -1001,7 +1083,7 @@ impl AdminClient {
         let status = response.status();
         let headers = response.headers().clone();
         let body = read_bounded(response, endpoint.operation(), MAX_BODY_BYTES, token).await?;
-        if status == StatusCode::OK {
+        if mutation_success(endpoint, status) {
             return Ok(ApiResponse {
                 value: MutationBody {
                     source_bytes: body,
@@ -1065,6 +1147,19 @@ impl AdminClient {
         accept: Option<&str>,
         policy: bool,
     ) -> Result<ApiResponse<PolicyBody>, AdminError> {
+        self.bytes_with_limit(endpoint, token, url, accept, policy, MAX_BODY_BYTES)
+            .await
+    }
+
+    async fn bytes_with_limit(
+        &self,
+        endpoint: Endpoint,
+        token: &AccessToken,
+        url: Url,
+        accept: Option<&str>,
+        policy: bool,
+        limit: usize,
+    ) -> Result<ApiResponse<PolicyBody>, AdminError> {
         let mut attempt = 0usize;
         loop {
             let request = self
@@ -1100,7 +1195,7 @@ impl AdminClient {
             };
             let status = response.status();
             let headers = response.headers().clone();
-            let body = read_bounded(response, endpoint.operation(), MAX_BODY_BYTES, token).await?;
+            let body = read_bounded(response, endpoint.operation(), limit, token).await?;
             if status == StatusCode::OK {
                 if policy && !policy_content_type(&headers) {
                     return Err(AdminError::DecodeFailed {
@@ -1152,6 +1247,11 @@ impl AdminClient {
             ));
         }
     }
+}
+
+fn mutation_success(endpoint: Endpoint, status: StatusCode) -> bool {
+    status == StatusCode::OK
+        || (endpoint == Endpoint::WebhookTest && status == StatusCode::ACCEPTED)
 }
 
 fn decode_json_mutation<T: DeserializeOwned>(

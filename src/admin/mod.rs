@@ -1,3 +1,4 @@
+pub mod access_explorer;
 pub mod audit;
 pub mod auth;
 pub mod client;
@@ -7,7 +8,9 @@ pub mod devices;
 pub mod dns;
 pub mod dns_mutations;
 pub mod dto;
+pub mod flow_logs;
 pub mod key_mutations;
+pub mod log_streaming;
 pub mod mutation;
 pub mod policy;
 pub mod policy_mutations;
@@ -15,6 +18,7 @@ pub mod route_mutations;
 pub mod routes;
 pub mod user_mutations;
 pub mod users;
+pub mod webhooks;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +28,8 @@ use crate::domain::activity::AuditSnapshot;
 use crate::domain::credential::CredentialSnapshot;
 use crate::domain::device::AdminDevice;
 use crate::domain::dns::{AdminDnsPreferences, AdminNameservers, AdminSearchPaths, AdminSplitDns};
+use crate::domain::flow::{FlowSnapshot, FlowWindow};
+use crate::domain::log_stream::{LogStreamConfiguration, LogStreamStatus, LogType};
 use crate::domain::policy::PolicySnapshot;
 use crate::domain::user::AdminUser;
 use crate::domain::{SourceHealth, Timestamp};
@@ -62,6 +68,7 @@ pub struct AdminResource<T> {
     pub profile: Option<String>,
     pub generation: u64,
     pub state: AdminResourceState,
+    pub last_failure: Option<AdminResourceState>,
     pub snapshot: Option<T>,
     pub observed_at: Option<Timestamp>,
     pub error: Option<String>,
@@ -73,6 +80,7 @@ impl<T> AdminResource<T> {
             profile,
             generation: 0,
             state: AdminResourceState::Idle,
+            last_failure: None,
             snapshot: None,
             observed_at: None,
             error: None,
@@ -92,6 +100,7 @@ impl<T> AdminResource<T> {
         self.snapshot = Some(snapshot);
         self.observed_at = Some(observed_at);
         self.state = AdminResourceState::Ready;
+        self.last_failure = None;
         self.error = None;
     }
 
@@ -99,6 +108,7 @@ impl<T> AdminResource<T> {
         if generation != self.generation {
             return;
         }
+        self.last_failure = Some(state);
         if self.snapshot.is_some() {
             self.state = AdminResourceState::Stale;
         } else {
@@ -111,6 +121,7 @@ impl<T> AdminResource<T> {
         self.profile = profile;
         self.generation = self.generation.saturating_add(1);
         self.state = AdminResourceState::Idle;
+        self.last_failure = None;
         self.snapshot = None;
         self.observed_at = None;
         self.error = None;
@@ -243,6 +254,11 @@ pub enum AdminRefreshResource {
     Settings,
     Contacts,
     Activity,
+    FlowLogs(FlowWindow),
+    Webhooks,
+    LogStreamConfiguration(LogType),
+    LogStreamStatus(LogType),
+    NetworkLogSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +275,25 @@ pub enum AdminResourceResult {
     Settings(Result<AdminSettings, AdminError>),
     Contacts(Result<AdminContacts, AdminError>),
     Activity(Result<AuditSnapshot, AdminError>),
+    FlowLogs(Box<Result<FlowSnapshot, AdminError>>),
+    Webhooks(
+        Result<
+            (
+                Vec<crate::domain::webhook::WebhookEndpoint>,
+                crate::admin::client::ResponseMeta,
+            ),
+            AdminError,
+        >,
+    ),
+    LogStreamConfiguration {
+        log_type: LogType,
+        result: Result<LogStreamConfiguration, AdminError>,
+    },
+    LogStreamStatus {
+        log_type: LogType,
+        result: Result<LogStreamStatus, AdminError>,
+    },
+    NetworkLogSettings(Result<AdminSettings, AdminError>),
 }
 
 #[derive(Debug, Clone)]

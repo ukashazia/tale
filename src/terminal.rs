@@ -386,7 +386,11 @@ pub struct RealTerminal {
 
 impl RealTerminal {
     pub fn enter() -> Result<Self, TaleError> {
-        let session = TerminalSession::new(CrosstermControl::new())
+        Self::enter_with_mouse(false)
+    }
+
+    pub fn enter_with_mouse(mouse: bool) -> Result<Self, TaleError> {
+        let session = TerminalSession::new_with_mouse(CrosstermControl::new(), mouse)
             .map_err(|error| TaleError::Terminal(error.to_string()))?;
         let backend = CrosstermBackend::new(io::stdout());
         let terminal = match Terminal::new(backend) {

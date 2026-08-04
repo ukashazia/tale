@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "schema": "devices",
+    "schema_version": 1,
+    "tale_version": "tale/test",
+    "observed_at": "2026-08-04T00:00:00Z",
+    "route": "devices",
+    "active_filter": "none",
+    "active_sort": "id",
+    "truncated": false,
+    "complete": true
+  },
+  "rows": [
+    {
+      "id": "device-a",
+      "name": "fixture-device",
+      "addresses": ["100.64.0.1"],
+      "source": "admin.devices",
+      "observed_at": "2026-08-04T00:00:00Z"
+    }
+  ]
+}

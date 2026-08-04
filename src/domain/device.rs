@@ -407,6 +407,7 @@ pub enum SortField {
     Rx,
     Tx,
     DeviceId,
+    Version,
 }
 
 impl SortField {
@@ -421,6 +422,7 @@ impl SortField {
             Self::Rx => "rx",
             Self::Tx => "tx",
             Self::DeviceId => "id",
+            Self::Version => "version",
         }
     }
 }
@@ -463,7 +465,25 @@ impl Default for SortSpec {
 }
 
 pub fn compare_devices(left: &Device, right: &Device, sort: SortSpec) -> Ordering {
-    let primary = match sort.field {
+    compare_devices_by_specs(left, right, &[sort])
+}
+
+pub fn compare_devices_by_specs(left: &Device, right: &Device, sorts: &[SortSpec]) -> Ordering {
+    for sort in sorts {
+        let primary = compare_device_field(left, right, sort.field);
+        let directed = match sort.direction {
+            SortDirection::Ascending => primary,
+            SortDirection::Descending => primary.reverse(),
+        };
+        if directed != Ordering::Equal {
+            return directed;
+        }
+    }
+    left.id.cmp(&right.id)
+}
+
+fn compare_device_field(left: &Device, right: &Device, field: SortField) -> Ordering {
+    match field {
         SortField::Name => left
             .display_name
             .to_lowercase()
@@ -479,15 +499,7 @@ pub fn compare_devices(left: &Device, right: &Device, sort: SortSpec) -> Orderin
         SortField::Rx => compare_optional(left.rx_bytes, right.rx_bytes),
         SortField::Tx => compare_optional(left.tx_bytes, right.tx_bytes),
         SortField::DeviceId => left.id.cmp(&right.id),
-    };
-    let directed = match sort.direction {
-        SortDirection::Ascending => primary,
-        SortDirection::Descending => primary.reverse(),
-    };
-    if directed == Ordering::Equal {
-        left.id.cmp(&right.id)
-    } else {
-        directed
+        SortField::Version => left.version.cmp(&right.version),
     }
 }
 

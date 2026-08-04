@@ -5,7 +5,14 @@ use ratatui::backend::TestBackend;
 use tale::app::{App, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
+use tale::domain::access_explorer::{AccessDecision, AccessResult, PolicySource};
+use tale::domain::flow::{FlowMessage, FlowMode, FlowSnapshot, FlowWindow};
+use tale::domain::health::{Finding, ObservedFact, Severity};
+use tale::domain::log_stream::{
+    LogStreamConfiguration, LogStreamDestination, LogStreamStatus, LogType, SecretAction,
+};
 use tale::domain::policy::PolicySnapshot;
+use tale::domain::webhook::{DestinationType, SubscriptionSet, WebhookEndpoint};
 use tale::paths::{PathEnvironment, Platform};
 
 fn admin_app() -> Option<App> {
@@ -107,6 +114,134 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
                     assert!(lines.iter().any(|line| line.contains("Tale")));
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn phase_eight_sections_render_derived_and_authoritative_states() {
+    let app = admin_app();
+    assert!(app.is_some());
+    let Some(mut app) = app else {
+        return;
+    };
+    app.health_findings = vec![Finding {
+        id: "finding-ui".to_owned(),
+        rule_id: "device-approval-pending".to_owned(),
+        severity: Severity::Warning,
+        title: "Device approval is pending".to_owned(),
+        observed_facts: vec![ObservedFact::from_source(
+            "approval",
+            "pending",
+            "fixture",
+            1_785_751_200,
+        )],
+        observed_at: 1_785_751_200,
+        affected_resource_ids: vec!["device-ui".to_owned()],
+        truncated_affected_resource_count: 0,
+        source_ids: vec!["fixture".to_owned()],
+        explanation: "authoritative fixture observation".to_owned(),
+        suggested_action_ids: Vec::new(),
+        derived: true,
+    }];
+    let now = time::OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(1_785_751_200);
+    let window = FlowWindow::new(now - time::Duration::hours(1), now, now);
+    assert!(window.is_ok());
+    if let Ok(window) = window {
+        let flow = FlowSnapshot::from_messages(
+            window,
+            vec![FlowMessage {
+                node_id: "raw-node-id".to_owned(),
+                reporting_node_name: None,
+                logged: "2026-08-04T00:02:00Z".to_owned(),
+                start: "2026-08-04T00:00:00Z".to_owned(),
+                end: "2026-08-04T00:01:00Z".to_owned(),
+                source_node: None,
+                destination_nodes: Vec::new(),
+                virtual_traffic: Vec::new(),
+                subnet_traffic: Vec::new(),
+                exit_traffic: Vec::new(),
+                physical_traffic: Vec::new(),
+            }],
+            FlowMode::Raw,
+            1_785_751_200,
+        );
+        assert!(flow.is_ok());
+        if let Ok(flow) = flow {
+            app.flow_snapshot = Some(flow);
+        }
+    }
+    let subscriptions = SubscriptionSet::from_wire(
+        vec!["device".to_owned()],
+        vec!["futureEventFromServer".to_owned()],
+    );
+    assert!(subscriptions.is_ok());
+    if let Ok(subscriptions) = subscriptions {
+        app.webhooks = vec![WebhookEndpoint {
+            stable_id: "webhook-ui".to_owned(),
+            endpoint_url: "https://hooks.example.test/ui".to_owned(),
+            destination_type: DestinationType::Slack,
+            subscriptions,
+            creator_login_name: None,
+            created_at: None,
+            last_modified_at: None,
+            status: "observed".to_owned(),
+            last_result: None,
+            observed_at: 1_785_751_200,
+            source_id: "fixture".to_owned(),
+        }];
+    }
+    app.log_stream_configurations.insert(
+        LogType::Network,
+        LogStreamConfiguration {
+            log_type: LogType::Network,
+            enabled: true,
+            destination: LogStreamDestination {
+                kind: "splunk".to_owned(),
+                identity: "https://logs.example.test".to_owned(),
+            },
+            secret_action: SecretAction::KeepExisting,
+            observed_at: 1_785_751_200,
+            source_id: "fixture".to_owned(),
+        },
+    );
+    app.log_stream_statuses.insert(
+        LogType::Network,
+        LogStreamStatus {
+            log_type: LogType::Network,
+            configured: true,
+            healthy: Some(true),
+            status: "publishing observed".to_owned(),
+            last_observation: Some(1_785_751_200),
+            source_id: "fixture".to_owned(),
+        },
+    );
+    app.access_explorer_result = Some(AccessResult {
+        decision: AccessDecision::Indeterminate,
+        policy_hash: "fixture-hash".to_owned(),
+        input: "alice@example.test".to_owned(),
+        requested_at: 1_785_751_200,
+        limitations: vec!["empty preview envelope".to_owned()],
+        matched_users: Vec::new(),
+        matched_ports: Vec::new(),
+        rule_locations: Vec::new(),
+        source: PolicySource::CurrentRemote,
+    });
+    for (route, expected) in [
+        (Route::Overview, "Health"),
+        (Route::Activity, "Flow Logs"),
+        (Route::Activity, "Log streams"),
+        (Route::Activity, "Webhooks"),
+        (Route::Access, "Access Explorer"),
+    ] {
+        app.route_stack = vec![route];
+        let lines = render_lines(&app, 160, 45);
+        assert!(lines.is_some());
+        if let Some(lines) = lines {
+            assert!(
+                lines.iter().any(|line| line.contains(expected)),
+                "missing {expected}"
+            );
         }
     }
 }

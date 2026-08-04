@@ -13,6 +13,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, overlay: &Overlay) {
         .candidates
         .iter()
         .map(|route| route.label())
+        .map(str::to_owned)
+        .chain(state.saved_views.iter().map(|name| format!("view:{name}")))
         .collect::<Vec<_>>()
         .join("  ");
     let error = state.error.as_deref().map_or("", |value| value);
@@ -21,7 +23,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, overlay: &Overlay) {
         Paragraph::new(text).style(theme::normal(app)).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("route command"),
+                .title("command palette"),
         ),
         area,
     );

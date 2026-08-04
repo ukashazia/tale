@@ -1,0 +1,8 @@
+{
+  "logType": "configuration",
+  "destinationType": "splunk",
+  "url": "https://logs.example.test/ingest",
+  "user": "fixture-user",
+  "uploadPeriodMinutes": 5,
+  "compressionFormat": "zstd"
+}

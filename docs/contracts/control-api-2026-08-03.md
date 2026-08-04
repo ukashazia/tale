@@ -242,6 +242,115 @@ The documented retention is the most recent 90 days. Tale defaults to the
 previous 24 hours ending at refresh start and bounds decoded events at 50,000.
 This endpoint is explicitly non-paginated.
 
+## Adopted Phase 8 operational methods
+
+Phase 8 adopts only the endpoint shapes verified in the current interactive
+OpenAPI schema and the public logging/webhook documentation. These methods are
+not generic repository access: each adapter has a typed request and response,
+an endpoint-specific scope, and a verification read where the mutation can
+leave the outcome unknown.
+
+### Network flow logs
+
+| Operation | Method and path | Scope | Request | Success and response | Errors and Tale bounds |
+| --- | --- | --- | --- | --- | --- |
+| flow window | `GET /api/v2/tailnet/{tailnet}/logging/network` | `logs:network:read` | required inclusive `start` and `end` RFC3339 UTC query values; no cursor/page parameters | 200 `application/json`; `{logs: NetworkFlowLog[]}` | 400 invalid window, 403 forbidden, 404 unsupported, 502 logging service unavailable; public retention is 30 days and a request is at most 24 hours; Tale rejects bodies above 64 MiB and decoded responses above 250,000 messages |
+
+The response contains server `logged` time, node `start`/`end` times, node
+identities, destination nodes, traffic-class counters, protocol, source and
+destination addresses/ports, and transmit/receive packet/byte counters where
+returned. It contains metadata and counters only. Tale never claims packet
+contents, payloads, or a packet capture. Server time is used for reporting;
+node timestamps remain raw and are displayed with clock-skew caveats.
+There is no pagination or page-size parameter. Tale sends only the required
+`start` and `end` values and treats 400, 403, 404, and 502 as endpoint-scoped
+errors; a plan-restricted 403 is classified as plan restricted.
+
+### Webhooks
+
+| Operation | Method and path | Scope | Request | Success and response | Mutation protocol |
+| --- | --- | --- | --- | --- | --- |
+| list endpoints | `GET /api/v2/tailnet/{tailnet}/webhooks` | `webhooks:read` | no query | 200 `{webhooks: Webhook[]}` | no pagination; secrets are never inventory data |
+| create endpoint | `POST /api/v2/tailnet/{tailnet}/webhooks` | `webhooks` | JSON `{endpointUrl, providerType, subscriptions}` | 200 `Webhook` | one request; returned write-only secret is moved directly to the Phase 7 view-once result; verify with list/detail |
+| edit subscriptions | `PATCH /api/v2/webhooks/{endpointId}` | `webhooks` | JSON `{subscriptions}` only | 200 `Webhook` | the public schema does not document URL/provider replacement; Tale marks those fields unsupported rather than emulating a console-only edit; unknown subscription values survive editing |
+| test endpoint | `POST /api/v2/webhooks/{endpointId}/test` | `webhooks` | empty body | 202 empty response; queued acknowledgement | no false delivery claim; refresh detail/status after acknowledgement |
+| rotate secret | `POST /api/v2/webhooks/{endpointId}/rotate` | `webhooks` | empty body | 200 `Webhook` | one request; returned secret is view-once only; verify with list/detail |
+| delete endpoint | `DELETE /api/v2/webhooks/{endpointId}` | `webhooks` | empty body | 200 empty response | verify absence with list/detail |
+
+The documented destination URL is HTTPS with port 80 or 443. Tale rejects
+credentials, fragments, control characters, invalid hosts, and other
+undocumented ports before dispatch; it does not perform a preflight request.
+Mutation requests are never automatically retried. Unknown categories/events
+returned by the server remain in a typed opaque subscription set and are sent
+back unchanged on an adopted edit.
+The adopted request body is the flat `subscriptions` string array plus
+`endpointUrl` and `providerType` for create, or only `subscriptions` for edit.
+The adopted known provider values are `discord`, `googlechat`, `mattermost`,
+and `slack`; unknown provider values are inventory-only. The adopted known
+subscription vocabulary is `device`, `user`, `key`, `policy`, `dns`,
+`webhook`, `network`, `nodeCreated`, `nodeNeedsApproval`, `nodeApproved`,
+`nodeKeyExpiringInOneDay`, `nodeKeyExpired`, `nodeDeleted`, `nodeSigned`,
+`nodeNeedsSignature`, `policyUpdate`, `userCreated`, `userNeedsApproval`,
+`userSuspended`, `userRestored`, `userDeleted`, `userApproved`,
+`userRoleUpdated`, `subnetIPForwardingNotEnabled`, and
+`exitNodeIPForwardingNotEnabled`. Server additions remain opaque and are not
+dropped. Inventory and detail responses must not contain the write-only
+`secret` field; create/rotate must return it once. Webhook endpoints are not
+paginated, and plan-restricted or forbidden responses remain endpoint-scoped.
+
+### Log streaming
+
+| Operation | Method and path | Scope | Request | Success and response |
+| --- | --- | --- | --- | --- |
+| configuration | `GET /api/v2/tailnet/{tailnet}/logging/{logType}/stream` | `log_streaming:read` | no query | 200 `LogstreamEndpointConfiguration`; 404 when not configured, unsupported, or forbidden |
+| replace configuration | `PUT /api/v2/tailnet/{tailnet}/logging/{logType}/stream` | `log_streaming` | typed complete destination/log-type configuration; no unrelated settings | 200 empty | 
+| delete configuration | `DELETE /api/v2/tailnet/{tailnet}/logging/{logType}/stream` | `log_streaming` | empty body | 200 empty |
+| publishing status | `GET /api/v2/tailnet/{tailnet}/logging/{logType}/status` | `log_streaming:read` | no query | 200 `LogstreamEndpointPublishingStatus`; 404 not configured/unsupported/forbidden; 502 logging service unavailable |
+
+The configuration and status reads are independent resources. Write-only
+destination secrets are omitted from reads. Private endpoint configuration is
+not enabled unless the documented `device_invites` and `policy_file`
+prerequisites are present and visible in the capability ledger. Tale presents
+network flow-log settings separately and never changes policy as a side effect.
+The adopted log types are `configuration` and `network`. The adopted typed
+destinations are `splunk`, `elastic`, `panther`, `cribl`, `datadog`, `axiom`,
+`s3`, and `gcs`; other integrations remain unavailable until their complete
+request fields are recorded. Complete replacement bodies use
+`destinationType`, `url` for non-object-storage destinations, `user`,
+`uploadPeriodMinutes` (at most 1440), `compressionFormat`, and the applicable
+destination fields: `token` for SIEM destinations,
+`s3Bucket`/`s3Region`/`s3KeyPrefix`/`s3AuthenticationType`/`s3AccessKeyId` or
+`s3RoleArn` plus `s3SecretAccessKey` for S3, and
+`gcsBucket`/`gcsKeyPrefix`/`gcsScopes` plus `gcsCredentials` for GCS. The
+secret fields are write-only and never become configuration data; if a read
+returns `gcsCredentials`, Tale rejects the response rather than retaining it.
+Configuration and status reads are not paginated. Status consumes the
+server-returned `lastActivity` and `lastError`; it does not infer activity from
+the time at which Tale observed the response.
+
+### Network-log setting
+
+| Operation | Method and path | Scope | Request | Success and response |
+| --- | --- | --- | --- | --- |
+| read setting | `GET /api/v2/tailnet/{tailnet}/settings` | `logs:network:read` | no query; only `networkFlowLoggingOn` is consumed for this feature | 200 `TailnetSettings` |
+| change setting | `PATCH /api/v2/tailnet/{tailnet}/settings` | `logs:network` | partial JSON body `{networkFlowLoggingOn: boolean}` only | 200 `TailnetSettings` |
+
+The PATCH body is an allowlisted partial update. Tale never sends a generic
+settings object or overwrites unrelated settings. The endpoint has no
+pagination; forbidden and plan-restricted responses are preserved as typed
+capability limitations.
+
+### Access Explorer
+
+Access Explorer uses the already adopted policy preview operation:
+`POST /api/v2/tailnet/{tailnet}/acl/preview`, scope `policy_file:read`, with
+the documented `type=user|ipport` and `previewFor` query values and exact
+candidate/current HuJSON bytes. No local policy evaluator or undocumented
+destination dimension is added. The typed result carries the policy hash,
+input, request time, server-supported Allowed/Denied/Indeterminate state,
+limitations, and returned rule locations when present. Empty, malformed, or
+forbidden responses are not converted into Denied.
+
 ## Authentication transport
 
 | Operation | Method and path | Scope | Request | Success and response |

@@ -8,10 +8,13 @@ pub mod domain;
 pub mod effect;
 pub mod error;
 pub mod event;
+pub mod export;
+pub mod health;
 pub mod local;
 pub mod mock;
 pub mod paths;
 pub mod runtime;
+pub mod saved_views;
 pub mod task;
 pub mod temporary;
 pub mod terminal;
@@ -392,16 +395,17 @@ fn doctor(config: &ResolvedConfig) {
     println!("config: {}", config.paths.config_file.display());
     println!("terminal: lifecycle owned by TerminalSession");
     if config.ui.mouse {
-        println!("ui.mouse: unsupported in Phase 1");
+        println!("ui.mouse: opt-in mouse parity enabled");
     }
 }
 
 fn launch_tui(config: ResolvedConfig, view: Option<&str>) -> Result<(), TaleError> {
+    let mouse = config.ui.mouse;
     let mut app = app::App::new(config);
     if let Some(view) = view.and_then(app::Route::parse) {
         app.route_stack = vec![view];
     }
-    let mut terminal = terminal::RealTerminal::enter()?;
+    let mut terminal = terminal::RealTerminal::enter_with_mouse(mouse)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

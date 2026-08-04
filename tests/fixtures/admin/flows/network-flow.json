@@ -1,0 +1,36 @@
+{
+  "logs": [
+    {
+      "logged": "2026-08-04T00:02:00Z",
+      "nodeId": "node-flow-a",
+      "start": "2026-08-04T00:00:00Z",
+      "end": "2026-08-04T00:01:00Z",
+      "srcNode": {
+        "nodeId": "node-source-a",
+        "name": "source-a",
+        "addresses": ["100.64.0.1"]
+      },
+      "dstNodes": [
+        {
+          "nodeId": "node-destination-a",
+          "name": "destination-a",
+          "addresses": ["100.64.0.2"]
+        }
+      ],
+      "virtualTraffic": [
+        {
+          "proto": "tcp",
+          "src": "100.64.0.1:52343",
+          "dst": "100.64.0.2:443",
+          "txPkts": 10,
+          "txBytes": 1000,
+          "rxPkts": 8,
+          "rxBytes": 800
+        }
+      ],
+      "subnetTraffic": [],
+      "exitTraffic": [],
+      "physicalTraffic": []
+    }
+  ]
+}

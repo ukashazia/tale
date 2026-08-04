@@ -1,0 +1,9 @@
+{
+  "endpointId": "webhook-fixture-2",
+  "endpointUrl": "https://hooks.example.test/new",
+  "providerType": "discord",
+  "subscriptions": [
+    "nodeApproved"
+  ],
+  "secret": "fixture-secret-never-in-inventory"
+}

@@ -1053,7 +1053,7 @@ impl ResolvedConfig {
             },
             SettingDisplay {
                 name: "ui.mouse",
-                value: format!("{} (unsupported in Phase 1)", self.ui.mouse),
+                value: format!("{} (opt-in Phase 8 parity)", self.ui.mouse),
                 source: self.ui.mouse_source,
             },
             SettingDisplay {

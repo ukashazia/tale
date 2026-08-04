@@ -179,6 +179,56 @@ impl TaskStore {
         &self.tasks
     }
 
+    pub fn filtered(&self, query: &str) -> impl Iterator<Item = &Task> {
+        let query = query.to_ascii_lowercase();
+        self.tasks
+            .iter()
+            .filter(move |task| task_matches_query(task, &query))
+    }
+
+    pub fn select_filtered_position(&mut self, query: &str, position: usize) {
+        let ids = self.filtered_ids(query);
+        self.selected = ids.get(position).copied();
+    }
+
+    pub fn select_filtered_first(&mut self, query: &str) {
+        self.select_filtered_position(query, 0);
+    }
+
+    pub fn select_filtered_last(&mut self, query: &str) {
+        let ids = self.filtered_ids(query);
+        self.selected = ids.last().copied();
+    }
+
+    pub fn select_next_filtered(&mut self, query: &str, offset: isize) {
+        let ids = self.filtered_ids(query);
+        if ids.is_empty() {
+            self.selected = None;
+            return;
+        }
+        let current = self
+            .selected
+            .and_then(|id| ids.iter().position(|candidate| *candidate == id))
+            .map_or(0, |position| position);
+        let next = if offset.is_negative() {
+            current.saturating_sub(offset.unsigned_abs())
+        } else {
+            current
+                .saturating_add(offset as usize)
+                .min(ids.len().saturating_sub(1))
+        };
+        self.selected = ids.get(next).copied();
+    }
+
+    fn filtered_ids(&self, query: &str) -> Vec<TaskId> {
+        let query = query.to_ascii_lowercase();
+        self.tasks
+            .iter()
+            .filter(|task| task_matches_query(task, &query))
+            .map(|task| task.id)
+            .collect()
+    }
+
     pub fn active(&self) -> impl Iterator<Item = &Task> {
         self.tasks.iter().filter(|task| !task.state.is_terminal())
     }
@@ -333,6 +383,19 @@ impl TaskStore {
             expires_at: now.saturating_add(5),
         })
     }
+}
+
+fn task_matches_query(task: &Task, query: &str) -> bool {
+    query.is_empty()
+        || [
+            task.action_id.as_str(),
+            task.target_label.as_str(),
+            task.state.label(),
+            task.summary.as_str(),
+            task.detail.as_str(),
+        ]
+        .into_iter()
+        .any(|value| value.to_ascii_lowercase().contains(query))
 }
 
 impl Default for TaskStore {

@@ -2,18 +2,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind};
+use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind, MouseEvent};
 
 use crate::admin::mutation::{AdminMutationOutcome, AdminMutationRequest, AdminSnapshotFields};
 use crate::admin::routes::AdminRouteObservation;
 use crate::admin::{AdminRefreshReport, AdminResourceReport};
 use crate::domain::Timestamp;
+use crate::domain::access_explorer::AccessResult;
 use crate::domain::account::LocalAccount;
 use crate::domain::credential::CredentialMetadata;
 use crate::domain::device::AdminDevice;
 use crate::domain::device::Device;
 use crate::domain::diagnostic::{DiagnosticResult, NetcheckObservation, PingSample};
+use crate::domain::health::{Finding, HealthSnapshot};
 use crate::domain::mutation::{LocalMutation, MutationResult};
+use crate::domain::operational::OperationalMutation;
 use crate::domain::policy_workflow::{PolicyDocument, PolicyPreview, PolicyValidation};
 use crate::domain::preference::LocalPreferences;
 use crate::domain::secret_result::SecretBuffer;
@@ -82,6 +85,28 @@ pub enum AdminEvent {
         refresh_resources: Vec<crate::admin::AdminRefreshResource>,
         refresh_local_dns: bool,
     },
+    OperationalFinished {
+        action_id: crate::action::ActionId,
+        mutation: OperationalMutation,
+        result: Result<OperationalResult, crate::admin::client::AdminError>,
+        secret: Option<Arc<SecretBuffer>>,
+    },
+    AccessExplorerFinished {
+        result: Result<AccessResult, crate::admin::client::AdminError>,
+    },
+    HealthEvaluationFinished {
+        generation: u64,
+        snapshot: HealthSnapshot,
+        findings: Vec<Finding>,
+    },
+    HealthEvaluationFailed {
+        generation: u64,
+        detail: String,
+    },
+    FlowAggregationFinished {
+        generation: u64,
+        result: Result<Vec<crate::domain::flow::AggregatedFlow>, crate::domain::flow::FlowError>,
+    },
     AuditCorrelationFinished {
         task_id: TaskId,
         mutation_id: u64,
@@ -90,6 +115,21 @@ pub enum AdminEvent {
     Failed {
         profile: String,
         generation: u64,
+        detail: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum OperationalResult {
+    Completed {
+        detail: String,
+    },
+    WebhookVerified {
+        endpoints: Vec<crate::domain::webhook::WebhookEndpoint>,
+        detail: String,
+    },
+    NetworkLogSettingVerified {
+        enabled: Option<bool>,
         detail: String,
     },
 }
@@ -178,6 +218,7 @@ pub enum CredentialRevocationResult {
 #[derive(Debug, Clone)]
 pub enum InputEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize { width: u16, height: u16 },
     Paste(String),
     FocusGained,
@@ -348,6 +389,7 @@ pub enum ShutdownReason {
 pub fn from_terminal_event(event: CrosstermEvent) -> Option<InputEvent> {
     match event {
         CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => Some(InputEvent::Key(key)),
+        CrosstermEvent::Mouse(mouse) => Some(InputEvent::Mouse(mouse)),
         CrosstermEvent::Resize(width, height) => Some(InputEvent::Resize { width, height }),
         CrosstermEvent::Paste(text) => Some(InputEvent::Paste(text)),
         CrosstermEvent::FocusGained => Some(InputEvent::FocusGained),

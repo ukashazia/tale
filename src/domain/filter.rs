@@ -41,6 +41,17 @@ impl FilterExpression {
                         | FilterField::RouteRole,
                     ..
                 }
+            ) || matches!(
+                term,
+                FilterTerm::StructuredField {
+                    field: FilterField::Approval
+                        | FilterField::KeyExpiry
+                        | FilterField::ClientVersion
+                        | FilterField::Sharing
+                        | FilterField::Posture
+                        | FilterField::RouteRole,
+                    ..
+                }
             )
         })
     }
@@ -61,10 +72,18 @@ pub enum FilterTerm {
         values: Vec<String>,
         comparison: Option<Comparison>,
     },
+    StructuredField {
+        field: FilterField,
+        negated: bool,
+        value: String,
+        mode: FieldMatchMode,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FilterField {
+    Id,
+    Name,
     Online,
     Owner,
     Os,
@@ -78,6 +97,13 @@ pub enum FilterField {
     Sharing,
     Posture,
     RouteRole,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FieldMatchMode {
+    Exact,
+    Contains,
+    StartsWith,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -201,6 +227,28 @@ fn parse_term((token, position): &(String, usize)) -> Result<FilterTerm, FilterE
             negated,
             values: Vec::new(),
             comparison: Some(Comparison::from_operator(operator, duration)),
+        });
+    }
+
+    if let Some((mode, structured_value)) = value_text.split_once('=') {
+        let mode = match mode {
+            "contains" => FieldMatchMode::Contains,
+            "starts_with" => FieldMatchMode::StartsWith,
+            _ => {
+                return Err(error(
+                    *position + colon + 1,
+                    "unknown structured filter operator",
+                ));
+            }
+        };
+        if structured_value.is_empty() {
+            return Err(error(*position + colon + 1, "filter value is required"));
+        }
+        return Ok(FilterTerm::StructuredField {
+            field,
+            negated,
+            value: normalize_value(structured_value)?,
+            mode,
         });
     }
 
@@ -340,7 +388,10 @@ fn normalize_value(value: &str) -> Result<String, FilterError> {
 
 fn parse_field(value: &str) -> Option<FilterField> {
     match value.to_ascii_lowercase().as_str() {
+        "id" => Some(FilterField::Id),
+        "name" => Some(FilterField::Name),
         "online" => Some(FilterField::Online),
+        "state" => Some(FilterField::Online),
         "owner" => Some(FilterField::Owner),
         "os" => Some(FilterField::Os),
         "path" => Some(FilterField::Path),
@@ -427,10 +478,15 @@ impl FilterTerm {
                 values,
                 comparison,
             } => {
+                if is_admin_filter_field(*field) {
+                    return true;
+                }
                 let matched = if let Some(comparison) = comparison {
                     comparison.matches(device.age_at(now))
                 } else {
                     values.iter().any(|value| match field {
+                        FilterField::Id => device.id.0.eq_ignore_ascii_case(value),
+                        FilterField::Name => device.display_name.eq_ignore_ascii_case(value),
                         FilterField::Online => match value.as_str() {
                             "true" | "online" => device.liveness == Liveness::Online,
                             "false" | "offline" => device.liveness == Liveness::Offline,
@@ -447,12 +503,24 @@ impl FilterTerm {
                         | FilterField::ClientVersion
                         | FilterField::Sharing
                         | FilterField::Posture
-                        | FilterField::RouteRole => false,
+                        | FilterField::RouteRole => true,
                         FilterField::LastSeen => device
                             .last_seen
                             .is_some_and(|last_seen| last_seen.to_string() == *value),
                     })
                 };
+                if *negated { !matched } else { matched }
+            }
+            Self::StructuredField {
+                field,
+                negated,
+                value,
+                mode,
+            } => {
+                if is_admin_filter_field(*field) {
+                    return true;
+                }
+                let matched = structured_device_field_matches(*field, value, *mode, device);
                 if *negated { !matched } else { matched }
             }
         }
@@ -492,6 +560,15 @@ impl FilterTerm {
                         .any(|value| admin_field_matches(*field, value, device, now))
                 }
             }
+            Self::StructuredField {
+                field,
+                negated,
+                value,
+                mode,
+            } => {
+                let matched = structured_admin_field_matches(*field, value, *mode, device, now);
+                if *negated { !matched } else { matched }
+            }
         };
         match self {
             Self::Field { negated, .. } if *negated => !matched,
@@ -507,6 +584,8 @@ fn admin_field_matches(
     now: Timestamp,
 ) -> bool {
     match field {
+        FilterField::Id => device.stable_id.eq_ignore_ascii_case(value),
+        FilterField::Name => device.display_name().eq_ignore_ascii_case(value),
         FilterField::Online => match value {
             "true" | "online" => device.connected_to_control == Some(true),
             "false" | "offline" => device.connected_to_control == Some(false),
@@ -582,6 +661,159 @@ fn admin_field_matches(
             "unknown" => !device.advertised_routes_returned && !device.enabled_routes_returned,
             _ => false,
         },
+    }
+}
+
+fn structured_device_field_matches(
+    field: FilterField,
+    value: &str,
+    mode: FieldMatchMode,
+    device: &Device,
+) -> bool {
+    match field {
+        FilterField::Id => text_matches(device.id.0.as_str(), value, mode),
+        FilterField::Name => {
+            text_matches(device.display_name.as_str(), value, mode)
+                || text_matches(device.hostname.as_str(), value, mode)
+        }
+        FilterField::Owner => {
+            device
+                .owner
+                .as_deref()
+                .is_some_and(|candidate| text_matches(candidate, value, mode))
+                || device
+                    .owner_label
+                    .as_deref()
+                    .is_some_and(|candidate| text_matches(candidate, value, mode))
+        }
+        FilterField::Os => text_matches(device.os.label(), value, mode),
+        FilterField::Path => text_matches(device.path.label(), value, mode),
+        FilterField::Tag => device
+            .tags
+            .iter()
+            .any(|candidate| text_matches(candidate, value, mode)),
+        FilterField::Online => text_matches(device.liveness.label(), value, mode),
+        FilterField::LastSeen => device
+            .last_seen
+            .is_some_and(|candidate| text_matches(candidate.to_string().as_str(), value, mode)),
+        FilterField::ClientVersion => text_matches(device.version.as_str(), value, mode),
+        FilterField::Property
+        | FilterField::Approval
+        | FilterField::KeyExpiry
+        | FilterField::Sharing
+        | FilterField::Posture
+        | FilterField::RouteRole => true,
+    }
+}
+
+fn structured_admin_field_matches(
+    field: FilterField,
+    value: &str,
+    mode: FieldMatchMode,
+    device: &AdminDevice,
+    now: Timestamp,
+) -> bool {
+    if mode == FieldMatchMode::Exact {
+        return admin_field_matches(field, value, device, now);
+    }
+    match field {
+        FilterField::Id => text_matches(device.stable_id.as_str(), value, mode),
+        FilterField::Name => text_matches(device.display_name(), value, mode),
+        FilterField::Owner => device
+            .user_id
+            .as_deref()
+            .is_some_and(|candidate| text_matches(candidate, value, mode)),
+        FilterField::Os => device
+            .os
+            .as_ref()
+            .is_some_and(|candidate| text_matches(candidate.label(), value, mode)),
+        FilterField::Path => text_matches("admin observation", value, mode),
+        FilterField::Tag => device
+            .tags
+            .iter()
+            .any(|candidate| text_matches(candidate, value, mode)),
+        FilterField::Online => text_matches(
+            match device.connected_to_control {
+                Some(true) => "online",
+                Some(false) => "offline",
+                None => "unknown",
+            },
+            value,
+            mode,
+        ),
+        FilterField::LastSeen => device
+            .last_seen
+            .is_some_and(|candidate| text_matches(candidate.to_string().as_str(), value, mode)),
+        FilterField::ClientVersion => device
+            .client_version
+            .as_deref()
+            .is_some_and(|candidate| text_matches(candidate, value, mode)),
+        FilterField::Property => [
+            "exit-node",
+            "exit-node-option",
+            "subnet-router",
+            "ssh",
+            "shared",
+        ]
+        .iter()
+        .any(|candidate| {
+            admin_field_matches(field, candidate, device, now)
+                && text_matches(candidate, value, mode)
+        }),
+        FilterField::Approval => ["approved", "pending", "unknown"].iter().any(|candidate| {
+            admin_field_matches(field, candidate, device, now)
+                && text_matches(candidate, value, mode)
+        }),
+        FilterField::KeyExpiry => {
+            ["expired", "soon", "disabled", "unknown"]
+                .iter()
+                .any(|candidate| {
+                    admin_field_matches(field, candidate, device, now)
+                        && text_matches(candidate, value, mode)
+                })
+        }
+        FilterField::Sharing => ["external", "internal", "unknown"].iter().any(|candidate| {
+            admin_field_matches(field, candidate, device, now)
+                && text_matches(candidate, value, mode)
+        }),
+        FilterField::Posture => ["present", "empty", "unknown"].iter().any(|candidate| {
+            admin_field_matches(field, candidate, device, now)
+                && text_matches(candidate, value, mode)
+        }),
+        FilterField::RouteRole => [
+            "subnet-router",
+            "exit-node",
+            "exit-node-option",
+            "none",
+            "unknown",
+        ]
+        .iter()
+        .any(|candidate| {
+            admin_field_matches(field, candidate, device, now)
+                && text_matches(candidate, value, mode)
+        }),
+    }
+}
+
+const fn is_admin_filter_field(field: FilterField) -> bool {
+    matches!(
+        field,
+        FilterField::Approval
+            | FilterField::KeyExpiry
+            | FilterField::ClientVersion
+            | FilterField::Sharing
+            | FilterField::Posture
+            | FilterField::RouteRole
+    )
+}
+
+fn text_matches(candidate: &str, value: &str, mode: FieldMatchMode) -> bool {
+    let candidate = candidate.to_ascii_lowercase();
+    let value = value.to_ascii_lowercase();
+    match mode {
+        FieldMatchMode::Exact => candidate == value,
+        FieldMatchMode::Contains => candidate.contains(&value),
+        FieldMatchMode::StartsWith => candidate.starts_with(&value),
     }
 }
 

@@ -1,0 +1,24 @@
+{
+  "devices": [
+    {
+      "id": "device-health-a",
+      "source": "admin.devices",
+      "approval": "pending",
+      "clientVersion": "1.2.0",
+      "keyExpiresAt": 1785751200
+    }
+  ],
+  "users": [],
+  "resources": [
+    {
+      "id": "routes",
+      "source": "admin.routes",
+      "observedAt": 1785751200,
+      "refreshInterval": 300,
+      "current": true,
+      "refreshFailures": 0
+    }
+  ],
+  "routes": [],
+  "relaySamples": []
+}

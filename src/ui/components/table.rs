@@ -8,31 +8,41 @@ use crate::domain::device::{Device, Liveness};
 use crate::ui::{text, theme};
 
 pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if !app.views.devices.columns.is_empty() {
+        render_registered_columns(frame, app, area);
+        return;
+    }
     let local_extended = app.source_mode == crate::app::SourceMode::Local
         && app.views.devices.wide_columns
         && area.width >= 120;
     let admin_extended =
         app.admin.profile.is_some() && app.views.devices.wide_columns && area.width >= 120;
     let local_traffic = local_extended && area.width >= 150;
-    let visible = app.visible_indices();
-    let rows = visible.into_iter().filter_map(|index| {
-        let device = app.devices_resource.snapshot.get(index)?;
-        let selected = app
-            .views
-            .devices
-            .selected_id
-            .as_ref()
-            .is_some_and(|id| id == &device.id);
-        Some(device_row(
-            app,
-            device,
-            selected,
-            area.width,
-            local_extended,
-            local_traffic,
-            admin_extended,
-        ))
-    });
+    let visible = app.visible_indices_arc();
+    let start = app.views.devices.scroll.min(visible.len());
+    let viewport = usize::from(area.height.saturating_sub(3));
+    let rows = visible
+        .iter()
+        .skip(start)
+        .take(viewport)
+        .filter_map(|index| {
+            let device = app.devices_resource.snapshot.get(*index)?;
+            let selected = app
+                .views
+                .devices
+                .selected_id
+                .as_ref()
+                .is_some_and(|id| id == &device.id);
+            Some(device_row(
+                app,
+                device,
+                selected,
+                area.width,
+                local_extended,
+                local_traffic,
+                admin_extended,
+            ))
+        });
     let header_values = if local_traffic {
         vec![
             "S",
@@ -166,6 +176,107 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ),
         area,
     );
+}
+
+fn render_registered_columns(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let visible = app.visible_indices_arc();
+    let start = app.views.devices.scroll.min(visible.len());
+    let viewport = usize::from(area.height.saturating_sub(3));
+    let rows = visible
+        .iter()
+        .skip(start)
+        .take(viewport)
+        .filter_map(|index| {
+            let device = app.devices_resource.snapshot.get(*index)?;
+            let selected = app
+                .views
+                .devices
+                .selected_id
+                .as_ref()
+                .is_some_and(|id| id == &device.id);
+            Some(registered_device_row(app, device, selected, area.width))
+        });
+    let mut headers = vec!["S".to_owned()];
+    headers.extend(app.views.devices.columns.iter().cloned());
+    let header = Row::new(headers).style(theme::title());
+    let mut widths = vec![ConstraintWidth::Fixed(2)];
+    widths.extend(
+        app.views
+            .devices
+            .columns
+            .iter()
+            .map(|_| ConstraintWidth::Fill(12)),
+    );
+    let constraints = widths
+        .into_iter()
+        .map(ConstraintWidth::constraint)
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Table::new(rows, constraints)
+            .header(header)
+            .column_spacing(1)
+            .style(theme::normal(app))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("devices · saved columns"),
+            ),
+        area,
+    );
+}
+
+fn registered_device_row(app: &App, device: &Device, selected: bool, width: u16) -> Row<'static> {
+    let marker = if app.resolved_config.ui.symbols == SymbolsMode::Unicode {
+        match device.liveness {
+            Liveness::Online => "●",
+            Liveness::Offline => "○",
+            Liveness::Unknown => "?",
+        }
+    } else {
+        device.liveness.marker()
+    };
+    let cells = app
+        .views
+        .devices
+        .columns
+        .iter()
+        .map(|column| {
+            let value = match column.as_str() {
+                "id" => device.id.0.clone(),
+                "name" => device.display_name.clone(),
+                "owner" => device
+                    .owner
+                    .as_deref()
+                    .or(device.owner_label.as_deref())
+                    .map_or_else(|| "-".to_owned(), str::to_owned),
+                "version" => device.version.clone(),
+                "last_seen" => device
+                    .age_at(app.now)
+                    .map_or_else(|| "-".to_owned(), format_age),
+                "os" => device.os.label().to_owned(),
+                "path" => device.path.label().to_owned(),
+                "tags" => {
+                    if device.tags.is_empty() {
+                        "-".to_owned()
+                    } else {
+                        device.tags.join(",")
+                    }
+                }
+                "online" | "state" => device.liveness.label().to_owned(),
+                "source" => app.source_mode.label().to_owned(),
+                _ => "not returned".to_owned(),
+            };
+            Cell::from(text::ellipsize(&value, usize::from(width.max(12))))
+        })
+        .collect::<Vec<_>>();
+    let mut values = vec![Cell::from(marker.to_owned())];
+    values.extend(cells);
+    let row = Row::new(values);
+    if selected {
+        row.style(theme::selected(app))
+    } else {
+        row
+    }
 }
 
 #[derive(Clone, Copy)]

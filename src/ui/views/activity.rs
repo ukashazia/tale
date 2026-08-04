@@ -13,12 +13,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if let Some(task) = app.focused_task() {
         let audit = admin_audit_summary(app);
         let detail = format!(
-            "{}\n{}\n{}\n\nAdmin audit\n{}\n{}",
+            "{}\n{}\n{}\n\nAdmin audit\n{}\n{}\n\n{}\n\n{}\n\n{}",
             task.state.label(),
             task.summary,
             task.detail,
             audit,
-            admin_audit_events(app)
+            admin_audit_events(app),
+            crate::ui::views::flows::summary(app),
+            crate::ui::views::log_streams::summary(app),
+            crate::ui::views::webhooks::summary(app)
         );
         frame.render_widget(
             ratatui::widgets::Paragraph::new(detail).block(
@@ -31,9 +34,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         frame.render_widget(
             ratatui::widgets::Paragraph::new(format!(
-                "Select a task with j/k; x cancels a cancellable task\n\nAdmin audit\n{}\n{}",
+                "Select a task with j/k; x cancels a cancellable task\n\nAdmin audit\n{}\n{}\n\n{}\n\n{}\n\n{}",
                 admin_audit_summary(app),
-                admin_audit_events(app)
+                admin_audit_events(app),
+                crate::ui::views::flows::summary(app),
+                crate::ui::views::log_streams::summary(app),
+                crate::ui::views::webhooks::summary(app)
             ))
             .block(
                 ratatui::widgets::Block::default()

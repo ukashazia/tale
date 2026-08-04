@@ -1,10 +1,13 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use sha2::{Digest, Sha256};
 
 use crate::action::{self, ActionContext, ActionId, Capability};
 use crate::admin::auth::SecretValue;
@@ -17,6 +20,7 @@ use crate::admin::{
     AdminSnapshot,
 };
 use crate::config::ResolvedConfig;
+use crate::domain::access_explorer::{AccessQuestion, AccessResult, PolicySource};
 use crate::domain::account::LocalAccount;
 use crate::domain::activity::AuditFilters;
 use crate::domain::admin_mutation::{
@@ -26,11 +30,21 @@ use crate::domain::admin_mutation::{
 use crate::domain::certificate::{BugReportRequest, CertificateRequest};
 use crate::domain::device::{
     ComposedDevice, Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec,
-    compare_devices, compose_exact_id,
+    compare_devices_by_specs, compose_exact_id,
 };
 use crate::domain::diagnostic::{DiagnosticResult, DiagnosticState};
-use crate::domain::filter::{self, FilterExpression, FilterField, FilterTerm};
+use crate::domain::filter::{
+    self, Comparison, FieldMatchMode, FilterExpression, FilterField, FilterTerm,
+};
+use crate::domain::flow::{
+    AggregateDimension, FlowError, FlowFilter, FlowGeneration, FlowSnapshot, FlowWindow,
+};
+use crate::domain::health::Finding;
+use crate::domain::log_stream::{LogStreamConfiguration, LogStreamStatus, LogType, SecretAction};
 use crate::domain::mutation::{LocalMutation, MutationLock};
+use crate::domain::operational::{
+    ExportRequest, LogStreamMutationDraft, OperationalMutation, SavedViewMutation,
+};
 use crate::domain::policy::PolicySnapshot;
 use crate::domain::policy_workflow::{PolicySelectorType, PolicyState, PolicyWorkflow};
 use crate::domain::preference::{
@@ -41,7 +55,11 @@ use crate::domain::route::{
     AdvertisementRequest, ExitNodeCandidate, ExitNodeRequest, ExitNodeSelection,
     overlapping_routes, parse_route_set, parse_static_endpoints,
 };
-use crate::domain::secret_result::{SecretMetadata, SecretResult};
+use crate::domain::saved_view::{
+    FilterClause, FilterOperator, FilterValue, SavedView, SortDirection as SavedSortDirection,
+    SortTerm,
+};
+use crate::domain::secret_result::{SecretInput, SecretMetadata, SecretResult};
 use crate::domain::service::{
     Backend, CertificateVerification, Exposure, Listener, LocalServicesSnapshot, PathMount, Port,
     ProxyProtocol, ServiceActionRequest, ServiceCapabilities, ServiceConflictKey,
@@ -55,11 +73,15 @@ use crate::domain::transfer::{
     TaildriveShare, TaildropConflict, TaildropReceiveRequest, TaildropSendRequest, TaildropTarget,
     normalize_share_name, validate_receive_directory, validate_regular_file,
 };
+use crate::domain::webhook::{
+    DestinationType, SubscriptionSet, WebhookDraft, WebhookEndpoint, WebhookMutation,
+};
 use crate::domain::{SourceHealth, Timestamp};
 use crate::effect::{Effect, Resource};
 use crate::event::{
     AdminEvent, CredentialEvent, CredentialRevocationResult, Event, InputEvent, LocalEvent,
-    PolicyApplyResult, PolicyEvent, ServicesEvent, ShutdownReason, SourceEvent, TaskEvent,
+    OperationalResult, PolicyApplyResult, PolicyEvent, ServicesEvent, ShutdownReason, SourceEvent,
+    TaskEvent,
 };
 use crate::local::client::{ExecutableResolution, HostPlatform};
 use crate::local::diagnostics::{self, DiagnosticRequest};
@@ -146,6 +168,7 @@ pub enum Focus {
 pub struct CommandPaletteState {
     pub input: String,
     pub candidates: Vec<Route>,
+    pub saved_views: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -194,6 +217,7 @@ pub struct ConfirmationState {
     pub admin_mutation: Option<AdminMutationRequest>,
     pub admin_batch: Option<AdminBatchConfirmation>,
     pub service_request: Option<ServiceActionRequest>,
+    pub operational_mutation: Option<OperationalMutation>,
     pub handoff: Option<HandoffCommand>,
     pub prompt: String,
     pub required_phrase: Option<String>,
@@ -228,6 +252,8 @@ pub struct OperatorFormState {
     pub ordered_selected: usize,
     pub ordered_editor: String,
     pub ordered_prefix: Option<String>,
+    pub secret_input: Option<SecretInput>,
+    pub secret_editing: bool,
 }
 
 impl OperatorFormState {
@@ -240,6 +266,8 @@ impl OperatorFormState {
             ordered_selected: 0,
             ordered_editor: String::new(),
             ordered_prefix: None,
+            secret_input: None,
+            secret_editing: false,
         }
     }
 
@@ -259,6 +287,8 @@ impl OperatorFormState {
             ordered_selected: 0,
             ordered_editor: editor,
             ordered_prefix: prefix,
+            secret_input: None,
+            secret_editing: false,
         }
     }
 
@@ -475,7 +505,9 @@ pub struct DeviceViewState {
     pub filter_draft: String,
     pub applied_filter: FilterExpression,
     pub sort: SortSpec,
+    pub sort_terms: Vec<SortSpec>,
     pub wide_columns: bool,
+    pub columns: Vec<String>,
 }
 
 impl Default for DeviceViewState {
@@ -486,9 +518,29 @@ impl Default for DeviceViewState {
             filter_draft: String::new(),
             applied_filter: FilterExpression::empty(),
             sort: SortSpec::default(),
+            sort_terms: vec![SortSpec::default()],
             wide_columns: false,
+            columns: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct DeviceVisibleCacheKey {
+    devices_generation: u64,
+    local_generation: u64,
+    admin_generation: u64,
+    now: Timestamp,
+    source_mode: SourceMode,
+    filter: FilterExpression,
+    sort: SortSpec,
+    sort_terms: Vec<SortSpec>,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceVisibleCache {
+    key: DeviceVisibleCacheKey,
+    indices: Arc<Vec<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -528,6 +580,20 @@ pub struct App {
     pub views: Views,
     pub devices_resource: DeviceResource,
     pub admin: AdminSnapshot,
+    pub health: crate::health::HealthState,
+    pub health_findings: Vec<Finding>,
+    health_evaluation_generation: u64,
+    pub flow_snapshot: Option<FlowSnapshot>,
+    pub flow_filter: FlowFilter,
+    pub flow_generation: FlowGeneration,
+    flow_aggregation_generation: u64,
+    flow_aggregation_cancellation: Option<Arc<AtomicBool>>,
+    pub webhooks: Vec<WebhookEndpoint>,
+    pub log_stream_configurations: BTreeMap<LogType, LogStreamConfiguration>,
+    pub log_stream_statuses: BTreeMap<LogType, LogStreamStatus>,
+    pub access_explorer_result: Option<AccessResult>,
+    pub saved_views: Option<crate::saved_views::SavedViewsState>,
+    pending_export_fingerprint: Option<[u8; 32]>,
     pub admin_profile_snapshots: BTreeMap<String, AdminSnapshot>,
     pub policy_workflow: Option<PolicyWorkflow>,
     policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
@@ -545,6 +611,7 @@ pub struct App {
     pub admin_activity_selected: usize,
     pub admin_audit_window_days: u64,
     pub audit_filters: AuditFilters,
+    pub task_filter: String,
     pub composed_devices: Vec<ComposedDevice>,
     pub local_resource: LocalResource,
     pub local_state: LocalState,
@@ -594,6 +661,7 @@ pub struct App {
     admin_read_locks: BTreeMap<String, u64>,
     pending_batch_retry: Option<Vec<BatchTarget>>,
     next_mutation_id: u64,
+    device_visible_cache: RefCell<Option<DeviceVisibleCache>>,
 }
 
 impl App {
@@ -630,6 +698,11 @@ impl App {
         let admin_environment_token = std::env::var("TALE_ACCESS_TOKEN")
             .ok()
             .map(|value| Arc::new(SecretValue::new(value)));
+        let saved_views_load = crate::saved_views::SavedViewsState::load(&config.paths.state_dir);
+        let (saved_views, saved_views_error) = match saved_views_load {
+            Ok(value) => (Some(value), None),
+            Err(error) => (None, Some(format!("saved-view state is invalid: {error}"))),
+        };
         Self {
             route_stack: vec![Route::Overview],
             focus: Focus::Collection,
@@ -640,6 +713,20 @@ impl App {
             },
             devices_resource: DeviceResource::empty(source_mode),
             admin,
+            health: crate::health::HealthState::default(),
+            health_findings: Vec::new(),
+            health_evaluation_generation: 0,
+            flow_snapshot: None,
+            flow_filter: FlowFilter::default(),
+            flow_generation: FlowGeneration::new(),
+            flow_aggregation_generation: 0,
+            flow_aggregation_cancellation: None,
+            webhooks: Vec::new(),
+            log_stream_configurations: BTreeMap::new(),
+            log_stream_statuses: BTreeMap::new(),
+            access_explorer_result: None,
+            saved_views,
+            pending_export_fingerprint: None,
             admin_profile_snapshots: BTreeMap::new(),
             policy_workflow: None,
             policy_temp_file: None,
@@ -657,6 +744,7 @@ impl App {
             admin_activity_selected: 0,
             admin_audit_window_days: 1,
             audit_filters: AuditFilters::default(),
+            task_filter: String::new(),
             composed_devices: Vec::new(),
             local_resource: LocalResource::new(),
             local_state,
@@ -685,7 +773,7 @@ impl App {
                 crate::local::now()
             },
             tick_count: 0,
-            runtime_error: None,
+            runtime_error: saved_views_error,
             copied_value: None,
             mutation_lock: MutationLock::new(),
             mutation_in_flight: None,
@@ -710,6 +798,7 @@ impl App {
             admin_read_locks: BTreeMap::new(),
             pending_batch_retry: None,
             next_mutation_id: 1,
+            device_visible_cache: RefCell::new(None),
         }
     }
 
@@ -743,6 +832,24 @@ impl App {
         effects
     }
 
+    fn recompute_health(&mut self) -> Vec<Effect> {
+        self.health_evaluation_generation = self.health_evaluation_generation.saturating_add(1);
+        if self.admin.profile.is_none() {
+            self.health.clear();
+            self.health_findings.clear();
+            return Vec::new();
+        }
+        let snapshot = crate::health::snapshot_from_admin(
+            &self.admin,
+            self.now,
+            self.resolved_config.admin.refresh_interval.as_secs(),
+        );
+        vec![Effect::StartHealthEvaluation {
+            generation: self.health_evaluation_generation,
+            snapshot,
+        }]
+    }
+
     pub fn update(&mut self, event: Event) -> Vec<Effect> {
         if !matches!(event, Event::Tick(_)) {
             self.render_invalidated = true;
@@ -767,6 +874,7 @@ impl App {
     }
 
     fn update_policy(&mut self, event: PolicyEvent) -> Vec<Effect> {
+        self.access_explorer_result = None;
         match event {
             PolicyEvent::RemoteFetched {
                 workflow_id,
@@ -856,6 +964,7 @@ impl App {
                 };
                 let path = file.path().to_path_buf();
                 self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
+                self.access_explorer_result = None;
                 if let Some(workflow) = self.policy_workflow.as_mut() {
                     workflow.set_base(document.clone());
                     workflow.set_candidate(document, path);
@@ -884,6 +993,7 @@ impl App {
                 }
                 match result {
                     Ok(candidate) => {
+                        self.access_explorer_result = None;
                         if let Some(workflow) = self.policy_workflow.as_mut() {
                             workflow.set_candidate(candidate, path.clone());
                             if let Some((base, candidate)) =
@@ -905,6 +1015,7 @@ impl App {
                         effects.extend(self.refresh_policy_workflow());
                     }
                     Err(detail) => {
+                        self.access_explorer_result = None;
                         if let Some(workflow) = self.policy_workflow.as_mut() {
                             if let Some(base) = workflow.base().cloned() {
                                 workflow.set_candidate(base, path);
@@ -1233,13 +1344,267 @@ impl App {
                 self.terminal_height = height;
                 Vec::new()
             }
+            InputEvent::Mouse(mouse) => self.handle_mouse(mouse),
             InputEvent::Paste(text) => self.handle_paste(&text),
             InputEvent::FocusGained | InputEvent::FocusLost => Vec::new(),
             InputEvent::Key(key) => self.handle_key(key),
         }
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        if !self.resolved_config.ui.mouse {
+            return Vec::new();
+        }
+        let action = match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if self.focus == Focus::Collection
+                    && self.mouse_in_scrollable_collection(mouse.column, mouse.row) =>
+            {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => Some(ActionId::CollectionMoveUp),
+                    MouseEventKind::ScrollDown => Some(ActionId::CollectionMoveDown),
+                    _ => None,
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.focus_mouse_region(mouse.column, mouse.row);
+                None
+            }
+            _ => None,
+        };
+        action.map_or_else(Vec::new, |action_id| {
+            if self.action_available_for_id(action_id) {
+                self.dispatch_action(action_id)
+            } else {
+                Vec::new()
+            }
+        })
+    }
+
+    fn focus_mouse_region(&mut self, column: u16, row: u16) {
+        if self.current_route() == Route::Activity {
+            self.focus = Focus::Collection;
+            let Some(collection) = self.activity_task_area() else {
+                return;
+            };
+            if !contains_point(collection, column, row) {
+                return;
+            }
+            let first_row = collection.y.saturating_add(1);
+            let row_count = usize::from(collection.height.saturating_sub(2));
+            if row >= first_row && usize::from(row.saturating_sub(first_row)) < row_count {
+                self.tasks.select_filtered_position(
+                    &self.task_filter,
+                    usize::from(row.saturating_sub(first_row)),
+                );
+            }
+            return;
+        }
+        if self.current_route() != Route::Devices {
+            let frame = crate::ui::layout::compute(
+                ratatui::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: self.terminal_width,
+                    height: self.terminal_height,
+                },
+                self,
+            );
+            if frame.minimum {
+                return;
+            }
+            if self.current_route() == Route::Services
+                && frame
+                    .inspector
+                    .is_some_and(|inspector| contains_point(inspector, column, row))
+            {
+                self.focus = Focus::Inspector;
+                return;
+            }
+            self.focus = Focus::Collection;
+            let area = frame
+                .inspector
+                .map_or(frame.content, |inspector| ratatui::layout::Rect {
+                    x: frame.content.x,
+                    y: frame.content.y,
+                    width: inspector.x.saturating_sub(frame.content.x),
+                    height: frame.content.height,
+                });
+            if !contains_point(area, column, row) {
+                return;
+            }
+            let first_row = match self.current_route() {
+                Route::Users | Route::Credentials => area.y.saturating_add(1),
+                Route::Routes => area.y.saturating_add(2),
+                Route::Services => area.y.saturating_add(3),
+                _ => return,
+            };
+            if row < first_row {
+                return;
+            }
+            let position = row.saturating_sub(first_row);
+            match self.current_route() {
+                Route::Users => {
+                    let length = self.admin.users.snapshot.as_ref().map_or(0, Vec::len);
+                    if usize::from(position) < length {
+                        self.admin_user_selected = usize::from(position);
+                    }
+                }
+                Route::Routes => {
+                    let length = self.admin.route_observations().len();
+                    if usize::from(position) < length {
+                        self.admin_route_selected = usize::from(position);
+                    }
+                }
+                Route::Credentials => {
+                    let length = self
+                        .admin
+                        .credentials
+                        .snapshot
+                        .as_ref()
+                        .map_or(0, |snapshot| snapshot.records.len());
+                    if usize::from(position) < length {
+                        self.admin_credential_selected = usize::from(position);
+                    }
+                }
+                Route::Services if usize::from(position) < self.service_row_count() => {
+                    self.views.services.selected = usize::from(position);
+                }
+                _ => {}
+            }
+            return;
+        }
+        let frame = crate::ui::layout::compute(
+            ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: self.terminal_width,
+                height: self.terminal_height,
+            },
+            self,
+        );
+        if let Some(inspector) = frame.inspector
+            && contains_point(inspector, column, row)
+        {
+            self.focus = Focus::Inspector;
+            return;
+        }
+        let Some(collection) = self.device_collection_area(frame) else {
+            self.focus = Focus::Collection;
+            return;
+        };
+        if !contains_point(collection, column, row) {
+            self.focus = Focus::Collection;
+            return;
+        }
+        self.focus = Focus::Collection;
+        let first_row = collection.y.saturating_add(2);
+        let row_count = usize::from(collection.height.saturating_sub(3));
+        if row >= first_row && usize::from(row.saturating_sub(first_row)) < row_count {
+            let position = self
+                .views
+                .devices
+                .scroll
+                .saturating_add(usize::from(row.saturating_sub(first_row)));
+            self.move_selection_to(position);
+        }
+    }
+
+    fn mouse_in_scrollable_collection(&self, column: u16, row: u16) -> bool {
+        if self.current_route() == Route::Devices {
+            let frame = crate::ui::layout::compute(
+                ratatui::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: self.terminal_width,
+                    height: self.terminal_height,
+                },
+                self,
+            );
+            return self
+                .device_collection_area(frame)
+                .is_some_and(|area| contains_point(area, column, row));
+        }
+        if self.current_route() == Route::Activity {
+            return self
+                .activity_task_area()
+                .is_some_and(|area| contains_point(area, column, row));
+        }
+        if !matches!(
+            self.current_route(),
+            Route::Users | Route::Routes | Route::Credentials | Route::Services
+        ) {
+            return false;
+        }
+        let frame = crate::ui::layout::compute(
+            ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: self.terminal_width,
+                height: self.terminal_height,
+            },
+            self,
+        );
+        if frame.minimum {
+            return false;
+        }
+        let area = frame
+            .inspector
+            .map_or(frame.content, |inspector| ratatui::layout::Rect {
+                x: frame.content.x,
+                y: frame.content.y,
+                width: inspector.x.saturating_sub(frame.content.x),
+                height: frame.content.height,
+            });
+        contains_point(area, column, row)
+    }
+
+    fn activity_task_area(&self) -> Option<ratatui::layout::Rect> {
+        let frame = crate::ui::layout::compute(
+            ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: self.terminal_width,
+                height: self.terminal_height,
+            },
+            self,
+        );
+        if frame.minimum {
+            return None;
+        }
+        let regions = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Percentage(60),
+                ratatui::layout::Constraint::Percentage(40),
+            ])
+            .split(frame.content);
+        regions.first().copied()
+    }
+
+    fn device_collection_area(
+        &self,
+        frame: crate::ui::layout::FrameLayout,
+    ) -> Option<ratatui::layout::Rect> {
+        if frame.minimum || self.focus == Focus::Inspector {
+            return None;
+        }
+        Some(match frame.inspector {
+            Some(inspector) => ratatui::layout::Rect {
+                x: frame.content.x,
+                y: frame.content.y,
+                width: inspector.x.saturating_sub(frame.content.x),
+                height: frame.content.height,
+            },
+            None => frame.content,
+        })
+    }
+
     fn handle_paste(&mut self, text: &str) -> Vec<Effect> {
+        let saved_view_names = self
+            .saved_views
+            .as_ref()
+            .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names);
         let Some(overlay) = self.overlays.last_mut() else {
             return Vec::new();
         };
@@ -1247,6 +1612,7 @@ impl App {
             Overlay::CommandPalette(state) => {
                 state.input.push_str(text);
                 state.candidates = route_candidates(&state.input);
+                state.saved_views = filter_saved_view_candidates(&saved_view_names, &state.input);
             }
             Overlay::FilterEditor(state) => {
                 state.input.push_str(text);
@@ -1255,7 +1621,13 @@ impl App {
             Overlay::Help(state) if state.searchable => state.query.push_str(text),
             Overlay::DiagnosticInput(state) => state.input.push_str(text),
             Overlay::OperatorForm(state) => {
-                state.append_ordered_text(text);
+                if state.secret_editing {
+                    if let Some(secret) = state.secret_input.as_mut() {
+                        secret.push_str(text);
+                    }
+                } else {
+                    state.append_ordered_text(text);
+                }
                 state.error = None;
             }
             Overlay::ServiceForm(state) => {
@@ -1313,6 +1685,10 @@ impl App {
     }
 
     fn handle_text_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
+        let saved_view_names = self
+            .saved_views
+            .as_ref()
+            .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names);
         let overlay = self.overlays.last_mut()?;
         match overlay {
             Overlay::CommandPalette(state) => {
@@ -1320,10 +1696,14 @@ impl App {
                     KeyCode::Char(character) if key.modifiers.is_empty() => {
                         state.input.push(character);
                         state.candidates = route_candidates(&state.input);
+                        state.saved_views =
+                            filter_saved_view_candidates(&saved_view_names, &state.input);
                     }
                     KeyCode::Backspace => {
                         let _ = state.input.pop();
                         state.candidates = route_candidates(&state.input);
+                        state.saved_views =
+                            filter_saved_view_candidates(&saved_view_names, &state.input);
                     }
                     KeyCode::Enter => {
                         let input = state.input.clone();
@@ -1401,6 +1781,14 @@ impl App {
                 Some(Vec::new())
             }
             Overlay::OperatorForm(state) => {
+                if key.code == KeyCode::Char('s')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                    && state.secret_input.is_some()
+                {
+                    state.secret_editing = !state.secret_editing;
+                    state.error = None;
+                    return Some(Vec::new());
+                }
                 if state.ordered_items.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Up, modifiers) if modifiers.is_empty() => {
@@ -1436,7 +1824,11 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Char(character) if key.modifiers.is_empty() => {
-                        if state.ordered_items.is_some() {
+                        if state.secret_editing {
+                            if let Some(secret) = state.secret_input.as_mut() {
+                                secret.push(character);
+                            }
+                        } else if state.ordered_items.is_some() {
                             state.ordered_editor.push(character);
                             state.sync_ordered_input();
                         } else {
@@ -1445,7 +1837,11 @@ impl App {
                         state.error = None;
                     }
                     KeyCode::Backspace => {
-                        if state.ordered_items.is_some() {
+                        if state.secret_editing {
+                            if let Some(secret) = state.secret_input.as_mut() {
+                                secret.pop();
+                            }
+                        } else if state.ordered_items.is_some() {
                             let _ = state.ordered_editor.pop();
                             state.sync_ordered_input();
                         } else {
@@ -1589,7 +1985,7 @@ impl App {
             }
             Overlay::SortPicker { mut selected } => {
                 match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => selected = (selected + 1).min(17),
+                    KeyCode::Char('j') | KeyCode::Down => selected = (selected + 1).min(19),
                     KeyCode::Char('k') | KeyCode::Up => selected = selected.saturating_sub(1),
                     KeyCode::Enter => {
                         let value = selected;
@@ -1737,6 +2133,9 @@ impl App {
                 Overlay::Confirmation(state) => Some(state.action_id),
                 _ => None,
             };
+            if confirmation_action == Some(ActionId::CollectionExport) {
+                self.pending_export_fingerprint = None;
+            }
             if confirmation_action == Some(ActionId::AdminCredentialAuthKeyCreate) {
                 self.pending_auth_key_request = None;
             }
@@ -1755,6 +2154,23 @@ impl App {
 
     fn accept_command(&mut self, input: &str) -> Vec<Effect> {
         let trimmed = input.trim();
+        if let Some(name) = trimmed.strip_prefix("view:") {
+            let name = name.trim();
+            let known = self
+                .saved_views
+                .as_ref()
+                .is_some_and(|saved_views| saved_views.store.apply(name).is_ok());
+            if !known {
+                if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
+                    state.error = Some(format!("unknown saved view: {name}"));
+                }
+                return Vec::new();
+            }
+            self.overlays.pop();
+            return self.apply_saved_view_operation(SavedViewMutation::Apply {
+                name: name.to_owned(),
+            });
+        }
         let (route_text, filter_text) =
             trimmed.split_once(' ').map_or((trimmed, ""), |parts| parts);
         let Some(route) = Route::parse(route_text) else {
@@ -1763,7 +2179,10 @@ impl App {
             }
             return Vec::new();
         };
-        if !filter_text.trim().is_empty() && route != Route::Devices {
+        if !filter_text.trim().is_empty() && route == Route::Activity {
+            self.task_filter = filter_text.trim().to_owned();
+            self.tasks.select_filtered_first(&self.task_filter);
+        } else if !filter_text.trim().is_empty() && route != Route::Devices {
             if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
                 state.error = Some("filters are available for devices only".to_owned());
             }
@@ -1790,6 +2209,12 @@ impl App {
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
+        if self.current_route() == Route::Activity {
+            self.task_filter = input.trim().to_owned();
+            self.tasks.select_filtered_first(&self.task_filter);
+            self.overlays.pop();
+            return Vec::new();
+        }
         match filter::parse(input) {
             Ok(expression) => {
                 self.views.devices.filter_draft = input.to_owned();
@@ -1851,13 +2276,22 @@ impl App {
                     .push(Overlay::CommandPalette(CommandPaletteState {
                         input: String::new(),
                         candidates: route_candidates(""),
+                        saved_views: self
+                            .saved_views
+                            .as_ref()
+                            .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names),
                         error: None,
                     }));
                 Vec::new()
             }
             ActionId::ViewFilter => {
+                let input = if self.current_route() == Route::Activity {
+                    self.task_filter.clone()
+                } else {
+                    self.views.devices.filter_draft.clone()
+                };
                 self.overlays.push(Overlay::FilterEditor(FilterEditorState {
-                    input: self.views.devices.filter_draft.clone(),
+                    input,
                     error: None,
                 }));
                 Vec::new()
@@ -1918,6 +2352,7 @@ impl App {
                             admin_mutation: None,
                             admin_batch: None,
                             service_request: None,
+                            operational_mutation: None,
                             handoff: None,
                             prompt: "The full policy source may contain sensitive access rules. Copy it to the clipboard?"
                                 .to_owned(),
@@ -1972,7 +2407,7 @@ impl App {
             }
             ActionId::CollectionMoveUp => {
                 if self.current_route() == Route::Activity {
-                    self.tasks.select_next(-1);
+                    self.tasks.select_next_filtered(&self.task_filter, -1);
                     self.move_admin_activity_selection(-1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-1);
@@ -1980,6 +2415,8 @@ impl App {
                     self.move_admin_user_selection(-1);
                 } else if self.current_route() == Route::Routes {
                     self.move_admin_route_selection(-1);
+                } else if self.current_route() == Route::Credentials {
+                    self.move_admin_credential_selection(-1);
                 } else {
                     self.move_selection(-1);
                 }
@@ -1987,7 +2424,7 @@ impl App {
             }
             ActionId::CollectionMoveDown => {
                 if self.current_route() == Route::Activity {
-                    self.tasks.select_next(1);
+                    self.tasks.select_next_filtered(&self.task_filter, 1);
                     self.move_admin_activity_selection(1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(1);
@@ -1995,6 +2432,8 @@ impl App {
                     self.move_admin_user_selection(1);
                 } else if self.current_route() == Route::Routes {
                     self.move_admin_route_selection(1);
+                } else if self.current_route() == Route::Credentials {
+                    self.move_admin_credential_selection(1);
                 } else {
                     self.move_selection(1);
                 }
@@ -2002,7 +2441,7 @@ impl App {
             }
             ActionId::CollectionFirst => {
                 if self.current_route() == Route::Activity {
-                    self.tasks.selected = self.tasks.all().first().map(|task| task.id);
+                    self.tasks.select_filtered_first(&self.task_filter);
                     self.admin_activity_selected = 0;
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = 0;
@@ -2011,6 +2450,8 @@ impl App {
                     self.admin_user_selected = 0;
                 } else if self.current_route() == Route::Routes {
                     self.admin_route_selected = 0;
+                } else if self.current_route() == Route::Credentials {
+                    self.admin_credential_selected = 0;
                 } else {
                     self.move_selection_to(0);
                 }
@@ -2018,7 +2459,7 @@ impl App {
             }
             ActionId::CollectionLast => {
                 if self.current_route() == Route::Activity {
-                    self.tasks.selected = self.tasks.all().last().map(|task| task.id);
+                    self.tasks.select_filtered_last(&self.task_filter);
                     self.admin_activity_selected = self
                         .admin
                         .activity
@@ -2040,6 +2481,13 @@ impl App {
                 } else if self.current_route() == Route::Routes {
                     self.admin_route_selected =
                         self.admin.route_observations().len().saturating_sub(1);
+                } else if self.current_route() == Route::Credentials {
+                    self.admin_credential_selected = self
+                        .admin
+                        .credentials
+                        .snapshot
+                        .as_ref()
+                        .map_or(0, |snapshot| snapshot.records.len().saturating_sub(1));
                 } else {
                     self.move_selection_to(usize::MAX);
                 }
@@ -2047,7 +2495,7 @@ impl App {
             }
             ActionId::CollectionPageUp => {
                 if self.current_route() == Route::Activity {
-                    self.tasks.select_next(-5);
+                    self.tasks.select_next_filtered(&self.task_filter, -5);
                     self.move_admin_activity_selection(-5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-5);
@@ -2055,6 +2503,8 @@ impl App {
                     self.move_admin_user_selection(-5);
                 } else if self.current_route() == Route::Routes {
                     self.move_admin_route_selection(-5);
+                } else if self.current_route() == Route::Credentials {
+                    self.move_admin_credential_selection(-5);
                 } else {
                     self.move_selection(-5);
                 }
@@ -2062,7 +2512,7 @@ impl App {
             }
             ActionId::CollectionPageDown => {
                 if self.current_route() == Route::Activity {
-                    self.tasks.select_next(5);
+                    self.tasks.select_next_filtered(&self.task_filter, 5);
                     self.move_admin_activity_selection(5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(5);
@@ -2070,6 +2520,8 @@ impl App {
                     self.move_admin_user_selection(5);
                 } else if self.current_route() == Route::Routes {
                     self.move_admin_route_selection(5);
+                } else if self.current_route() == Route::Credentials {
+                    self.move_admin_credential_selection(5);
                 } else {
                     self.move_selection(5);
                 }
@@ -2107,7 +2559,7 @@ impl App {
                 Vec::new()
             }
             ActionId::ResourceActions => {
-                let actions = if self.current_route() == Route::Services {
+                let mut actions = if self.current_route() == Route::Services {
                     self.service_actions_for_section()
                 } else if self.admin.profile.is_some() && self.current_route() == Route::Devices {
                     vec![
@@ -2166,6 +2618,7 @@ impl App {
                 } else {
                     Vec::new()
                 };
+                actions.extend(self.phase_eight_resource_actions());
                 self.overlays.push(Overlay::ActionPicker(ActionPickerState {
                     actions,
                     selected: 0,
@@ -2337,6 +2790,79 @@ impl App {
             ActionId::AuditOpenPolicyDiff => self.open_audit_investigation(),
             ActionId::BatchReviewOutcomes => self.open_selected_batch_result(),
             ActionId::BatchRetrySelected => self.retry_selected_batch(),
+            ActionId::ActivityFlowsSelectWindow => {
+                let now =
+                    time::OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(self.now as i64);
+                let window = crate::domain::flow::FlowWindow::previous_hour(now);
+                let input = window.query_values().map_or_else(
+                    |_| String::new(),
+                    |(start, end)| format!("start={start};end={end}"),
+                );
+                self.overlays
+                    .push(Overlay::OperatorForm(OperatorFormState::new(
+                        action_id, input, None,
+                    )));
+                Vec::new()
+            }
+            ActionId::ActivityFlowsAggregate => {
+                if let Some(snapshot) = self.flow_snapshot.as_ref() {
+                    if !snapshot.complete {
+                        self.runtime_error = Some(
+                            "flow aggregation is disabled for a partial bounded response; choose a narrower window"
+                                .to_owned(),
+                        );
+                        return Vec::new();
+                    }
+                    let dimensions = vec![
+                        AggregateDimension::ReportingNode,
+                        AggregateDimension::TrafficClass,
+                        AggregateDimension::Protocol,
+                    ];
+                    let messages = snapshot.messages.clone();
+                    self.cancel_flow_aggregation();
+                    self.flow_aggregation_generation =
+                        self.flow_aggregation_generation.saturating_add(1);
+                    let generation = self.flow_aggregation_generation;
+                    let cancellation = Arc::new(AtomicBool::new(false));
+                    self.flow_aggregation_cancellation = Some(Arc::clone(&cancellation));
+                    self.runtime_error = Some("aggregating the bounded flow window".to_owned());
+                    return vec![Effect::StartFlowAggregation {
+                        generation,
+                        messages,
+                        filter: self.flow_filter.clone(),
+                        dimensions,
+                        cancellation,
+                    }];
+                } else {
+                    self.runtime_error = Some(
+                        "flow aggregation requires a completed bounded flow window".to_owned(),
+                    );
+                }
+                Vec::new()
+            }
+            ActionId::ActivityFlowsOpenDevice => {
+                self.navigate(Route::Devices);
+                Vec::new()
+            }
+            ActionId::OverviewHealthOpenResource | ActionId::OverviewHealthRunSuggestedAction => {
+                self.dispatch_health_action(action_id)
+            }
+            ActionId::AdminWebhookCreate
+            | ActionId::AdminWebhookEdit
+            | ActionId::AdminWebhookTest
+            | ActionId::AdminWebhookRotateSecret
+            | ActionId::AdminWebhookDelete
+            | ActionId::AdminLogStreamReplace
+            | ActionId::AdminLogStreamDelete
+            | ActionId::AdminNetworkLogsSettings => self.open_phase_eight_action(action_id),
+            ActionId::SavedViewCreate
+            | ActionId::SavedViewReplace
+            | ActionId::SavedViewRename
+            | ActionId::SavedViewDelete
+            | ActionId::SavedViewApply
+            | ActionId::CollectionExport
+            | ActionId::AccessExplorerAsk
+            | ActionId::AccessExplorerOpenRule => self.open_phase_eight_local_action(action_id),
         }
     }
 
@@ -2349,6 +2875,11 @@ impl App {
             Capability::MockOnly => self.source_mode == SourceMode::Mock,
             Capability::Disabled(_) => false,
         }
+    }
+
+    fn action_available_for_id(&self, action_id: ActionId) -> bool {
+        action::find_action(action_id)
+            .is_some_and(|spec| self.action_available(action_id, spec.capability))
     }
 
     fn admin_action_available(&self, action_id: ActionId) -> bool {
@@ -2369,7 +2900,24 @@ impl App {
             ActionId::AccessCopySource => self.admin.policy.snapshot.is_some(),
             ActionId::ActivitySelectWindow
             | ActionId::ActivityOpenActor
-            | ActionId::ActivityOpenTarget => self.admin.profile.is_some(),
+            | ActionId::ActivityOpenTarget
+            | ActionId::ActivityFlowsSelectWindow
+            | ActionId::ActivityFlowsAggregate
+            | ActionId::ActivityFlowsOpenDevice
+            | ActionId::AccessExplorerAsk
+            | ActionId::AccessExplorerOpenRule
+            | ActionId::OverviewHealthOpenResource
+            | ActionId::OverviewHealthRunSuggestedAction => {
+                self.phase_eight_read_available(action_id)
+            }
+            ActionId::AdminWebhookCreate
+            | ActionId::AdminWebhookEdit
+            | ActionId::AdminWebhookTest
+            | ActionId::AdminWebhookRotateSecret
+            | ActionId::AdminWebhookDelete
+            | ActionId::AdminLogStreamReplace
+            | ActionId::AdminLogStreamDelete
+            | ActionId::AdminNetworkLogsSettings => self.phase_eight_mutation_available(action_id),
             ActionId::SettingsInspectCapabilities => self.admin.profile.is_some(),
             ActionId::AdminPolicyEdit
             | ActionId::AdminPolicyEditorReopen
@@ -2544,6 +3092,40 @@ impl App {
             ActionId::AdminCredentialRevoke => self.selected_credential().is_some(),
             _ => false,
         }
+    }
+
+    fn phase_eight_read_available(&self, action_id: ActionId) -> bool {
+        if self.admin.profile.is_none() {
+            return false;
+        }
+        let scope = match action_id {
+            ActionId::ActivityFlowsSelectWindow
+            | ActionId::ActivityFlowsAggregate
+            | ActionId::ActivityFlowsOpenDevice => "logs:network:read",
+            ActionId::AccessExplorerAsk | ActionId::AccessExplorerOpenRule => "policy_file:read",
+            _ => return true,
+        };
+        self.admin_scope_allowed(scope)
+    }
+
+    fn phase_eight_mutation_available(&self, action_id: ActionId) -> bool {
+        if self.admin.profile.is_none()
+            || self.admin.profile_read_only
+            || self.resolved_config.read_only
+        {
+            return false;
+        }
+        let scope = match action_id {
+            ActionId::AdminWebhookCreate
+            | ActionId::AdminWebhookEdit
+            | ActionId::AdminWebhookTest
+            | ActionId::AdminWebhookRotateSecret
+            | ActionId::AdminWebhookDelete => "webhooks",
+            ActionId::AdminLogStreamReplace | ActionId::AdminLogStreamDelete => "log_streaming",
+            ActionId::AdminNetworkLogsSettings => "logs:network",
+            _ => return false,
+        };
+        self.admin_scope_allowed(scope)
     }
 
     fn admin_scope_allowed(&self, scope: &str) -> bool {
@@ -2879,10 +3461,296 @@ impl App {
                 .selected_admin_user()
                 .and_then(|user| user.role.clone())
                 .unwrap_or_else(|| "member".to_owned()),
+            ActionId::AdminWebhookCreate => String::new(),
+            ActionId::AdminWebhookEdit => {
+                self.webhooks.first().map_or_else(String::new, |webhook| {
+                    format!(
+                        "categories={};events={}",
+                        webhook.subscriptions.wire_categories().join(","),
+                        webhook.subscriptions.wire_events().join(",")
+                    )
+                })
+            }
+            ActionId::AdminLogStreamReplace => self
+                .log_stream_configurations
+                .get(&LogType::Network)
+                .or_else(|| self.log_stream_configurations.get(&LogType::Configuration))
+                .map_or_else(
+                    || "type=network;destination=;url=;secret=replace".to_owned(),
+                    |configuration| {
+                        format!(
+                            "type={};destination={};url={};secret=replace",
+                            configuration.log_type.wire_value(),
+                            configuration.destination.kind,
+                            configuration.destination.identity
+                        )
+                    },
+                ),
+            ActionId::AdminNetworkLogsSettings => self
+                .admin
+                .settings
+                .snapshot
+                .as_ref()
+                .and_then(|settings| settings.network_flow_logging_on)
+                .map_or_else(
+                    || "on".to_owned(),
+                    |value| if value { "on" } else { "off" }.to_owned(),
+                ),
+            _ => String::new(),
+        };
+        let mut state = admin_operator_form_state(action_id, input, None);
+        if action_id == ActionId::AdminLogStreamReplace {
+            state.secret_input = Some(SecretInput::new());
+        }
+        self.overlays.push(Overlay::OperatorForm(state));
+        Vec::new()
+    }
+
+    fn selected_webhook(&self) -> Option<&WebhookEndpoint> {
+        self.webhooks.first()
+    }
+
+    fn open_phase_eight_action(&mut self, action_id: ActionId) -> Vec<Effect> {
+        match action_id {
+            ActionId::AdminWebhookCreate
+            | ActionId::AdminWebhookEdit
+            | ActionId::AdminLogStreamReplace
+            | ActionId::AdminNetworkLogsSettings => self.open_admin_form(action_id),
+            ActionId::AdminWebhookTest => {
+                let Some(webhook) = self.selected_webhook() else {
+                    self.runtime_error = Some("no observed webhook is available".to_owned());
+                    return Vec::new();
+                };
+                self.open_operational_confirmation(
+                    action_id,
+                    OperationalMutation::Webhook(WebhookMutation::Test {
+                        endpoint_id: webhook.stable_id.clone(),
+                    }),
+                )
+            }
+            ActionId::AdminWebhookRotateSecret => {
+                let Some(webhook) = self.selected_webhook() else {
+                    self.runtime_error = Some("no observed webhook is available".to_owned());
+                    return Vec::new();
+                };
+                self.open_operational_confirmation(
+                    action_id,
+                    OperationalMutation::Webhook(WebhookMutation::RotateSecret {
+                        endpoint_id: webhook.stable_id.clone(),
+                    }),
+                )
+            }
+            ActionId::AdminWebhookDelete => {
+                let Some(webhook) = self.selected_webhook() else {
+                    self.runtime_error = Some("no observed webhook is available".to_owned());
+                    return Vec::new();
+                };
+                self.open_operational_confirmation(
+                    action_id,
+                    OperationalMutation::Webhook(WebhookMutation::Delete {
+                        endpoint_id: webhook.stable_id.clone(),
+                        endpoint_label: webhook.endpoint_url.clone(),
+                    }),
+                )
+            }
+            ActionId::AdminLogStreamDelete => {
+                let log_type = self
+                    .log_stream_configurations
+                    .keys()
+                    .next()
+                    .copied()
+                    .map_or(LogType::Network, |value| value);
+                self.open_operational_confirmation(
+                    action_id,
+                    OperationalMutation::LogStreamDelete(log_type),
+                )
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn open_operational_confirmation(
+        &mut self,
+        action_id: ActionId,
+        mutation: OperationalMutation,
+    ) -> Vec<Effect> {
+        self.pending_export_fingerprint = match &mutation {
+            OperationalMutation::Export(request) => match self.export_fingerprint(request) {
+                Ok(fingerprint) => Some(fingerprint),
+                Err(error) => {
+                    self.runtime_error = Some(format!("export preview unavailable: {error}"));
+                    return Vec::new();
+                }
+            },
+            _ => None,
+        };
+        let required_phrase = match &mutation {
+            OperationalMutation::Webhook(WebhookMutation::Test { .. }) => None,
+            OperationalMutation::Webhook(WebhookMutation::RotateSecret { .. }) => {
+                Some("ROTATE WEBHOOK SECRET".to_owned())
+            }
+            OperationalMutation::Webhook(WebhookMutation::Delete { .. }) => {
+                Some("DELETE WEBHOOK".to_owned())
+            }
+            OperationalMutation::LogStreamDelete(_) => Some("DELETE LOG STREAM".to_owned()),
+            OperationalMutation::Webhook(_)
+            | OperationalMutation::LogStreamReplace(_)
+            | OperationalMutation::NetworkLogSetting { .. } => {
+                Some("APPLY OPERATIONAL CHANGE".to_owned())
+            }
+            OperationalMutation::SavedView(SavedViewMutation::Replace { .. })
+            | OperationalMutation::SavedView(SavedViewMutation::Delete { .. }) => None,
+            OperationalMutation::SavedView(
+                SavedViewMutation::Create(_)
+                | SavedViewMutation::Rename { .. }
+                | SavedViewMutation::Apply { .. },
+            ) => None,
+            OperationalMutation::Export(request) if request.path.exists() => {
+                Some("OVERWRITE EXPORT".to_owned())
+            }
+            OperationalMutation::Export(_) => None,
+        };
+        let prompt = match &mutation {
+            OperationalMutation::Webhook(WebhookMutation::Test { .. }) => {
+                "Queue a server-side webhook test? Tale will report acknowledgement only.".to_owned()
+            }
+            OperationalMutation::Webhook(WebhookMutation::RotateSecret { .. }) => {
+                "Rotate this webhook's write-only signing secret? The new secret is shown once.".to_owned()
+            }
+            OperationalMutation::Webhook(WebhookMutation::Delete { .. }) => {
+                "Delete this webhook after a final typed confirmation?".to_owned()
+            }
+            OperationalMutation::LogStreamDelete(_) => {
+                "Delete this log-stream configuration?".to_owned()
+            }
+            OperationalMutation::Webhook(_)
+            | OperationalMutation::LogStreamReplace(_)
+            | OperationalMutation::NetworkLogSetting { .. } => {
+                "Apply this typed operational change?".to_owned()
+            }
+            OperationalMutation::SavedView(_) => {
+                "Apply this saved-view operation? The document stores only query and presentation state.".to_owned()
+            }
+            OperationalMutation::Export(_) => {
+                "Write this allowlisted deterministic export?".to_owned()
+            }
+        };
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id,
+                mutation: None,
+                admin_mutation: None,
+                admin_batch: None,
+                service_request: None,
+                operational_mutation: Some(mutation.clone()),
+                handoff: None,
+                prompt,
+                required_phrase,
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines: vec![
+                mutation.preview(),
+                "No automatic retry will be attempted; a verification read follows the mutation."
+                    .to_owned(),
+            ],
+                redacted_argv: Vec::new(),
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn dispatch_health_action(&mut self, action_id: ActionId) -> Vec<Effect> {
+        let Some(finding) = self.health_findings.first() else {
+            self.runtime_error = Some("no derived health finding is available".to_owned());
+            return Vec::new();
+        };
+        if action_id == ActionId::OverviewHealthOpenResource {
+            self.runtime_error = Some(format!(
+                "{} · observed facts: {} · source: {}",
+                finding.title,
+                finding
+                    .observed_facts
+                    .iter()
+                    .map(|fact| format!("{}={}", fact.label, fact.value))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if finding.source_ids.is_empty() {
+                    "not returned".to_owned()
+                } else {
+                    finding.source_ids.join(", ")
+                }
+            ));
+            match finding.rule_id.as_str() {
+                "device-key-expired" | "device-key-expiring" | "device-approval-pending" => {
+                    self.navigate(Route::Devices);
+                }
+                "user-approval-pending" => self.navigate(Route::Users),
+                "route-overlap-review" => self.navigate(Route::Routes),
+                _ => {}
+            }
+            return Vec::new();
+        }
+        let Some(suggested) = finding.suggested_action_ids.first() else {
+            self.runtime_error = Some(
+                "this derived finding has no suggested action; inspect its observed facts"
+                    .to_owned(),
+            );
+            return Vec::new();
+        };
+        let action = match suggested.as_str() {
+            "admin.device.approve" => ActionId::AdminDeviceApprove,
+            "admin.device.key_expire_now" => ActionId::AdminDeviceKeyExpireNow,
+            "admin.routes.replace_approvals" => ActionId::AdminRoutesReplaceApprovals,
+            "admin.user.approve" => ActionId::AdminUserApprove,
+            _ => {
+                self.runtime_error = Some(format!(
+                    "suggested action {suggested} is not registered in the current action catalog"
+                ));
+                return Vec::new();
+            }
+        };
+        if !self.action_available_for_id(action) {
+            self.runtime_error = self.action_unavailable_reason(action);
+            return Vec::new();
+        }
+        self.dispatch_action(action)
+    }
+
+    fn open_phase_eight_local_action(&mut self, action_id: ActionId) -> Vec<Effect> {
+        let input = match action_id {
+            ActionId::SavedViewCreate => {
+                "name=;route=devices;columns=id,name;filter=;sort=id:ascending;wide=false"
+                    .to_owned()
+            }
+            ActionId::SavedViewReplace => {
+                "name=;route=devices;columns=id,name;filter=;sort=id:ascending;wide=false"
+                    .to_owned()
+            }
+            ActionId::SavedViewRename => "name=;new=;".to_owned(),
+            ActionId::SavedViewDelete | ActionId::SavedViewApply => "name=".to_owned(),
+            ActionId::CollectionExport => "format=json;path=;collection=devices".to_owned(),
+            ActionId::AccessExplorerAsk => "source=;destination=;port=;policy=current".to_owned(),
+            ActionId::AccessExplorerOpenRule => {
+                if let Some(result) = self.access_explorer_result.as_ref() {
+                    self.runtime_error = Some(format!(
+                        "authoritative preview locations: {}",
+                        result
+                            .rule_locations
+                            .iter()
+                            .map(u32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                } else {
+                    self.runtime_error =
+                        Some("no authoritative Access Explorer result is available".to_owned());
+                }
+                return Vec::new();
+            }
             _ => String::new(),
         };
         self.overlays
-            .push(Overlay::OperatorForm(admin_operator_form_state(
+            .push(Overlay::OperatorForm(OperatorFormState::new(
                 action_id, input, None,
             )));
         Vec::new()
@@ -3147,6 +4015,7 @@ impl App {
             Ok(file) => {
                 let path = file.path().to_path_buf();
                 self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
+                self.access_explorer_result = None;
                 if let Some(workflow) = self.policy_workflow.as_mut() {
                     workflow.discard_candidate();
                     workflow.set_candidate(base, path);
@@ -3277,6 +4146,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: None,
                 service_request: None,
+                operational_mutation: None,
                 handoff: None,
                 prompt: "Apply this exact policy candidate to the remote tailnet?".to_owned(),
                 required_phrase: Some("APPLY POLICY".to_owned()),
@@ -3376,6 +4246,7 @@ impl App {
                     return false;
                 }
             };
+        self.access_explorer_result = None;
         if let Some(workflow) = self.policy_workflow.as_mut() {
             workflow.set_candidate(document, path);
         }
@@ -3447,6 +4318,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: None,
                 service_request: None,
+                operational_mutation: None,
                 handoff: None,
                 prompt: if replacing_remote {
                     "Replace the retained candidate with the latest remote policy?".to_owned()
@@ -3474,6 +4346,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: None,
                 service_request: None,
+                operational_mutation: None,
                 handoff: None,
                 prompt: "Close the policy workflow and remove its temporary files?".to_owned(),
                 required_phrase: Some("CLOSE POLICY WORKFLOW".to_owned()),
@@ -3518,6 +4391,7 @@ impl App {
         let path = file.path().to_path_buf();
         self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
         self.close_latest_policy_temp_file();
+        self.access_explorer_result = None;
         if let Some(workflow) = self.policy_workflow.as_mut() {
             workflow.set_base(latest.clone());
             workflow.set_candidate(latest, path);
@@ -3600,6 +4474,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: None,
                 service_request: None,
+                operational_mutation: None,
                 handoff: None,
                 prompt:
                     "Create this auth key? The secret will be shown once and cannot be recovered."
@@ -3751,6 +4626,7 @@ impl App {
             admin_mutation: None,
             admin_batch: None,
             service_request: None,
+            operational_mutation: None,
             handoff: None,
             prompt:
                 "Revoke this remote credential? Tale will issue one DELETE and then read it back."
@@ -3830,6 +4706,7 @@ impl App {
             admin_mutation: None,
             admin_batch: None,
             service_request: None,
+            operational_mutation: None,
             handoff: None,
             prompt: "Remove this local Tale credential from the OS keyring? This does not revoke any remote credential.".to_owned(),
             required_phrase: Some("REMOVE LOCAL CREDENTIAL".to_owned()),
@@ -3955,6 +4832,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: None,
                 service_request: None,
+                operational_mutation: None,
                 handoff: Some(handoff::login_command(&executable.path)),
                 prompt: "Open Tailscale login in the terminal; Tale will not collect credentials."
                     .to_owned(),
@@ -3979,6 +4857,7 @@ impl App {
             admin_mutation: None,
             admin_batch: None,
             service_request: None,
+            operational_mutation: None,
             handoff: Some(handoff::logout_command(&executable.path)),
             prompt: "Log out this local account; the node key will be invalidated and reauthentication will be required.".to_owned(),
             required_phrase: Some("LOGOUT".to_owned()),
@@ -4091,6 +4970,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: None,
                 service_request: None,
+                operational_mutation: None,
                 handoff: None,
                 prompt,
                 required_phrase,
@@ -4237,6 +5117,56 @@ impl App {
                 }
             };
         }
+        if state.action_id == ActionId::ActivityFlowsSelectWindow {
+            return match parse_flow_window_form(&state.input, self.now) {
+                Ok((window, filter)) => {
+                    let mut filter = filter;
+                    if let Err(error) = self.resolve_flow_filter_labels(&mut filter) {
+                        if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                            current.error = Some(error);
+                        }
+                        return Vec::new();
+                    }
+                    self.overlays.pop();
+                    self.cancel_flow_aggregation();
+                    self.flow_aggregation_generation =
+                        self.flow_aggregation_generation.saturating_add(1);
+                    self.flow_filter = filter;
+                    self.flow_snapshot = None;
+                    self.flow_generation.begin();
+                    self.start_admin_resource_refresh(vec![AdminRefreshResource::FlowLogs(window)])
+                }
+                Err(error) => {
+                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                        current.error = Some(error);
+                    }
+                    Vec::new()
+                }
+            };
+        }
+        if matches!(
+            state.action_id,
+            ActionId::AdminWebhookCreate
+                | ActionId::AdminWebhookEdit
+                | ActionId::AdminLogStreamReplace
+                | ActionId::AdminNetworkLogsSettings
+        ) {
+            return self.accept_phase_eight_form(state);
+        }
+        if matches!(
+            state.action_id,
+            ActionId::SavedViewCreate
+                | ActionId::SavedViewReplace
+                | ActionId::SavedViewRename
+                | ActionId::SavedViewDelete
+                | ActionId::SavedViewApply
+                | ActionId::CollectionExport
+        ) {
+            return self.accept_phase_eight_local_form(state);
+        }
+        if state.action_id == ActionId::AccessExplorerAsk {
+            return self.accept_access_explorer_form(state);
+        }
         if is_admin_mutation_action(state.action_id) {
             return self.accept_admin_form(state);
         }
@@ -4256,6 +5186,193 @@ impl App {
             Ok(mutation) => {
                 self.overlays.pop();
                 self.open_mutation_confirmation(mutation)
+            }
+            Err(error) => {
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn accept_phase_eight_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        let result = match state.action_id {
+            ActionId::AdminWebhookCreate => parse_webhook_create(&state.input),
+            ActionId::AdminWebhookEdit => self.parse_webhook_edit(&state.input),
+            ActionId::AdminLogStreamReplace => {
+                parse_log_stream_draft(&state.input, state.secret_input.as_ref())
+            }
+            ActionId::AdminNetworkLogsSettings => parse_network_log_setting(&state.input),
+            _ => Err("this is not a Phase 8 operational form".to_owned()),
+        };
+        match result {
+            Ok(mutation) => {
+                self.overlays.pop();
+                self.open_operational_confirmation(state.action_id, mutation)
+            }
+            Err(error) => {
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn parse_webhook_edit(&self, input: &str) -> Result<OperationalMutation, String> {
+        let endpoint = self
+            .selected_webhook()
+            .ok_or_else(|| "no observed webhook is available".to_owned())?;
+        let fields = parse_operational_fields(input)?;
+        ensure_operational_fields(&fields, &["categories", "events"])?;
+        let categories = csv_field(&fields, "categories");
+        let events = csv_field(&fields, "events");
+        let after = endpoint
+            .subscriptions
+            .edit_known(categories, events)
+            .map_err(|error| error.to_string())?;
+        Ok(OperationalMutation::Webhook(
+            WebhookMutation::EditSubscriptions {
+                endpoint_id: endpoint.stable_id.clone(),
+                endpoint_url: endpoint.endpoint_url.clone(),
+                destination_type: endpoint.destination_type.clone(),
+                before: endpoint.subscriptions.clone(),
+                after,
+            },
+        ))
+    }
+
+    fn resolve_flow_filter_labels(&self, filter: &mut FlowFilter) -> Result<(), String> {
+        let Some(devices) = self.admin.devices.snapshot.as_ref() else {
+            if filter.reporting_node_label.is_some()
+                || filter.source_node_label.is_some()
+                || filter.destination_node_label.is_some()
+            {
+                return Err(
+                    "flow label filters require an observed device snapshot for exact ID resolution"
+                        .to_owned(),
+                );
+            }
+            return Ok(());
+        };
+        let resolve = |label: &mut Option<String>| -> Result<Option<String>, String> {
+            let Some(label) = label.as_deref() else {
+                return Ok(None);
+            };
+            let matches = devices
+                .iter()
+                .filter(|device| device.display_name() == label)
+                .map(|device| device.stable_id.clone())
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [stable_id] => Ok(Some(stable_id.clone())),
+                [] => Err(format!(
+                    "flow label {label} was not returned by the device source"
+                )),
+                _ => Err(format!(
+                    "flow label {label} is ambiguous; use a stable node ID"
+                )),
+            }
+        };
+        if filter.reporting_node_id.is_none() {
+            filter.reporting_node_id = resolve(&mut filter.reporting_node_label)?;
+        }
+        if filter.source_node_id.is_none() {
+            filter.source_node_id = resolve(&mut filter.source_node_label)?;
+        }
+        if filter.destination_node_id.is_none() {
+            filter.destination_node_id = resolve(&mut filter.destination_node_label)?;
+        }
+        Ok(())
+    }
+
+    fn cancel_flow_aggregation(&mut self) {
+        if let Some(cancellation) = self.flow_aggregation_cancellation.take() {
+            cancellation.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn accept_phase_eight_local_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        let result = match state.action_id {
+            ActionId::SavedViewCreate | ActionId::SavedViewReplace => {
+                parse_saved_view_form(&state.input).map(|view| {
+                    if state.action_id == ActionId::SavedViewCreate {
+                        OperationalMutation::SavedView(SavedViewMutation::Create(view))
+                    } else {
+                        OperationalMutation::SavedView(SavedViewMutation::Replace {
+                            name: view.name.clone(),
+                            view,
+                        })
+                    }
+                })
+            }
+            ActionId::SavedViewRename => {
+                parse_rename_form(&state.input).map(|(name, replacement)| {
+                    OperationalMutation::SavedView(SavedViewMutation::Rename { name, replacement })
+                })
+            }
+            ActionId::SavedViewDelete => parse_name_form(&state.input)
+                .map(|name| OperationalMutation::SavedView(SavedViewMutation::Delete { name })),
+            ActionId::SavedViewApply => parse_name_form(&state.input)
+                .map(|name| OperationalMutation::SavedView(SavedViewMutation::Apply { name })),
+            ActionId::CollectionExport => parse_export_form(&state.input),
+            _ => Err("this is not a local Phase 8 form".to_owned()),
+        };
+        match result {
+            Ok(mutation) => {
+                self.overlays.pop();
+                self.open_operational_confirmation(state.action_id, mutation)
+            }
+            Err(error) => {
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn accept_access_explorer_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        let result = parse_access_question(&state.input).and_then(|question| {
+            let policy = match question.policy_source {
+                PolicySource::CurrentRemote => self
+                    .admin
+                    .policy
+                    .snapshot
+                    .as_ref()
+                    .ok_or_else(|| "current remote policy is not observed".to_owned())
+                    .and_then(|snapshot| {
+                        crate::domain::policy_workflow::PolicyDocument::from_bytes_with_content_type(
+                            snapshot.source_bytes.clone(),
+                            snapshot.content_type.clone(),
+                            snapshot.fetched_at,
+                        )
+                        .map_err(|error| error.to_string())
+                    })?,
+                PolicySource::ActiveCandidate => self
+                    .policy_workflow
+                    .as_ref()
+                    .and_then(|workflow| workflow.candidate().cloned())
+                    .ok_or_else(|| "an active policy candidate is not available".to_owned())?,
+            };
+            let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+                return Err("an authenticated admin profile is required".to_owned());
+            };
+            Ok(Effect::StartAccessExplorer {
+                question,
+                policy,
+                profile,
+                tailnet,
+                credential,
+                environment_token: self.admin_environment_token.clone(),
+                timeout: self.resolved_config.admin.request_timeout,
+            })
+        });
+        match result {
+            Ok(effect) => {
+                self.overlays.pop();
+                vec![effect]
             }
             Err(error) => {
                 if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
@@ -4889,6 +6006,7 @@ impl App {
                         admin_mutation: None,
                         admin_batch: None,
                         service_request: None,
+                        operational_mutation: None,
                         handoff: Some(command),
                         prompt: "Pause Tale and open the selected interactive terminal session."
                             .to_owned(),
@@ -5148,6 +6266,33 @@ impl App {
                 current.error = Some(format!("type {required} exactly to confirm"));
             }
             return Vec::new();
+        }
+        let overwrite_confirmed = state.required_phrase.as_deref() == Some("OVERWRITE EXPORT");
+        if let Some(OperationalMutation::Export(request)) = state.operational_mutation.as_ref()
+            && let Some(expected) = self.pending_export_fingerprint
+            && self.export_fingerprint(request).ok() != Some(expected)
+        {
+            self.set_confirmation_error(
+                "the export source changed after preview; refresh and review the export again",
+            );
+            return Vec::new();
+        }
+        if let Some(OperationalMutation::Export(request)) = state.operational_mutation.as_ref()
+            && request.path.exists()
+            && !overwrite_confirmed
+        {
+            self.set_confirmation_error(
+                "the export target appeared after preview; review the overwrite confirmation again",
+            );
+            return Vec::new();
+        }
+        if let Some(mutation) = state.operational_mutation.clone() {
+            self.pending_export_fingerprint = None;
+            return self.accept_operational_mutation(
+                state.action_id,
+                mutation,
+                overwrite_confirmed,
+            );
         }
         if let Some(batch) = state.admin_batch.clone() {
             return self.accept_admin_batch_confirmation(batch);
@@ -5538,6 +6683,493 @@ impl App {
         Vec::new()
     }
 
+    fn accept_operational_mutation(
+        &mut self,
+        action_id: ActionId,
+        mutation: OperationalMutation,
+        overwrite_confirmed: bool,
+    ) -> Vec<Effect> {
+        if matches!(
+            mutation,
+            OperationalMutation::SavedView(_) | OperationalMutation::Export(_)
+        ) {
+            self.overlays.pop();
+            return self.apply_local_operational_mutation(mutation, overwrite_confirmed);
+        }
+        if !self.phase_eight_mutation_available(action_id) {
+            self.set_confirmation_error(
+                "the operational mutation is no longer permitted by profile, scope, or read-only mode",
+            );
+            return Vec::new();
+        }
+        let Some(profile) = self.admin.profile.clone() else {
+            self.set_confirmation_error("an authenticated admin profile is required");
+            return Vec::new();
+        };
+        let Some(profile_config) = self.resolved_config.profiles.get(&profile) else {
+            self.set_confirmation_error("admin profile configuration is unavailable");
+            return Vec::new();
+        };
+        let Some(tailnet) = self.admin.tailnet.clone() else {
+            self.set_confirmation_error("admin tailnet is no longer selected");
+            return Vec::new();
+        };
+        self.overlays.pop();
+        vec![Effect::StartOperationalMutation {
+            action_id,
+            mutation,
+            profile,
+            tailnet,
+            credential: profile_config.credential.clone(),
+            environment_token: self.admin_environment_token.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+        }]
+    }
+
+    fn apply_local_operational_mutation(
+        &mut self,
+        mutation: OperationalMutation,
+        overwrite_confirmed: bool,
+    ) -> Vec<Effect> {
+        match mutation {
+            OperationalMutation::SavedView(operation) => self.apply_saved_view_operation(operation),
+            OperationalMutation::Export(request) => match self.build_export_document(&request) {
+                Ok(document) => {
+                    let format = if request.format == "csv" {
+                        crate::export::ExportFormat::Csv
+                    } else {
+                        crate::export::ExportFormat::Json
+                    };
+                    match crate::export::write_atomic(
+                        &document,
+                        &request.path,
+                        format,
+                        overwrite_confirmed,
+                    ) {
+                        Ok(path) => {
+                            self.runtime_error = Some(format!(
+                                "deterministic {} export written to {}",
+                                request.format,
+                                path.display()
+                            ));
+                        }
+                        Err(error) => self.runtime_error = Some(error.to_string()),
+                    }
+                    Vec::new()
+                }
+                Err(error) => {
+                    self.runtime_error = Some(error);
+                    Vec::new()
+                }
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_saved_view_operation(&mut self, operation: SavedViewMutation) -> Vec<Effect> {
+        let Some(saved_views) = self.saved_views.as_mut() else {
+            self.runtime_error = Some("saved-view state is unavailable".to_owned());
+            return Vec::new();
+        };
+        let result = match operation {
+            SavedViewMutation::Create(view) => {
+                saved_views.store.create(view, &saved_views.registry)
+            }
+            SavedViewMutation::Replace { name, view } => {
+                saved_views
+                    .store
+                    .replace(&name, view, &saved_views.registry)
+            }
+            SavedViewMutation::Rename { name, replacement } => {
+                saved_views.store.rename(&name, replacement)
+            }
+            SavedViewMutation::Delete { name } => saved_views.store.delete(&name),
+            SavedViewMutation::Apply { name } => {
+                let view = match saved_views.store.apply(&name) {
+                    Ok(view) => view.clone(),
+                    Err(error) => {
+                        self.runtime_error = Some(error.to_string());
+                        return Vec::new();
+                    }
+                };
+                match self.apply_saved_view_to_ui(&view) {
+                    Ok(()) => {
+                        self.runtime_error = Some(format!("saved view {name} applied"));
+                        return Vec::new();
+                    }
+                    Err(error) => {
+                        self.runtime_error = Some(error);
+                        return Vec::new();
+                    }
+                }
+            }
+        };
+        match result {
+            Ok(()) => self.runtime_error = Some("saved-view file updated atomically".to_owned()),
+            Err(error) => self.runtime_error = Some(error.to_string()),
+        }
+        Vec::new()
+    }
+
+    fn apply_saved_view_to_ui(&mut self, view: &SavedView) -> Result<(), String> {
+        let route = Route::parse(&view.route)
+            .filter(|route| route.label() == view.route)
+            .ok_or_else(|| format!("saved view route is not canonical: {}", view.route))?;
+        if route == Route::Devices {
+            let terms = view
+                .filters
+                .iter()
+                .map(saved_filter_to_term)
+                .collect::<Result<Vec<_>, _>>()?;
+            let filter_text = view
+                .filters
+                .iter()
+                .map(saved_filter_to_cli)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" ");
+            let expression = FilterExpression { terms };
+            self.views.devices.filter_draft = filter_text;
+            self.views.devices.applied_filter = expression;
+            let sort_terms = view
+                .sort
+                .iter()
+                .map(saved_sort_to_device)
+                .collect::<Result<Vec<_>, _>>()?;
+            self.views.devices.sort_terms = if sort_terms.is_empty() {
+                vec![SortSpec::default()]
+            } else {
+                sort_terms
+            };
+            self.views.devices.sort = self
+                .views
+                .devices
+                .sort_terms
+                .first()
+                .copied()
+                .map_or(SortSpec::default(), |value| value);
+            self.views.devices.wide_columns =
+                view.wide_columns || view.columns.iter().any(|column| column == "version");
+            self.views.devices.columns = view.columns.clone();
+            self.reconcile_selection(None);
+        } else if view.wide_columns
+            || !view.columns.is_empty()
+            || !view.filters.is_empty()
+            || !view.sort.is_empty()
+        {
+            return Err(format!(
+                "saved view route {} has no active structured-view adapter",
+                view.route
+            ));
+        }
+        self.navigate(route);
+        Ok(())
+    }
+
+    fn export_fingerprint(&self, request: &ExportRequest) -> Result<[u8; 32], String> {
+        let mut document = self.build_export_document(request)?;
+        document.metadata.export_timestamp = None;
+        let bytes = document
+            .json_bytes_in_order()
+            .map_err(|error| error.to_string())?;
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let digest = hasher.finalize();
+        let mut fingerprint = [0_u8; 32];
+        fingerprint.copy_from_slice(&digest);
+        Ok(fingerprint)
+    }
+
+    fn build_export_document(
+        &self,
+        request: &ExportRequest,
+    ) -> Result<crate::domain::export::ExportDocument, String> {
+        use crate::domain::export::{ExportCollection, ExportMetadata, ExportRow, ExportSource};
+        let source_id = self.admin.profile.as_ref().map_or_else(
+            || "admin:unselected".to_owned(),
+            |value| format!("admin:{value}"),
+        );
+        let active_filter = if request.collection == ExportCollection::Devices {
+            canonical_device_filter(&self.views.devices.applied_filter)
+        } else {
+            "none".to_owned()
+        };
+        let active_sort = if request.collection == ExportCollection::Devices {
+            canonical_device_sort(&self.device_sort_terms())
+        } else {
+            "stable_key".to_owned()
+        };
+        let export_route = match request.collection {
+            ExportCollection::Devices => "devices",
+            ExportCollection::Users => "users",
+            ExportCollection::Routes => "routes",
+            ExportCollection::Dns => "dns",
+            ExportCollection::CredentialMetadata => "credentials",
+            ExportCollection::Audit => "activity",
+            ExportCollection::HealthFindings => "overview",
+            ExportCollection::FlowLogs => "activity",
+        };
+        let metadata = |observed_at: Timestamp, complete: bool| ExportMetadata {
+            schema: request.collection,
+            schema_version: 1,
+            tale_version: env!("CARGO_PKG_VERSION").to_owned(),
+            sources: vec![ExportSource {
+                id: source_id.clone(),
+                observed_at,
+            }],
+            observed_at,
+            route: export_route.to_owned(),
+            active_filter: active_filter.clone(),
+            active_sort: active_sort.clone(),
+            truncated: false,
+            complete,
+            export_timestamp: format_export_timestamp(self.now),
+        };
+        let (observed_at, complete, rows) =
+            match request.collection {
+                ExportCollection::Devices => {
+                    if self.devices_resource.observed_at.is_none()
+                        && self.devices_resource.snapshot.is_empty()
+                        && self.devices_resource.health != SourceHealth::Healthy
+                    {
+                        return Err("device collection is not currently observed".to_owned());
+                    }
+                    let observed_at = self
+                        .devices_resource
+                        .observed_at
+                        .map_or(self.now, |value| value);
+                    let rows = self
+                        .visible_indices()
+                        .into_iter()
+                        .filter_map(|index| self.devices_resource.snapshot.get(index))
+                        .map(|device| ExportRow::Device {
+                            id: device.id.0.clone(),
+                            name: device.display_name.clone(),
+                            addresses: sorted_strings(&device.addresses),
+                            source: source_id.clone(),
+                            observed_at,
+                        })
+                        .collect();
+                    (
+                        observed_at,
+                        self.devices_resource.health == SourceHealth::Healthy,
+                        rows,
+                    )
+                }
+                ExportCollection::Users => {
+                    let values =
+                        self.admin.users.snapshot.as_ref().ok_or_else(|| {
+                            "user collection is not currently observed".to_owned()
+                        })?;
+                    let observed_at = self.admin.users.observed_at.map_or(self.now, |value| value);
+                    let rows = values
+                        .iter()
+                        .map(|user| ExportRow::User {
+                            id: user.id.clone(),
+                            name: user.label().to_owned(),
+                            role: user
+                                .role
+                                .clone()
+                                .unwrap_or_else(|| "not returned".to_owned()),
+                            source: source_id.clone(),
+                            observed_at,
+                        })
+                        .collect();
+                    (
+                        observed_at,
+                        self.admin.users.state == AdminResourceState::Ready,
+                        rows,
+                    )
+                }
+                ExportCollection::Routes => {
+                    let observations = self.admin.route_observations();
+                    let observed_at = self
+                        .admin
+                        .routes
+                        .observed_at
+                        .map_or(self.now, |value| value);
+                    let rows = observations
+                        .iter()
+                        .flat_map(|observation| {
+                            observation.advertised.iter().map(|cidr| ExportRow::Route {
+                                id: format!("{}:{cidr}", observation.device_id),
+                                cidr: cidr
+                                    .parse::<crate::domain::route::IpNet>()
+                                    .map_or_else(|_| cidr.clone(), |value| value.to_string()),
+                                advertiser: observation.device_id.clone(),
+                                approval: if observation.enabled.iter().any(|value| value == cidr) {
+                                    "approved".to_owned()
+                                } else {
+                                    "not approved".to_owned()
+                                },
+                                source: source_id.clone(),
+                                observed_at: observation.observed_at,
+                            })
+                        })
+                        .collect();
+                    (
+                        observed_at,
+                        self.admin.routes.state == AdminResourceState::Ready,
+                        rows,
+                    )
+                }
+                ExportCollection::Dns => {
+                    let values = self
+                        .admin
+                        .nameservers
+                        .snapshot
+                        .as_ref()
+                        .ok_or_else(|| "DNS collection is not currently observed".to_owned())?;
+                    let observed_at = self
+                        .admin
+                        .nameservers
+                        .observed_at
+                        .map_or(self.now, |value| value);
+                    let sorted_values = sorted_strings(&values.values);
+                    let rows = sorted_values
+                        .iter()
+                        .enumerate()
+                        .map(|(index, value)| ExportRow::Dns {
+                            name: format!("nameserver-{index}"),
+                            value: value.clone(),
+                            source: source_id.clone(),
+                            observed_at,
+                        })
+                        .collect();
+                    (
+                        observed_at,
+                        self.admin.nameservers.state == AdminResourceState::Ready,
+                        rows,
+                    )
+                }
+                ExportCollection::CredentialMetadata => {
+                    let values = self.admin.credentials.snapshot.as_ref().ok_or_else(|| {
+                        "credential metadata is not currently observed".to_owned()
+                    })?;
+                    let rows = values
+                        .records
+                        .iter()
+                        .map(|record| ExportRow::CredentialMetadata {
+                            id: record.id.clone(),
+                            credential_type: record.key_type.clone(),
+                            status: credential_status(record, self.now),
+                            created_at: record.created_at,
+                            expires_at: record.expires_at,
+                            source: source_id.clone(),
+                            observed_at: values.observed_at,
+                        })
+                        .collect();
+                    (values.observed_at, !values.partial, rows)
+                }
+                ExportCollection::Audit => {
+                    let values =
+                        self.admin.activity.snapshot.as_ref().ok_or_else(|| {
+                            "audit collection is not currently observed".to_owned()
+                        })?;
+                    let rows = values
+                        .events
+                        .iter()
+                        .filter(|event| self.audit_filters.matches(event))
+                        .map(|event| ExportRow::Audit {
+                            event_id: audit_export_id(event),
+                            event_time: format_export_timestamp(event.event_time)
+                                .unwrap_or_else(|| event.event_time_text.clone()),
+                            action: event
+                                .action
+                                .clone()
+                                .unwrap_or_else(|| "not returned".to_owned()),
+                            actor: event.actor.as_ref().map_or_else(
+                                || "not returned".to_owned(),
+                                |actor| {
+                                    actor
+                                        .id
+                                        .clone()
+                                        .or(actor.display.clone())
+                                        .unwrap_or_else(|| "not returned".to_owned())
+                                },
+                            ),
+                            target: event.target.as_ref().map_or_else(
+                                || "not returned".to_owned(),
+                                |target| {
+                                    target
+                                        .id
+                                        .clone()
+                                        .or(target.display.clone())
+                                        .unwrap_or_else(|| "not returned".to_owned())
+                                },
+                            ),
+                            source: source_id.clone(),
+                            observed_at: values.observed_at,
+                        })
+                        .collect();
+                    (values.observed_at, !values.delayed, rows)
+                }
+                ExportCollection::HealthFindings => {
+                    let observed_at = self
+                        .health
+                        .snapshot
+                        .as_ref()
+                        .map_or(0, |snapshot| snapshot.now);
+                    let rows = self
+                        .health_findings
+                        .iter()
+                        .map(|finding| ExportRow::HealthFinding {
+                            id: finding.id.clone(),
+                            rule_id: finding.rule_id.clone(),
+                            severity: finding.severity.label().to_owned(),
+                            title: finding.title.clone(),
+                            affected_resource_ids: finding.affected_resource_ids.clone(),
+                            source_ids: finding.source_ids.clone(),
+                            derived: finding.derived,
+                            observed_at: finding.observed_at,
+                        })
+                        .collect();
+                    (observed_at, self.health.snapshot.is_some(), rows)
+                }
+                ExportCollection::FlowLogs => {
+                    let snapshot = self
+                        .flow_snapshot
+                        .as_ref()
+                        .ok_or_else(|| "no bounded flow window is currently observed".to_owned())?;
+                    let rows = snapshot
+                        .messages
+                        .iter()
+                        .flat_map(|message| {
+                            message
+                                .records()
+                                .filter(|record| snapshot.filter.matches(record))
+                                .map(|record| {
+                                    let source = record.connection.canonical_src();
+                                    let destination = record.connection.canonical_dst();
+                                    ExportRow::FlowLog {
+                                        reporting_node: record.node_id,
+                                        logged: canonical_wire_timestamp(&record.logged),
+                                        start: canonical_wire_timestamp(&record.start),
+                                        end: canonical_wire_timestamp(&record.end),
+                                        traffic_class: record.class.label().to_owned(),
+                                        protocol: record.connection.proto,
+                                        source,
+                                        destination,
+                                        tx_packets: record.connection.tx_packets,
+                                        tx_bytes: record.connection.tx_bytes,
+                                        rx_packets: record.connection.rx_packets,
+                                        rx_bytes: record.connection.rx_bytes,
+                                    }
+                                })
+                        })
+                        .collect();
+                    (snapshot.observed_at, snapshot.complete, rows)
+                }
+            };
+        let mut document = crate::domain::export::ExportDocument {
+            metadata: metadata(observed_at, complete),
+            rows,
+        };
+        if request.collection != ExportCollection::Devices {
+            document.sort_rows();
+        }
+        Ok(document)
+    }
+
     pub fn exit_node_candidates(&self) -> Vec<ExitNodeCandidate> {
         let Some(snapshot) = self.local_resource.snapshot.as_ref() else {
             return Vec::new();
@@ -5751,6 +7383,12 @@ impl App {
         self.admin.tailnet = tailnet;
         self.admin.profile_read_only = profile_read_only || self.resolved_config.read_only;
         self.admin_generation = self.admin_generation.saturating_add(1);
+        self.health_evaluation_generation = self.health_evaluation_generation.saturating_add(1);
+        self.health.clear();
+        self.health_findings.clear();
+        self.cancel_flow_aggregation();
+        self.flow_aggregation_generation = self.flow_aggregation_generation.saturating_add(1);
+        self.flow_snapshot = None;
         self.admin_refresh_in_flight = false;
         self.admin_next_refresh = None;
         self.composed_devices.clear();
@@ -5828,6 +7466,17 @@ impl App {
                 AdminRefreshResource::Settings,
                 AdminRefreshResource::Contacts,
                 AdminRefreshResource::Activity,
+                AdminRefreshResource::Webhooks,
+                AdminRefreshResource::LogStreamConfiguration(
+                    crate::domain::log_stream::LogType::Configuration,
+                ),
+                AdminRefreshResource::LogStreamStatus(
+                    crate::domain::log_stream::LogType::Configuration,
+                ),
+                AdminRefreshResource::LogStreamConfiguration(
+                    crate::domain::log_stream::LogType::Network,
+                ),
+                AdminRefreshResource::LogStreamStatus(crate::domain::log_stream::LogType::Network),
             ],
             Route::Devices => vec![AdminRefreshResource::Devices],
             Route::Users => vec![AdminRefreshResource::Users],
@@ -5848,10 +7497,34 @@ impl App {
             ],
             Route::Access => vec![AdminRefreshResource::Policy],
             Route::Credentials => vec![AdminRefreshResource::Credentials],
-            Route::Activity => vec![AdminRefreshResource::Activity],
+            Route::Activity => vec![
+                AdminRefreshResource::Activity,
+                AdminRefreshResource::Webhooks,
+                AdminRefreshResource::LogStreamConfiguration(
+                    crate::domain::log_stream::LogType::Configuration,
+                ),
+                AdminRefreshResource::LogStreamStatus(
+                    crate::domain::log_stream::LogType::Configuration,
+                ),
+                AdminRefreshResource::LogStreamConfiguration(
+                    crate::domain::log_stream::LogType::Network,
+                ),
+                AdminRefreshResource::LogStreamStatus(crate::domain::log_stream::LogType::Network),
+            ],
             Route::Settings => vec![
                 AdminRefreshResource::Settings,
                 AdminRefreshResource::Contacts,
+                AdminRefreshResource::NetworkLogSettings,
+                AdminRefreshResource::LogStreamConfiguration(
+                    crate::domain::log_stream::LogType::Configuration,
+                ),
+                AdminRefreshResource::LogStreamStatus(
+                    crate::domain::log_stream::LogType::Configuration,
+                ),
+                AdminRefreshResource::LogStreamConfiguration(
+                    crate::domain::log_stream::LogType::Network,
+                ),
+                AdminRefreshResource::LogStreamStatus(crate::domain::log_stream::LogType::Network),
             ],
             Route::Local => vec![AdminRefreshResource::Devices],
         };
@@ -5935,6 +7608,11 @@ impl App {
                 AdminRefreshResource::Settings => self.admin.settings.begin(generation),
                 AdminRefreshResource::Contacts => self.admin.contacts.begin(generation),
                 AdminRefreshResource::Activity => self.admin.activity.begin(generation),
+                AdminRefreshResource::FlowLogs(_)
+                | AdminRefreshResource::Webhooks
+                | AdminRefreshResource::LogStreamConfiguration(_)
+                | AdminRefreshResource::LogStreamStatus(_)
+                | AdminRefreshResource::NetworkLogSettings => {}
             }
         }
         vec![Effect::StartAdminResourceRefresh {
@@ -6082,6 +7760,7 @@ impl App {
                 self.refresh_admin_capabilities();
                 self.sync_admin_display_devices();
                 self.update_composed_devices();
+                return self.recompute_health();
             }
             AdminEvent::ResourceRefreshFinished(report) => {
                 if self.admin.profile.as_deref() != Some(report.profile.as_str())
@@ -6185,12 +7864,15 @@ impl App {
                             report.observed_at,
                             result,
                         ),
-                        AdminResourceResult::Policy(result) => apply_admin_result(
-                            &mut self.admin.policy,
-                            report.generation,
-                            report.observed_at,
-                            result,
-                        ),
+                        AdminResourceResult::Policy(result) => {
+                            self.access_explorer_result = None;
+                            apply_admin_result(
+                                &mut self.admin.policy,
+                                report.generation,
+                                report.observed_at,
+                                result,
+                            )
+                        }
                         AdminResourceResult::Credentials(result) => apply_admin_result(
                             &mut self.admin.credentials,
                             report.generation,
@@ -6215,11 +7897,68 @@ impl App {
                             report.observed_at,
                             result,
                         ),
+                        AdminResourceResult::FlowLogs(result) => match *result {
+                            Ok(mut snapshot) => {
+                                self.cancel_flow_aggregation();
+                                self.flow_aggregation_generation =
+                                    self.flow_aggregation_generation.saturating_add(1);
+                                snapshot.set_filter(self.flow_filter.clone());
+                                snapshot.aggregates = None;
+                                self.flow_snapshot = Some(snapshot);
+                                let generation = self.flow_generation.generation;
+                                let _ = self.flow_generation.cancel(generation);
+                            }
+                            Err(error) => {
+                                self.cancel_flow_aggregation();
+                                self.flow_aggregation_generation =
+                                    self.flow_aggregation_generation.saturating_add(1);
+                                self.flow_snapshot = None;
+                                self.runtime_error = Some(error.to_string());
+                                let generation = self.flow_generation.generation;
+                                let _ = self.flow_generation.cancel(generation);
+                            }
+                        },
+                        AdminResourceResult::Webhooks(result) => match result {
+                            Ok((webhooks, _meta)) => self.webhooks = webhooks,
+                            Err(error) => self.runtime_error = Some(error.to_string()),
+                        },
+                        AdminResourceResult::LogStreamConfiguration { log_type, result } => {
+                            match result {
+                                Ok(configuration) => {
+                                    self.log_stream_configurations
+                                        .insert(configuration.log_type, configuration);
+                                }
+                                Err(error @ AdminError::NotFound { .. }) => {
+                                    self.log_stream_configurations.remove(&log_type);
+                                    self.runtime_error = Some(error.to_string());
+                                }
+                                Err(error) => self.runtime_error = Some(error.to_string()),
+                            }
+                        }
+                        AdminResourceResult::LogStreamStatus { log_type, result } => match result {
+                            Ok(status) => {
+                                self.log_stream_statuses.insert(status.log_type, status);
+                            }
+                            Err(error @ AdminError::NotFound { .. }) => {
+                                self.log_stream_statuses.remove(&log_type);
+                                self.runtime_error = Some(error.to_string());
+                            }
+                            Err(error) => self.runtime_error = Some(error.to_string()),
+                        },
+                        AdminResourceResult::NetworkLogSettings(result) => {
+                            apply_admin_result(
+                                &mut self.admin.settings,
+                                report.generation,
+                                report.observed_at,
+                                result,
+                            );
+                        }
                     }
                 }
                 self.refresh_admin_capabilities();
                 self.sync_admin_display_devices();
                 self.update_composed_devices();
+                let health_effects = self.recompute_health();
                 if let Some(targets) = self.pending_batch_retry.take() {
                     if self.admin.devices.state != AdminResourceState::Ready {
                         self.runtime_error = Some(
@@ -6230,6 +7969,7 @@ impl App {
                         return self.begin_retry_batch_preflight(targets);
                     }
                 }
+                return health_effects;
             }
             AdminEvent::AuthenticationFailed {
                 profile,
@@ -6270,6 +8010,7 @@ impl App {
                 self.refresh_admin_capabilities();
                 self.sync_admin_display_devices();
                 self.update_composed_devices();
+                return self.recompute_health();
             }
             AdminEvent::DeviceEnrichmentFinished {
                 profile,
@@ -6335,6 +8076,7 @@ impl App {
                 }
                 self.refresh_admin_capabilities();
                 self.update_composed_devices();
+                return self.recompute_health();
             }
             AdminEvent::DeviceEnrichmentFailed {
                 profile,
@@ -6465,6 +8207,7 @@ impl App {
                         admin_mutation: Some(*request),
                         admin_batch: None,
                         service_request: None,
+                        operational_mutation: None,
                         handoff: None,
                         prompt,
                         required_phrase,
@@ -6538,6 +8281,117 @@ impl App {
                     effects.extend(self.start_local_diagnostic(DiagnosticRequest::DnsStatus));
                 }
                 return effects;
+            }
+            AdminEvent::OperationalFinished {
+                action_id,
+                mutation,
+                result,
+                secret,
+            } => {
+                match result {
+                    Ok(OperationalResult::WebhookVerified { endpoints, detail }) => {
+                        self.webhooks = endpoints;
+                        self.runtime_error = Some(detail);
+                    }
+                    Ok(OperationalResult::NetworkLogSettingVerified { enabled, detail }) => {
+                        if let Some(value) = enabled
+                            && let Some(settings) = self.admin.settings.snapshot.as_mut()
+                        {
+                            settings.network_flow_logging_on = Some(value);
+                        }
+                        self.runtime_error = Some(detail);
+                    }
+                    Ok(OperationalResult::Completed { detail }) => {
+                        self.runtime_error = Some(detail);
+                    }
+                    Err(error) => {
+                        self.runtime_error = Some(error.to_string());
+                    }
+                }
+                if let Some(secret) = secret {
+                    let credential_id = match &mutation {
+                        OperationalMutation::Webhook(WebhookMutation::Create(_)) => None,
+                        OperationalMutation::Webhook(WebhookMutation::RotateSecret {
+                            endpoint_id,
+                        }) => Some(endpoint_id.clone()),
+                        _ => None,
+                    };
+                    let result_id = self.next_secret_result_id;
+                    self.next_secret_result_id = self.next_secret_result_id.saturating_add(1);
+                    self.secret_result = Some(SecretResult::from_handle(
+                        SecretMetadata {
+                            result_id,
+                            credential_id,
+                            credential_type: "webhook signing secret".to_owned(),
+                            description: Some("one-time webhook signing secret".to_owned()),
+                            created_at: self.now,
+                            expires_at: None,
+                            warning: "This secret is view-once. It is not listed, persisted, logged, or recoverable after close.".to_owned(),
+                        },
+                        secret,
+                    ));
+                    self.overlays.push(Overlay::SecretResult);
+                }
+                let refresh = match action_id {
+                    ActionId::AdminWebhookCreate
+                    | ActionId::AdminWebhookEdit
+                    | ActionId::AdminWebhookTest
+                    | ActionId::AdminWebhookRotateSecret
+                    | ActionId::AdminWebhookDelete
+                    | ActionId::AdminLogStreamReplace
+                    | ActionId::AdminLogStreamDelete
+                    | ActionId::AdminNetworkLogsSettings => self.start_admin_current_view_refresh(),
+                    _ => Vec::new(),
+                };
+                return refresh;
+            }
+            AdminEvent::AccessExplorerFinished { result } => match result {
+                Ok(result) => {
+                    self.access_explorer_result = Some(result);
+                    self.runtime_error = Some(
+                        "Access Explorer result is authoritative only for the documented policy preview request"
+                            .to_owned(),
+                    );
+                }
+                Err(error) => self.runtime_error = Some(error.to_string()),
+            },
+            AdminEvent::HealthEvaluationFinished {
+                generation,
+                snapshot,
+                findings,
+            } => {
+                if generation == self.health_evaluation_generation && self.admin.profile.is_some() {
+                    self.health.replace_evaluated(snapshot, findings.clone());
+                    self.health_findings = findings;
+                }
+            }
+            AdminEvent::HealthEvaluationFailed { generation, detail } => {
+                if generation == self.health_evaluation_generation {
+                    self.runtime_error = Some(detail);
+                }
+            }
+            AdminEvent::FlowAggregationFinished { generation, result } => {
+                if generation != self.flow_aggregation_generation {
+                    return Vec::new();
+                }
+                self.flow_aggregation_cancellation = None;
+                match result {
+                    Ok(rows) => {
+                        if let Some(snapshot) = self.flow_snapshot.as_mut() {
+                            snapshot.mode = crate::domain::flow::FlowMode::Aggregate(vec![
+                                AggregateDimension::ReportingNode,
+                                AggregateDimension::TrafficClass,
+                                AggregateDimension::Protocol,
+                            ]);
+                            snapshot.aggregates = Some(rows);
+                            self.runtime_error = Some(
+                                "flow counters aggregated in a cancellable generation".to_owned(),
+                            );
+                        }
+                    }
+                    Err(FlowError::Cancelled) => {}
+                    Err(error) => self.runtime_error = Some(error.to_string()),
+                }
             }
             AdminEvent::AuditCorrelationFinished {
                 task_id,
@@ -6724,6 +8578,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: Some(AdminBatchConfirmation { batch, requests }),
                 service_request: None,
+                operational_mutation: None,
                 handoff: None,
                 prompt: "Apply this immutable route-approval batch? Each advertiser is verified independently; failures remain per-target."
                     .to_owned(),
@@ -7207,6 +9062,53 @@ impl App {
         }
     }
 
+    fn phase_eight_resource_actions(&self) -> Vec<ActionId> {
+        let mut actions = vec![
+            ActionId::SavedViewCreate,
+            ActionId::SavedViewReplace,
+            ActionId::SavedViewRename,
+            ActionId::SavedViewDelete,
+            ActionId::SavedViewApply,
+            ActionId::CollectionExport,
+        ];
+        match self.current_route() {
+            Route::Overview => actions.extend([
+                ActionId::OverviewHealthOpenResource,
+                ActionId::OverviewHealthRunSuggestedAction,
+            ]),
+            Route::Access => actions.extend([
+                ActionId::AccessExplorerAsk,
+                ActionId::AccessExplorerOpenRule,
+            ]),
+            Route::Activity => actions.extend([
+                ActionId::ActivityFlowsSelectWindow,
+                ActionId::ActivityFlowsAggregate,
+                ActionId::ActivityFlowsOpenDevice,
+                ActionId::AdminWebhookCreate,
+                ActionId::AdminWebhookEdit,
+                ActionId::AdminWebhookTest,
+                ActionId::AdminWebhookRotateSecret,
+                ActionId::AdminWebhookDelete,
+                ActionId::AdminLogStreamReplace,
+                ActionId::AdminLogStreamDelete,
+                ActionId::AdminNetworkLogsSettings,
+            ]),
+            Route::Settings => actions.extend([
+                ActionId::AdminLogStreamReplace,
+                ActionId::AdminLogStreamDelete,
+                ActionId::AdminNetworkLogsSettings,
+            ]),
+            Route::Devices
+            | Route::Users
+            | Route::Routes
+            | Route::Dns
+            | Route::Credentials
+            | Route::Local
+            | Route::Services => {}
+        }
+        actions
+    }
+
     fn open_service_action(&mut self, action_id: ActionId) -> Vec<Effect> {
         if !self.action_is_available(action_id) {
             self.runtime_error = self
@@ -7605,6 +9507,7 @@ impl App {
                 admin_mutation: None,
                 admin_batch: None,
                 service_request: Some(request),
+                operational_mutation: None,
                 handoff: None,
                 prompt,
                 required_phrase,
@@ -9239,11 +11142,36 @@ impl App {
     }
 
     pub fn visible_indices(&self) -> Vec<usize> {
-        self.visible_indices_for(&self.devices_resource.snapshot)
+        self.visible_indices_arc().as_ref().clone()
+    }
+
+    pub fn visible_indices_arc(&self) -> Arc<Vec<usize>> {
+        let key = DeviceVisibleCacheKey {
+            devices_generation: self.devices_resource.generation,
+            local_generation: self.local_resource.generation,
+            admin_generation: self.admin.devices.generation,
+            now: self.now,
+            source_mode: self.source_mode,
+            filter: self.views.devices.applied_filter.clone(),
+            sort: self.views.devices.sort,
+            sort_terms: self.views.devices.sort_terms.clone(),
+        };
+        if let Some(cache) = self.device_visible_cache.borrow().as_ref()
+            && cache.key == key
+        {
+            return Arc::clone(&cache.indices);
+        }
+        let indices = Arc::new(self.visible_indices_for(&self.devices_resource.snapshot));
+        *self.device_visible_cache.borrow_mut() = Some(DeviceVisibleCache {
+            key,
+            indices: Arc::clone(&indices),
+        });
+        indices
     }
 
     fn visible_indices_for(&self, devices: &[Device]) -> Vec<usize> {
         let requires_admin_data = self.views.devices.applied_filter.requires_admin_data();
+        let sort_terms = self.device_sort_terms();
         let mut indices: Vec<usize> = devices
             .iter()
             .enumerate()
@@ -9288,7 +11216,7 @@ impl App {
                 (Some(left), Some(right)) if self.source_mode == SourceMode::Local => {
                     self.compare_local_devices(left, right)
                 }
-                (Some(left), Some(right)) => compare_devices(left, right, self.views.devices.sort),
+                (Some(left), Some(right)) => compare_devices_by_specs(left, right, &sort_terms),
                 _ => left.cmp(right),
             }
         });
@@ -9310,7 +11238,8 @@ impl App {
     }
 
     fn compare_local_devices(&self, left: &Device, right: &Device) -> std::cmp::Ordering {
-        if self.views.devices.sort == SortSpec::default() {
+        let sort_terms = self.device_sort_terms();
+        if sort_terms.len() == 1 && sort_terms[0] == SortSpec::default() {
             let left_self = self.local_self_id.as_ref().is_some_and(|id| id == &left.id);
             let right_self = self
                 .local_self_id
@@ -9335,7 +11264,17 @@ impl App {
                 })
                 .then_with(|| left.id.cmp(&right.id));
         }
-        compare_devices(left, right, self.views.devices.sort)
+        compare_devices_by_specs(left, right, &sort_terms)
+    }
+
+    fn device_sort_terms(&self) -> Vec<SortSpec> {
+        if self.views.devices.sort_terms.is_empty()
+            || self.views.devices.sort_terms.first() != Some(&self.views.devices.sort)
+        {
+            vec![self.views.devices.sort]
+        } else {
+            self.views.devices.sort_terms.clone()
+        }
     }
 
     fn local_active(&self, id: &DeviceId) -> bool {
@@ -9352,7 +11291,7 @@ impl App {
     }
 
     fn move_selection(&mut self, offset: isize) {
-        let visible = self.visible_indices();
+        let visible = self.visible_indices_arc();
         if visible.is_empty() {
             self.views.devices.selected_id = None;
             return;
@@ -9379,11 +11318,16 @@ impl App {
             .get(next)
             .and_then(|index| self.devices_resource.snapshot.get(*index))
             .map(|device| device.id.clone());
-        self.views.devices.scroll = next;
+        self.ensure_device_selection_visible(next);
     }
 
     fn move_selection_to(&mut self, position: usize) {
-        let visible = self.visible_indices();
+        let visible = self.visible_indices_arc();
+        if visible.is_empty() {
+            self.views.devices.selected_id = None;
+            self.views.devices.scroll = 0;
+            return;
+        }
         let index = if position == usize::MAX {
             visible.len().saturating_sub(1)
         } else {
@@ -9393,7 +11337,20 @@ impl App {
             .get(index)
             .and_then(|value| self.devices_resource.snapshot.get(*value))
             .map(|device| device.id.clone());
-        self.views.devices.scroll = index;
+        self.ensure_device_selection_visible(index);
+    }
+
+    fn ensure_device_selection_visible(&mut self, position: usize) {
+        let viewport = self.device_viewport_rows();
+        if position < self.views.devices.scroll {
+            self.views.devices.scroll = position;
+        } else if position >= self.views.devices.scroll.saturating_add(viewport) {
+            self.views.devices.scroll = position.saturating_add(1).saturating_sub(viewport);
+        }
+    }
+
+    fn device_viewport_rows(&self) -> usize {
+        usize::from(self.terminal_height.saturating_sub(8)).max(1)
     }
 
     fn move_admin_user_selection(&mut self, offset: isize) {
@@ -9404,6 +11361,17 @@ impl App {
     fn move_admin_route_selection(&mut self, offset: isize) {
         let length = self.admin.route_observations().len();
         self.admin_route_selected = move_bounded_index(self.admin_route_selected, length, offset);
+    }
+
+    fn move_admin_credential_selection(&mut self, offset: isize) {
+        let length = self
+            .admin
+            .credentials
+            .snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.records.len());
+        self.admin_credential_selected =
+            move_bounded_index(self.admin_credential_selected, length, offset);
     }
 
     fn selected_admin_user(&self) -> Option<&crate::domain::user::AdminUser> {
@@ -9650,6 +11618,7 @@ impl App {
             SortField::Rx,
             SortField::Tx,
             SortField::DeviceId,
+            SortField::Version,
         ];
         let field = fields
             .get(choice / 2)
@@ -9661,6 +11630,7 @@ impl App {
             SortDirection::Descending
         };
         self.views.devices.sort = SortSpec { field, direction };
+        self.views.devices.sort_terms = vec![self.views.devices.sort];
         self.reconcile_selection(None);
     }
 
@@ -9822,6 +11792,769 @@ fn apply_system_policy_editability(
     }
 }
 
+fn parse_operational_fields(input: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut fields = BTreeMap::new();
+    for part in input
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let (name, value) = part
+            .split_once('=')
+            .ok_or_else(|| format!("operational field must be name=value: {part}"))?;
+        let name = name.trim();
+        if name.is_empty()
+            || fields
+                .insert(name.to_owned(), value.trim().to_owned())
+                .is_some()
+        {
+            return Err(format!("duplicate or empty operational field: {name}"));
+        }
+    }
+    Ok(fields)
+}
+
+fn required_operational_field(
+    fields: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<String, String> {
+    let value = fields
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("operational field {name} is required"))?;
+    if value.trim().is_empty() {
+        return Err(format!("operational field {name} is required"));
+    }
+    Ok(value)
+}
+
+fn csv_field(fields: &BTreeMap<String, String>, name: &str) -> Vec<String> {
+    fields.get(name).map_or_else(Vec::new, |value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect()
+    })
+}
+
+fn parse_webhook_create(input: &str) -> Result<OperationalMutation, String> {
+    let fields = parse_operational_fields(input)?;
+    ensure_operational_fields(&fields, &["url", "provider", "categories", "events"])?;
+    let endpoint_url = required_operational_field(&fields, "url")?;
+    let provider = required_operational_field(&fields, "provider")?;
+    let subscriptions = SubscriptionSet::from_wire(
+        csv_field(&fields, "categories"),
+        csv_field(&fields, "events"),
+    )
+    .map_err(|error| error.to_string())?;
+    let draft = WebhookDraft {
+        endpoint_url,
+        destination_type: DestinationType::from_wire(&provider),
+        subscriptions,
+    };
+    draft.validate().map_err(|error| error.to_string())?;
+    Ok(OperationalMutation::Webhook(WebhookMutation::Create(draft)))
+}
+
+fn parse_log_stream_draft(
+    input: &str,
+    secret_input: Option<&SecretInput>,
+) -> Result<OperationalMutation, String> {
+    let fields = parse_operational_fields(input)?;
+    ensure_operational_fields(
+        &fields,
+        &[
+            "type",
+            "destination",
+            "url",
+            "user",
+            "period",
+            "compression",
+            "secret",
+            "s3-bucket",
+            "s3-region",
+            "s3-prefix",
+            "s3-auth",
+            "s3-access-key",
+            "s3-role",
+            "gcs-bucket",
+            "gcs-prefix",
+            "gcs-scopes",
+        ],
+    )?;
+    let log_type = match required_operational_field(&fields, "type")?.as_str() {
+        "configuration" => LogType::Configuration,
+        "network" => LogType::Network,
+        value => return Err(format!("unsupported log-stream type {value}")),
+    };
+    let destination_type = required_operational_field(&fields, "destination")?.to_ascii_lowercase();
+    if !crate::admin::log_streaming::is_supported_destination(&destination_type) {
+        return Err(format!(
+            "destination {destination_type} is unavailable in Tale because its documented fields are not adopted"
+        ));
+    }
+    let url = fields.get("url").cloned().unwrap_or_else(String::new);
+    let secret_action = match fields.get("secret").map(String::as_str) {
+        Some("replace") => SecretAction::Replace,
+        Some(value) => return Err(format!("secret must be replace, not {value}")),
+        None => {
+            return Err(
+                "log-stream replacement requires secret=replace and a write-only secret in Ctrl+S input"
+                    .to_owned(),
+            );
+        }
+    };
+    let token = if secret_action == SecretAction::Replace {
+        let value = secret_input
+            .filter(|secret| !secret.is_empty())
+            .ok_or_else(|| {
+                "secret=replace requires a write-only secret in Ctrl+S input".to_owned()
+            })?;
+        Some(Arc::new(crate::domain::secret_result::SecretBuffer::new(
+            value.as_str(),
+        )))
+    } else {
+        None
+    };
+    let upload_period_minutes = fields
+        .get("period")
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| "period must be an integer number of minutes".to_owned())
+        })
+        .transpose()?;
+    let gcs_scopes = csv_field(&fields, "gcs-scopes");
+    let gcs_credentials = if destination_type == "gcs" {
+        token.clone()
+    } else {
+        None
+    };
+    let token = if destination_type == "gcs" {
+        None
+    } else {
+        token
+    };
+    Ok(OperationalMutation::LogStreamReplace(
+        LogStreamMutationDraft {
+            log_type,
+            destination_type,
+            url,
+            user: optional_operational_field(&fields, "user"),
+            upload_period_minutes,
+            compression_format: optional_operational_field(&fields, "compression"),
+            token,
+            s3_bucket: optional_operational_field(&fields, "s3-bucket"),
+            s3_region: optional_operational_field(&fields, "s3-region"),
+            s3_key_prefix: optional_operational_field(&fields, "s3-prefix"),
+            s3_authentication_type: optional_operational_field(&fields, "s3-auth"),
+            s3_access_key_id: optional_operational_field(&fields, "s3-access-key"),
+            s3_role_arn: optional_operational_field(&fields, "s3-role"),
+            gcs_bucket: optional_operational_field(&fields, "gcs-bucket"),
+            gcs_key_prefix: optional_operational_field(&fields, "gcs-prefix"),
+            gcs_scopes,
+            gcs_credentials,
+            secret_action,
+        },
+    ))
+}
+
+fn optional_operational_field(fields: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    fields
+        .get(name)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+}
+
+fn ensure_operational_fields(
+    fields: &BTreeMap<String, String>,
+    allowed: &[&str],
+) -> Result<(), String> {
+    if let Some(field) = fields
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(format!(
+            "operational field {field} is not supported by this typed form"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_network_log_setting(input: &str) -> Result<OperationalMutation, String> {
+    let value = input.trim().to_ascii_lowercase();
+    let enabled = match value.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => return Err("network-log setting must be on or off".to_owned()),
+    };
+    Ok(OperationalMutation::NetworkLogSetting { enabled })
+}
+
+fn parse_flow_window_form(input: &str, now: Timestamp) -> Result<(FlowWindow, FlowFilter), String> {
+    let fields = parse_operational_fields(input)?;
+    let allowed = [
+        "start",
+        "end",
+        "reporting",
+        "reporting-name",
+        "source",
+        "source-name",
+        "destination",
+        "destination-name",
+        "protocol",
+        "source-address",
+        "destination-address",
+        "class",
+        "source-port",
+        "destination-port",
+        "min-bytes",
+    ];
+    if fields
+        .keys()
+        .any(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err("flow form contains an unsupported field".to_owned());
+    }
+    let now = i64::try_from(now)
+        .ok()
+        .and_then(|value| time::OffsetDateTime::from_unix_timestamp(value).ok())
+        .ok_or_else(|| "flow clock is outside the supported timestamp range".to_owned())?;
+    let start = required_operational_field(&fields, "start")?;
+    let end = required_operational_field(&fields, "end")?;
+    let window = FlowWindow::from_rfc3339(&start, &end, now).map_err(|error| error.to_string())?;
+    let traffic_class = fields
+        .get("class")
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| match value.as_str() {
+            "virtual" => Ok(crate::domain::flow::TrafficClass::Virtual),
+            "subnet" => Ok(crate::domain::flow::TrafficClass::Subnet),
+            "exit" => Ok(crate::domain::flow::TrafficClass::Exit),
+            "physical" => Ok(crate::domain::flow::TrafficClass::Physical),
+            _ => Err("flow traffic class must be virtual, subnet, exit, or physical".to_owned()),
+        })
+        .transpose()?;
+    let filter = FlowFilter {
+        reporting_node_id: optional_operational_field(&fields, "reporting"),
+        reporting_node_label: optional_operational_field(&fields, "reporting-name"),
+        source_node_id: optional_operational_field(&fields, "source"),
+        source_node_label: optional_operational_field(&fields, "source-name"),
+        destination_node_id: optional_operational_field(&fields, "destination"),
+        destination_node_label: optional_operational_field(&fields, "destination-name"),
+        protocol: optional_operational_field(&fields, "protocol"),
+        source_address: optional_operational_field(&fields, "source-address"),
+        destination_address: optional_operational_field(&fields, "destination-address"),
+        traffic_class,
+        source_port: parse_optional_flow_port(&fields, "source-port")?,
+        destination_port: parse_optional_flow_port(&fields, "destination-port")?,
+        minimum_bytes: parse_optional_flow_u64(&fields, "min-bytes")?,
+    };
+    filter.validate().map_err(|error| error.to_string())?;
+    Ok((window, filter))
+}
+
+fn parse_optional_flow_port(
+    fields: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<Option<u16>, String> {
+    fields
+        .get(name)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| format!("{name} must be an integer port"))
+        })
+        .transpose()
+}
+
+fn parse_optional_flow_u64(
+    fields: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<Option<u64>, String> {
+    fields
+        .get(name)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{name} must be a non-negative integer"))
+        })
+        .transpose()
+}
+
+fn parse_access_question(input: &str) -> Result<AccessQuestion, String> {
+    let fields = parse_operational_fields(input)?;
+    ensure_operational_fields(&fields, &["source", "destination", "port", "policy"])?;
+    let policy_source = match fields.get("policy").map_or("current", String::as_str) {
+        "current" => PolicySource::CurrentRemote,
+        "candidate" => PolicySource::ActiveCandidate,
+        value => return Err(format!("policy must be current or candidate, not {value}")),
+    };
+    Ok(AccessQuestion {
+        source_selector: required_operational_field(&fields, "source")?,
+        destination_selector: required_operational_field(&fields, "destination")?,
+        protocol_or_port: optional_operational_field(&fields, "port"),
+        ssh_user: None,
+        application_capability: None,
+        policy_source,
+    })
+}
+
+fn parse_saved_view_form(input: &str) -> Result<SavedView, String> {
+    let fields = parse_operational_fields(input)?;
+    ensure_operational_fields(
+        &fields,
+        &["name", "route", "wide", "columns", "filter", "sort"],
+    )?;
+    let name = required_operational_field(&fields, "name")?;
+    let route = required_operational_field(&fields, "route")?;
+    let wide_columns = fields
+        .get("wide")
+        .map_or(Ok(false), |value| match value.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err("wide must be true or false".to_owned()),
+        })?;
+    let filters = match fields.get("filter") {
+        Some(value) => value
+            .split("||")
+            .filter(|value| !value.trim().is_empty())
+            .map(parse_saved_filter)
+            .collect::<Result<Vec<_>, _>>()?,
+        None => Vec::new(),
+    };
+    let sort = match fields.get("sort") {
+        Some(value) => value
+            .split(',')
+            .filter(|value| !value.trim().is_empty())
+            .map(parse_saved_sort)
+            .collect::<Result<Vec<_>, _>>()?,
+        None => Vec::new(),
+    };
+    Ok(SavedView {
+        name,
+        route,
+        wide_columns,
+        columns: csv_field(&fields, "columns"),
+        filters,
+        sort,
+    })
+}
+
+fn parse_saved_filter(value: &str) -> Result<FilterClause, String> {
+    let mut parts = value.splitn(3, '|');
+    let field = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "saved filter field is required".to_owned())?;
+    let operator = match parts
+        .next()
+        .map(str::trim)
+        .ok_or_else(|| "saved filter operator is required".to_owned())?
+    {
+        "equals" => FilterOperator::Equals,
+        "not_equals" => FilterOperator::NotEquals,
+        "contains" => FilterOperator::Contains,
+        "starts_with" => FilterOperator::StartsWith,
+        "greater_than" => FilterOperator::GreaterThan,
+        "less_than" => FilterOperator::LessThan,
+        value => return Err(format!("unsupported saved filter operator {value}")),
+    };
+    let raw_value = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "saved filter value is required".to_owned())?;
+    let value = if let Some(value) = raw_value.strip_prefix("number:") {
+        FilterValue::Number(
+            value
+                .parse::<i64>()
+                .map_err(|_| "saved numeric filter value is invalid".to_owned())?,
+        )
+    } else if let Some(value) = raw_value.strip_prefix("boolean:") {
+        FilterValue::Boolean(match value {
+            "true" => true,
+            "false" => false,
+            _ => return Err("saved boolean filter value is invalid".to_owned()),
+        })
+    } else {
+        FilterValue::Text(raw_value.to_owned())
+    };
+    Ok(FilterClause {
+        field,
+        operator,
+        value,
+    })
+}
+
+fn parse_saved_sort(value: &str) -> Result<SortTerm, String> {
+    let (field, direction) = value
+        .split_once(':')
+        .ok_or_else(|| "saved sort must be field:ascending|descending".to_owned())?;
+    let descending = match direction.trim() {
+        "ascending" => false,
+        "descending" => true,
+        _ => return Err("saved sort direction is invalid".to_owned()),
+    };
+    if field.trim().is_empty() {
+        return Err("saved sort field is required".to_owned());
+    }
+    Ok(SortTerm {
+        field: field.trim().to_owned(),
+        direction: if descending {
+            SavedSortDirection::Descending
+        } else {
+            SavedSortDirection::Ascending
+        },
+    })
+}
+
+fn parse_name_form(input: &str) -> Result<String, String> {
+    let fields = parse_operational_fields(input)?;
+    ensure_operational_fields(&fields, &["name"])?;
+    required_operational_field(&fields, "name")
+}
+
+fn parse_rename_form(input: &str) -> Result<(String, String), String> {
+    let fields = parse_operational_fields(input)?;
+    ensure_operational_fields(&fields, &["name", "new"])?;
+    Ok((
+        required_operational_field(&fields, "name")?,
+        required_operational_field(&fields, "new")?,
+    ))
+}
+
+fn parse_export_form(input: &str) -> Result<OperationalMutation, String> {
+    let fields = parse_operational_fields(input)?;
+    ensure_operational_fields(&fields, &["format", "path", "collection"])?;
+    let format = required_operational_field(&fields, "format")?.to_ascii_lowercase();
+    if format != "json" && format != "csv" {
+        return Err("export format must be json or csv".to_owned());
+    }
+    let collection = match required_operational_field(&fields, "collection")?.as_str() {
+        "devices" => crate::domain::export::ExportCollection::Devices,
+        "users" => crate::domain::export::ExportCollection::Users,
+        "routes" => crate::domain::export::ExportCollection::Routes,
+        "dns" => crate::domain::export::ExportCollection::Dns,
+        "credentials_metadata" => crate::domain::export::ExportCollection::CredentialMetadata,
+        "audit" => crate::domain::export::ExportCollection::Audit,
+        "health_findings" => crate::domain::export::ExportCollection::HealthFindings,
+        "flow_logs" => crate::domain::export::ExportCollection::FlowLogs,
+        value => return Err(format!("unsupported export collection {value}")),
+    };
+    let path = PathBuf::from(required_operational_field(&fields, "path")?);
+    Ok(OperationalMutation::Export(ExportRequest {
+        collection,
+        format,
+        path,
+    }))
+}
+
+fn saved_filter_to_term(filter: &FilterClause) -> Result<FilterTerm, String> {
+    let field = match filter.field.as_str() {
+        "id" => FilterField::Id,
+        "name" => FilterField::Name,
+        "owner" => FilterField::Owner,
+        "os" => FilterField::Os,
+        "path" => FilterField::Path,
+        "tag" => FilterField::Tag,
+        "last_seen" => FilterField::LastSeen,
+        "online" | "state" => FilterField::Online,
+        "approval" => FilterField::Approval,
+        "key_expiry" => FilterField::KeyExpiry,
+        "version" => FilterField::ClientVersion,
+        "sharing" => FilterField::Sharing,
+        "posture" => FilterField::Posture,
+        "route_role" => FilterField::RouteRole,
+        value => return Err(format!("saved device filter field {value} is unavailable")),
+    };
+    let value = match &filter.value {
+        FilterValue::Text(value) => value.clone(),
+        FilterValue::Number(value) => value.to_string(),
+        FilterValue::Boolean(value) => value.to_string(),
+    };
+    let (negated, mode) = match filter.operator {
+        FilterOperator::Equals => (false, FieldMatchMode::Exact),
+        FilterOperator::NotEquals => (true, FieldMatchMode::Exact),
+        FilterOperator::Contains => (false, FieldMatchMode::Contains),
+        FilterOperator::StartsWith => (false, FieldMatchMode::StartsWith),
+        FilterOperator::GreaterThan | FilterOperator::LessThan => {
+            return Err(format!(
+                "saved operator {} is unavailable for device filtering",
+                filter.operator.wire_value()
+            ));
+        }
+    };
+    Ok(FilterTerm::StructuredField {
+        field,
+        negated,
+        value,
+        mode,
+    })
+}
+
+fn saved_filter_to_cli(filter: &FilterClause) -> Result<String, String> {
+    let field = match filter.field.as_str() {
+        "last_seen" => "lastseen",
+        "key_expiry" => "keyexpiry",
+        "route_role" => "route-role",
+        "state" => "state",
+        value => value,
+    };
+    let value = match &filter.value {
+        FilterValue::Text(value) => value.clone(),
+        FilterValue::Number(value) => value.to_string(),
+        FilterValue::Boolean(value) => value.to_string(),
+    };
+    let operator = filter.operator.wire_value();
+    match operator {
+        "equals" => Ok(format!("{field}:{value}")),
+        "not_equals" => Ok(format!("!{field}:{value}")),
+        "contains" => Ok(format!("{field}:contains={value}")),
+        "starts_with" => Ok(format!("{field}:starts_with={value}")),
+        "greater_than" | "less_than" => Err(format!(
+            "saved operator {operator} cannot be translated to the device filter grammar"
+        )),
+        _ => Err(format!("saved operator {operator} is not supported")),
+    }
+}
+
+fn saved_sort_to_device(sort: &SortTerm) -> Result<SortSpec, String> {
+    let field = match sort.field.as_str() {
+        "id" => SortField::DeviceId,
+        "name" => SortField::Name,
+        "owner" => SortField::Owner,
+        "os" => SortField::Os,
+        "path" => SortField::Path,
+        "last_seen" => SortField::LastSeen,
+        "version" => SortField::Version,
+        "state" | "online" => SortField::Liveness,
+        "rx" => SortField::Rx,
+        "tx" => SortField::Tx,
+        value => return Err(format!("saved device sort field {value} is unavailable")),
+    };
+    Ok(SortSpec {
+        field,
+        direction: match sort.direction {
+            SavedSortDirection::Ascending => SortDirection::Ascending,
+            SavedSortDirection::Descending => SortDirection::Descending,
+        },
+    })
+}
+
+fn sorted_strings(values: &[String]) -> Vec<String> {
+    let mut values = values.to_vec();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn canonical_device_filter(expression: &FilterExpression) -> String {
+    if expression.terms.is_empty() {
+        "none".to_owned()
+    } else {
+        expression
+            .terms
+            .iter()
+            .map(canonical_filter_term)
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    }
+}
+
+fn canonical_filter_term(term: &FilterTerm) -> String {
+    match term {
+        FilterTerm::Text(value) => format!("text={value}"),
+        FilterTerm::Field {
+            field,
+            negated,
+            values,
+            comparison,
+        } => {
+            let field = match field {
+                FilterField::Id => "id",
+                FilterField::Name => "name",
+                FilterField::Online => "online",
+                FilterField::Owner => "owner",
+                FilterField::Os => "os",
+                FilterField::Path => "path",
+                FilterField::Tag => "tag",
+                FilterField::LastSeen => "last_seen",
+                FilterField::Property => "property",
+                FilterField::Approval => "approval",
+                FilterField::KeyExpiry => "key_expiry",
+                FilterField::ClientVersion => "version",
+                FilterField::Sharing => "sharing",
+                FilterField::Posture => "posture",
+                FilterField::RouteRole => "route_role",
+            };
+            let value = if let Some(comparison) = comparison {
+                let (operator, duration) = match comparison {
+                    Comparison::Less(value) => ("less", value),
+                    Comparison::LessOrEqual(value) => ("less_or_equal", value),
+                    Comparison::Greater(value) => ("greater", value),
+                    Comparison::GreaterOrEqual(value) => ("greater_or_equal", value),
+                    Comparison::Equal(value) => ("equal", value),
+                };
+                format!("{operator}:{}s", duration.as_secs())
+            } else {
+                let mut values = values.clone();
+                values.sort();
+                values.dedup();
+                values.join(",")
+            };
+            format!("{}{}:{value}", if *negated { "!" } else { "" }, field)
+        }
+        FilterTerm::StructuredField {
+            field,
+            negated,
+            value,
+            mode,
+        } => {
+            let field = match field {
+                FilterField::Id => "id",
+                FilterField::Name => "name",
+                FilterField::Online => "online",
+                FilterField::Owner => "owner",
+                FilterField::Os => "os",
+                FilterField::Path => "path",
+                FilterField::Tag => "tag",
+                FilterField::LastSeen => "last_seen",
+                FilterField::Property => "property",
+                FilterField::Approval => "approval",
+                FilterField::KeyExpiry => "key_expiry",
+                FilterField::ClientVersion => "version",
+                FilterField::Sharing => "sharing",
+                FilterField::Posture => "posture",
+                FilterField::RouteRole => "route_role",
+            };
+            let mode = match mode {
+                FieldMatchMode::Exact => "equals",
+                FieldMatchMode::Contains => "contains",
+                FieldMatchMode::StartsWith => "starts_with",
+            };
+            format!(
+                "{}{}:{mode}={value}",
+                if *negated { "!" } else { "" },
+                field
+            )
+        }
+    }
+}
+
+fn canonical_device_sort(sorts: &[SortSpec]) -> String {
+    if sorts.is_empty() {
+        return "stable_key".to_owned();
+    }
+    sorts
+        .iter()
+        .map(|sort| {
+            let field = match sort.field {
+                SortField::Name => "name",
+                SortField::Liveness => "state",
+                SortField::Owner => "owner",
+                SortField::Os => "os",
+                SortField::Path => "path",
+                SortField::LastSeen => "last_seen",
+                SortField::Rx => "rx",
+                SortField::Tx => "tx",
+                SortField::DeviceId => "id",
+                SortField::Version => "version",
+            };
+            format!("{field}:{}", sort.direction.label())
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn contains_point(area: ratatui::layout::Rect, column: u16, row: u16) -> bool {
+    column >= area.x
+        && column < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
+}
+
+fn audit_export_id(event: &crate::domain::activity::AuditEvent) -> String {
+    let actor = event.actor.as_ref().map_or("not-returned", |value| {
+        value
+            .id
+            .as_deref()
+            .or(value.display.as_deref())
+            .map_or("not-returned", |value| value)
+    });
+    let target = event.target.as_ref().map_or("not-returned", |value| {
+        value
+            .id
+            .as_deref()
+            .or(value.display.as_deref())
+            .map_or("not-returned", |value| value)
+    });
+    [
+        event.event_time.to_string(),
+        event
+            .event_group_id
+            .as_deref()
+            .map_or("", |value| value)
+            .to_owned(),
+        event
+            .event_type
+            .as_deref()
+            .map_or("", |value| value)
+            .to_owned(),
+        event.action.as_deref().map_or("", |value| value).to_owned(),
+        actor.to_owned(),
+        target.to_owned(),
+        event.origin.as_deref().map_or("", |value| value).to_owned(),
+    ]
+    .join("\u{0}")
+}
+
+fn format_export_timestamp(value: Timestamp) -> Option<String> {
+    i64::try_from(value)
+        .ok()
+        .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .and_then(|date| {
+            date.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+}
+
+fn canonical_wire_timestamp(value: &str) -> String {
+    let Ok(timestamp) =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+    else {
+        return value.to_owned();
+    };
+    match timestamp
+        .to_offset(time::UtcOffset::UTC)
+        .format(&time::format_description::well_known::Rfc3339)
+    {
+        Ok(formatted) => formatted,
+        Err(_) => value.to_owned(),
+    }
+}
+
+fn credential_status(
+    record: &crate::domain::credential::CredentialMetadata,
+    now: Timestamp,
+) -> String {
+    if record.revoked_at.is_some() {
+        "revoked".to_owned()
+    } else if record.invalid == Some(true) {
+        "invalid".to_owned()
+    } else if record.expires_at.is_some_and(|value| value <= now) {
+        "expired".to_owned()
+    } else {
+        "observed".to_owned()
+    }
+}
+
 fn mark_policy_managed<T>(preference: &mut ObservedPreference<T>) {
     if preference.value.is_some() {
         preference.editability = PreferenceEditability::PolicyManaged;
@@ -9898,6 +12631,19 @@ fn route_candidates(input: &str) -> Vec<Route> {
                 .any(|alias| alias.starts_with(&value))
     })
     .collect()
+}
+
+fn filter_saved_view_candidates(names: &[String], input: &str) -> Vec<String> {
+    let query = input.to_ascii_lowercase();
+    names
+        .iter()
+        .filter(|name| {
+            format!("view:{name}")
+                .to_ascii_lowercase()
+                .starts_with(&query)
+        })
+        .cloned()
+        .collect()
 }
 
 fn parse_service_fields(input: &str) -> Result<BTreeMap<String, String>, String> {
@@ -10228,6 +12974,21 @@ fn is_admin_action(action_id: ActionId) -> bool {
             | ActionId::AuditOpenPolicyDiff
             | ActionId::BatchReviewOutcomes
             | ActionId::BatchRetrySelected
+            | ActionId::OverviewHealthOpenResource
+            | ActionId::OverviewHealthRunSuggestedAction
+            | ActionId::ActivityFlowsSelectWindow
+            | ActionId::ActivityFlowsAggregate
+            | ActionId::ActivityFlowsOpenDevice
+            | ActionId::AdminWebhookCreate
+            | ActionId::AdminWebhookEdit
+            | ActionId::AdminWebhookTest
+            | ActionId::AdminWebhookRotateSecret
+            | ActionId::AdminWebhookDelete
+            | ActionId::AdminLogStreamReplace
+            | ActionId::AdminLogStreamDelete
+            | ActionId::AdminNetworkLogsSettings
+            | ActionId::AccessExplorerAsk
+            | ActionId::AccessExplorerOpenRule
     )
 }
 
@@ -11125,6 +13886,7 @@ fn apply_admin_result<T>(
     match result {
         Ok(snapshot) => resource.succeed(generation, snapshot, observed_at),
         Err(error) => {
+            let failure_state = admin_state_for_error(&error);
             let state = if resource.snapshot.is_some()
                 && matches!(
                     error,
@@ -11142,10 +13904,11 @@ fn apply_admin_result<T>(
                 ) {
                 AdminResourceState::Stale
             } else {
-                admin_state_for_error(&error)
+                failure_state
             };
             resource.generation = generation;
             resource.state = state;
+            resource.last_failure = Some(failure_state);
             resource.error = Some(error.to_string());
         }
     }
@@ -11154,11 +13917,13 @@ fn apply_admin_result<T>(
 fn mark_admin_unauthenticated<T>(resource: &mut AdminResource<T>, generation: u64, detail: String) {
     resource.generation = generation;
     resource.state = AdminResourceState::Unauthenticated;
+    resource.last_failure = Some(AdminResourceState::Unauthenticated);
     resource.error = Some(detail);
 }
 
 fn mark_admin_failed<T>(resource: &mut AdminResource<T>, generation: u64, detail: String) {
     resource.generation = generation;
+    resource.last_failure = Some(AdminResourceState::Failed);
     resource.state = if resource.snapshot.is_some() {
         AdminResourceState::Stale
     } else {

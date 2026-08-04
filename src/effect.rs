@@ -1,12 +1,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crate::admin::AdminRefreshResource;
 use crate::admin::auth::SecretValue;
 use crate::admin::key_mutations::AuthKeyCreateRequest;
 use crate::admin::mutation::AdminMutationRequest;
+use crate::domain::access_explorer::AccessQuestion;
+use crate::domain::flow::{AggregateDimension, FlowFilter, FlowMessage};
+use crate::domain::health::HealthSnapshot;
 use crate::domain::mutation::LocalMutation;
+use crate::domain::operational::OperationalMutation;
+use crate::domain::policy_workflow::PolicyDocument;
 use crate::domain::policy_workflow::PolicySelectorType;
 use crate::domain::secret_result::SecretBuffer;
 use crate::domain::service::ServiceActionRequest;
@@ -69,6 +75,35 @@ pub enum Effect {
         credential: String,
         environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
+    },
+    StartOperationalMutation {
+        action_id: crate::action::ActionId,
+        mutation: OperationalMutation,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+    },
+    StartAccessExplorer {
+        question: AccessQuestion,
+        policy: PolicyDocument,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+    },
+    StartHealthEvaluation {
+        generation: u64,
+        snapshot: HealthSnapshot,
+    },
+    StartFlowAggregation {
+        generation: u64,
+        messages: Vec<FlowMessage>,
+        filter: FlowFilter,
+        dimensions: Vec<AggregateDimension>,
+        cancellation: Arc<AtomicBool>,
     },
     StartPolicyRemoteFetch {
         workflow_id: u64,

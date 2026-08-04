@@ -102,6 +102,34 @@ fn output_cap_retains_both_ends_with_a_visible_marker() {
 }
 
 #[test]
+fn task_filtering_keeps_selection_inside_the_filtered_projection() {
+    let mut store = TaskStore::new();
+    let first = store.create(ActionId::MockSuccess, "network flow", MOCK_NOW, false);
+    let second = store.create(ActionId::MockFailure, "webhook delivery", MOCK_NOW, false);
+    let third = store.create(ActionId::MockSuccess, "network export", MOCK_NOW, false);
+    assert!(store.start(first));
+    assert!(store.succeed(first, MOCK_NOW, "flow complete", "bounded flow"));
+    assert!(store.start(second));
+    assert!(store.fail(second, MOCK_NOW, "webhook failed", "server rejected test"));
+    assert!(store.start(third));
+    assert!(store.succeed(third, MOCK_NOW, "export complete", "deterministic output"));
+
+    let filtered = store
+        .filtered("network")
+        .map(|task| task.id)
+        .collect::<Vec<_>>();
+    assert_eq!(filtered, vec![first, third]);
+    store.select_filtered_first("network");
+    assert_eq!(store.selected, Some(first));
+    store.select_next_filtered("network", 1);
+    assert_eq!(store.selected, Some(third));
+    store.select_filtered_position("webhook", 0);
+    assert_eq!(store.selected, Some(second));
+    store.select_next_filtered("missing", 1);
+    assert_eq!(store.selected, None);
+}
+
+#[test]
 fn notifications_expire_without_removing_task_results() {
     let application = app();
     assert!(application.is_some());

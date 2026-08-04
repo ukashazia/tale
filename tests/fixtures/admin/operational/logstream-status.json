@@ -1,0 +1,14 @@
+{
+  "lastActivity": "2026-08-04T00:03:00Z",
+  "lastError": "",
+  "maxBodySize": 524288,
+  "numBytesSent": 1024,
+  "numEntriesSent": 4,
+  "numSpoofedEntries": 0,
+  "numTotalRequests": 4,
+  "numFailedRequests": 0,
+  "rateBytesSent": 1.0,
+  "rateEntriesSent": 0.1,
+  "rateTotalRequests": 0.1,
+  "rateFailedRequests": 0.0
+}

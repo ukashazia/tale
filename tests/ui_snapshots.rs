@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use tale::action::ActionId;
 
 use tale::app::{App, Focus, Overlay, Route};
 use tale::cli::Cli;
@@ -220,4 +221,75 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
             assert!(lines.iter().any(|line| line.contains("at least 60")));
         }
     }
+}
+
+#[test]
+fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
+    let keyboard = populated_app();
+    assert!(keyboard.is_some());
+    let mut keyboard = match keyboard {
+        Some(value) => value,
+        None => return,
+    };
+    keyboard.dispatch_action(ActionId::CollectionFirst);
+    let _ = keyboard.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::NONE,
+    ))));
+    let keyboard_selected = keyboard.views.devices.selected_id.clone();
+
+    let mouse_disabled = populated_app();
+    assert!(mouse_disabled.is_some());
+    let mut mouse_disabled = match mouse_disabled {
+        Some(value) => value,
+        None => return,
+    };
+    mouse_disabled.dispatch_action(ActionId::CollectionFirst);
+    let before_disabled = mouse_disabled.views.devices.selected_id.clone();
+    let _ = mouse_disabled.update(Event::Input(InputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 2,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    })));
+    assert_eq!(mouse_disabled.views.devices.selected_id, before_disabled);
+
+    let enabled = populated_app();
+    assert!(enabled.is_some());
+    let mut enabled = match enabled {
+        Some(value) => value,
+        None => return,
+    };
+    enabled.resolved_config.ui.mouse = true;
+    enabled.dispatch_action(ActionId::CollectionFirst);
+    let _ = enabled.update(Event::Input(InputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 2,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    })));
+    assert_eq!(enabled.views.devices.selected_id, keyboard_selected);
+
+    let activity = populated_app();
+    assert!(activity.is_some());
+    let mut activity = match activity {
+        Some(value) => value,
+        None => return,
+    };
+    activity.resolved_config.ui.mouse = true;
+    activity.route_stack = vec![Route::Activity];
+    let first = activity
+        .tasks
+        .create(ActionId::MockSuccess, "first task", 1, false);
+    let second = activity
+        .tasks
+        .create(ActionId::MockFailure, "second task", 1, false);
+    activity.tasks.selected = Some(first);
+    let _ = activity.update(Event::Input(InputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 2,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    })));
+    assert_eq!(activity.tasks.selected, Some(second));
 }

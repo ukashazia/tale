@@ -6,7 +6,7 @@ use crate::app::App;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let items = app.tasks.all().iter().map(|task| {
+    let items = app.tasks.filtered(&app.task_filter).map(|task| {
         let marker = match task.state {
             crate::task::TaskState::Succeeded => "+",
             crate::task::TaskState::Failed => "!",
@@ -21,10 +21,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             task.state.label()
         ))
     });
+    let title = if app.task_filter.is_empty() {
+        "task history".to_owned()
+    } else {
+        format!("task history · filter={}", app.task_filter)
+    };
     frame.render_widget(
         List::new(items)
             .style(theme::normal(app))
-            .block(Block::default().borders(Borders::ALL).title("task history")),
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }

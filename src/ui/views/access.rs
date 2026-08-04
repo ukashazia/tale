@@ -50,6 +50,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .map_or("policy source not returned", |value| value),
         ));
     }
+    lines.push(Line::from(""));
+    lines.extend(
+        crate::ui::views::access_explorer::summary(app)
+            .lines()
+            .map(|line| Line::from(line.to_owned())),
+    );
     frame.render_widget(
         Paragraph::new(lines).style(theme::normal(app)).block(
             Block::default()
