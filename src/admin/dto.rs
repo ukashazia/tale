@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
+use zeroize::Zeroizing;
 
 use crate::domain::Timestamp;
 
@@ -18,6 +19,10 @@ pub enum DtoError {
     InvalidRoute { value: String },
     #[error("credential response contained secret material")]
     SecretFieldReturned,
+    #[error("auth-key response did not contain a one-time secret")]
+    MissingCredentialSecret,
+    #[error("credential response returned an unsupported credential type")]
+    InvalidCredentialType,
     #[error("required response collection was not returned: {field}")]
     MissingCollection { field: &'static str },
     #[error("response collection exceeded the 50,000 record limit: {field}")]
@@ -139,6 +144,49 @@ pub struct PolicyDetailsDto {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PolicyValidationDto {
+    pub message: Option<String>,
+    pub data: Option<Vec<PolicyValidationDataDto>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PolicyValidationDataDto {
+    pub user: Option<String>,
+    pub severity: Option<String>,
+    pub line: Option<u64>,
+    pub column: Option<u64>,
+    pub range: Option<Value>,
+    pub source: Option<String>,
+    pub destination: Option<String>,
+    pub expected: Option<Value>,
+    pub actual: Option<Value>,
+    #[serde(rename = "testID", alias = "testId", alias = "test")]
+    pub test_id: Option<String>,
+    pub errors: Option<Vec<String>>,
+    pub warnings: Option<Vec<String>>,
+    pub name: Option<String>,
+    pub passed: Option<bool>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PolicyPreviewDto {
+    pub matches: Option<Vec<PolicyPreviewMatchDto>>,
+    #[serde(rename = "type")]
+    pub selector_type: Option<String>,
+    #[serde(rename = "previewFor")]
+    pub preview_for: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PolicyPreviewMatchDto {
+    pub users: Option<Vec<String>>,
+    pub ports: Option<Vec<String>>,
+    #[serde(rename = "lineNumber")]
+    pub line_number: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct KeysResponse {
     pub keys: Option<Vec<KeyDto>>,
 }
@@ -146,7 +194,8 @@ pub struct KeysResponse {
 #[derive(Deserialize)]
 pub struct KeyDto {
     pub id: Option<String>,
-    pub key: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_secret_field")]
+    pub key: Option<Zeroizing<String>>,
     #[serde(rename = "keyType")]
     pub key_type: Option<String>,
     #[serde(rename = "created")]
@@ -154,6 +203,8 @@ pub struct KeyDto {
     pub updated: Option<String>,
     pub expires: Option<String>,
     pub revoked: Option<String>,
+    #[serde(rename = "lastUsed", alias = "lastUsedAt")]
+    pub last_used: Option<String>,
     pub scopes: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
     pub description: Option<String>,
@@ -161,6 +212,15 @@ pub struct KeyDto {
     #[serde(rename = "userId")]
     pub user_id: Option<String>,
     pub capabilities: Option<Value>,
+    #[serde(rename = "knownDependents")]
+    pub known_dependents: Option<Vec<String>>,
+}
+
+fn deserialize_secret_field<'de, D>(deserializer: D) -> Result<Option<Zeroizing<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|value| value.map(Zeroizing::new))
 }
 
 impl fmt::Debug for KeyDto {
@@ -174,11 +234,13 @@ impl fmt::Debug for KeyDto {
             .field("updated", &self.updated)
             .field("expires", &self.expires)
             .field("revoked", &self.revoked)
+            .field("last_used", &self.last_used)
             .field("scopes", &self.scopes)
             .field("tags", &self.tags)
             .field("description", &self.description)
             .field("invalid", &self.invalid)
             .field("user_id", &self.user_id)
+            .field("known_dependents", &self.known_dependents)
             .field(
                 "capabilities",
                 &self.capabilities.as_ref().map(redact_json_value),
@@ -368,6 +430,10 @@ pub fn redact_json_value(value: &Value) -> Value {
                     let redacted = lower.contains("secret")
                         || lower.contains("token")
                         || lower.contains("authorization")
+                        || lower.contains("password")
+                        || lower.contains("private")
+                        || lower.contains("cookie")
+                        || lower.contains("credential")
                         || key.eq_ignore_ascii_case("key");
                     (
                         key.clone(),

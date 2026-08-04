@@ -1,0 +1,16 @@
+{
+  "message": "fictional policy syntax is invalid",
+  "data": [
+    {
+      "severity": "error",
+      "line": 7,
+      "column": 11,
+      "range": {"start": 2, "end": 5},
+      "source": "group:fictional",
+      "destination": "*:443",
+      "expected": "fictional expected value",
+      "actual": "fictional actual value",
+      "errors": ["fictional syntax error"]
+    }
+  ]
+}

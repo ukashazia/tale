@@ -4,8 +4,11 @@ use std::time::Duration;
 
 use crate::admin::AdminRefreshResource;
 use crate::admin::auth::SecretValue;
+use crate::admin::key_mutations::AuthKeyCreateRequest;
 use crate::admin::mutation::AdminMutationRequest;
 use crate::domain::mutation::LocalMutation;
+use crate::domain::policy_workflow::PolicySelectorType;
+use crate::domain::secret_result::SecretBuffer;
 use crate::domain::service::ServiceActionRequest;
 use crate::domain::source::LocalExecutable;
 use crate::local::client::ExecutableResolution;
@@ -66,6 +69,83 @@ pub enum Effect {
         credential: String,
         environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
+    },
+    StartPolicyRemoteFetch {
+        workflow_id: u64,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+    },
+    StartPolicyEditor {
+        workflow_id: u64,
+        command: crate::terminal::EditorCommand,
+        path: PathBuf,
+    },
+    StartPolicyValidate {
+        workflow_id: u64,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+        path: PathBuf,
+    },
+    StartPolicyPreview {
+        workflow_id: u64,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+        path: PathBuf,
+        selector_type: PolicySelectorType,
+        selector: String,
+    },
+    StartPolicyApply {
+        workflow_id: u64,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+        path: PathBuf,
+        expected_base_hash: String,
+        expected_candidate_hash: String,
+    },
+    StartAuthKeyCreate {
+        result_id: u64,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+        request: AuthKeyCreateRequest,
+    },
+    StartCredentialDetail {
+        key_id: String,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+    },
+    StartCredentialRevoke {
+        key_id: String,
+        profile: String,
+        tailnet: String,
+        credential: String,
+        environment_token: Option<Arc<SecretValue>>,
+        timeout: Duration,
+    },
+    StartProfileCredentialRemove {
+        profile: String,
+        reference: String,
+    },
+    CopySecret {
+        result_id: u64,
+        secret: Arc<SecretBuffer>,
     },
     CancelAdminRefresh,
     DropAdminToken {

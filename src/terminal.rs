@@ -1,4 +1,6 @@
 use std::io::{self, Stdout};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -31,6 +33,145 @@ pub enum TerminalError {
     Operation(String),
     #[error("terminal cleanup failed: {0}")]
     Cleanup(String),
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct EditorCommand {
+    executable: PathBuf,
+    arguments: Vec<String>,
+}
+
+impl std::fmt::Debug for EditorCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EditorCommand")
+            .field("executable", &self.executable)
+            .field("arguments", &self.arguments)
+            .finish()
+    }
+}
+
+impl EditorCommand {
+    pub fn parse(value: &str) -> Result<Self, EditorError> {
+        if value.trim().is_empty() || contains_shell_syntax(value) {
+            return Err(EditorError::InvalidCommand);
+        }
+        let parts = shlex::split(value).ok_or(EditorError::InvalidCommand)?;
+        let mut parts = parts.into_iter();
+        let executable = parts.next().ok_or(EditorError::InvalidCommand)?;
+        if executable.is_empty() || is_shell_executable(&executable) {
+            return Err(EditorError::InvalidCommand);
+        }
+        Ok(Self {
+            executable: PathBuf::from(executable),
+            arguments: parts.collect(),
+        })
+    }
+
+    pub fn from_environment() -> Result<Self, EditorError> {
+        let visual = std::env::var("VISUAL").ok();
+        let editor = std::env::var("EDITOR").ok();
+        visual
+            .filter(|value| !value.trim().is_empty())
+            .or(editor.filter(|value| !value.trim().is_empty()))
+            .ok_or(EditorError::NotConfigured)
+            .and_then(|value| Self::parse(&value))
+    }
+
+    pub fn executable(&self) -> &Path {
+        self.executable.as_path()
+    }
+
+    pub fn arguments(&self) -> &[String] {
+        self.arguments.as_slice()
+    }
+
+    pub fn argv_with_path(&self, path: &Path) -> Vec<std::ffi::OsString> {
+        self.arguments
+            .iter()
+            .map(std::ffi::OsString::from)
+            .chain(std::iter::once(path.as_os_str().to_owned()))
+            .collect()
+    }
+}
+
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+pub enum EditorError {
+    #[error("no usable external editor is configured")]
+    NotConfigured,
+    #[error("the external editor command is invalid")]
+    InvalidCommand,
+    #[error("the external editor could not be started")]
+    Spawn,
+    #[error("the external editor could not be waited for")]
+    Wait,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct EditorExit {
+    pub success: bool,
+    pub code: Option<i32>,
+    pub elapsed: Duration,
+}
+
+impl EditorCommand {
+    pub async fn run(&self, path: &Path) -> Result<EditorExit, EditorError> {
+        let started = SystemTime::now();
+        let mut command = tokio::process::Command::new(self.executable.as_os_str());
+        command
+            .args(self.argv_with_path(path))
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        command.kill_on_drop(true);
+        let status = command.status().await.map_err(|_| EditorError::Spawn)?;
+        let elapsed = SystemTime::now()
+            .duration_since(started)
+            .map_or(Duration::ZERO, |value| value);
+        Ok(EditorExit {
+            success: status.success(),
+            code: status.code(),
+            elapsed,
+        })
+    }
+}
+
+fn contains_shell_syntax(value: &str) -> bool {
+    value.chars().any(|character| {
+        matches!(
+            character,
+            ';' | '|' | '&' | '>' | '<' | '`' | '$' | '\n' | '\r'
+        )
+    })
+}
+
+fn is_shell_executable(value: &str) -> bool {
+    let executable = match value.rsplit(['/', '\\']).next() {
+        Some(value) => value,
+        None => value,
+    }
+    .to_ascii_lowercase();
+    matches!(
+        executable.as_str(),
+        "sh" | "sh.exe"
+            | "bash"
+            | "bash.exe"
+            | "zsh"
+            | "zsh.exe"
+            | "dash"
+            | "dash.exe"
+            | "fish"
+            | "fish.exe"
+            | "ksh"
+            | "ksh.exe"
+            | "cmd"
+            | "cmd.exe"
+            | "command.com"
+            | "powershell"
+            | "powershell.exe"
+            | "pwsh"
+            | "pwsh.exe"
+    )
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]

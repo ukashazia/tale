@@ -10,10 +10,12 @@ use thiserror::Error;
 use super::auth::AccessToken;
 use super::dto::{
     AuditResponse, ContactsResponse, DeviceDto, DevicePostureAttributesDto, DeviceRoutesDto,
-    DevicesResponse, DnsPreferencesDto, KeyDto, KeysResponse, NameserversResponse, SearchPathsDto,
-    SettingsDto, UserDto, UsersResponse,
+    DevicesResponse, DnsPreferencesDto, KeyDto, KeysResponse, NameserversResponse,
+    PolicyPreviewDto, PolicyValidationDto, SearchPathsDto, SettingsDto, UserDto, UsersResponse,
 };
+use super::key_mutations::AuthKeyCreateRequest;
 use crate::domain::Timestamp;
+use crate::domain::policy_workflow::PolicySelectorType;
 
 pub const API_ORIGIN: &str = "https://api.tailscale.com";
 const API_PREFIX: &str = "/api/v2";
@@ -49,8 +51,13 @@ pub enum Endpoint {
     SplitDns,
     SplitDnsPatch,
     Policy,
+    PolicyValidate,
+    PolicyPreview,
+    PolicySave,
     CredentialList,
     CredentialDetail,
+    CredentialCreate,
+    CredentialRevoke,
     Settings,
     Contacts,
     Audit,
@@ -86,8 +93,13 @@ impl Endpoint {
             Self::SplitDns => "get split DNS",
             Self::SplitDnsPatch => "edit split DNS",
             Self::Policy => "get policy source",
+            Self::PolicyValidate => "validate policy candidate",
+            Self::PolicyPreview => "preview policy permissions",
+            Self::PolicySave => "save policy source",
             Self::CredentialList => "list credential metadata",
             Self::CredentialDetail => "get credential metadata",
+            Self::CredentialCreate => "create auth key",
+            Self::CredentialRevoke => "revoke credential",
             Self::Settings => "get tailnet settings",
             Self::Contacts => "get tailnet contacts",
             Self::Audit => "get configuration audit",
@@ -121,7 +133,10 @@ impl Endpoint {
             | Self::SearchPathsSet
             | Self::SplitDnsPatch => "dns",
             Self::Policy => "policy_file:read",
+            Self::PolicyValidate | Self::PolicyPreview => "policy_file:read",
+            Self::PolicySave => "policy_file",
             Self::CredentialList | Self::CredentialDetail => "credential-specific read scope",
+            Self::CredentialCreate | Self::CredentialRevoke => "credential-specific write scope",
             Self::Settings => "feature_settings:read",
             Self::Contacts => "account_settings:read",
             Self::Audit => "logs:configuration:read",
@@ -158,17 +173,37 @@ pub struct ApiResponse<T> {
 
 pub type MutationResponse<T> = ApiResponse<T>;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct PolicyBody {
     pub source_bytes: Vec<u8>,
     pub content_type: String,
     pub etag: Option<String>,
 }
 
+impl std::fmt::Debug for PolicyBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PolicyBody")
+            .field(
+                "source_bytes",
+                &format_args!("<{} bytes>", self.source_bytes.len()),
+            )
+            .field("content_type", &self.content_type)
+            .field("etag", &self.etag)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct MutationBody {
     source_bytes: Vec<u8>,
     content_type: String,
+}
+
+#[derive(Clone, Copy)]
+struct RawMediaTypes<'a> {
+    content_type: &'a str,
+    accept: &'a str,
 }
 
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
@@ -607,6 +642,78 @@ impl AdminClient {
         .await
     }
 
+    pub async fn validate_policy(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        candidate: &[u8],
+    ) -> Result<ApiResponse<PolicyValidationDto>, AdminError> {
+        let url = self.path(&["tailnet", tailnet, "acl", "validate"], &[])?;
+        let response = self
+            .mutation_raw(
+                Endpoint::PolicyValidate,
+                Method::POST,
+                token,
+                url,
+                candidate,
+                RawMediaTypes {
+                    content_type: "application/hujson",
+                    accept: "application/json",
+                },
+            )
+            .await?;
+        decode_json_mutation(response, Endpoint::PolicyValidate)
+    }
+
+    pub async fn preview_policy(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        selector_type: PolicySelectorType,
+        selector: &str,
+        candidate: &[u8],
+    ) -> Result<ApiResponse<PolicyPreviewDto>, AdminError> {
+        let url = self.path(
+            &["tailnet", tailnet, "acl", "preview"],
+            &[
+                ("type", selector_type.api_value()),
+                ("previewFor", selector),
+            ],
+        )?;
+        let response = self
+            .mutation_raw(
+                Endpoint::PolicyPreview,
+                Method::POST,
+                token,
+                url,
+                candidate,
+                RawMediaTypes {
+                    content_type: "application/hujson",
+                    accept: "application/json",
+                },
+            )
+            .await?;
+        decode_json_mutation(response, Endpoint::PolicyPreview)
+    }
+
+    pub async fn save_policy(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        candidate: &[u8],
+    ) -> Result<MutationResponse<PolicyBody>, AdminError> {
+        let url = self.path(&["tailnet", tailnet, "acl"], &[])?;
+        self.mutation_policy(
+            Endpoint::PolicySave,
+            token,
+            url,
+            candidate,
+            "application/hujson",
+            "application/hujson",
+        )
+        .await
+    }
+
     pub async fn list_keys(
         &self,
         token: &AccessToken,
@@ -625,6 +732,44 @@ impl AdminClient {
         let url = self.path(&["tailnet", tailnet, "keys", key_id], &[])?;
         self.json(Endpoint::CredentialDetail, token, url, None)
             .await
+    }
+
+    pub async fn create_auth_key(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        request: &AuthKeyCreateRequest,
+    ) -> Result<MutationResponse<KeyDto>, AdminError> {
+        let body = request
+            .json_body()
+            .map_err(|error| AdminError::ValidationFailed {
+                operation: Endpoint::CredentialCreate.operation().to_owned(),
+                detail: error.to_string(),
+            })?;
+        self.mutation_json(
+            Endpoint::CredentialCreate,
+            Method::POST,
+            token,
+            self.path(&["tailnet", tailnet, "keys"], &[])?,
+            Some(body),
+        )
+        .await
+    }
+
+    pub async fn revoke_credential(
+        &self,
+        token: &AccessToken,
+        tailnet: &str,
+        key_id: &str,
+    ) -> Result<MutationResponse<()>, AdminError> {
+        self.mutation_empty(
+            Endpoint::CredentialRevoke,
+            Method::DELETE,
+            token,
+            self.path(&["tailnet", tailnet, "keys", key_id], &[])?,
+            None,
+        )
+        .await
     }
 
     pub async fn get_settings(
@@ -822,6 +967,96 @@ impl AdminClient {
         ))
     }
 
+    async fn mutation_raw(
+        &self,
+        endpoint: Endpoint,
+        method: Method,
+        token: &AccessToken,
+        url: Url,
+        body: &[u8],
+        media: RawMediaTypes<'_>,
+    ) -> Result<ApiResponse<MutationBody>, AdminError> {
+        let response = self
+            .http
+            .request(method, url)
+            .header(AUTHORIZATION, format!("Bearer {}", token.as_str()))
+            .header(USER_AGENT, crate::VERSION_USER_AGENT)
+            .header(ACCEPT, media.accept)
+            .header(CONTENT_TYPE, media.content_type)
+            .body(body.to_vec())
+            .send()
+            .await
+            .map_err(|error| {
+                if error.is_timeout() {
+                    AdminError::TimedOut {
+                        operation: endpoint.operation().to_owned(),
+                    }
+                } else {
+                    AdminError::Transport {
+                        operation: endpoint.operation().to_owned(),
+                        detail: bounded_detail(&error.to_string()),
+                    }
+                }
+            })?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = read_bounded(response, endpoint.operation(), MAX_BODY_BYTES, token).await?;
+        if status == StatusCode::OK {
+            return Ok(ApiResponse {
+                value: MutationBody {
+                    source_bytes: body,
+                    content_type: header_text(&headers, CONTENT_TYPE),
+                },
+                meta: response_meta(status, &headers),
+            });
+        }
+        let detail = bounded_detail(&redact_body(&body, token.as_str()));
+        Err(classify_status(
+            endpoint,
+            status,
+            retry_after_seconds(&headers),
+            detail,
+        ))
+    }
+
+    async fn mutation_policy(
+        &self,
+        endpoint: Endpoint,
+        token: &AccessToken,
+        url: Url,
+        body: &[u8],
+        content_type: &str,
+        accept: &str,
+    ) -> Result<MutationResponse<PolicyBody>, AdminError> {
+        let response = self
+            .mutation_raw(
+                endpoint,
+                Method::POST,
+                token,
+                url,
+                body,
+                RawMediaTypes {
+                    content_type,
+                    accept,
+                },
+            )
+            .await?;
+        if !policy_content_type_string(&response.value.content_type) {
+            return Err(AdminError::DecodeFailed {
+                operation: endpoint.operation().to_owned(),
+                detail: "the policy mutation response did not use HuJSON content type".to_owned(),
+            });
+        }
+        Ok(ApiResponse {
+            value: PolicyBody {
+                source_bytes: response.value.source_bytes,
+                content_type: response.value.content_type,
+                etag: None,
+            },
+            meta: response.meta,
+        })
+    }
+
     async fn bytes(
         &self,
         endpoint: Endpoint,
@@ -919,6 +1154,27 @@ impl AdminClient {
     }
 }
 
+fn decode_json_mutation<T: DeserializeOwned>(
+    response: ApiResponse<MutationBody>,
+    endpoint: Endpoint,
+) -> Result<ApiResponse<T>, AdminError> {
+    if !json_content_type(&response.value.content_type) {
+        return Err(AdminError::DecodeFailed {
+            operation: endpoint.operation().to_owned(),
+            detail: "the policy operation response did not use a JSON content type".to_owned(),
+        });
+    }
+    serde_json::from_slice::<T>(&response.value.source_bytes)
+        .map(|value| ApiResponse {
+            value,
+            meta: response.meta,
+        })
+        .map_err(|error| AdminError::DecodeFailed {
+            operation: endpoint.operation().to_owned(),
+            detail: bounded_detail(&error.to_string()),
+        })
+}
+
 fn response_meta(status: StatusCode, headers: &HeaderMap) -> ResponseMeta {
     let rate_limit = rate_limit(headers);
     ResponseMeta {
@@ -986,10 +1242,12 @@ fn header_value(value: &HeaderValue) -> Option<&str> {
 }
 
 fn policy_content_type(headers: &HeaderMap) -> bool {
-    let content_type = header_text(headers, CONTENT_TYPE).to_ascii_lowercase();
+    policy_content_type_string(&header_text(headers, CONTENT_TYPE))
+}
+
+fn policy_content_type_string(content_type: &str) -> bool {
+    let content_type = content_type.to_ascii_lowercase();
     content_type.starts_with("application/hujson")
-        || content_type.starts_with("application/json")
-        || content_type.starts_with("text/hujson")
 }
 
 fn json_content_type(content_type: &str) -> bool {

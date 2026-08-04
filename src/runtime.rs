@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,13 +15,16 @@ use crate::action::ActionId;
 use crate::admin;
 use crate::admin::auth::{CredentialStore, OsCredentialStore, TokenManager};
 use crate::admin::client::{AdminClient, AdminError};
+use crate::admin::key_mutations::decode_created_auth_key;
 use crate::admin::mutation::{
     AdminMutationOutcome, AdminMutationRequest, AdminSnapshotFields, device_fields,
     dns_preferences_fields, nameserver_fields, search_path_fields, split_dns_fields, user_fields,
 };
+use crate::admin::policy_mutations::{decode_preview_checked, decode_validation};
 use crate::app::App;
 use crate::domain::account::LocalAccount;
 use crate::domain::mutation::{LocalMutation, MutationResult};
+use crate::domain::policy_workflow::{PolicyDocument, PolicySelectorType, hash_bytes};
 use crate::domain::preference::{LocalPreferences, PreferenceRequest};
 use crate::domain::redaction::Redactor;
 use crate::domain::route::{
@@ -37,7 +41,8 @@ use crate::effect::{Effect, Resource};
 use crate::error::TaleError;
 use crate::event::LocalEvent;
 use crate::event::{
-    self as app_event, AdminEvent, Event, InputEvent, ShutdownReason, SourceEvent, TaskEvent,
+    self as app_event, AdminEvent, CredentialEvent, CredentialRevocationResult, Event, InputEvent,
+    PolicyApplyResult, PolicyEvent, ShutdownReason, SourceEvent, TaskEvent,
 };
 use crate::local::client::{self, LocalClient};
 use crate::local::diagnostics;
@@ -48,13 +53,34 @@ use crate::local::{accounts, handoff, policy};
 use crate::local::{certificates, services, transfers};
 use crate::mock::{self, MOCK_NOW, MockTaskBehavior};
 use crate::task::{Progress, TaskId, grace_duration};
-use crate::terminal::RealTerminal;
+use crate::terminal::{EditorCommand, RealTerminal};
 use crate::ui;
 
 const EVENT_CAPACITY: usize = 256;
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 const ADMIN_VERIFICATION_DEADLINE: Duration = Duration::from_secs(30);
 const ADMIN_VERIFICATION_POLL: Duration = Duration::from_millis(250);
+
+struct PolicyTaskContext {
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    workflow_id: u64,
+    profile: String,
+    credential: String,
+    tailnet: String,
+    timeout: Duration,
+}
+
+struct AuthKeyTaskContext {
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    result_id: u64,
+    profile: String,
+    credential: String,
+    tailnet: String,
+    timeout: Duration,
+    request: crate::admin::key_mutations::AuthKeyCreateRequest,
+}
 
 pub trait TerminalDriver {
     fn draw(&mut self, app: &App) -> Result<(), TaleError>;
@@ -622,6 +648,278 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 .await;
             });
         }
+        Effect::StartPolicyRemoteFetch {
+            workflow_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+        } => {
+            let token_manager =
+                token_manager_for(&mut *admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_policy_remote_fetch(
+                    queue,
+                    token_manager,
+                    workflow_id,
+                    profile,
+                    credential,
+                    tailnet,
+                    timeout,
+                )
+                .await;
+            });
+        }
+        Effect::StartPolicyEditor {
+            workflow_id,
+            command,
+            path,
+        } => {
+            if *terminal_suspended {
+                let queue = queue.clone();
+                tasks.spawn(async move {
+                    queue
+                        .send(Event::Policy(Box::new(PolicyEvent::EditorFinished {
+                            workflow_id,
+                            result: Err("another interactive child owns the terminal".to_owned()),
+                            path,
+                            editor_success: false,
+                            editor_code: None,
+                        })))
+                        .await;
+                });
+                return;
+            }
+            if let Err(error) = terminal.suspend_for_handoff() {
+                let queue = queue.clone();
+                let detail = error.to_string();
+                tasks.spawn(async move {
+                    queue
+                        .send(Event::Policy(Box::new(PolicyEvent::EditorFinished {
+                            workflow_id,
+                            result: Err(detail),
+                            path,
+                            editor_success: false,
+                            editor_code: None,
+                        })))
+                        .await;
+                });
+                return;
+            }
+            *terminal_suspended = true;
+            handoff_input_gate.store(false, Ordering::Release);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                let result = run_policy_editor(command, path.clone()).await;
+                queue
+                    .send(Event::Policy(Box::new(PolicyEvent::EditorFinished {
+                        workflow_id,
+                        result: result.0,
+                        path,
+                        editor_success: result.1,
+                        editor_code: result.2,
+                    })))
+                    .await;
+            });
+        }
+        Effect::StartPolicyValidate {
+            workflow_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+            path,
+        } => {
+            let token_manager =
+                token_manager_for(&mut *admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_policy_validate(
+                    PolicyTaskContext {
+                        queue,
+                        token_manager,
+                        workflow_id,
+                        profile,
+                        credential,
+                        tailnet,
+                        timeout,
+                    },
+                    path,
+                )
+                .await;
+            });
+        }
+        Effect::StartPolicyPreview {
+            workflow_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+            path,
+            selector_type,
+            selector,
+        } => {
+            let token_manager =
+                token_manager_for(&mut *admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_policy_preview(
+                    PolicyTaskContext {
+                        queue,
+                        token_manager,
+                        workflow_id,
+                        profile,
+                        credential,
+                        tailnet,
+                        timeout,
+                    },
+                    path,
+                    selector_type,
+                    selector,
+                )
+                .await;
+            });
+        }
+        Effect::StartPolicyApply {
+            workflow_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+            path,
+            expected_base_hash,
+            expected_candidate_hash,
+        } => {
+            let token_manager =
+                token_manager_for(&mut *admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_policy_apply(
+                    PolicyTaskContext {
+                        queue,
+                        token_manager,
+                        workflow_id,
+                        profile,
+                        credential,
+                        tailnet,
+                        timeout,
+                    },
+                    path,
+                    expected_base_hash,
+                    expected_candidate_hash,
+                )
+                .await;
+            });
+        }
+        Effect::StartAuthKeyCreate {
+            result_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+            request,
+        } => {
+            let token_manager =
+                token_manager_for(&mut *admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_auth_key_create(AuthKeyTaskContext {
+                    queue,
+                    token_manager,
+                    result_id,
+                    profile,
+                    credential,
+                    tailnet,
+                    timeout,
+                    request,
+                })
+                .await;
+            });
+        }
+        Effect::StartCredentialDetail {
+            key_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+        } => {
+            let token_manager =
+                token_manager_for(&mut *admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_credential_detail(
+                    queue,
+                    token_manager,
+                    key_id,
+                    profile,
+                    credential,
+                    tailnet,
+                    timeout,
+                )
+                .await;
+            });
+        }
+        Effect::StartCredentialRevoke {
+            key_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token,
+            timeout,
+        } => {
+            let token_manager =
+                token_manager_for(&mut *admin_token_managers, &profile, environment_token);
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                run_credential_revoke(
+                    queue,
+                    token_manager,
+                    key_id,
+                    profile,
+                    credential,
+                    tailnet,
+                    timeout,
+                )
+                .await;
+            });
+        }
+        Effect::StartProfileCredentialRemove { profile, reference } => {
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                let store = OsCredentialStore;
+                let result = store.delete(&reference).map_err(|error| error.to_string());
+                queue
+                    .send(Event::Credential(Box::new(CredentialEvent::LocalRemoved {
+                        profile,
+                        reference,
+                        result,
+                    })))
+                    .await;
+            });
+        }
+        Effect::CopySecret { result_id, secret } => {
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                let result = crate::clipboard::SystemClipboard::new().and_then(|mut clipboard| {
+                    crate::clipboard::copy_secret(&mut clipboard, secret.as_ref())
+                });
+                queue
+                    .send(Event::Credential(Box::new(
+                        CredentialEvent::ClipboardCopied {
+                            result_id,
+                            result: result.map_err(|error| error.to_string()),
+                        },
+                    )))
+                    .await;
+            });
+        }
         Effect::DropAdminToken { profile } => {
             admin_token_managers.remove(&profile);
         }
@@ -1049,6 +1347,477 @@ fn token_manager_for(
     let manager = Arc::new(TokenManager::new_with_override(store, environment_token));
     managers.insert(profile.to_owned(), Arc::clone(&manager));
     manager
+}
+
+async fn policy_token(
+    token_manager: &TokenManager,
+    profile: &str,
+    credential: &str,
+) -> Result<crate::admin::auth::AccessToken, String> {
+    token_manager
+        .access_token(profile, credential)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn policy_document(bytes: Vec<u8>, observed_at: u64) -> Result<PolicyDocument, String> {
+    PolicyDocument::from_bytes(bytes, observed_at).map_err(|error| error.to_string())
+}
+
+async fn run_policy_remote_fetch(
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    workflow_id: u64,
+    profile: String,
+    credential: String,
+    tailnet: String,
+    timeout: Duration,
+) {
+    let observed_at = crate::local::now();
+    let result = async {
+        let token = policy_token(&token_manager, &profile, &credential).await?;
+        let client = AdminClient::new(timeout).map_err(|error| error.to_string())?;
+        let response = client
+            .get_policy(&token, &tailnet)
+            .await
+            .map_err(|error| error.to_string())?;
+        let etag = response.value.etag.clone();
+        let content_type = response.value.content_type.clone();
+        let document = PolicyDocument::from_bytes_with_content_type(
+            response.value.source_bytes,
+            content_type.clone(),
+            observed_at,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok::<_, String>((document, etag, content_type))
+    }
+    .await;
+    let (result, etag, content_type) = match result {
+        Ok((document, etag, content_type)) => (Ok(document), etag, content_type),
+        Err(detail) => (Err(detail), None, String::new()),
+    };
+    let _ = queue
+        .send(Event::Policy(Box::new(PolicyEvent::RemoteFetched {
+            workflow_id,
+            result,
+            etag,
+            content_type,
+            observed_at,
+        })))
+        .await;
+}
+
+async fn run_policy_editor(
+    command: EditorCommand,
+    path: PathBuf,
+) -> (Result<PolicyDocument, String>, bool, Option<i32>) {
+    let exit = match command.run(&path).await {
+        Ok(exit) => exit,
+        Err(error) => return (Err(error.to_string()), false, None),
+    };
+    let result = crate::temporary::TemporaryPolicyFile::read_candidate_path(&path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| policy_document(bytes, crate::local::now()));
+    (result, exit.success, exit.code)
+}
+
+async fn run_policy_validate(context: PolicyTaskContext, path: PathBuf) {
+    let PolicyTaskContext {
+        queue,
+        token_manager,
+        workflow_id,
+        profile,
+        credential,
+        tailnet,
+        timeout,
+    } = context;
+    let result = async {
+        let bytes = crate::temporary::TemporaryPolicyFile::read_candidate_path(&path)
+            .map_err(|error| error.to_string())?;
+        let candidate = policy_document(bytes.clone(), crate::local::now())?;
+        let token = policy_token(&token_manager, &profile, &credential).await?;
+        let client = AdminClient::new(timeout).map_err(|error| error.to_string())?;
+        let response = client
+            .validate_policy(&token, &tailnet, &bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(decode_validation(
+            response.value,
+            &candidate,
+            response.meta.observed_at,
+        ))
+    }
+    .await;
+    let _ = queue
+        .send(Event::Policy(Box::new(PolicyEvent::Validated {
+            workflow_id,
+            result,
+        })))
+        .await;
+}
+
+async fn run_policy_preview(
+    context: PolicyTaskContext,
+    path: PathBuf,
+    selector_type: PolicySelectorType,
+    selector: String,
+) {
+    let PolicyTaskContext {
+        queue,
+        token_manager,
+        workflow_id,
+        profile,
+        credential,
+        tailnet,
+        timeout,
+    } = context;
+    let result = async {
+        let bytes = crate::temporary::TemporaryPolicyFile::read_candidate_path(&path)
+            .map_err(|error| error.to_string())?;
+        let candidate = policy_document(bytes.clone(), crate::local::now())?;
+        let token = policy_token(&token_manager, &profile, &credential).await?;
+        let client = AdminClient::new(timeout).map_err(|error| error.to_string())?;
+        let response = client
+            .preview_policy(&token, &tailnet, selector_type, &selector, &bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+        decode_preview_checked(
+            response.value,
+            &candidate,
+            selector_type,
+            &selector,
+            response.meta.observed_at,
+        )
+    }
+    .await;
+    let _ = queue
+        .send(Event::Policy(Box::new(PolicyEvent::Previewed {
+            workflow_id,
+            result,
+        })))
+        .await;
+}
+
+async fn run_policy_apply(
+    context: PolicyTaskContext,
+    path: PathBuf,
+    expected_base_hash: String,
+    expected_candidate_hash: String,
+) {
+    let result = apply_policy_remote(
+        &context,
+        &path,
+        &expected_base_hash,
+        &expected_candidate_hash,
+    )
+    .await;
+    let PolicyTaskContext {
+        queue, workflow_id, ..
+    } = context;
+    let _ = queue
+        .send(Event::Policy(Box::new(PolicyEvent::Applied {
+            workflow_id,
+            result,
+        })))
+        .await;
+}
+
+async fn apply_policy_remote(
+    context: &PolicyTaskContext,
+    path: &std::path::Path,
+    expected_base_hash: &str,
+    expected_candidate_hash: &str,
+) -> PolicyApplyResult {
+    let bytes = match crate::temporary::TemporaryPolicyFile::read_candidate_path(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return PolicyApplyResult::FailedRetained {
+                detail: error.to_string(),
+            };
+        }
+    };
+    let candidate_hash = hash_bytes(&bytes);
+    if candidate_hash != expected_candidate_hash {
+        return PolicyApplyResult::FailedRetained {
+            detail: "the temporary candidate changed before apply".to_owned(),
+        };
+    }
+    let token = match policy_token(
+        &context.token_manager,
+        &context.profile,
+        &context.credential,
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(detail) => return PolicyApplyResult::FailedRetained { detail },
+    };
+    let client = match AdminClient::new(context.timeout) {
+        Ok(client) => client,
+        Err(error) => {
+            return PolicyApplyResult::FailedRetained {
+                detail: error.to_string(),
+            };
+        }
+    };
+    let latest = match client.get_policy(&token, &context.tailnet).await {
+        Ok(response) => response,
+        Err(error) => {
+            return PolicyApplyResult::FailedRetained {
+                detail: error.to_string(),
+            };
+        }
+    };
+    let latest_hash = hash_bytes(&latest.value.source_bytes);
+    if latest_hash != expected_base_hash {
+        let document = match policy_document(latest.value.source_bytes, latest.meta.observed_at) {
+            Ok(document) => document,
+            Err(detail) => return PolicyApplyResult::FailedRetained { detail },
+        };
+        return PolicyApplyResult::RemoteConflict { latest: document };
+    }
+    let candidate = match policy_document(bytes.clone(), crate::local::now()) {
+        Ok(candidate) => candidate,
+        Err(detail) => return PolicyApplyResult::FailedRetained { detail },
+    };
+    let validation = match client
+        .validate_policy(&token, &context.tailnet, &bytes)
+        .await
+    {
+        Ok(response) => decode_validation(response.value, &candidate, response.meta.observed_at),
+        Err(error) => {
+            return PolicyApplyResult::FailedRetained {
+                detail: error.to_string(),
+            };
+        }
+    };
+    if !validation.valid {
+        return PolicyApplyResult::FailedRetained {
+            detail: validation
+                .bounded_safe_detail
+                .or(validation.message)
+                .unwrap_or_else(|| "final server validation rejected the candidate".to_owned()),
+        };
+    }
+    if let Err(error) = client.save_policy(&token, &context.tailnet, &bytes).await {
+        return if policy_save_may_have_reached_server(&error) {
+            verify_saved_policy(
+                &client,
+                &token,
+                &context.tailnet,
+                &bytes,
+                candidate_hash,
+                false,
+            )
+            .await
+        } else {
+            PolicyApplyResult::FailedRetained {
+                detail: error.to_string(),
+            }
+        };
+    }
+    verify_saved_policy(
+        &client,
+        &token,
+        &context.tailnet,
+        &bytes,
+        candidate_hash,
+        true,
+    )
+    .await
+}
+
+async fn verify_saved_policy(
+    client: &AdminClient,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    candidate: &[u8],
+    candidate_hash: String,
+    save_confirmed: bool,
+) -> PolicyApplyResult {
+    match client.get_policy(token, tailnet).await {
+        Ok(response) if response.value.source_bytes == candidate => PolicyApplyResult::Succeeded {
+            saved_hash: candidate_hash,
+        },
+        Ok(_) if save_confirmed => PolicyApplyResult::SucceededUnverified {
+            saved_hash: candidate_hash,
+        },
+        Ok(_) => PolicyApplyResult::OutcomeUnknown {
+            detail: "policy save outcome is unknown; remote bytes differ from the candidate"
+                .to_owned(),
+        },
+        Err(error) => PolicyApplyResult::OutcomeUnknown {
+            detail: format!("policy save outcome is unknown; verification failed: {error}"),
+        },
+    }
+}
+
+fn policy_save_may_have_reached_server(error: &AdminError) -> bool {
+    matches!(
+        error,
+        AdminError::TimedOut { .. }
+            | AdminError::Transport { .. }
+            | AdminError::RateLimited { .. }
+            | AdminError::ServerFailure { .. }
+            | AdminError::UnexpectedStatus { .. }
+            | AdminError::DecodeFailed { .. }
+            | AdminError::BodyTooLarge { .. }
+    )
+}
+
+async fn run_auth_key_create(context: AuthKeyTaskContext) {
+    let AuthKeyTaskContext {
+        queue,
+        token_manager,
+        result_id,
+        profile,
+        credential,
+        tailnet,
+        timeout,
+        request,
+    } = context;
+    let result = async {
+        let token = policy_token(&token_manager, &profile, &credential).await?;
+        let client = AdminClient::new(timeout).map_err(|error| error.to_string())?;
+        let response = client
+            .create_auth_key(&token, &tailnet, &request)
+            .await
+            .map_err(|error| error.to_string())?;
+        decode_created_auth_key(response.value, response.meta.observed_at)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    let event = match result {
+        Ok(created) => Event::Credential(Box::new(CredentialEvent::AuthKeyCreated {
+            result_id,
+            metadata: created.metadata,
+            secret: created.secret,
+            observed_at: created.created_at,
+        })),
+        Err(detail) => Event::Credential(Box::new(CredentialEvent::AuthKeyCreateFailed {
+            result_id,
+            detail,
+        })),
+    };
+    let _ = queue.send(event).await;
+}
+
+async fn run_credential_detail(
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    key_id: String,
+    profile: String,
+    credential: String,
+    tailnet: String,
+    timeout: Duration,
+) {
+    let result = async {
+        let token = policy_token(&token_manager, &profile, &credential).await?;
+        let client = AdminClient::new(timeout).map_err(|error| error.to_string())?;
+        let response = client
+            .get_key(&token, &tailnet, &key_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        crate::admin::credentials::decode_credential(response.value)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    let _ = queue
+        .send(Event::Credential(Box::new(
+            CredentialEvent::DetailFetched { key_id, result },
+        )))
+        .await;
+}
+
+async fn run_credential_revoke(
+    queue: EventQueue,
+    token_manager: Arc<TokenManager>,
+    key_id: String,
+    profile: String,
+    credential: String,
+    tailnet: String,
+    timeout: Duration,
+) {
+    let result = async {
+        let token = match policy_token(&token_manager, &profile, &credential).await {
+            Ok(token) => token,
+            Err(detail) => return CredentialRevocationResult::Failed { detail },
+        };
+        let client = match AdminClient::new(timeout) {
+            Ok(client) => client,
+            Err(error) => {
+                return CredentialRevocationResult::Failed {
+                    detail: error.to_string(),
+                };
+            }
+        };
+        match client.revoke_credential(&token, &tailnet, &key_id).await {
+            Ok(_) => verify_credential_revocation(&client, &token, &tailnet, &key_id).await,
+            Err(error) if revocation_may_have_reached_server(&error) => {
+                match verify_credential_revocation(&client, &token, &tailnet, &key_id).await {
+                    CredentialRevocationResult::Verified => CredentialRevocationResult::Verified,
+                    CredentialRevocationResult::Failed { detail } => {
+                        CredentialRevocationResult::OutcomeUnknown { detail }
+                    }
+                    CredentialRevocationResult::OutcomeUnknown { detail } => {
+                        CredentialRevocationResult::OutcomeUnknown { detail }
+                    }
+                }
+            }
+            Err(error) => CredentialRevocationResult::Failed {
+                detail: error.to_string(),
+            },
+        }
+    }
+    .await;
+    let _ = queue
+        .send(Event::Credential(Box::new(CredentialEvent::Revoked {
+            key_id,
+            result,
+        })))
+        .await;
+}
+
+async fn verify_credential_revocation(
+    client: &AdminClient,
+    token: &crate::admin::auth::AccessToken,
+    tailnet: &str,
+    key_id: &str,
+) -> CredentialRevocationResult {
+    match client.get_key(token, tailnet, key_id).await {
+        Err(AdminError::NotFound { .. }) => CredentialRevocationResult::Verified,
+        Err(AdminError::TimedOut { .. }) => CredentialRevocationResult::OutcomeUnknown {
+            detail: "credential revocation verification timed out".to_owned(),
+        },
+        Err(error) => CredentialRevocationResult::OutcomeUnknown {
+            detail: format!("credential revocation verification unavailable: {error}"),
+        },
+        Ok(response) => match crate::admin::credentials::decode_credential(response.value) {
+            Ok(metadata) if metadata.invalid == Some(true) || metadata.revoked_at.is_some() => {
+                CredentialRevocationResult::Verified
+            }
+            Ok(_) => CredentialRevocationResult::Failed {
+                detail: "remote credential revocation was not confirmed".to_owned(),
+            },
+            Err(error) => CredentialRevocationResult::OutcomeUnknown {
+                detail: format!(
+                    "credential revocation verification could not decode metadata: {error}"
+                ),
+            },
+        },
+    }
+}
+
+fn revocation_may_have_reached_server(error: &AdminError) -> bool {
+    matches!(
+        error,
+        AdminError::TimedOut { .. }
+            | AdminError::Transport { .. }
+            | AdminError::RateLimited { .. }
+            | AdminError::ServerFailure { .. }
+            | AdminError::UnexpectedStatus { .. }
+            | AdminError::NotFound { .. }
+    )
 }
 
 async fn run_admin_refresh(

@@ -50,6 +50,7 @@ pub fn decode_credential(key: KeyDto) -> Result<CredentialMetadata, DtoError> {
         updated_at: parse_timestamp(key.updated.as_deref(), "key.updated")?,
         expires_at: parse_timestamp(key.expires.as_deref(), "key.expires")?,
         revoked_at: parse_timestamp(key.revoked.as_deref(), "key.revoked")?,
+        last_used_at: parse_timestamp(key.last_used.as_deref(), "key.lastUsed")?,
         scopes: key.scopes.unwrap_or_default(),
         tags: key.tags.unwrap_or_default(),
         description: key.description,
@@ -59,5 +60,6 @@ pub fn decode_credential(key: KeyDto) -> Result<CredentialMetadata, DtoError> {
             Some(serde_json::Value::Object(map)) => map.keys().cloned().collect(),
             None | Some(_) => Vec::new(),
         },
+        known_dependents: key.known_dependents.unwrap_or_default(),
     })
 }

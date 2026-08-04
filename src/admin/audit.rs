@@ -91,32 +91,102 @@ fn target(value: Option<&Value>, token: Option<&str>) -> Option<AuditTarget> {
 }
 
 fn safe_value(value: Option<Value>, token: Option<&str>) -> Option<Value> {
-    value.map(|value| {
-        let value = crate::admin::dto::redact_json_value(&value);
-        redact_token_value(value, token)
-    })
+    value.and_then(|value| redact_audit_value(&value, token))
 }
 
-fn redact_token_value(value: Value, token: Option<&str>) -> Value {
+fn redact_audit_value(value: &Value, token: Option<&str>) -> Option<Value> {
     match value {
-        Value::Object(object) => Value::Object(
-            object
-                .into_iter()
-                .map(|(key, value)| (key, redact_token_value(value, token)))
-                .collect(),
-        ),
-        Value::Array(values) => Value::Array(
+        Value::Object(object) => {
+            let mut result = serde_json::Map::new();
+            for (key, child) in object {
+                let lower = key.to_ascii_lowercase();
+                if is_sensitive_key(&lower) {
+                    continue;
+                }
+                if is_known_audit_key(&lower)
+                    && let Some(value) = redact_audit_value(child, token)
+                {
+                    result.insert(key.clone(), value);
+                }
+            }
+            Some(Value::Object(result))
+        }
+        Value::Array(values) => Some(Value::Array(
             values
-                .into_iter()
-                .map(|value| redact_token_value(value, token))
+                .iter()
+                .filter_map(|value| redact_audit_value(value, token))
                 .collect(),
-        ),
-        Value::String(value) => match token {
-            Some(token) => Value::String(value.replace(token, "<redacted>")),
-            None => Value::String(value),
-        },
-        other => other,
+        )),
+        Value::String(value) => Some(Value::String(match token {
+            Some(token) => value.replace(token, "<redacted>"),
+            None => value.clone(),
+        })),
+        Value::Null | Value::Bool(_) | Value::Number(_) => Some(value.clone()),
     }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    [
+        "secret",
+        "token",
+        "authorization",
+        "password",
+        "private",
+        "cookie",
+        "credential",
+        "clientsecret",
+        "accesskey",
+    ]
+    .iter()
+    .any(|part| key.contains(part))
+}
+
+fn is_known_audit_key(key: &str) -> bool {
+    [
+        "id",
+        "type",
+        "kind",
+        "name",
+        "displayname",
+        "loginname",
+        "userid",
+        "deviceid",
+        "keyid",
+        "action",
+        "status",
+        "role",
+        "description",
+        "created",
+        "updated",
+        "expires",
+        "revoked",
+        "invalid",
+        "authorized",
+        "enabled",
+        "tags",
+        "scopes",
+        "capabilities",
+        "acl",
+        "rules",
+        "grants",
+        "tests",
+        "sshtests",
+        "source",
+        "destination",
+        "src",
+        "dst",
+        "users",
+        "ports",
+        "line",
+        "column",
+        "range",
+        "expected",
+        "actual",
+        "value",
+        "old",
+        "new",
+    ]
+    .contains(&key)
 }
 
 fn redact_text(value: &str, token: Option<&str>) -> String {

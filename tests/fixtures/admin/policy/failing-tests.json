@@ -1,0 +1,12 @@
+{
+  "data": [
+    {
+      "testID": "ssh-fictional-001",
+      "name": "fictional declared SSH test",
+      "passed": false,
+      "message": "fictional declared test failed",
+      "source": "user:fictional",
+      "destination": "node-fictional:22"
+    }
+  ]
+}

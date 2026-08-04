@@ -37,6 +37,22 @@ pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Ope
         crate::action::ActionId::AdminUserRoleChange => {
             "documented role: owner/member/admin/it-admin/network-admin/billing-admin/auditor"
         }
+        crate::action::ActionId::AdminCredentialAuthKeyCreate => {
+            "description=text;expiry=7d;reusable=false;ephemeral=true;preauthorized=false;tags=tag:team-a,tag:prod"
+        }
+        crate::action::ActionId::AdminPolicyPreview => {
+            "type=user|ipport;previewFor=<server-supported user or ip:port selector>"
+        }
+        crate::action::ActionId::AuditFilterTime => {
+            "inclusive UTC RFC3339 values: start=2026-08-03T00:00:00Z;end=2026-08-04T00:00:00Z (empty clears each bound)"
+        }
+        crate::action::ActionId::AuditFilterActor => {
+            "exact fields: id=user-or-principal-id;display=resolved display value"
+        }
+        crate::action::ActionId::AuditFilterAction => "exact action value, such as device.view",
+        crate::action::ActionId::AuditFilterTarget => {
+            "exact fields: type=device|user|route|dns|credential|policy;id=stable-id;text=summary search"
+        }
         _ => "enter a typed local operator request",
     };
     let preference_status = if state.action_id == crate::action::ActionId::LocalPreferencesEdit {

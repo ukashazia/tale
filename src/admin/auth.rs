@@ -621,6 +621,16 @@ fn is_supported_read_scope(scope: &str) -> bool {
             | "api_access_tokens:read"
             | "oauth_keys:read"
             | "federated_keys:read"
+            | "policy_file"
+            | "auth_keys"
+            | "api_access_tokens"
+            | "oauth_keys"
+            | "federated_keys"
+            | "policy_file:write"
+            | "auth_keys:write"
+            | "api_access_tokens:write"
+            | "oauth_keys:write"
+            | "federated_keys:write"
             | "feature_settings:read"
             | "account_settings:read"
             | "logs:configuration:read"
@@ -642,15 +652,22 @@ async fn probe_record(
                 Probe::Users
             } else if has_scope(&record.requested_scopes, "dns:read") {
                 Probe::Nameservers
-            } else if has_scope(&record.requested_scopes, "policy_file:read") {
+            } else if has_any_scope(
+                &record.requested_scopes,
+                &["policy_file:read", "policy_file"],
+            ) {
                 Probe::Policy
             } else if record.requested_scopes.iter().any(|scope| {
                 matches!(
                     scope.as_str(),
                     "auth_keys:read"
+                        | "auth_keys"
                         | "api_access_tokens:read"
+                        | "api_access_tokens"
                         | "oauth_keys:read"
+                        | "oauth_keys"
                         | "federated_keys:read"
+                        | "federated_keys"
                 )
             }) {
                 Probe::Credentials
@@ -728,6 +745,10 @@ enum Probe {
 
 fn has_scope(scopes: &[String], expected: &str) -> bool {
     scopes.iter().any(|scope| scope == expected)
+}
+
+fn has_any_scope(scopes: &[String], expected: &[&str]) -> bool {
+    expected.iter().any(|value| has_scope(scopes, value))
 }
 
 fn utc_timestamp() -> Result<u64, AuthError> {

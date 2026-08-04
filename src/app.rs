@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -17,6 +18,7 @@ use crate::admin::{
 };
 use crate::config::ResolvedConfig;
 use crate::domain::account::LocalAccount;
+use crate::domain::activity::AuditFilters;
 use crate::domain::admin_mutation::{
     AdminChange, AdminMutationState, AdminResourceLocks, AuditCorrelation, BatchMutation,
     BatchTarget, transition,
@@ -30,6 +32,7 @@ use crate::domain::diagnostic::{DiagnosticResult, DiagnosticState};
 use crate::domain::filter::{self, FilterExpression, FilterField, FilterTerm};
 use crate::domain::mutation::{LocalMutation, MutationLock};
 use crate::domain::policy::PolicySnapshot;
+use crate::domain::policy_workflow::{PolicySelectorType, PolicyState, PolicyWorkflow};
 use crate::domain::preference::{
     LocalPreferences, ObservedPreference, PreferenceEditability, PreferenceField, PreferenceRequest,
 };
@@ -38,6 +41,7 @@ use crate::domain::route::{
     AdvertisementRequest, ExitNodeCandidate, ExitNodeRequest, ExitNodeSelection,
     overlapping_routes, parse_route_set, parse_static_endpoints,
 };
+use crate::domain::secret_result::{SecretMetadata, SecretResult};
 use crate::domain::service::{
     Backend, CertificateVerification, Exposure, Listener, LocalServicesSnapshot, PathMount, Port,
     ProxyProtocol, ServiceActionRequest, ServiceCapabilities, ServiceConflictKey,
@@ -54,8 +58,8 @@ use crate::domain::transfer::{
 use crate::domain::{SourceHealth, Timestamp};
 use crate::effect::{Effect, Resource};
 use crate::event::{
-    AdminEvent, Event, InputEvent, LocalEvent, ServicesEvent, ShutdownReason, SourceEvent,
-    TaskEvent,
+    AdminEvent, CredentialEvent, CredentialRevocationResult, Event, InputEvent, LocalEvent,
+    PolicyApplyResult, PolicyEvent, ServicesEvent, ShutdownReason, SourceEvent, TaskEvent,
 };
 use crate::local::client::{ExecutableResolution, HostPlatform};
 use crate::local::diagnostics::{self, DiagnosticRequest};
@@ -434,6 +438,9 @@ pub enum Overlay {
     ServiceSectionPicker(ServiceSectionPickerState),
     AccountPicker(AccountPickerState),
     HandoffInput(HandoffInputState),
+    PolicyEditor,
+    SecretResult,
+    AuditInvestigation,
 }
 
 #[derive(Debug, Clone)]
@@ -513,7 +520,7 @@ pub enum ShutdownState {
     Requested(ShutdownReason),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct App {
     pub route_stack: Vec<Route>,
     pub focus: Focus,
@@ -522,11 +529,22 @@ pub struct App {
     pub devices_resource: DeviceResource,
     pub admin: AdminSnapshot,
     pub admin_profile_snapshots: BTreeMap<String, AdminSnapshot>,
+    pub policy_workflow: Option<PolicyWorkflow>,
+    policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
+    latest_policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
+    pub secret_result: Option<SecretResult>,
+    next_policy_workflow_id: u64,
+    next_secret_result_id: u64,
+    pending_auth_key_request: Option<crate::admin::key_mutations::AuthKeyCreateRequest>,
+    pending_auth_key_result: Option<u64>,
+    pending_credential_revoke: Option<String>,
     admin_environment_token: Option<Arc<SecretValue>>,
     pub admin_user_selected: usize,
     pub admin_route_selected: usize,
+    pub admin_credential_selected: usize,
     pub admin_activity_selected: usize,
     pub admin_audit_window_days: u64,
+    pub audit_filters: AuditFilters,
     pub composed_devices: Vec<ComposedDevice>,
     pub local_resource: LocalResource,
     pub local_state: LocalState,
@@ -623,11 +641,22 @@ impl App {
             devices_resource: DeviceResource::empty(source_mode),
             admin,
             admin_profile_snapshots: BTreeMap::new(),
+            policy_workflow: None,
+            policy_temp_file: None,
+            latest_policy_temp_file: None,
+            secret_result: None,
+            next_policy_workflow_id: 1,
+            next_secret_result_id: 1,
+            pending_auth_key_request: None,
+            pending_auth_key_result: None,
+            pending_credential_revoke: None,
             admin_environment_token,
             admin_user_selected: 0,
             admin_route_selected: 0,
+            admin_credential_selected: 0,
             admin_activity_selected: 0,
             admin_audit_window_days: 1,
+            audit_filters: AuditFilters::default(),
             composed_devices: Vec::new(),
             local_resource: LocalResource::new(),
             local_state,
@@ -731,8 +760,434 @@ impl App {
             Event::Local(local) => self.update_local(*local),
             Event::Services(services) => self.update_services(*services),
             Event::Admin(admin) => self.update_admin(*admin),
+            Event::Policy(policy) => self.update_policy(*policy),
+            Event::Credential(credential) => self.update_credential(*credential),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         }
+    }
+
+    fn update_policy(&mut self, event: PolicyEvent) -> Vec<Effect> {
+        match event {
+            PolicyEvent::RemoteFetched {
+                workflow_id,
+                result,
+                ..
+            } => {
+                if self
+                    .policy_workflow
+                    .as_ref()
+                    .is_none_or(|workflow| workflow.workflow_id() != workflow_id)
+                {
+                    return Vec::new();
+                }
+                let document = match result {
+                    Ok(document) => document,
+                    Err(detail) => {
+                        if let Some(workflow) = self.policy_workflow.as_mut() {
+                            workflow.retain_failure();
+                        }
+                        self.runtime_error = Some(detail);
+                        return Vec::new();
+                    }
+                };
+                let start_editor = self
+                    .policy_workflow
+                    .as_ref()
+                    .is_some_and(|workflow| workflow.state() == PolicyState::Opening);
+                let base_hash = self
+                    .policy_workflow
+                    .as_ref()
+                    .and_then(PolicyWorkflow::base)
+                    .map(|base| base.hash().to_owned());
+                let has_candidate = self
+                    .policy_workflow
+                    .as_ref()
+                    .is_some_and(|workflow| workflow.candidate().is_some());
+                let remote_changed = base_hash
+                    .as_deref()
+                    .is_some_and(|hash| document.hash() != hash);
+                let edited_candidate = self
+                    .policy_workflow
+                    .as_ref()
+                    .and_then(|workflow| workflow.base().zip(workflow.candidate()))
+                    .is_some_and(|(base, candidate)| candidate.hash() != base.hash());
+                if has_candidate && remote_changed {
+                    self.close_latest_policy_temp_file();
+                    let latest_file =
+                        match crate::temporary::TemporaryPolicyFile::create(document.bytes()) {
+                            Ok(file) => file,
+                            Err(error) => {
+                                self.runtime_error = Some(error.to_string());
+                                return Vec::new();
+                            }
+                        };
+                    let latest_path = latest_file.path().to_path_buf();
+                    self.latest_policy_temp_file = Some(Arc::new(Mutex::new(latest_file)));
+                    if let Some(workflow) = self.policy_workflow.as_mut() {
+                        workflow.set_latest_remote_with_path(document, Some(latest_path));
+                    }
+                    self.runtime_error = Some(
+                        "remote policy changed; candidate and latest remote are retained separately"
+                            .to_owned(),
+                    );
+                    return Vec::new();
+                }
+                if edited_candidate {
+                    self.close_latest_policy_temp_file();
+                    if let Some(workflow) = self.policy_workflow.as_mut() {
+                        workflow.set_latest_remote(document);
+                    }
+                    self.runtime_error = Some(
+                        "remote policy is unchanged; the edited candidate was retained".to_owned(),
+                    );
+                    return Vec::new();
+                }
+                self.close_policy_temp_file();
+                self.close_latest_policy_temp_file();
+                let file = match crate::temporary::TemporaryPolicyFile::create(document.bytes()) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        if let Some(workflow) = self.policy_workflow.as_mut() {
+                            workflow.retain_failure();
+                        }
+                        self.runtime_error = Some(error.to_string());
+                        return Vec::new();
+                    }
+                };
+                let path = file.path().to_path_buf();
+                self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
+                if let Some(workflow) = self.policy_workflow.as_mut() {
+                    workflow.set_base(document.clone());
+                    workflow.set_candidate(document, path);
+                }
+                if start_editor {
+                    self.start_policy_editor()
+                } else {
+                    Vec::new()
+                }
+            }
+            PolicyEvent::EditorFinished {
+                workflow_id,
+                result,
+                path,
+                editor_success,
+                editor_code,
+            } => {
+                self.interactive_handoff_active = false;
+                let mut effects = vec![Effect::ResumeTerminal];
+                if self
+                    .policy_workflow
+                    .as_ref()
+                    .is_none_or(|workflow| workflow.workflow_id() != workflow_id)
+                {
+                    return effects;
+                }
+                match result {
+                    Ok(candidate) => {
+                        if let Some(workflow) = self.policy_workflow.as_mut() {
+                            workflow.set_candidate(candidate, path.clone());
+                            if let Some((base, candidate)) =
+                                workflow.base().zip(workflow.candidate())
+                                && let Ok(diff) = crate::admin::policy_mutations::build_policy_diff(
+                                    base, candidate,
+                                )
+                            {
+                                let _ = workflow.set_diff(diff);
+                            }
+                        }
+                        if !editor_success {
+                            self.runtime_error = Some(format!(
+                                "external editor returned {}; candidate retained",
+                                editor_code
+                                    .map_or_else(|| "signal".to_owned(), |value| value.to_string())
+                            ));
+                        }
+                        effects.extend(self.refresh_policy_workflow());
+                    }
+                    Err(detail) => {
+                        if let Some(workflow) = self.policy_workflow.as_mut() {
+                            if let Some(base) = workflow.base().cloned() {
+                                workflow.set_candidate(base, path);
+                            }
+                            workflow.retain_failure();
+                        }
+                        self.runtime_error = Some(detail);
+                    }
+                }
+                effects
+            }
+            PolicyEvent::Validated {
+                workflow_id,
+                result,
+            } => {
+                if let Some(workflow) = self.policy_workflow.as_mut()
+                    && workflow.workflow_id() == workflow_id
+                {
+                    match result {
+                        Ok(validation) => {
+                            if !workflow.set_validation(validation) {
+                                self.runtime_error = Some(
+                                    "server validation result was not bound to the current candidate"
+                                        .to_owned(),
+                                );
+                            }
+                        }
+                        Err(detail) => {
+                            workflow.retain_failure();
+                            self.runtime_error = Some(detail);
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            PolicyEvent::Previewed {
+                workflow_id,
+                result,
+            } => {
+                if let Some(workflow) = self.policy_workflow.as_mut()
+                    && workflow.workflow_id() == workflow_id
+                {
+                    match result {
+                        Ok(preview) => {
+                            if !workflow.set_preview(preview) {
+                                self.runtime_error = Some(
+                                    "server permission preview was not bound to the current candidate"
+                                        .to_owned(),
+                                );
+                            }
+                        }
+                        Err(detail) => {
+                            workflow.retain_failure();
+                            self.runtime_error = Some(detail);
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            PolicyEvent::Diffed {
+                workflow_id,
+                result,
+            } => {
+                if let Some(workflow) = self.policy_workflow.as_mut()
+                    && workflow.workflow_id() == workflow_id
+                {
+                    match result {
+                        Ok(diff) => {
+                            if !workflow.set_diff(diff) {
+                                self.runtime_error = Some(
+                                    "policy diff was not bound to the current candidate".to_owned(),
+                                );
+                            }
+                        }
+                        Err(detail) => self.runtime_error = Some(detail),
+                    }
+                }
+                Vec::new()
+            }
+            PolicyEvent::Applied {
+                workflow_id,
+                result,
+            } => {
+                if let PolicyApplyResult::RemoteConflict { latest } = &result {
+                    let workflow_matches = self
+                        .policy_workflow
+                        .as_ref()
+                        .is_some_and(|workflow| workflow.workflow_id() == workflow_id);
+                    if !workflow_matches {
+                        return Vec::new();
+                    }
+                    self.close_latest_policy_temp_file();
+                    let latest_path =
+                        match crate::temporary::TemporaryPolicyFile::create(latest.bytes()) {
+                            Ok(file) => {
+                                let path = file.path().to_path_buf();
+                                self.latest_policy_temp_file = Some(Arc::new(Mutex::new(file)));
+                                Some(path)
+                            }
+                            Err(error) => {
+                                self.runtime_error = Some(error.to_string());
+                                None
+                            }
+                        };
+                    if let Some(workflow) = self.policy_workflow.as_mut() {
+                        workflow.set_latest_remote_with_path(latest.clone(), latest_path);
+                    }
+                    self.runtime_error = Some(
+                        "remote policy changed; candidate and latest remote retained for review"
+                            .to_owned(),
+                    );
+                    return Vec::new();
+                }
+                let mut refresh_audit = false;
+                if let Some(workflow) = self.policy_workflow.as_mut()
+                    && workflow.workflow_id() == workflow_id
+                {
+                    match result {
+                        PolicyApplyResult::Succeeded { saved_hash } => {
+                            workflow.mark_verifying();
+                            workflow.mark_succeeded();
+                            self.runtime_error =
+                                Some(format!("policy applied and verified: {saved_hash}"));
+                            refresh_audit = true;
+                        }
+                        PolicyApplyResult::SucceededUnverified { saved_hash } => {
+                            workflow.mark_succeeded_unverified();
+                            self.runtime_error = Some(format!(
+                                "policy save completed; verification unavailable: {saved_hash}"
+                            ));
+                            refresh_audit = true;
+                        }
+                        PolicyApplyResult::FailedRetained { detail } => {
+                            workflow.retain_failure();
+                            self.runtime_error = Some(detail);
+                        }
+                        PolicyApplyResult::OutcomeUnknown { detail } => {
+                            workflow.mark_unknown();
+                            self.runtime_error = Some(detail);
+                        }
+                        PolicyApplyResult::RemoteConflict { .. } => {}
+                    }
+                }
+                if refresh_audit {
+                    self.start_admin_resource_refresh(vec![AdminRefreshResource::Activity])
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    fn update_credential(&mut self, event: CredentialEvent) -> Vec<Effect> {
+        match event {
+            CredentialEvent::AuthKeyCreated {
+                result_id,
+                metadata,
+                secret,
+                observed_at,
+            } => {
+                if self.pending_auth_key_result != Some(result_id) {
+                    return Vec::new();
+                }
+                self.pending_auth_key_result = None;
+                let secret_result = SecretResult::from_handle(
+                    SecretMetadata {
+                        result_id,
+                        credential_id: Some(metadata.id.clone()),
+                        credential_type: metadata.key_type.clone(),
+                        description: metadata.description.clone(),
+                        created_at: observed_at,
+                        expires_at: metadata.expires_at,
+                        warning: "This secret is view-once. It is not listed, persisted, logged, or recoverable after close.".to_owned(),
+                    },
+                    secret,
+                );
+                self.secret_result = Some(secret_result);
+                self.overlays.push(Overlay::SecretResult);
+            }
+            CredentialEvent::AuthKeyCreateFailed { result_id, detail } => {
+                if self.pending_auth_key_result == Some(result_id) {
+                    self.pending_auth_key_result = None;
+                    self.runtime_error = Some(detail);
+                }
+            }
+            CredentialEvent::DetailFetched { key_id, result } => {
+                if self.pending_credential_revoke.as_deref() != Some(key_id.as_str()) {
+                    return Vec::new();
+                }
+                self.pending_credential_revoke = None;
+                match result {
+                    Ok(metadata) => return self.open_credential_revoke_with_metadata(metadata),
+                    Err(detail) => self.runtime_error = Some(detail),
+                }
+            }
+            CredentialEvent::Revoked { key_id, result } => {
+                if self.pending_credential_revoke.as_deref() != Some(key_id.as_str()) {
+                    return Vec::new();
+                }
+                self.pending_credential_revoke = None;
+                match result {
+                    CredentialRevocationResult::Verified => {
+                        self.runtime_error =
+                            Some("remote credential revocation was verified".to_owned());
+                        let current_profile = self.admin.profile.clone();
+                        let current_reference = self
+                            .admin
+                            .profile
+                            .as_ref()
+                            .and_then(|profile| self.resolved_config.profiles.get(profile))
+                            .map(|profile| profile.credential.as_str());
+                        let clear_current = current_reference == Some(key_id.as_str());
+                        let next_profile = current_profile.as_ref().and_then(|current| {
+                            self.resolved_config
+                                .profiles
+                                .iter()
+                                .find(|(name, profile)| {
+                                    *name != current && profile.credential != key_id
+                                })
+                                .map(|(name, _)| name.clone())
+                        });
+                        let effects = self
+                            .start_admin_resource_refresh(vec![AdminRefreshResource::Credentials]);
+                        if clear_current {
+                            if let Some(next_profile) = next_profile {
+                                self.runtime_error = Some(format!(
+                                    "remote credential revocation was verified; switching to configured profile {next_profile}"
+                                ));
+                                let mut effects = effects;
+                                effects.extend(self.switch_profile(Some(next_profile)));
+                                return effects;
+                            }
+                            let mut effects = effects;
+                            effects.extend(self.clear_admin_profile());
+                            return effects;
+                        }
+                        return effects;
+                    }
+                    CredentialRevocationResult::OutcomeUnknown { detail }
+                    | CredentialRevocationResult::Failed { detail } => {
+                        self.runtime_error = Some(detail)
+                    }
+                }
+            }
+            CredentialEvent::LocalRemoved {
+                profile, result, ..
+            } => {
+                if self.admin.profile.as_deref() != Some(profile.as_str()) {
+                    return Vec::new();
+                }
+                match result {
+                    Ok(true) => {
+                        self.runtime_error = Some(format!(
+                            "removed local Tale credential for profile {profile}"
+                        ));
+                        return self.clear_admin_profile();
+                    }
+                    Ok(false) => {
+                        self.runtime_error =
+                            Some("local Tale credential was not present".to_owned())
+                    }
+                    Err(detail) => self.runtime_error = Some(detail),
+                }
+            }
+            CredentialEvent::ClipboardCopied { result_id, result } => {
+                if self
+                    .secret_result
+                    .as_ref()
+                    .is_none_or(|value| value.metadata().result_id != result_id)
+                {
+                    return Vec::new();
+                }
+                match result {
+                    Ok(()) => {
+                        self.runtime_error = Some(
+                            "secret copied explicitly; Tale did not clear the clipboard".to_owned(),
+                        )
+                    }
+                    Err(detail) => self.runtime_error = Some(detail),
+                }
+            }
+        }
+        Vec::new()
     }
 
     fn update_tick(&mut self, tick: Instant) -> Vec<Effect> {
@@ -825,8 +1280,7 @@ impl App {
             return effect;
         }
         if key.code == KeyCode::Esc {
-            self.pop_overlay_or_back();
-            return Vec::new();
+            return self.pop_overlay_or_back();
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             let effects = self.cancel_focused_task();
@@ -1213,13 +1667,49 @@ impl App {
                 self.overlays.push(Overlay::AccountPicker(state));
                 Vec::new()
             }
+            Overlay::PolicyEditor => {
+                if key.code == KeyCode::Char('e') && key.modifiers.is_empty() {
+                    return self.reopen_policy_editor();
+                }
+                if key.code == KeyCode::Char('v') && key.modifiers.is_empty() {
+                    return self.validate_policy_candidate();
+                }
+                if key.code == KeyCode::Char('p') && key.modifiers.is_empty() {
+                    return self.preview_policy_candidate();
+                }
+                if key.code == KeyCode::Char('d') && key.modifiers.is_empty() {
+                    return self.diff_policy_candidate();
+                }
+                if key.code == KeyCode::Char('a') && key.modifiers.is_empty() {
+                    return self.open_policy_apply_confirmation();
+                }
+                if key.code == KeyCode::Char('x') && key.modifiers.is_empty() {
+                    return self.open_policy_discard_confirmation();
+                }
+                self.overlays.push(Overlay::PolicyEditor);
+                Vec::new()
+            }
+            Overlay::SecretResult => {
+                if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('c'))
+                    && key.modifiers.is_empty()
+                {
+                    let effects = self.copy_secret_result();
+                    self.overlays.push(Overlay::SecretResult);
+                    return effects;
+                }
+                self.overlays.push(Overlay::SecretResult);
+                Vec::new()
+            }
+            Overlay::AuditInvestigation => {
+                self.overlays.push(Overlay::AuditInvestigation);
+                Vec::new()
+            }
         }
     }
 
     fn handle_quit_key(&mut self) -> Vec<Effect> {
         if !self.overlays.is_empty() {
-            self.pop_overlay_or_back();
-            return Vec::new();
+            return self.pop_overlay_or_back();
         }
         if self.focus == Focus::Inspector {
             self.focus = Focus::Collection;
@@ -1238,15 +1728,29 @@ impl App {
         }
     }
 
-    fn pop_overlay_or_back(&mut self) {
-        if self.overlays.pop().is_some() {
-            return;
+    fn pop_overlay_or_back(&mut self) -> Vec<Effect> {
+        if let Some(overlay) = self.overlays.pop() {
+            if matches!(overlay, Overlay::SecretResult) {
+                return self.close_secret_result();
+            }
+            let confirmation_action = match &overlay {
+                Overlay::Confirmation(state) => Some(state.action_id),
+                _ => None,
+            };
+            if confirmation_action == Some(ActionId::AdminCredentialAuthKeyCreate) {
+                self.pending_auth_key_request = None;
+            }
+            if confirmation_action == Some(ActionId::AdminCredentialRevoke) {
+                self.pending_credential_revoke = None;
+            }
+            return Vec::new();
         }
         if self.focus == Focus::Inspector {
             self.focus = Focus::Collection;
         } else if self.route_stack.len() > 1 {
             self.route_stack.pop();
         }
+        Vec::new()
     }
 
     fn accept_command(&mut self, input: &str) -> Vec<Effect> {
@@ -1811,6 +2315,26 @@ impl App {
             | ActionId::AdminUserSuspend
             | ActionId::AdminUserRestore
             | ActionId::AdminUserDelete => self.open_admin_form(action_id),
+            ActionId::AdminPolicyEdit => self.open_policy_workflow(),
+            ActionId::AdminPolicyEditorReopen => self.reopen_policy_editor(),
+            ActionId::AdminPolicyCandidateDiscard => self.open_policy_discard_confirmation(),
+            ActionId::AdminPolicyRemoteRefresh => self.refresh_policy_workflow(),
+            ActionId::AdminPolicyValidate => self.validate_policy_candidate(),
+            ActionId::AdminPolicyPreview => self.preview_policy_candidate(),
+            ActionId::AdminPolicyDiff => self.diff_policy_candidate(),
+            ActionId::AdminPolicyApply => self.open_policy_apply_confirmation(),
+            ActionId::AdminPolicyWorkflowClose => self.open_policy_close_confirmation(),
+            ActionId::AdminCredentialAuthKeyCreate => self.open_auth_key_confirmation(),
+            ActionId::SecretResultCopy => self.copy_secret_result(),
+            ActionId::SecretResultClose => self.close_secret_result(),
+            ActionId::AdminCredentialRevoke => self.open_credential_revoke_confirmation(),
+            ActionId::ProfileCredentialRemove => self.open_profile_credential_confirmation(),
+            ActionId::AuditFilterTime
+            | ActionId::AuditFilterActor
+            | ActionId::AuditFilterAction
+            | ActionId::AuditFilterTarget => self.open_audit_filter(action_id),
+            ActionId::AuditOpenTarget => self.open_audit_reference(true),
+            ActionId::AuditOpenPolicyDiff => self.open_audit_investigation(),
             ActionId::BatchReviewOutcomes => self.open_selected_batch_result(),
             ActionId::BatchRetrySelected => self.retry_selected_batch(),
         }
@@ -1847,6 +2371,24 @@ impl App {
             | ActionId::ActivityOpenActor
             | ActionId::ActivityOpenTarget => self.admin.profile.is_some(),
             ActionId::SettingsInspectCapabilities => self.admin.profile.is_some(),
+            ActionId::AdminPolicyEdit
+            | ActionId::AdminPolicyEditorReopen
+            | ActionId::AdminPolicyCandidateDiscard
+            | ActionId::AdminPolicyRemoteRefresh
+            | ActionId::AdminPolicyValidate
+            | ActionId::AdminPolicyPreview
+            | ActionId::AdminPolicyDiff
+            | ActionId::AdminPolicyApply
+            | ActionId::AdminPolicyWorkflowClose
+            | ActionId::AdminCredentialAuthKeyCreate
+            | ActionId::AdminCredentialRevoke
+            | ActionId::ProfileCredentialRemove => self.phase_seven_admin_available(action_id),
+            ActionId::AuditFilterTime
+            | ActionId::AuditFilterActor
+            | ActionId::AuditFilterAction
+            | ActionId::AuditFilterTarget
+            | ActionId::AuditOpenTarget
+            | ActionId::AuditOpenPolicyDiff => self.admin.profile.is_some(),
             action_id if is_admin_mutation_action(action_id) => {
                 self.admin_mutation_available(action_id)
             }
@@ -1885,6 +2427,16 @@ impl App {
             return false;
         }
         match action_id {
+            ActionId::AdminPolicyApply => self
+                .policy_workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow.state() == PolicyState::ReadyToApply),
+            ActionId::AdminPolicyCandidateDiscard => self.policy_workflow.is_some(),
+            ActionId::AdminCredentialAuthKeyCreate => self.admin_scope_allowed("auth_keys:write"),
+            ActionId::AdminCredentialRevoke => self
+                .selected_credential()
+                .is_some_and(|credential| !credential.id.is_empty()),
+            ActionId::ProfileCredentialRemove => true,
             ActionId::AdminRoutesReplaceApprovals => {
                 self.admin.routes.state == AdminResourceState::Ready
                     && self
@@ -1919,12 +2471,92 @@ impl App {
         }
     }
 
+    fn phase_seven_admin_available(&self, action_id: ActionId) -> bool {
+        if self.admin.profile.is_none() {
+            return false;
+        }
+        if matches!(
+            action_id,
+            ActionId::AdminPolicyEdit | ActionId::AdminPolicyEditorReopen
+        ) && !crate::temporary::policy_editing_supported()
+        {
+            return false;
+        }
+        if matches!(action_id, ActionId::ProfileCredentialRemove) {
+            return self
+                .resolved_config
+                .profiles
+                .contains_key(self.admin.profile.as_deref().map_or("", |value| value));
+        }
+        if matches!(action_id, ActionId::AdminCredentialAuthKeyCreate)
+            && !self.admin_scope_allowed("auth_keys:write")
+        {
+            return false;
+        }
+        if matches!(action_id, ActionId::AdminCredentialRevoke) {
+            let Some(credential) = self.selected_credential() else {
+                return false;
+            };
+            let credential_type = crate::admin::key_mutations::remote_credential_type(credential);
+            let Some(read_scope) = credential_type.read_scope() else {
+                return false;
+            };
+            let Some(write_scope) = credential_type.write_scope() else {
+                return false;
+            };
+            if !credential_type.supported_for_revoke()
+                || !self.admin_scope_allowed(read_scope)
+                || !self.admin_scope_allowed(write_scope)
+            {
+                return false;
+            }
+        }
+        if matches!(
+            action_id,
+            ActionId::AdminPolicyApply
+                | ActionId::AdminCredentialAuthKeyCreate
+                | ActionId::AdminCredentialRevoke
+        ) && (self.resolved_config.read_only || self.admin.profile_read_only)
+        {
+            return false;
+        }
+        match action_id {
+            ActionId::AdminPolicyEdit | ActionId::AdminPolicyRemoteRefresh => {
+                self.admin_scope_allowed("policy_file:read")
+            }
+            ActionId::AdminPolicyEditorReopen => self
+                .policy_workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow.candidate_path().is_some()),
+            ActionId::AdminPolicyCandidateDiscard
+            | ActionId::AdminPolicyValidate
+            | ActionId::AdminPolicyPreview
+            | ActionId::AdminPolicyDiff
+            | ActionId::AdminPolicyWorkflowClose => self.policy_workflow.is_some(),
+            ActionId::AdminPolicyApply => {
+                self.admin_scope_allowed("policy_file:write")
+                    && self
+                        .policy_workflow
+                        .as_ref()
+                        .is_some_and(|workflow| workflow.state() == PolicyState::ReadyToApply)
+            }
+            ActionId::AdminCredentialAuthKeyCreate => true,
+            ActionId::AdminCredentialRevoke => self.selected_credential().is_some(),
+            _ => false,
+        }
+    }
+
     fn admin_scope_allowed(&self, scope: &str) -> bool {
         self.admin.requested_scopes.is_empty()
             || self.admin.requested_scopes.iter().any(|value| {
                 value == scope
                     || value == "*"
+                    || value == "all"
                     || value.ends_with(":*") && scope.starts_with(value.trim_end_matches('*'))
+                    || scope
+                        .strip_suffix(":read")
+                        .or_else(|| scope.strip_suffix(":write"))
+                        .is_some_and(|base| value == base)
             })
     }
 
@@ -1957,6 +2589,16 @@ impl App {
         }
         if self.resolved_config.read_only && is_mutating_action(action_id) {
             return Some("read-only mode blocks local mutations".to_owned());
+        }
+        if matches!(
+            action_id,
+            ActionId::AdminPolicyEdit | ActionId::AdminPolicyEditorReopen
+        ) && !crate::temporary::policy_editing_supported()
+        {
+            return Some(
+                "policy editing is unavailable: secure user-only temporary storage is unsupported on this platform"
+                    .to_owned(),
+            );
         }
         if is_admin_mutation_action(action_id)
             && (self.resolved_config.read_only || self.admin.profile_read_only)
@@ -2394,6 +3036,913 @@ impl App {
         Vec::new()
     }
 
+    fn admin_policy_context(&self) -> Option<(String, String, String)> {
+        let profile = self.admin.profile.clone()?;
+        let tailnet = self.admin.tailnet.clone()?;
+        let credential = self
+            .resolved_config
+            .profiles
+            .get(&profile)?
+            .credential
+            .clone();
+        Some((profile, tailnet, credential))
+    }
+
+    fn open_policy_workflow(&mut self) -> Vec<Effect> {
+        if self.policy_workflow.is_some() {
+            self.runtime_error = Some("a policy workflow is already open".to_owned());
+            return Vec::new();
+        }
+        let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+            self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+            return Vec::new();
+        };
+        let workflow_id = self.next_policy_workflow_id;
+        self.next_policy_workflow_id = self.next_policy_workflow_id.saturating_add(1);
+        self.policy_workflow = Some(PolicyWorkflow::opening(
+            workflow_id,
+            profile.clone(),
+            tailnet.clone(),
+            self.now,
+        ));
+        self.overlays.push(Overlay::PolicyEditor);
+        vec![Effect::StartPolicyRemoteFetch {
+            workflow_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token: self.admin_environment_token.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+        }]
+    }
+
+    fn refresh_policy_workflow(&mut self) -> Vec<Effect> {
+        let Some(workflow) = self.policy_workflow.as_ref() else {
+            return self.open_policy_workflow();
+        };
+        let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+            self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+            return Vec::new();
+        };
+        vec![Effect::StartPolicyRemoteFetch {
+            workflow_id: workflow.workflow_id(),
+            profile,
+            tailnet,
+            credential,
+            environment_token: self.admin_environment_token.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+        }]
+    }
+
+    fn start_policy_editor(&mut self) -> Vec<Effect> {
+        let Some(workflow) = self.policy_workflow.as_ref() else {
+            return Vec::new();
+        };
+        let Some(path) = workflow.candidate_path().map(PathBuf::from) else {
+            self.runtime_error = Some("the policy temporary file is unavailable".to_owned());
+            return Vec::new();
+        };
+        let command = match crate::terminal::EditorCommand::from_environment() {
+            Ok(command) => command,
+            Err(error) => {
+                self.runtime_error = Some(error.to_string());
+                if let Some(workflow) = self.policy_workflow.as_mut() {
+                    workflow.retain_failure();
+                }
+                return Vec::new();
+            }
+        };
+        let workflow_id = workflow.workflow_id();
+        if let Some(workflow) = self.policy_workflow.as_mut() {
+            workflow.mark_editing_externally();
+        }
+        self.interactive_handoff_active = true;
+        vec![Effect::StartPolicyEditor {
+            workflow_id,
+            command,
+            path,
+        }]
+    }
+
+    fn reopen_policy_editor(&mut self) -> Vec<Effect> {
+        if self.policy_workflow.is_none() {
+            return self.open_policy_workflow();
+        }
+        self.start_policy_editor()
+    }
+
+    fn discard_policy_candidate(&mut self) -> Vec<Effect> {
+        let base = self
+            .policy_workflow
+            .as_ref()
+            .and_then(PolicyWorkflow::base)
+            .cloned();
+        let Some(base) = base else {
+            self.runtime_error = Some("the policy base is unavailable".to_owned());
+            return Vec::new();
+        };
+        self.close_policy_temp_file();
+        self.close_latest_policy_temp_file();
+        match crate::temporary::TemporaryPolicyFile::create(base.bytes()) {
+            Ok(file) => {
+                let path = file.path().to_path_buf();
+                self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
+                if let Some(workflow) = self.policy_workflow.as_mut() {
+                    workflow.discard_candidate();
+                    workflow.set_candidate(base, path);
+                }
+            }
+            Err(error) => self.runtime_error = Some(error.to_string()),
+        }
+        Vec::new()
+    }
+
+    fn validate_policy_candidate(&mut self) -> Vec<Effect> {
+        let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+            self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+            return Vec::new();
+        };
+        if !self.sync_policy_candidate_file() {
+            return Vec::new();
+        }
+        let Some(workflow) = self.policy_workflow.as_ref() else {
+            return Vec::new();
+        };
+        let Some(path) = workflow.candidate_path().map(PathBuf::from) else {
+            self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+            return Vec::new();
+        };
+        let workflow_id = workflow.workflow_id();
+        if let Some(workflow) = self.policy_workflow.as_mut() {
+            workflow.mark_validating();
+        }
+        vec![Effect::StartPolicyValidate {
+            workflow_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token: self.admin_environment_token.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+            path,
+        }]
+    }
+
+    fn preview_policy_candidate(&mut self) -> Vec<Effect> {
+        let selector = self
+            .selected_admin_user()
+            .map_or_else(|| "autogroup:members".to_owned(), |user| user.id.clone());
+        self.overlays
+            .push(Overlay::OperatorForm(OperatorFormState::new(
+                ActionId::AdminPolicyPreview,
+                format!("type=user;previewFor={selector}"),
+                None,
+            )));
+        Vec::new()
+    }
+
+    fn start_policy_preview(
+        &mut self,
+        selector_type: PolicySelectorType,
+        selector: String,
+    ) -> Vec<Effect> {
+        let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+            self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+            return Vec::new();
+        };
+        if !self.sync_policy_candidate_file() {
+            return Vec::new();
+        }
+        let Some(workflow) = self.policy_workflow.as_ref() else {
+            return Vec::new();
+        };
+        let Some(path) = workflow.candidate_path().map(PathBuf::from) else {
+            self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+            return Vec::new();
+        };
+        let workflow_id = workflow.workflow_id();
+        if let Some(workflow) = self.policy_workflow.as_mut() {
+            workflow.mark_previewing();
+        }
+        vec![Effect::StartPolicyPreview {
+            workflow_id,
+            profile,
+            tailnet,
+            credential,
+            environment_token: self.admin_environment_token.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+            path,
+            selector_type,
+            selector,
+        }]
+    }
+
+    fn diff_policy_candidate(&mut self) -> Vec<Effect> {
+        if !self.sync_policy_candidate_file() {
+            return Vec::new();
+        }
+        let Some(workflow) = self.policy_workflow.as_mut() else {
+            return Vec::new();
+        };
+        let Some((base, candidate)) = workflow.base().zip(workflow.candidate()) else {
+            self.runtime_error = Some("both policy base and candidate are required".to_owned());
+            return Vec::new();
+        };
+        match crate::admin::policy_mutations::build_policy_diff(base, candidate) {
+            Ok(diff) => {
+                let _ = workflow.set_diff(diff);
+            }
+            Err(error) => self.runtime_error = Some(error.to_string()),
+        }
+        Vec::new()
+    }
+
+    fn open_policy_apply_confirmation(&mut self) -> Vec<Effect> {
+        if !self.sync_policy_candidate_file() {
+            return Vec::new();
+        }
+        let Some(workflow) = self.policy_workflow.as_ref() else {
+            return Vec::new();
+        };
+        if let Err(error) = workflow.apply_guard(self.now) {
+            self.runtime_error = Some(error.to_string());
+            return Vec::new();
+        }
+        let Some(candidate) = workflow.candidate() else {
+            return Vec::new();
+        };
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: ActionId::AdminPolicyApply,
+                mutation: None,
+                admin_mutation: None,
+                admin_batch: None,
+                service_request: None,
+                handoff: None,
+                prompt: "Apply this exact policy candidate to the remote tailnet?".to_owned(),
+                required_phrase: Some("APPLY POLICY".to_owned()),
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines: vec![
+                    format!(
+                        "base hash: {}",
+                        workflow.base().map_or("not returned", |value| value.hash())
+                    ),
+                    format!("candidate hash: {}", candidate.hash()),
+                    format!(
+                        "base observed: {}",
+                        workflow
+                            .base()
+                            .map_or("not returned".to_owned(), |value| value
+                                .observed_at()
+                                .to_string())
+                    ),
+                    format!("candidate observed: {}", candidate.observed_at()),
+                    format!("candidate bytes: {}", candidate.len()),
+                    format!("validation bound: {}", workflow.validation().is_some()),
+                    format!(
+                        "validation/tests: {}",
+                        workflow.validation().map_or_else(
+                            || "not returned".to_owned(),
+                            |value| if value.valid {
+                                "server passed".to_owned()
+                            } else {
+                                "server failed".to_owned()
+                            }
+                        )
+                    ),
+                    format!("permission preview bound: {}", workflow.preview().is_some()),
+                    format!(
+                        "diff: {}",
+                        workflow.diff().map_or_else(
+                            || "not computed; press d for the complete textual diff".to_owned(),
+                            |value| format!(
+                                "+{} -{}; press d for the complete textual diff",
+                                value.additions, value.removals
+                            )
+                        )
+                    ),
+                    "final server validation runs immediately before one save request".to_owned(),
+                    "remote bytes are fetched and compared after save".to_owned(),
+                    "the final hash check is not a server-atomic compare-and-swap".to_owned(),
+                ],
+                redacted_argv: Vec::new(),
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn sync_policy_candidate_file(&mut self) -> bool {
+        let Some((path, expected_hash, content_type)) =
+            self.policy_workflow.as_ref().and_then(|workflow| {
+                workflow
+                    .candidate()
+                    .zip(workflow.candidate_path())
+                    .map(|(candidate, path)| {
+                        (
+                            path.to_path_buf(),
+                            candidate.hash().to_owned(),
+                            candidate.content_type().to_owned(),
+                        )
+                    })
+            })
+        else {
+            return true;
+        };
+        let bytes = match crate::temporary::TemporaryPolicyFile::read_candidate_path(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if let Some(workflow) = self.policy_workflow.as_mut() {
+                    workflow.retain_failure();
+                }
+                self.runtime_error = Some(error.to_string());
+                return false;
+            }
+        };
+        if crate::domain::policy_workflow::hash_bytes(&bytes) == expected_hash {
+            return true;
+        }
+        let document =
+            match crate::domain::policy_workflow::PolicyDocument::from_bytes_with_content_type(
+                bytes,
+                content_type,
+                self.now,
+            ) {
+                Ok(document) => document,
+                Err(error) => {
+                    if let Some(workflow) = self.policy_workflow.as_mut() {
+                        workflow.retain_failure();
+                    }
+                    self.runtime_error = Some(error.to_string());
+                    return false;
+                }
+            };
+        if let Some(workflow) = self.policy_workflow.as_mut() {
+            workflow.set_candidate(document, path);
+        }
+        self.runtime_error = Some(
+            "the temporary candidate changed; validation, preview, and diff were invalidated"
+                .to_owned(),
+        );
+        false
+    }
+
+    fn open_policy_discard_confirmation(&mut self) -> Vec<Effect> {
+        let Some(workflow) = self.policy_workflow.as_ref() else {
+            self.runtime_error = Some("the policy workflow is not open".to_owned());
+            return Vec::new();
+        };
+        let replacing_remote =
+            workflow.latest_remote().is_some() && workflow.state() == PolicyState::RemoteConflict;
+        let phrase = if replacing_remote {
+            "REPLACE POLICY CANDIDATE"
+        } else {
+            "DISCARD POLICY CANDIDATE"
+        };
+        let mut preview_lines = vec![
+            format!(
+                "base hash: {}",
+                workflow.base().map_or("not returned", |value| value.hash())
+            ),
+            format!(
+                "candidate hash: {}",
+                workflow
+                    .candidate()
+                    .map_or("not returned", |value| value.hash())
+            ),
+            format!(
+                "candidate path: {}",
+                workflow
+                    .candidate_path()
+                    .map_or("not retained".to_owned(), |value| value
+                        .display()
+                        .to_string())
+            ),
+        ];
+        if replacing_remote {
+            preview_lines.extend([
+                format!(
+                    "latest remote hash: {}",
+                    workflow
+                        .latest_remote()
+                        .map_or("not returned", |value| value.hash())
+                ),
+                format!(
+                    "latest remote path: {}",
+                    workflow
+                        .latest_remote_path()
+                        .map_or("not retained".to_owned(), |value| value
+                            .display()
+                            .to_string())
+                ),
+                "replace candidate with latest remote bytes; no merge will be attempted".to_owned(),
+            ]);
+        } else {
+            preview_lines
+                .push("the candidate will be replaced with the unchanged base bytes".to_owned());
+        }
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: ActionId::AdminPolicyCandidateDiscard,
+                mutation: None,
+                admin_mutation: None,
+                admin_batch: None,
+                service_request: None,
+                handoff: None,
+                prompt: if replacing_remote {
+                    "Replace the retained candidate with the latest remote policy?".to_owned()
+                } else {
+                    "Discard the retained policy candidate?".to_owned()
+                },
+                required_phrase: Some(phrase.to_owned()),
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines,
+                redacted_argv: Vec::new(),
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn open_policy_close_confirmation(&mut self) -> Vec<Effect> {
+        let Some(workflow) = self.policy_workflow.as_ref() else {
+            return Vec::new();
+        };
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: ActionId::AdminPolicyWorkflowClose,
+                mutation: None,
+                admin_mutation: None,
+                admin_batch: None,
+                service_request: None,
+                handoff: None,
+                prompt: "Close the policy workflow and remove its temporary files?".to_owned(),
+                required_phrase: Some("CLOSE POLICY WORKFLOW".to_owned()),
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines: vec![
+                    format!("state: {}", workflow.state().label()),
+                    format!(
+                        "candidate path: {}",
+                        workflow
+                            .candidate_path()
+                            .map_or("not retained".to_owned(), |value| value
+                                .display()
+                                .to_string())
+                    ),
+                    "closing destroys the candidate and any retained latest-remote copy".to_owned(),
+                ],
+                redacted_argv: Vec::new(),
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn replace_policy_candidate_with_latest(&mut self) -> Vec<Effect> {
+        let Some(latest) = self
+            .policy_workflow
+            .as_ref()
+            .and_then(PolicyWorkflow::latest_remote)
+            .cloned()
+        else {
+            self.runtime_error = Some("the latest remote policy is unavailable".to_owned());
+            return Vec::new();
+        };
+        self.close_policy_temp_file();
+        let file = match crate::temporary::TemporaryPolicyFile::create(latest.bytes()) {
+            Ok(file) => file,
+            Err(error) => {
+                self.runtime_error = Some(error.to_string());
+                return Vec::new();
+            }
+        };
+        let path = file.path().to_path_buf();
+        self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
+        self.close_latest_policy_temp_file();
+        if let Some(workflow) = self.policy_workflow.as_mut() {
+            workflow.set_base(latest.clone());
+            workflow.set_candidate(latest, path);
+        }
+        Vec::new()
+    }
+
+    fn close_policy_workflow(&mut self) -> Vec<Effect> {
+        self.close_policy_temp_file();
+        self.close_latest_policy_temp_file();
+        if let Some(workflow) = self.policy_workflow.as_mut() {
+            workflow.close();
+        }
+        self.policy_workflow = None;
+        self.pending_auth_key_request = None;
+        self.pending_credential_revoke = None;
+        self.overlays
+            .retain(|overlay| !matches!(overlay, Overlay::PolicyEditor));
+        Vec::new()
+    }
+
+    fn close_policy_temp_file(&mut self) {
+        if let Some(file) = self.policy_temp_file.take() {
+            match file.lock() {
+                Ok(mut file) => {
+                    if let Err(error) = file.close() {
+                        self.runtime_error = Some(error.to_string());
+                    }
+                }
+                Err(_) => {
+                    self.runtime_error =
+                        Some("policy temporary storage could not be locked".to_owned())
+                }
+            }
+        }
+    }
+
+    fn close_latest_policy_temp_file(&mut self) {
+        if let Some(file) = self.latest_policy_temp_file.take() {
+            match file.lock() {
+                Ok(mut file) => {
+                    if let Err(error) = file.close() {
+                        self.runtime_error = Some(error.to_string());
+                    }
+                }
+                Err(_) => {
+                    self.runtime_error =
+                        Some("latest remote policy storage could not be locked".to_owned());
+                }
+            }
+        }
+    }
+
+    fn open_auth_key_confirmation(&mut self) -> Vec<Effect> {
+        self.overlays
+            .push(Overlay::OperatorForm(OperatorFormState::new(
+                ActionId::AdminCredentialAuthKeyCreate,
+                "description=tale-generated;expiry=7d;reusable=false;ephemeral=true;preauthorized=false;tags="
+                    .to_owned(),
+                None,
+            )));
+        Vec::new()
+    }
+
+    fn open_auth_key_form_with_request(
+        &mut self,
+        request: crate::admin::key_mutations::AuthKeyCreateRequest,
+    ) -> Vec<Effect> {
+        if let Err(error) = request.validate() {
+            self.runtime_error = Some(error.to_string());
+            return Vec::new();
+        }
+        self.pending_auth_key_request = Some(request.clone());
+        let expiry_days = request.expiry_seconds / (24 * 60 * 60);
+        let tags = request.tags.join(",");
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                action_id: ActionId::AdminCredentialAuthKeyCreate,
+                mutation: None,
+                admin_mutation: None,
+                admin_batch: None,
+                service_request: None,
+                handoff: None,
+                prompt:
+                    "Create this auth key? The secret will be shown once and cannot be recovered."
+                        .to_owned(),
+                required_phrase: Some("CREATE AUTH KEY".to_owned()),
+                input: String::new(),
+                lose_ssh_checked: false,
+                preview_lines: vec![
+                    format!(
+                        "profile: {}",
+                        self.admin.profile.as_deref().unwrap_or("not selected")
+                    ),
+                    format!(
+                        "tailnet: {}",
+                        self.admin.tailnet.as_deref().unwrap_or("not selected")
+                    ),
+                    "endpoint: POST /tailnet/{tailnet}/keys".to_owned(),
+                    "scope: auth_keys".to_owned(),
+                    "type: auth".to_owned(),
+                    format!(
+                        "description: {}",
+                        request.description.as_deref().unwrap_or("none")
+                    ),
+                    format!("expiry: {expiry_days} days"),
+                    format!("reusable: {}", request.reusable),
+                    format!("ephemeral: {}", request.ephemeral),
+                    format!("preauthorized: {}", request.preauthorized),
+                    format!(
+                        "tags: {}",
+                        if tags.is_empty() {
+                            "none"
+                        } else {
+                            tags.as_str()
+                        }
+                    ),
+                    format!(
+                        "expires at: {}",
+                        self.now.saturating_add(request.expiry_seconds)
+                    ),
+                ],
+                redacted_argv: Vec::new(),
+                error: None,
+            })));
+        Vec::new()
+    }
+
+    fn selected_credential(&self) -> Option<&crate::domain::credential::CredentialMetadata> {
+        self.admin
+            .credentials
+            .snapshot
+            .as_ref()?
+            .records
+            .get(self.admin_credential_selected)
+    }
+
+    fn open_credential_revoke_confirmation(&mut self) -> Vec<Effect> {
+        let Some(credential) = self.selected_credential() else {
+            self.runtime_error = Some("select a credential before revoking it".to_owned());
+            return Vec::new();
+        };
+        let credential_type = crate::admin::key_mutations::remote_credential_type(credential);
+        if !credential_type.supported_for_revoke() {
+            self.runtime_error = Some(
+                "the selected credential type has no supported Phase 7 revocation contract"
+                    .to_owned(),
+            );
+            return Vec::new();
+        }
+        let Some(read_scope) = credential_type.read_scope() else {
+            self.runtime_error = Some("the selected credential read scope is unknown".to_owned());
+            return Vec::new();
+        };
+        let Some(write_scope) = credential_type.write_scope() else {
+            self.runtime_error = Some("the selected credential write scope is unknown".to_owned());
+            return Vec::new();
+        };
+        if !self.admin_scope_allowed(read_scope) || !self.admin_scope_allowed(write_scope) {
+            self.runtime_error = Some(format!(
+                "revocation requires the selected credential's {read_scope} and {write_scope} scopes"
+            ));
+            return Vec::new();
+        }
+        let key_id = credential.id.clone();
+        let Some((profile, tailnet, credential_reference)) = self.admin_policy_context() else {
+            self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+            return Vec::new();
+        };
+        self.pending_credential_revoke = Some(key_id.clone());
+        vec![Effect::StartCredentialDetail {
+            key_id,
+            profile,
+            tailnet,
+            credential: credential_reference,
+            environment_token: self.admin_environment_token.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+        }]
+    }
+
+    fn open_credential_revoke_with_metadata(
+        &mut self,
+        credential: crate::domain::credential::CredentialMetadata,
+    ) -> Vec<Effect> {
+        let credential_type = crate::admin::key_mutations::remote_credential_type(&credential);
+        if !credential_type.supported_for_revoke() {
+            self.runtime_error = Some(
+                "the selected credential type has no supported Phase 7 revocation contract"
+                    .to_owned(),
+            );
+            return Vec::new();
+        }
+        let Some(read_scope) = credential_type.read_scope() else {
+            self.runtime_error = Some("the selected credential read scope is unknown".to_owned());
+            return Vec::new();
+        };
+        let Some(write_scope) = credential_type.write_scope() else {
+            self.runtime_error = Some("the selected credential write scope is unknown".to_owned());
+            return Vec::new();
+        };
+        if !self.admin_scope_allowed(read_scope) || !self.admin_scope_allowed(write_scope) {
+            self.runtime_error = Some(format!(
+                "revocation requires the selected credential's {read_scope} and {write_scope} scopes"
+            ));
+            return Vec::new();
+        }
+        if credential.invalid == Some(true) || credential.revoked_at.is_some() {
+            self.runtime_error = Some("the credential is already invalid or revoked".to_owned());
+            return Vec::new();
+        }
+        let phrase = format!("REVOKE {}", credential.id);
+        self.pending_credential_revoke = Some(credential.id.clone());
+        let references = self
+            .resolved_config
+            .profiles
+            .iter()
+            .filter(|(_, profile)| profile.credential == credential.id)
+            .map(|(profile, _)| format!("{profile} -> {}", credential.id))
+            .collect::<Vec<_>>();
+        let display_list = |values: &[String]| {
+            if values.is_empty() {
+                "none returned".to_owned()
+            } else {
+                values.join(",")
+            }
+        };
+        self.overlays
+            .push(Overlay::Confirmation(Box::new(ConfirmationState {
+            action_id: ActionId::AdminCredentialRevoke,
+            mutation: None,
+            admin_mutation: None,
+            admin_batch: None,
+            service_request: None,
+            handoff: None,
+            prompt:
+                "Revoke this remote credential? Tale will issue one DELETE and then read it back."
+                    .to_owned(),
+            required_phrase: Some(phrase),
+            input: String::new(),
+            lose_ssh_checked: false,
+            preview_lines: vec![
+                format!("id: {}", credential.id),
+                format!("type: {}", credential.key_type),
+                format!(
+                    "description: {}",
+                    credential
+                        .description
+                        .as_deref()
+                        .map_or("not returned", |value| value)
+                ),
+                format!(
+                    "owner: {}",
+                    credential
+                        .user_id
+                        .as_deref()
+                        .map_or("not returned", |value| value)
+                ),
+                format!(
+                    "created: {}",
+                    credential
+                        .created_at
+                        .map_or_else(|| "not returned".to_owned(), |value| value.to_string())
+                ),
+                format!(
+                    "expires: {}",
+                    credential
+                        .expires_at
+                        .map_or_else(|| "not returned".to_owned(), |value| value.to_string())
+                ),
+                format!(
+                    "last used: {}",
+                    credential
+                        .last_used_at
+                        .map_or_else(|| "not returned".to_owned(), |value| value.to_string())
+                ),
+                format!("scopes: {}", display_list(&credential.scopes)),
+                format!("tags: {}", display_list(&credential.tags)),
+                format!(
+                    "known dependents: {}",
+                    display_list(&credential.known_dependents)
+                ),
+                format!(
+                    "known Tale profile references: {}",
+                    if references.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        references.join(", ")
+                    }
+                ),
+                "remote revocation and local keyring removal are separate actions".to_owned(),
+            ],
+            redacted_argv: vec!["DELETE /tailnet/{tailnet}/keys/{exact-id}".to_owned()],
+            error: None,
+        })));
+        Vec::new()
+    }
+
+    fn open_profile_credential_confirmation(&mut self) -> Vec<Effect> {
+        let Some(profile) = self.admin.profile.clone() else {
+            self.runtime_error = Some("an active profile is required".to_owned());
+            return Vec::new();
+        };
+        let Some(configuration) = self.resolved_config.profiles.get(&profile) else {
+            self.runtime_error = Some("the active profile configuration is unavailable".to_owned());
+            return Vec::new();
+        };
+        self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
+            action_id: ActionId::ProfileCredentialRemove,
+            mutation: None,
+            admin_mutation: None,
+            admin_batch: None,
+            service_request: None,
+            handoff: None,
+            prompt: "Remove this local Tale credential from the OS keyring? This does not revoke any remote credential.".to_owned(),
+            required_phrase: Some("REMOVE LOCAL CREDENTIAL".to_owned()),
+            input: String::new(),
+            lose_ssh_checked: false,
+            preview_lines: vec![format!("profile: {profile}"), format!("keyring reference: {}", configuration.credential)],
+            redacted_argv: Vec::new(),
+            error: None,
+        })));
+        Vec::new()
+    }
+
+    fn open_audit_investigation(&mut self) -> Vec<Effect> {
+        self.overlays.push(Overlay::AuditInvestigation);
+        Vec::new()
+    }
+
+    fn open_audit_filter(&mut self, action_id: ActionId) -> Vec<Effect> {
+        let input = match action_id {
+            ActionId::AuditFilterTime => format!(
+                "start={};end={}",
+                self.audit_filters
+                    .start
+                    .map_or(String::new(), format_audit_timestamp),
+                self.audit_filters
+                    .end
+                    .map_or(String::new(), format_audit_timestamp)
+            ),
+            ActionId::AuditFilterActor => format!(
+                "id={};display={}",
+                self.audit_filters.actor_id.as_deref().unwrap_or(""),
+                self.audit_filters.actor_display.as_deref().unwrap_or("")
+            ),
+            ActionId::AuditFilterAction => format!(
+                "action={}",
+                self.audit_filters.action.as_deref().unwrap_or("")
+            ),
+            ActionId::AuditFilterTarget => format!(
+                "type={};id={};text={}",
+                self.audit_filters.target_type.as_deref().unwrap_or(""),
+                self.audit_filters.target_id.as_deref().unwrap_or(""),
+                self.audit_filters.text.as_deref().unwrap_or("")
+            ),
+            _ => String::new(),
+        };
+        self.overlays
+            .push(Overlay::OperatorForm(OperatorFormState::new(
+                action_id, input, None,
+            )));
+        Vec::new()
+    }
+
+    fn accept_audit_filter(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        let parsed = parse_audit_filter(state.action_id, &state.input);
+        match parsed {
+            Ok(filters) => {
+                match state.action_id {
+                    ActionId::AuditFilterTime => {
+                        self.audit_filters.start = filters.start;
+                        self.audit_filters.end = filters.end;
+                    }
+                    ActionId::AuditFilterActor => {
+                        self.audit_filters.actor_id = filters.actor_id;
+                        self.audit_filters.actor_display = filters.actor_display;
+                    }
+                    ActionId::AuditFilterAction => self.audit_filters.action = filters.action,
+                    ActionId::AuditFilterTarget => {
+                        self.audit_filters.target_type = filters.target_type;
+                        self.audit_filters.target_id = filters.target_id;
+                        self.audit_filters.text = filters.text;
+                    }
+                    _ => {}
+                }
+                self.admin_activity_selected = 0;
+                self.overlays.pop();
+                self.open_audit_investigation()
+            }
+            Err(error) => {
+                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                    current.error = Some(error);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn copy_secret_result(&mut self) -> Vec<Effect> {
+        let Some(result) = self.secret_result.as_mut() else {
+            self.runtime_error = Some("no one-time secret is open".to_owned());
+            return Vec::new();
+        };
+        let result_id = result.metadata().result_id;
+        let Some(secret) = result.mark_copy_requested() else {
+            self.runtime_error = Some("the one-time secret has already been closed".to_owned());
+            return Vec::new();
+        };
+        vec![Effect::CopySecret { result_id, secret }]
+    }
+
+    fn close_secret_result(&mut self) -> Vec<Effect> {
+        if let Some(result) = self.secret_result.as_mut() {
+            result.close();
+        }
+        self.secret_result = None;
+        self.overlays
+            .retain(|overlay| !matches!(overlay, Overlay::SecretResult));
+        if self.admin.profile.is_some() {
+            self.start_admin_resource_refresh(vec![AdminRefreshResource::Credentials])
+        } else {
+            Vec::new()
+        }
+    }
+
     fn open_login_confirmation(&mut self) -> Vec<Effect> {
         let Some(executable) = self.local_executable.as_ref() else {
             self.runtime_error = Some("local executable has not been discovered".to_owned());
@@ -2651,6 +4200,43 @@ impl App {
     }
 
     fn accept_operator_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+        if matches!(
+            state.action_id,
+            ActionId::AuditFilterTime
+                | ActionId::AuditFilterActor
+                | ActionId::AuditFilterAction
+                | ActionId::AuditFilterTarget
+        ) {
+            return self.accept_audit_filter(state);
+        }
+        if state.action_id == ActionId::AdminPolicyPreview {
+            return match parse_policy_preview_request(&state.input) {
+                Ok((selector_type, selector)) => {
+                    self.overlays.pop();
+                    self.start_policy_preview(selector_type, selector)
+                }
+                Err(error) => {
+                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                        current.error = Some(error);
+                    }
+                    Vec::new()
+                }
+            };
+        }
+        if state.action_id == ActionId::AdminCredentialAuthKeyCreate {
+            return match parse_auth_key_request(&state.input) {
+                Ok(request) => {
+                    self.overlays.pop();
+                    self.open_auth_key_form_with_request(request)
+                }
+                Err(error) => {
+                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+                        current.error = Some(error);
+                    }
+                    Vec::new()
+                }
+            };
+        }
         if is_admin_mutation_action(state.action_id) {
             return self.accept_admin_form(state);
         }
@@ -3584,6 +5170,179 @@ impl App {
             self.overlays.pop();
             return Vec::new();
         }
+        if state.action_id == ActionId::AdminPolicyCandidateDiscard {
+            self.overlays.pop();
+            if state.required_phrase.as_deref() == Some("REPLACE POLICY CANDIDATE") {
+                return self.replace_policy_candidate_with_latest();
+            }
+            return self.discard_policy_candidate();
+        }
+        if state.action_id == ActionId::AdminPolicyWorkflowClose {
+            self.overlays.pop();
+            return self.close_policy_workflow();
+        }
+        if state.action_id == ActionId::AdminPolicyApply {
+            if self.resolved_config.read_only
+                || self.admin.profile_read_only
+                || !self.admin_scope_allowed("policy_file:write")
+            {
+                self.set_confirmation_error(
+                    "policy apply is no longer permitted by the current read-only mode or scope",
+                );
+                return Vec::new();
+            }
+            if !self.sync_policy_candidate_file() {
+                return Vec::new();
+            }
+            let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+                self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+                return Vec::new();
+            };
+            let Some(workflow) = self.policy_workflow.as_mut() else {
+                self.runtime_error = Some("the policy workflow is no longer open".to_owned());
+                return Vec::new();
+            };
+            if let Err(error) = workflow.apply_guard(self.now) {
+                if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
+                    current.error = Some(error.to_string());
+                }
+                return Vec::new();
+            }
+            let Some(path) = workflow.candidate_path().map(PathBuf::from) else {
+                self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+                return Vec::new();
+            };
+            let Some(base_hash) = workflow.base().map(|value| value.hash().to_owned()) else {
+                self.runtime_error = Some("the policy base is unavailable".to_owned());
+                return Vec::new();
+            };
+            let Some(candidate_hash) = workflow.candidate().map(|value| value.hash().to_owned())
+            else {
+                self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+                return Vec::new();
+            };
+            workflow.mark_applying();
+            self.overlays.pop();
+            return vec![Effect::StartPolicyApply {
+                workflow_id: workflow.workflow_id(),
+                profile,
+                tailnet,
+                credential,
+                environment_token: self.admin_environment_token.clone(),
+                timeout: self.resolved_config.admin.request_timeout,
+                path,
+                expected_base_hash: base_hash,
+                expected_candidate_hash: candidate_hash,
+            }];
+        }
+        if state.action_id == ActionId::AdminCredentialAuthKeyCreate {
+            if self.resolved_config.read_only
+                || self.admin.profile_read_only
+                || !self.admin_scope_allowed("auth_keys:write")
+            {
+                self.set_confirmation_error(
+                    "auth-key creation is no longer permitted by the current read-only mode or scope",
+                );
+                return Vec::new();
+            }
+            let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+                self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+                return Vec::new();
+            };
+            let Some(request) = self.pending_auth_key_request.take() else {
+                self.runtime_error = Some("the auth-key request is no longer available".to_owned());
+                return Vec::new();
+            };
+            if let Err(error) = request.validate() {
+                self.runtime_error = Some(error.to_string());
+                return Vec::new();
+            }
+            let result_id = self.next_secret_result_id;
+            self.next_secret_result_id = self.next_secret_result_id.saturating_add(1);
+            self.pending_auth_key_result = Some(result_id);
+            self.overlays.pop();
+            return vec![Effect::StartAuthKeyCreate {
+                result_id,
+                profile,
+                tailnet,
+                credential,
+                environment_token: self.admin_environment_token.clone(),
+                timeout: self.resolved_config.admin.request_timeout,
+                request,
+            }];
+        }
+        if state.action_id == ActionId::AdminCredentialRevoke {
+            let Some(key_id) = state
+                .required_phrase
+                .as_deref()
+                .and_then(|value| value.strip_prefix("REVOKE "))
+            else {
+                self.runtime_error = Some("the credential revoke target is unavailable".to_owned());
+                return Vec::new();
+            };
+            if self.pending_credential_revoke.as_deref() != Some(key_id) {
+                self.set_confirmation_error(
+                    "the credential detail is no longer current; reopen revocation",
+                );
+                return Vec::new();
+            }
+            if self.resolved_config.read_only || self.admin.profile_read_only {
+                self.set_confirmation_error("read-only mode blocks remote credential revocation");
+                return Vec::new();
+            }
+            let Some(selected) = self.selected_credential() else {
+                self.set_confirmation_error("the selected credential is no longer available");
+                return Vec::new();
+            };
+            let credential_type = crate::admin::key_mutations::remote_credential_type(selected);
+            let Some(read_scope) = credential_type.read_scope() else {
+                self.set_confirmation_error("the selected credential read scope is unknown");
+                return Vec::new();
+            };
+            let Some(write_scope) = credential_type.write_scope() else {
+                self.set_confirmation_error("the selected credential write scope is unknown");
+                return Vec::new();
+            };
+            if selected.id != key_id
+                || !credential_type.supported_for_revoke()
+                || selected.invalid == Some(true)
+                || selected.revoked_at.is_some()
+                || !self.admin_scope_allowed(read_scope)
+                || !self.admin_scope_allowed(write_scope)
+            {
+                self.set_confirmation_error(
+                    "the selected credential changed or is no longer revocable; reopen revocation",
+                );
+                return Vec::new();
+            }
+            let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
+                self.runtime_error = Some("an authenticated admin profile is required".to_owned());
+                return Vec::new();
+            };
+            self.overlays.pop();
+            return vec![Effect::StartCredentialRevoke {
+                key_id: key_id.to_owned(),
+                profile,
+                tailnet,
+                credential,
+                environment_token: self.admin_environment_token.clone(),
+                timeout: self.resolved_config.admin.request_timeout,
+            }];
+        }
+        if state.action_id == ActionId::ProfileCredentialRemove {
+            let Some(profile) = self.admin.profile.clone() else {
+                self.runtime_error = Some("an active profile is required".to_owned());
+                return Vec::new();
+            };
+            let Some(configuration) = self.resolved_config.profiles.get(&profile) else {
+                self.runtime_error =
+                    Some("the active profile configuration is unavailable".to_owned());
+                return Vec::new();
+            };
+            let reference = configuration.credential.clone();
+            self.overlays.pop();
+            return vec![Effect::StartProfileCredentialRemove { profile, reference }];
+        }
         if let Some(mut request) = state.admin_mutation {
             if !self.admin_mutation_available(request.action_id) {
                 let reason = self
@@ -3939,6 +5698,21 @@ impl App {
             );
             return Vec::new();
         }
+        self.close_policy_temp_file();
+        self.close_latest_policy_temp_file();
+        if let Some(workflow) = self.policy_workflow.as_mut() {
+            workflow.close();
+        }
+        self.policy_workflow = None;
+        self.pending_auth_key_request = None;
+        self.pending_auth_key_result = None;
+        self.pending_credential_revoke = None;
+        if let Some(result) = self.secret_result.as_mut() {
+            result.close();
+        }
+        self.secret_result = None;
+        self.overlays
+            .retain(|overlay| !matches!(overlay, Overlay::PolicyEditor | Overlay::SecretResult));
         let preflight_locks = self
             .admin_preflight_locks
             .iter()
@@ -3982,6 +5756,7 @@ impl App {
         self.composed_devices.clear();
         self.admin_user_selected = 0;
         self.admin_route_selected = 0;
+        self.admin_credential_selected = 0;
         self.admin_activity_selected = 0;
         let mut effects = vec![Effect::CancelAdminRefresh];
         if let Some(previous) = previous_profile {
@@ -6502,6 +8277,17 @@ impl App {
     fn request_shutdown(&mut self, reason: ShutdownReason) -> Vec<Effect> {
         if matches!(self.shutdown_state, ShutdownState::Running) {
             self.shutdown_state = ShutdownState::Requested(reason);
+            self.close_policy_temp_file();
+            self.close_latest_policy_temp_file();
+            if let Some(workflow) = self.policy_workflow.as_mut() {
+                workflow.close();
+            }
+            self.policy_workflow = None;
+            self.pending_auth_key_result = None;
+            if let Some(result) = self.secret_result.as_mut() {
+                result.close();
+            }
+            self.secret_result = None;
             self.overlays.clear();
             self.admin_environment_token = None;
             self.render_invalidated = true;
@@ -7646,30 +9432,47 @@ impl App {
     }
 
     fn move_admin_activity_selection(&mut self, offset: isize) {
-        let length = self
-            .admin
-            .activity
-            .snapshot
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.events.len());
+        let length = self.admin.activity.snapshot.as_ref().map_or(0, |snapshot| {
+            snapshot.filtered_events(&self.audit_filters).len()
+        });
         self.admin_activity_selected =
             move_bounded_index(self.admin_activity_selected, length, offset);
     }
 
     fn selected_admin_activity(&self) -> Option<&crate::domain::activity::AuditEvent> {
-        self.admin
-            .activity
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.events.get(self.admin_activity_selected))
+        self.admin.activity.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .filtered_events(&self.audit_filters)
+                .into_iter()
+                .nth(self.admin_activity_selected)
+        })
+    }
+
+    pub(crate) fn selected_audit_event_for_view(
+        &self,
+    ) -> Option<&crate::domain::activity::AuditEvent> {
+        self.selected_admin_activity()
     }
 
     fn open_audit_reference(&mut self, target: bool) -> Vec<Effect> {
-        let id = self.selected_admin_activity().and_then(|event| {
+        let selected = self.selected_admin_activity().cloned();
+        let (kind, id) = selected.as_ref().map_or((None, None), |event| {
             if target {
-                event.target.as_ref().and_then(|value| value.id.clone())
+                (
+                    event
+                        .target
+                        .as_ref()
+                        .and_then(|value| value.kind.as_deref().map(str::to_ascii_lowercase)),
+                    event.target.as_ref().and_then(|value| value.id.clone()),
+                )
             } else {
-                event.actor.as_ref().and_then(|value| value.id.clone())
+                (
+                    event
+                        .actor
+                        .as_ref()
+                        .and_then(|value| value.kind.as_deref().map(str::to_ascii_lowercase)),
+                    event.actor.as_ref().and_then(|value| value.id.clone()),
+                )
             }
         });
         let Some(id) = id else {
@@ -7677,43 +9480,109 @@ impl App {
                 Some("the selected audit record has no exact reference ID".to_owned());
             return Vec::new();
         };
-        if let Some(index) = self
-            .admin
-            .users
-            .snapshot
-            .as_ref()
-            .and_then(|users| users.iter().position(|user| user.id == id))
-        {
-            self.admin_user_selected = index;
-            self.navigate(Route::Users);
-            return Vec::new();
+        if target {
+            match kind.as_deref() {
+                Some("dns") | Some("nameserver") | Some("searchpath") => {
+                    self.navigate(Route::Dns);
+                    return Vec::new();
+                }
+                Some("route") | Some("device_route") => {
+                    if self
+                        .admin
+                        .route_observations()
+                        .iter()
+                        .any(|route| route.device_id == id)
+                    {
+                        self.navigate(Route::Routes);
+                        return Vec::new();
+                    }
+                    self.runtime_error = Some(
+                        "the exact audit route reference is not in the current snapshot".to_owned(),
+                    );
+                    return Vec::new();
+                }
+                Some("credential") | Some("key") | Some("auth_key") => {
+                    if let Some(index) =
+                        self.admin
+                            .credentials
+                            .snapshot
+                            .as_ref()
+                            .and_then(|snapshot| {
+                                snapshot.records.iter().position(|record| record.id == id)
+                            })
+                    {
+                        self.admin_credential_selected = index;
+                        self.navigate(Route::Credentials);
+                        return Vec::new();
+                    }
+                    self.runtime_error = Some(
+                        "the exact audit credential reference is not in the current snapshot"
+                            .to_owned(),
+                    );
+                    return Vec::new();
+                }
+                Some("policy") | Some("acl") | Some("access") => {
+                    self.navigate(Route::Access);
+                    return Vec::new();
+                }
+                _ => {}
+            }
         }
-        if let Some(index) = self
-            .admin
-            .devices
-            .snapshot
-            .as_ref()
-            .and_then(|devices| devices.iter().position(|device| device.stable_id == id))
-        {
-            let device_id = self
-                .admin
-                .devices
-                .snapshot
-                .as_ref()
-                .and_then(|devices| devices.get(index))
-                .map(|device| device.stable_id.clone());
-            self.views.devices.selected_id = device_id.map(DeviceId::new);
-            self.navigate(Route::Devices);
-            self.focus = Focus::Inspector;
-            return self
-                .views
-                .devices
-                .selected_id
-                .as_ref()
-                .map(|device_id| device_id.0.clone())
-                .and_then(|device_id| self.start_admin_device_enrichment(Some(device_id)))
-                .into_iter()
-                .collect();
+        match kind.as_deref() {
+            Some("user") => {
+                if let Some(index) = self
+                    .admin
+                    .users
+                    .snapshot
+                    .as_ref()
+                    .and_then(|users| users.iter().position(|user| user.id == id))
+                {
+                    self.admin_user_selected = index;
+                    self.navigate(Route::Users);
+                    return Vec::new();
+                }
+            }
+            Some("device") | Some("node") => {
+                if let Some(index) =
+                    self.admin.devices.snapshot.as_ref().and_then(|devices| {
+                        devices.iter().position(|device| device.stable_id == id)
+                    })
+                {
+                    let device_id = self
+                        .admin
+                        .devices
+                        .snapshot
+                        .as_ref()
+                        .and_then(|devices| devices.get(index))
+                        .map(|device| device.stable_id.clone());
+                    self.views.devices.selected_id = device_id.map(DeviceId::new);
+                    self.navigate(Route::Devices);
+                    self.focus = Focus::Inspector;
+                    return self
+                        .views
+                        .devices
+                        .selected_id
+                        .as_ref()
+                        .map(|device_id| device_id.0.clone())
+                        .and_then(|device_id| self.start_admin_device_enrichment(Some(device_id)))
+                        .into_iter()
+                        .collect();
+                }
+            }
+            Some("credential") | Some("key") | Some("auth_key") => {
+                if let Some(index) = self
+                    .admin
+                    .credentials
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.records.iter().position(|record| record.id == id))
+                {
+                    self.admin_credential_selected = index;
+                    self.navigate(Route::Credentials);
+                    return Vec::new();
+                }
+            }
+            _ => {}
         }
         self.runtime_error =
             Some("the exact audit reference is not in the current snapshot".to_owned());
@@ -7882,6 +9751,9 @@ impl App {
             Overlay::ServiceSectionPicker(_) => "service section",
             Overlay::AccountPicker(_) => "local accounts",
             Overlay::HandoffInput(_) => "terminal handoff",
+            Overlay::PolicyEditor => "policy workflow",
+            Overlay::SecretResult => "secret result",
+            Overlay::AuditInvestigation => "audit investigation",
         })
     }
 
@@ -8336,6 +10208,24 @@ fn is_admin_action(action_id: ActionId) -> bool {
             | ActionId::AdminUserSuspend
             | ActionId::AdminUserRestore
             | ActionId::AdminUserDelete
+            | ActionId::AdminPolicyEdit
+            | ActionId::AdminPolicyEditorReopen
+            | ActionId::AdminPolicyCandidateDiscard
+            | ActionId::AdminPolicyRemoteRefresh
+            | ActionId::AdminPolicyValidate
+            | ActionId::AdminPolicyPreview
+            | ActionId::AdminPolicyDiff
+            | ActionId::AdminPolicyApply
+            | ActionId::AdminPolicyWorkflowClose
+            | ActionId::AdminCredentialAuthKeyCreate
+            | ActionId::AdminCredentialRevoke
+            | ActionId::ProfileCredentialRemove
+            | ActionId::AuditFilterTime
+            | ActionId::AuditFilterActor
+            | ActionId::AuditFilterAction
+            | ActionId::AuditFilterTarget
+            | ActionId::AuditOpenTarget
+            | ActionId::AuditOpenPolicyDiff
             | ActionId::BatchReviewOutcomes
             | ActionId::BatchRetrySelected
     )
@@ -8363,6 +10253,11 @@ fn is_admin_mutation_action(action_id: ActionId) -> bool {
             | ActionId::AdminUserSuspend
             | ActionId::AdminUserRestore
             | ActionId::AdminUserDelete
+            | ActionId::AdminPolicyCandidateDiscard
+            | ActionId::AdminPolicyApply
+            | ActionId::AdminCredentialAuthKeyCreate
+            | ActionId::AdminCredentialRevoke
+            | ActionId::ProfileCredentialRemove
     )
 }
 
@@ -8400,6 +10295,195 @@ fn is_admin_user_action(action_id: ActionId) -> bool {
             | ActionId::AdminUserRestore
             | ActionId::AdminUserDelete
     )
+}
+
+fn parse_auth_key_request(
+    input: &str,
+) -> Result<crate::admin::key_mutations::AuthKeyCreateRequest, String> {
+    let mut seen = BTreeSet::new();
+    let mut description = None;
+    let mut expiry_seconds = None;
+    let mut reusable = None;
+    let mut ephemeral = None;
+    let mut preauthorized = None;
+    let mut tags = None;
+    for part in input.split(';') {
+        let (key, value) = part
+            .split_once('=')
+            .ok_or_else(|| "auth-key fields use key=value separated by semicolons".to_owned())?;
+        if !seen.insert(key) {
+            return Err(format!("auth-key field repeated: {key}"));
+        }
+        match key {
+            "description" => {
+                description = (!value.is_empty()).then_some(value.to_owned());
+            }
+            "expiry" => {
+                let days_text = value.strip_suffix('d').ok_or_else(|| {
+                    "expiry must use a whole number of days, such as 7d".to_owned()
+                })?;
+                let days = days_text
+                    .parse::<u64>()
+                    .map_err(|_| "expiry must use a whole number of days, such as 7d".to_owned())?;
+                expiry_seconds = days.checked_mul(24 * 60 * 60);
+                if expiry_seconds.is_none() {
+                    return Err("expiry is too large".to_owned());
+                }
+            }
+            "reusable" => reusable = Some(parse_auth_key_bool(value, key)?),
+            "ephemeral" => ephemeral = Some(parse_auth_key_bool(value, key)?),
+            "preauthorized" | "preapproved" => {
+                preauthorized = Some(parse_auth_key_bool(value, key)?);
+            }
+            "tags" => {
+                tags = Some(if value.is_empty() {
+                    Vec::new()
+                } else {
+                    value.split(',').map(str::to_owned).collect()
+                });
+            }
+            _ => return Err(format!("unknown auth-key field: {key}")),
+        }
+    }
+    let expiry_seconds = expiry_seconds.ok_or_else(|| "auth-key expiry is required".to_owned())?;
+    let reusable = reusable.ok_or_else(|| "auth-key reusable is required".to_owned())?;
+    let ephemeral = ephemeral.ok_or_else(|| "auth-key ephemeral is required".to_owned())?;
+    let preauthorized =
+        preauthorized.ok_or_else(|| "auth-key preauthorized is required".to_owned())?;
+    let tags = tags.ok_or_else(|| "auth-key tags are required".to_owned())?;
+    let request = crate::admin::key_mutations::AuthKeyCreateRequest {
+        description,
+        expiry_seconds,
+        reusable,
+        ephemeral,
+        preauthorized,
+        tags,
+    };
+    request.validate().map_err(|error| error.to_string())?;
+    Ok(request)
+}
+
+fn parse_policy_preview_request(input: &str) -> Result<(PolicySelectorType, String), String> {
+    let mut selector_type = None;
+    let mut selector = None;
+    let mut seen = BTreeSet::new();
+    for part in input.split(';') {
+        let (key, value) = part.split_once('=').ok_or_else(|| {
+            "policy preview fields use key=value separated by semicolons".to_owned()
+        })?;
+        if !seen.insert(key) {
+            return Err(format!("policy preview field repeated: {key}"));
+        }
+        match key {
+            "type" => {
+                selector_type = Some(match value {
+                    "user" => PolicySelectorType::User,
+                    "ipport" => PolicySelectorType::IpPort,
+                    _ => return Err("policy preview type must be user or ipport".to_owned()),
+                });
+            }
+            "previewFor" => {
+                if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+                    return Err(
+                        "policy preview previewFor must be non-empty, bounded, and textual"
+                            .to_owned(),
+                    );
+                }
+                selector = Some(value.to_owned());
+            }
+            _ => return Err(format!("unknown policy preview field: {key}")),
+        }
+    }
+    let selector_type =
+        selector_type.ok_or_else(|| "policy preview type is required".to_owned())?;
+    let selector = selector.ok_or_else(|| "policy preview previewFor is required".to_owned())?;
+    Ok((selector_type, selector))
+}
+
+fn parse_auth_key_bool(value: &str, field: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("auth-key {field} must be true or false")),
+    }
+}
+
+fn parse_audit_filter(action_id: ActionId, input: &str) -> Result<AuditFilters, String> {
+    let mut fields = BTreeMap::new();
+    for part in input.split(';') {
+        let (key, value) = part
+            .split_once('=')
+            .ok_or_else(|| "audit filters use key=value separated by semicolons".to_owned())?;
+        if fields.insert(key, value).is_some() {
+            return Err(format!("audit filter field repeated: {key}"));
+        }
+    }
+    let expected = match action_id {
+        ActionId::AuditFilterTime => &["start", "end"][..],
+        ActionId::AuditFilterActor => &["id", "display"][..],
+        ActionId::AuditFilterAction => &["action"][..],
+        ActionId::AuditFilterTarget => &["type", "id", "text"][..],
+        _ => return Err("this is not an audit filter form".to_owned()),
+    };
+    if fields.keys().any(|key| !expected.contains(key)) {
+        return Err("audit filter contains an unsupported field".to_owned());
+    }
+    let mut filters = AuditFilters::default();
+    match action_id {
+        ActionId::AuditFilterTime => {
+            filters.start = parse_optional_audit_time(fields.get("start").copied())?;
+            filters.end = parse_optional_audit_time(fields.get("end").copied())?;
+            if filters
+                .start
+                .zip(filters.end)
+                .is_some_and(|(start, end)| start > end)
+            {
+                return Err("audit start must not be after audit end".to_owned());
+            }
+        }
+        ActionId::AuditFilterActor => {
+            filters.actor_id = optional_audit_text(fields.get("id").copied());
+            filters.actor_display = optional_audit_text(fields.get("display").copied());
+        }
+        ActionId::AuditFilterAction => {
+            filters.action = optional_audit_text(fields.get("action").copied());
+        }
+        ActionId::AuditFilterTarget => {
+            filters.target_type = optional_audit_text(fields.get("type").copied());
+            filters.target_id = optional_audit_text(fields.get("id").copied());
+            filters.text = optional_audit_text(fields.get("text").copied());
+        }
+        _ => {}
+    }
+    Ok(filters)
+}
+
+fn optional_audit_text(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn parse_optional_audit_time(value: Option<&str>) -> Result<Option<Timestamp>, String> {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let parsed = time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .map_err(|_| "audit times must be RFC3339 UTC values".to_owned())?;
+    u64::try_from(parsed.unix_timestamp())
+        .map(Some)
+        .map_err(|_| "audit time must not be before the Unix epoch".to_owned())
+}
+
+fn format_audit_timestamp(value: Timestamp) -> String {
+    i64::try_from(value)
+        .ok()
+        .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .and_then(|date| {
+            date.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn admin_change_input(change: &AdminChange) -> String {

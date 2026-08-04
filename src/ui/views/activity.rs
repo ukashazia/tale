@@ -58,9 +58,11 @@ fn admin_audit_summary(app: &App) -> String {
                 .map_or("not observed", |value| value)
         );
     };
-    let first = snapshot.events.first();
+    let filtered = snapshot.filtered_events(&app.audit_filters);
+    let first = filtered.first().copied();
     format!(
-        "{} events · {} · {} · configuration audit only; read-only activity is absent by server design",
+        "{} of {} events · {} · {} · configuration audit only; read-only activity is absent by server design",
+        filtered.len(),
         snapshot.events.len(),
         if snapshot.delayed {
             "delivery may be delayed"
@@ -80,12 +82,12 @@ fn admin_audit_events(app: &App) -> String {
     let Some(snapshot) = app.admin.activity.snapshot.as_ref() else {
         return "no audit events".to_owned();
     };
-    if snapshot.events.is_empty() {
+    let filtered = snapshot.filtered_events(&app.audit_filters);
+    if filtered.is_empty() {
         return "no events in selected window".to_owned();
     }
-    snapshot
-        .events
-        .iter()
+    filtered
+        .into_iter()
         .take(8)
         .enumerate()
         .map(|(index, event)| {

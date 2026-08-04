@@ -1,0 +1,9 @@
+{
+  // fictional comment must survive unchanged
+  "groups": {
+    "group:fictional": ["fictional@example.test"],
+  },
+  "acls": [
+    {"action": "accept", "src": ["group:fictional"], "dst": ["*:443"]},
+  ],
+}

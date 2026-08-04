@@ -1,11 +1,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::Value;
 use tale::admin::auth::{
     AccessTokenRecord, CredentialRecord, CredentialStore, MemoryCredentialStore, SecretValue,
     TokenManager, encode_record,
 };
 use tale::admin::client::{AdminClient, AdminError};
+use tale::admin::key_mutations::AuthKeyCreateRequest;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -183,6 +185,149 @@ async fn policy_contract_preserves_bytes_and_requests_hujson() -> Result<(), Str
         request.contains("accept: application/hujson")
             || request.contains("Accept: application/hujson")
     );
+    Ok(())
+}
+
+fn captured_body(request: &str) -> &[u8] {
+    request
+        .split_once("\r\n\r\n")
+        .map_or("", |parts| parts.1)
+        .as_bytes()
+}
+
+#[tokio::test]
+async fn policy_validation_preview_and_save_use_exact_phase_seven_contracts() -> Result<(), String>
+{
+    let candidate = include_bytes!("fixtures/admin/policy/valid.hujson").to_vec();
+    let (base_url, capture) =
+        fake_response("200 OK", "application/json", br#"{}"#.to_vec()).await?;
+    let (client, token) = client_with_token(base_url).await?;
+    let result = client
+        .validate_policy(&token, "example test/fictional", &candidate)
+        .await;
+    assert!(result.is_ok());
+    let request = capture.lock().await.clone();
+    assert!(
+        request
+            .starts_with("POST /api/v2/tailnet/example%20test%2Ffictional/acl/validate HTTP/1.1")
+    );
+    assert!(request.contains("accept: application/json"));
+    assert!(request.contains("content-type: application/hujson"));
+    assert_eq!(captured_body(&request), candidate.as_slice());
+
+    let preview = br#"{"matches":[],"type":"user","previewFor":"user-fictional-001"}"#;
+    let (base_url, capture) = fake_response("200 OK", "application/json", preview.to_vec()).await?;
+    let (client, token) = client_with_token(base_url).await?;
+    let result = client
+        .preview_policy(
+            &token,
+            "example.test",
+            tale::domain::policy_workflow::PolicySelectorType::User,
+            "user-fictional-001",
+            &candidate,
+        )
+        .await;
+    assert!(result.is_ok());
+    let request = capture.lock().await.clone();
+    assert!(request.starts_with(
+        "POST /api/v2/tailnet/example.test/acl/preview?type=user&previewFor=user-fictional-001 HTTP/1.1"
+    ));
+    assert!(request.contains("accept: application/json"));
+    assert!(request.contains("content-type: application/hujson"));
+    assert_eq!(captured_body(&request), candidate.as_slice());
+
+    let (base_url, capture) =
+        fake_response("200 OK", "application/hujson", candidate.clone()).await?;
+    let (client, token) = client_with_token(base_url).await?;
+    let result = client.save_policy(&token, "example.test", &candidate).await;
+    assert!(result.is_ok());
+    if let Ok(result) = result {
+        assert_eq!(result.value.source_bytes, candidate);
+    }
+    let request = capture.lock().await.clone();
+    assert!(request.starts_with("POST /api/v2/tailnet/example.test/acl HTTP/1.1"));
+    assert!(request.contains("accept: application/hujson"));
+    assert!(request.contains("content-type: application/hujson"));
+    assert!(!request.to_ascii_lowercase().contains("if-match:"));
+    assert_eq!(captured_body(&request), candidate.as_slice());
+    Ok(())
+}
+
+#[tokio::test]
+async fn credential_list_detail_create_and_revoke_use_exact_contracts() -> Result<(), String> {
+    let (base_url, capture) =
+        fake_response("200 OK", "application/json", br#"{"keys":[]}"#.to_vec()).await?;
+    let (client, token) = client_with_token(base_url).await?;
+    let result = client.list_keys(&token, "example test/fictional").await;
+    assert!(result.is_ok());
+    let request = capture.lock().await.clone();
+    assert!(
+        request
+            .starts_with("GET /api/v2/tailnet/example%20test%2Ffictional/keys?all=false HTTP/1.1")
+    );
+    assert!(request.contains("accept: application/json"));
+
+    let detail = include_bytes!("fixtures/admin/credentials/auth-key-no-secret.json").to_vec();
+    let (base_url, capture) = fake_response("200 OK", "application/json", detail).await?;
+    let (client, token) = client_with_token(base_url).await?;
+    let result = client
+        .get_key(&token, "example.test", "key fictional/001")
+        .await;
+    assert!(result.is_ok());
+    let request = capture.lock().await.clone();
+    assert!(
+        request.starts_with("GET /api/v2/tailnet/example.test/keys/key%20fictional%2F001 HTTP/1.1")
+    );
+    assert!(request.contains("accept: application/json"));
+
+    let create_body = include_bytes!("fixtures/admin/credentials/auth-key-success.json").to_vec();
+    let (base_url, capture) = fake_response("200 OK", "application/json", create_body).await?;
+    let (client, token) = client_with_token(base_url).await?;
+    let create = AuthKeyCreateRequest {
+        description: Some("fictional operator".to_owned()),
+        expiry_seconds: 7 * 24 * 60 * 60,
+        reusable: false,
+        ephemeral: true,
+        preauthorized: false,
+        tags: vec!["tag:fictional".to_owned()],
+    };
+    let result = client
+        .create_auth_key(&token, "example.test", &create)
+        .await;
+    assert!(result.is_ok());
+    let request = capture.lock().await.clone();
+    assert!(request.starts_with("POST /api/v2/tailnet/example.test/keys HTTP/1.1"));
+    assert!(request.contains("accept: application/json"));
+    assert!(request.contains("content-type: application/json"));
+    let body = serde_json::from_slice::<Value>(captured_body(&request))
+        .map_err(|error| error.to_string())?;
+    assert_eq!(body["keyType"], "auth");
+    assert_eq!(body["description"], "fictional operator");
+    assert_eq!(body["expirySeconds"], 7 * 24 * 60 * 60);
+    assert_eq!(body["capabilities"]["devices"]["create"]["reusable"], false);
+    assert_eq!(body["capabilities"]["devices"]["create"]["ephemeral"], true);
+    assert_eq!(
+        body["capabilities"]["devices"]["create"]["preauthorized"],
+        false
+    );
+    assert_eq!(
+        body["capabilities"]["devices"]["create"]["tags"][0],
+        "tag:fictional"
+    );
+
+    let (base_url, capture) = fake_response("200 OK", "application/json", Vec::new()).await?;
+    let (client, token) = client_with_token(base_url).await?;
+    let result = client
+        .revoke_credential(&token, "example.test", "key fictional/001")
+        .await;
+    assert!(result.is_ok());
+    let request = capture.lock().await.clone();
+    assert!(
+        request
+            .starts_with("DELETE /api/v2/tailnet/example.test/keys/key%20fictional%2F001 HTTP/1.1")
+    );
+    assert!(request.contains("accept: application/json"));
+    assert_eq!(captured_body(&request), b"");
     Ok(())
 }
 

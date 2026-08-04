@@ -1,12 +1,15 @@
 pub mod access;
 pub mod activity;
+pub mod audit;
 pub mod credentials;
 pub mod devices;
 pub mod diagnostics;
 pub mod dns;
 pub mod local;
 pub mod overview;
+pub mod policy_editor;
 pub mod routes;
+pub mod secret_result;
 pub mod services;
 pub mod settings;
 pub mod transfers;

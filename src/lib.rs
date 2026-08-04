@@ -2,6 +2,7 @@ pub mod action;
 pub mod admin;
 pub mod app;
 pub mod cli;
+pub mod clipboard;
 pub mod config;
 pub mod domain;
 pub mod effect;
@@ -12,6 +13,7 @@ pub mod mock;
 pub mod paths;
 pub mod runtime;
 pub mod task;
+pub mod temporary;
 pub mod terminal;
 pub mod ui;
 

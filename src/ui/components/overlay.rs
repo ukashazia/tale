@@ -7,6 +7,7 @@ use crate::ui::components::{
     action_picker, batch_result, command_palette, confirm, copy_picker, filter, form, help,
 };
 use crate::ui::theme;
+use crate::ui::views::{audit, policy_editor, secret_result};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
     let area = centered(frame.area(), overlay);
@@ -130,6 +131,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         }
         Overlay::AccountPicker(state) => form::render_accounts(frame, app, area, state),
         Overlay::HandoffInput(state) => form::render_handoff(frame, app, area, state),
+        Overlay::PolicyEditor => policy_editor::render(frame, app, area),
+        Overlay::SecretResult => secret_result::render(frame, app, area),
+        Overlay::AuditInvestigation => audit::render(frame, app, area),
     }
 }
 
@@ -143,7 +147,10 @@ fn centered(area: Rect, overlay: &Overlay) -> Rect {
         | Overlay::ServiceForm(_)
         | Overlay::ServiceSectionPicker(_)
         | Overlay::HandoffInput(_)
-        | Overlay::Confirmation(_) => area.width.saturating_mul(2) / 3,
+        | Overlay::Confirmation(_)
+        | Overlay::PolicyEditor
+        | Overlay::SecretResult
+        | Overlay::AuditInvestigation => area.width.saturating_mul(2) / 3,
         _ => area.width.saturating_mul(3) / 5,
     }
     .max(20)

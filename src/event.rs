@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind};
@@ -7,11 +9,14 @@ use crate::admin::routes::AdminRouteObservation;
 use crate::admin::{AdminRefreshReport, AdminResourceReport};
 use crate::domain::Timestamp;
 use crate::domain::account::LocalAccount;
+use crate::domain::credential::CredentialMetadata;
 use crate::domain::device::AdminDevice;
 use crate::domain::device::Device;
 use crate::domain::diagnostic::{DiagnosticResult, NetcheckObservation, PingSample};
 use crate::domain::mutation::{LocalMutation, MutationResult};
+use crate::domain::policy_workflow::{PolicyDocument, PolicyPreview, PolicyValidation};
 use crate::domain::preference::LocalPreferences;
+use crate::domain::secret_result::SecretBuffer;
 use crate::domain::service::{
     FunnelStatus, ServeStatus, ServiceActionRequest, ServiceFailure, ServiceTaskData,
 };
@@ -31,6 +36,8 @@ pub enum Event {
     Local(Box<LocalEvent>),
     Services(Box<ServicesEvent>),
     Admin(Box<AdminEvent>),
+    Policy(Box<PolicyEvent>),
+    Credential(Box<CredentialEvent>),
     ShutdownRequested(ShutdownReason),
 }
 
@@ -85,6 +92,87 @@ pub enum AdminEvent {
         generation: u64,
         detail: String,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum PolicyEvent {
+    RemoteFetched {
+        workflow_id: u64,
+        result: Result<PolicyDocument, String>,
+        etag: Option<String>,
+        content_type: String,
+        observed_at: Timestamp,
+    },
+    EditorFinished {
+        workflow_id: u64,
+        result: Result<PolicyDocument, String>,
+        path: PathBuf,
+        editor_success: bool,
+        editor_code: Option<i32>,
+    },
+    Validated {
+        workflow_id: u64,
+        result: Result<PolicyValidation, String>,
+    },
+    Previewed {
+        workflow_id: u64,
+        result: Result<PolicyPreview, String>,
+    },
+    Diffed {
+        workflow_id: u64,
+        result: Result<crate::domain::policy_workflow::PolicyDiff, String>,
+    },
+    Applied {
+        workflow_id: u64,
+        result: PolicyApplyResult,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum PolicyApplyResult {
+    Succeeded { saved_hash: String },
+    SucceededUnverified { saved_hash: String },
+    RemoteConflict { latest: PolicyDocument },
+    FailedRetained { detail: String },
+    OutcomeUnknown { detail: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum CredentialEvent {
+    AuthKeyCreated {
+        result_id: u64,
+        metadata: CredentialMetadata,
+        secret: Arc<SecretBuffer>,
+        observed_at: Timestamp,
+    },
+    AuthKeyCreateFailed {
+        result_id: u64,
+        detail: String,
+    },
+    DetailFetched {
+        key_id: String,
+        result: Result<CredentialMetadata, String>,
+    },
+    Revoked {
+        key_id: String,
+        result: CredentialRevocationResult,
+    },
+    LocalRemoved {
+        profile: String,
+        reference: String,
+        result: Result<bool, String>,
+    },
+    ClipboardCopied {
+        result_id: u64,
+        result: Result<(), String>,
+    },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CredentialRevocationResult {
+    Verified,
+    OutcomeUnknown { detail: String },
+    Failed { detail: String },
 }
 
 #[derive(Debug, Clone)]

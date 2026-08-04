@@ -1,0 +1,4 @@
+{
+  // fictional concurrent remote edit
+  "groups": {"group:fictional": ["different@example.test"]},
+}

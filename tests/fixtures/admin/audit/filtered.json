@@ -1,0 +1,25 @@
+{
+  "version": "1",
+  "tailnet": "example.test",
+  "logs": [
+    {
+      "eventTime": "2026-08-04T00:00:00Z",
+      "type": "policy",
+      "actor": {"id": "user-fictional-001", "displayName": "Fictional Operator", "type": "user"},
+      "target": {"id": "policy-fictional-001", "type": "policy"},
+      "action": "policy.update",
+      "old": {"description": "fictional-old", "privateKey": "fictional-private-canary"},
+      "new": {"description": "fictional-new", "credentialSecret": "fictional-secret-canary"},
+      "actionDetails": "fictional policy source diff"
+    },
+    {
+      "eventTime": "2026-08-03T00:00:00Z",
+      "type": "device",
+      "actor": {"id": "user-other-001", "displayName": "Other Fictional Operator", "type": "user"},
+      "target": {"id": "node-other-001", "type": "device"},
+      "action": "device.view",
+      "old": null,
+      "new": {"observed": true}
+    }
+  ]
+}
