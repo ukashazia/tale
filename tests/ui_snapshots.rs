@@ -293,3 +293,31 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
     })));
     assert_eq!(activity.tasks.selected, Some(second));
 }
+
+#[test]
+fn all_color_and_symbol_modes_render_compact_keyboard_surfaces() {
+    for color in [
+        ColorMode::None,
+        ColorMode::Ansi16,
+        ColorMode::Ansi256,
+        ColorMode::TrueColor,
+    ] {
+        for symbols in [SymbolsMode::Ascii, SymbolsMode::Unicode] {
+            let app = populated_app();
+            assert!(app.is_some());
+            if let Some(mut app) = app {
+                app.resolved_config.ui.color = color;
+                app.resolved_config.ui.symbols = symbols;
+                let lines = lines_at(&app, 60, 18);
+                assert!(lines.is_some());
+                if let Some(lines) = lines {
+                    assert_frame_shape(&lines, 60, 18);
+                    assert!(lines.iter().any(|line| line.contains("devices")));
+                    if symbols == SymbolsMode::Ascii {
+                        assert!(!lines.iter().any(|line| line.contains('●')));
+                    }
+                }
+            }
+        }
+    }
+}

@@ -4,6 +4,7 @@ pub mod app;
 pub mod cli;
 pub mod clipboard;
 pub mod config;
+pub mod doctor;
 pub mod domain;
 pub mod effect;
 pub mod error;
@@ -85,7 +86,7 @@ pub fn run(mut cli: Cli) -> Result<(), TaleError> {
             cli.mock = args.mock;
             let config =
                 config::resolve(&cli, &environment, &path_environment).map_err(config_error)?;
-            doctor(&config);
+            run_doctor(&config, args.output.as_deref())?;
             Ok(())
         }
         None => {
@@ -379,24 +380,21 @@ fn auth_runtime() -> Result<tokio::runtime::Runtime, TaleError> {
         .map_err(|error| TaleError::RuntimeInitialization(error.to_string()))
 }
 
-fn doctor(config: &ResolvedConfig) {
-    println!("Tale doctor (Phase 1)");
-    println!(
-        "source: {}",
-        if config.mock {
-            "mock"
-        } else {
-            "local unavailable"
+fn run_doctor(config: &ResolvedConfig, output: Option<&std::path::Path>) -> Result<(), TaleError> {
+    let bundle = crate::doctor::build(config);
+    match output {
+        Some(path) => {
+            crate::doctor::write_new_atomic(&bundle, path)
+                .map_err(|error| TaleError::Application(error.to_string()))?;
+            println!("wrote redacted support bundle: {}", path.display());
         }
-    );
-    println!("local process adapter: not constructed");
-    println!("HTTP adapter: not constructed");
-    println!("keyring adapter: not constructed");
-    println!("config: {}", config.paths.config_file.display());
-    println!("terminal: lifecycle owned by TerminalSession");
-    if config.ui.mouse {
-        println!("ui.mouse: opt-in mouse parity enabled");
+        None => {
+            let report = crate::doctor::text_report(&bundle)
+                .map_err(|error| TaleError::Application(error.to_string()))?;
+            println!("{report}");
+        }
     }
+    Ok(())
 }
 
 fn launch_tui(config: ResolvedConfig, view: Option<&str>) -> Result<(), TaleError> {

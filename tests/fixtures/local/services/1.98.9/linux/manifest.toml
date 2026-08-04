@@ -1,0 +1,47 @@
+manifest_version = 1
+tailscale_version = "1.98.9"
+platform = "linux"
+captured_at = "2026-08-03"
+redaction_reviewed = true
+
+[[fixtures]]
+command = "tailscale serve status"
+arguments = ["serve", "status", "--json"]
+exit_code = 0
+stdout_file = "serve-empty.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale funnel status"
+arguments = ["funnel", "status", "--json"]
+exit_code = 0
+stdout_file = "funnel-empty.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale metrics print"
+arguments = ["metrics", "print"]
+exit_code = 0
+stdout_file = "metrics-truncated.txt"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale bugreport"
+arguments = ["bugreport", "--diagnose", "fictional note"]
+exit_code = 0
+stdout_file = "bugreport.txt"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale serve status malformed"
+arguments = ["serve", "status", "--json"]
+exit_code = 0
+stdout_file = "serve-malformed.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale funnel status malformed"
+arguments = ["funnel", "status", "--json"]
+exit_code = 0
+stdout_file = "funnel-malformed.json"
+stderr_file = ""

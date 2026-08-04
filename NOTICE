@@ -1,0 +1,2 @@
+Tale is distributed under the MIT License. Third-party dependency licenses are
+reviewed through deny.toml and the locked Cargo dependency graph.

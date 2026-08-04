@@ -32,6 +32,7 @@ pub struct Cli {
     pub tailscale_path: Option<PathBuf>,
 
     #[arg(long)]
+    #[arg(hide = true)]
     pub mock: bool,
 }
 
@@ -74,5 +75,9 @@ pub enum ConfigCommand {
 #[derive(Debug, Clone, Args)]
 pub struct DoctorArgs {
     #[arg(long)]
+    #[arg(hide = true)]
     pub mock: bool,
+
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
 }

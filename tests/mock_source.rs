@@ -127,10 +127,10 @@ fn mock_doctor_reports_no_real_adapters() {
     if let Ok(output) = output {
         assert_eq!(output.status.code(), Some(0));
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("source: mock"));
-        assert!(stdout.contains("local process adapter: not constructed"));
-        assert!(stdout.contains("HTTP adapter: not constructed"));
-        assert!(stdout.contains("keyring adapter: not constructed"));
-        assert!(!stdout.contains("tailscale"));
+        assert!(stdout.contains("\"source_mode\": \"mock\""));
+        assert!(stdout.contains("doctor does not spawn a local process"));
+        assert!(stdout.contains("doctor does not contact the Control API"));
+        assert!(stdout.contains("keyring content"));
+        assert!(!stdout.contains("TALE_ACCESS_TOKEN"));
     }
 }

@@ -4,9 +4,9 @@ Tale is a keyboard-first Tailscale terminal application built with Rust and
 Ratatui. Its goal is to combine local-client operation, tailnet administration,
 and network diagnostics in one coherent interface.
 
-Tale is currently in research and design. The executable remains a scaffold;
-the documents below define the product and implementation contract before code
-is added.
+Tale is an implementation-stage terminal application. The hardening work keeps
+support claims evidence-based; see `docs/support.md` before treating any
+platform or client combination as supported.
 
 ## Design documents
 
@@ -16,6 +16,12 @@ is added.
 - [Application architecture](docs/architecture.md)
 - [Configuration contract](docs/configuration.md)
 - [End-to-end feature plan](docs/roadmap.md)
+- [Support matrix](docs/support.md)
+- [Installation](docs/install.md)
+- [Security review](docs/security.md)
+- [Troubleshooting and recovery](docs/troubleshooting.md)
+- [Release checklist](docs/release-checklist.md)
+- [`tale(1)` man page](docs/cli/tale.1)
 
 ## Implementation specifications
 
@@ -44,3 +50,7 @@ Tale uses supported Tailscale surfaces instead of scraping the admin console:
 If Tailscale exposes a feature only in the web console, Tale reports that
 limitation plainly. It does not emulate the console through browser automation
 or depend on undocumented endpoints.
+
+Local installation and local-node operation do not imply admin access. Admin
+mode requires a separately configured profile and least-privilege Control API
+credential. Tale never uploads doctor bundles or support data automatically.

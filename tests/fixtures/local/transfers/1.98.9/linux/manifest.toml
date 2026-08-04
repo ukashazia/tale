@@ -1,0 +1,47 @@
+manifest_version = 1
+tailscale_version = "1.98.9"
+platform = "linux"
+captured_at = "2026-08-03"
+redaction_reviewed = true
+
+[[fixtures]]
+command = "tailscale file cp targets"
+arguments = ["file", "cp", "--targets"]
+exit_code = 0
+stdout_file = "taildrop-targets.tsv"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale file cp targets additive"
+arguments = ["file", "cp", "--targets"]
+exit_code = 0
+stdout_file = "taildrop-targets-additive.tsv"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale file cp progress"
+arguments = ["file", "cp", "--update-interval=1s", "file with spaces.txt", "node:"]
+exit_code = 0
+stdout_file = "progress.txt"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale drive list"
+arguments = ["drive", "list"]
+exit_code = 0
+stdout_file = "drive-empty.txt"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale drive list spaces"
+arguments = ["drive", "list"]
+exit_code = 0
+stdout_file = "drive-spaces.txt"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale drive list malformed"
+arguments = ["drive", "list"]
+exit_code = 0
+stdout_file = "drive-malformed.txt"
+stderr_file = ""

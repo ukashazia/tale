@@ -1,0 +1,75 @@
+manifest_version = 1
+tailscale_version = "1.98.9"
+platform = "linux"
+captured_at = "2026-08-03"
+redaction_reviewed = true
+
+[[fixtures]]
+command = "tailscale version"
+arguments = ["version", "--json", "--daemon"]
+exit_code = 0
+stdout_file = "version.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale status"
+arguments = ["status", "--json"]
+exit_code = 0
+stdout_file = "status.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale switch"
+arguments = ["switch", "--list", "--json"]
+exit_code = 0
+stdout_file = "accounts.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale dns status"
+arguments = ["dns", "status", "--json"]
+exit_code = 0
+stdout_file = "dns-status.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale dns query"
+arguments = ["dns", "query", "--json", "example.test", "A"]
+exit_code = 0
+stdout_file = "dns-query-A.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale netcheck one-shot"
+arguments = ["netcheck", "--format=json"]
+exit_code = 0
+stdout_file = "netcheck.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale netcheck live"
+arguments = ["netcheck", "--format=json-line", "--every=2s"]
+exit_code = 0
+stdout_file = "netcheck.jsonl"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale ping"
+arguments = ["ping", "--c=10", "--timeout=5s", "--until-direct=true", "node.example.test"]
+exit_code = 0
+stdout_file = "ping.txt"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale syspolicy list"
+arguments = ["syspolicy", "list", "--json"]
+exit_code = 0
+stdout_file = "syspolicy.json"
+stderr_file = ""
+
+[[fixtures]]
+command = "tailscale whois"
+arguments = ["whois", "--json", "100.64.0.2"]
+exit_code = 0
+stdout_file = "whois.json"
+stderr_file = ""

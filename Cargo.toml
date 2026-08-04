@@ -2,10 +2,14 @@
 name = "tale"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+readme = "README.md"
 
 [dependencies]
 arboard = { version = "3.6.1", default-features = false }
 clap = { version = "4.6.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+clap_complete = "4.6.8"
+clap_mangen = "0.3.0"
 crossterm = { version = "0.29.0", default-features = false, features = ["bracketed-paste", "events"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -24,3 +28,11 @@ url = "2"
 zeroize = "1"
 keyring = "3"
 libc = "0.2"
+
+[dev-dependencies]
+criterion = "0.8.2"
+syn = { version = "2.0", features = ["full", "visit"] }
+
+[[bench]]
+name = "phase9"
+harness = false
