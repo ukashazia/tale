@@ -2,27 +2,30 @@
 
 ## Information architecture
 
-Tale is resource-oriented. A bottom `:` command line provides direct navigation; the UI
-does not spend permanent width on a large sidebar.
+Tale is resource-oriented. A bottom `:` palette provides fuzzy navigation; the UI does
+not spend permanent width on a large sidebar.
 
-Canonical routes and aliases:
+Canonical routes:
 
-| Route | Aliases | Default content |
-| --- | --- | --- |
-| `overview` | `ov`, `home` | health and actionable queues |
-| `local` | `self` | local node and preferences |
-| `devices` | `device`, `dev`, `nodes` | device inventory |
-| `users` | `user` | member inventory |
-| `routes` | `route`, `rt` | subnet and exit routes |
-| `dns` | — | tailnet DNS and query tool |
-| `access` | `policy`, `acl`, `grants` | policy source and tests |
-| `services` | `service`, `serve`, `funnel` | local and tailnet services |
-| `credentials` | `keys`, `auth` | supported credentials |
-| `activity` | `logs`, `tasks`, `events` | tasks and audit/network logs |
-| `settings` | `config` | Tale and supported tailnet settings |
+| Route | Default content |
+| --- | --- |
+| `overview` | health and actionable queues |
+| `local` | local node and preferences |
+| `devices` | device inventory |
+| `users` | member inventory |
+| `routes` | subnet and exit routes |
+| `dns` | tailnet DNS and query tool |
+| `access` | policy source and tests |
+| `services` | local and tailnet services |
+| `credentials` | supported credentials |
+| `activity` | tasks and audit/network logs |
+| `settings` | Tale and supported tailnet settings |
 
-Typing `:devices owner:alice online:true` navigates and applies the trailing
-filter. Commands select known routes and parameters; they are not a shell.
+The empty palette groups every route into a breathable adaptive grid with `Fleet`,
+`Local`, `Network`, and `Operations` headings. Typing fuzzy-matches route names and
+their concise descriptions; `dvcs` finds `devices` and `audit` finds `activity`.
+Aliases, saved views, filters, and shell syntax are not part of navigation. Filtering
+is a separate `/` interaction.
 
 ## Frame layout
 
@@ -49,7 +52,7 @@ Wide terminals use a collection-and-inspector layout:
   every field remains available in details.
 - Below 60x18, Tale shows a minimum-size explanation instead of a corrupted UI.
 - Command, filter, transient, completion, and help surfaces grow upward from
-  the final terminal row. Only alerts and confirmations are centered modals.
+  the terminal edge. Only alerts and confirmations are centered modals.
 
 The `terminal` theme preserves the terminal's existing background; the two
 Tailscale-inspired themes paint explicit warm canvases. Borders communicate
@@ -64,12 +67,12 @@ focus, not decoration. Color is semantic and never the only state signal.
 | `:` | open the inline route command line |
 | `/` | edit the active view's filter inline with live valid results |
 | `?` | open contextual bottom help; `/` filters help labels and keys |
-| `Tab` / `Shift+Tab` | complete or cycle in command/filter editors |
+| `Tab` / `Shift+Tab` | select navigation results or complete filter fields |
 | `Esc` | cancel only the active interaction; no-op in normal mode |
 | `[` / `]` | restore the previous or next view-history frame |
 | `r` | refresh the active resource |
 | `R` | refresh every source used by the active route |
-| `@` | open task and command history |
+| `@` | open task history |
 | `q` | quit when safe; active tasks retain their confirmation boundary |
 | `Ctrl+c` | first press cancels the focused task/input; second press while idle quits |
 
@@ -100,11 +103,10 @@ truncates a key while leaving a misleading label. Disabled actions remain
 visible with their capability reason. Transients do not use row selection,
 arrows, or a timeout; `Esc` cancels and an unknown key leaves the menu open.
 
-The `:` editor supports Unicode-safe cursor movement, Home/End, adjacent scalar
-deletion, `Ctrl+w/u/k`, bounded successful-command history, and schema-aware
-Tab/Shift+Tab completion. The `/` editor applies every valid parse live, keeps
-the last valid rows during an invalid edit, and restores filter, stable
-selection, and scroll on `Esc`.
+The `:` palette supports Unicode-safe editing and true fuzzy matching. It has no
+selection cursor; `Enter` opens the highest-scoring result. The `/` editor applies every valid
+parse live, keeps the last valid rows during an invalid edit, and restores filter,
+stable selection, and scroll on `Esc`.
 
 View history is browser-style and bounded to 100 frames. New navigation after
 moving backward discards the forward branch. Frames restore stable identities,

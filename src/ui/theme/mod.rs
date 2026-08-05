@@ -277,14 +277,15 @@ fn role_spec(role: StyleRole, id: ThemeId) -> RoleSpec {
         R::TextMuted => RoleSpec::fg(T::Muted),
         R::TextDisabled => RoleSpec::fg(T::Disabled).modified(Modifier::DIM),
         R::TextInverse => RoleSpec::fg(T::Canvas),
+        R::SectionHeading => RoleSpec::bg(T::Canvas, T::Focus).modified(Modifier::BOLD),
         R::TextLink => RoleSpec::fg(T::Info).modified(Modifier::UNDERLINED),
         R::TextCode => RoleSpec::fg(T::Focus).modified(Modifier::ITALIC),
         R::KeyHint => RoleSpec::fg(T::Focus).modified(Modifier::BOLD),
         R::KeyHintDisabled => {
             RoleSpec::fg(T::Disabled).modified(Modifier::DIM.union(Modifier::CROSSED_OUT))
         }
-        R::Prompt => RoleSpec::bg(primary, T::Inset).modified(Modifier::BOLD),
-        R::PromptCursor => RoleSpec::bg(T::Canvas, T::FocusStrong).modified(Modifier::BOLD),
+        R::Prompt => RoleSpec::fg(primary).modified(Modifier::BOLD),
+        R::PromptCursor => RoleSpec::fg(T::FocusStrong).modified(Modifier::BOLD),
         R::CompletionMatch => RoleSpec::fg(T::Focus).modified(Modifier::UNDERLINED),
         R::CompletionSelected | R::Selection => if id == ThemeId::TailscaleLight {
             RoleSpec::bg(T::Primary, T::Focus)

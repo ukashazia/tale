@@ -6,11 +6,11 @@
 - Produces: a bottom-anchored, keyboard-first interaction shell inspired by
   jjui and k9s without copying their source
 
-This phase replaces Tale's centered command, filter, action, and copy pickers
-with a coherent interaction grammar. Commands and filters are inline at the
-bottom, action and copy prefixes are transient key menus, contextual help is a
-which-key-style bottom sheet, and route history has explicit backward and
-forward movement.
+This phase replaces Tale's centered navigation, filter, action, and copy pickers
+with a coherent interaction grammar. Navigation uses a fuzzy adaptive grid at the
+bottom, filters remain inline, action and copy prefixes are transient key menus,
+contextual help is a which-key-style bottom sheet, and route history has explicit
+backward and forward movement.
 
 The redesign changes interaction structure, not product-domain behavior. All
 existing actions, forms, risk confirmations, tasks, source states, redaction,
@@ -20,9 +20,9 @@ and mutation verification contracts remain in force.
 
 ### User-visible result
 
-- `:` opens a one-line command prompt in the footer.
+- `:` opens the canonical route grid and fuzzy navigation prompt.
 - `/` opens a one-line filter prompt in the footer.
-- `Tab` completes commands or route-valid filter terms.
+- `Tab` cycles navigation results or completes route-valid filter terms.
 - `a` shows contextual action keys at the bottom; the next key invokes one.
 - `y` shows contextual copy keys at the bottom; the next key copies one field.
 - `?` opens contextual which-key help anchored to the bottom.
@@ -112,10 +112,21 @@ Reserve a bottom region below the route content and above the terminal edge:
 normal:
 │ a actions  y copy  / filter  : go  r refresh  ? help            │
 
-command with completions:
-│ devices      Devices inventory                                  │
-│ dev          Alias for devices                                  │
-│ : devi█                                                           │
+navigation palette:
+│ Views   Esc Close                                                 │
+│                                                                │
+│ Fleet                  Local                 Network             │
+│ devices  Machines...   local     This...     routes  Network...  │
+│ users    Members       services  Serve...    dns     Name...     │
+│ overview Fleet summary                       access  Policies    │
+│                                                                │
+│ Operations                                                     │
+│ credentials Keys & tokens                                      │
+│ activity    Tasks & audit                                      │
+│ settings    Configuration                                      │
+│                                                                │
+│ : dvcs▏                                                         │
+│ Enter Open best match                                           │
 
 filter with error:
 │ owner:        Owner name or ID                                   │
@@ -128,13 +139,15 @@ transient:
 Rules:
 
 - normal mode uses one footer row;
-- command/filter mode replaces that row with its prompt;
+- navigation mode reserves a stable-height adaptive grid with its prompt and hints;
+- filter mode replaces the normal row with its prompt and completion tray;
 - transient mode replaces that row with its key menu;
-- completion/help rows grow upward and never move the prompt from the final row;
-- completion trays show at most six candidates, plus an overflow count when
-  necessary;
+- navigation uses three group columns at 120 columns and two at supported widths
+  below that;
+- the navigation grid reserves two group bands, so filtering never moves the prompt;
+- filter completion trays show at most six candidates, plus an overflow count;
 - bottom content never covers an alert or confirmation;
-- at 60x18, prompt editing remains functional even when candidates are hidden;
+- at 60x18, the complete two-column grouped catalog and prompt remain functional;
 - no bottom interaction surface is rendered through `Clear` over a centered
   rectangle;
 - mouse hit regions are derived from the final rendered spans.
@@ -145,31 +158,31 @@ overflow indicator.
 
 ## 12.3 Command-line contract
 
-### Grammar
+### Catalog and matching
 
-The accepted grammar is:
+The palette contains exactly these canonical routes:
 
 ```text
-:<route-or-alias> [route filter]
-:view:<saved-view-name>
+devices  local  services  users  routes  dns
+access  credentials  activity  overview  settings
 ```
 
-The leading colon is UI chrome and is not stored in the command buffer. Route
-names and aliases remain those documented in `docs/ux.md`. This is not a shell:
-quotes, separators, substitutions, pipes, redirects, and executable names have
-no special execution meaning.
+The leading colon is UI chrome and is not stored in the input buffer. There are
+no aliases and no secondary command grammar. Saved views and filters remain in
+their dedicated action and `/` interactions. The palette is not a shell: quotes,
+separators, substitutions, pipes, redirects, and executable names have no
+execution meaning.
 
 Execution rules:
 
-- an exact route or alias navigates to that route;
-- trailing text is parsed by that destination route's filter grammar before
-  navigation commits;
-- a saved-view name resolves through the existing saved-view domain contract;
-- an unknown or ambiguous target leaves the line open with an inline error;
-- a route that does not accept a general filter rejects trailing text;
-- empty `Enter` closes without navigation;
+- empty input shows the complete canonical catalog;
+- input fuzzy-matches canonical names and concise descriptions;
+- matches sort by fuzzy score with catalog order as the stable tie-breaker;
+- `Enter` opens the highest-scoring result, never raw input;
+- no matches leave the palette open with `No matching view`;
 - successful execution creates one view-history entry;
-- navigation to an equivalent current frame is a semantic no-op.
+- selecting the current route closes the palette, resets collection focus, and
+  creates no redundant history entry.
 
 Do not add arbitrary action commands in this phase. Existing action invocation
 continues through keys, forms, and the action registry.
@@ -187,40 +200,29 @@ Support:
 | Ctrl+w | delete preceding whitespace-delimited word |
 | Ctrl+u | delete from start to cursor |
 | Ctrl+k | delete from cursor to end |
-| Up/Down | older/newer command from this process session |
-| Tab/Shift+Tab | complete or cycle forward/backward |
-| Enter | validate and execute |
+| Enter | open the highest-scoring canonical route |
 | Esc | cancel and restore normal footer |
 
 The cursor must never split UTF-8. Horizontal scrolling keeps the cursor visible
-and shows edge indicators when content is clipped. History is bounded to 100
-successful commands, deduplicates consecutive identical commands, contains no
-secrets, and is not persisted in this phase.
+and shows edge indicators when content is clipped. Navigation input is not stored
+as command history.
 
-### Completion
+### Fuzzy result presentation
 
-Command completion candidates are generated from:
+Each result contains:
 
-- canonical route names;
-- route aliases, labeled as aliases;
-- saved-view names after the literal `view:` prefix;
-- destination filter field names, operators, and bounded enum/boolean values
-  after a route has been resolved.
+- one canonical route name;
+- one concise description;
+- match indices for semantic accent highlighting;
+- the canonical `Route` value executed by `Enter`.
 
-Completion uses prefix matching first and case-insensitive substring matching
-second. Prefix matches sort before substring matches; canonical names sort
-before aliases; remaining ties sort by display text and stable ID.
-
-On first `Tab`:
-
-1. if all candidates share additional prefix text, insert the longest common
-   prefix;
-2. otherwise select the first candidate and open the tray.
-
-Further `Tab`/`Shift+Tab` cycle without losing the original edit span. Any
-ordinary edit resets the cycle. A single unambiguous candidate inserts it and
-adds the required delimiter. `Enter` never implicitly selects a merely
-highlighted candidate when the buffer itself is invalid.
+Use a maintained fuzzy matcher with case-insensitive smart normalization. Matching
+characters use the key/accent role and descriptions use muted text. Routes are
+grouped under filled semantic headings. Within each group, the widest visible route
+name determines the description column, avoiding arbitrary global spacing while
+preserving alignment. Blank rows separate group bands. The grid renders no selection
+cursor or highlight; results are already ordered by match quality and `Enter` opens
+the first one. Grid height remains constant while the result count changes.
 
 ## 12.4 Filter-line contract
 
@@ -561,7 +563,7 @@ Generate navigation sequences and prove:
 At 160x45, 110x30, 80x24, and 60x18, assert rendered cells for:
 
 - normal footer;
-- command prompt with zero, one, six, and overflowing candidates;
+- navigation grid with the full catalog, fuzzy results, and no matches;
 - filter prompt with a positioned error;
 - action and nested action transients;
 - copy transient;
@@ -580,7 +582,7 @@ rectangle. Snapshot labels alone are insufficient; inspect buffer coordinates.
 
 Script deterministic mock-mode journeys for:
 
-1. `:devices owner:alice online:true`, completion, execute, back, and forward;
+1. `:dvcs`, execute, `/ owner:alice online:true`, back, and forward;
 2. live `/` filtering, invalid edit, cancel restoration, then valid commit;
 3. `a` direct action, disabled action reason, nested service action, and
    confirmation;

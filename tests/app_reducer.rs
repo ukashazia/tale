@@ -186,6 +186,48 @@ fn completion_generations_advance_and_resize_preserves_editor_state() {
 }
 
 #[test]
+fn navigation_palette_is_canonical_and_fuzzy() {
+    assert_eq!(Route::parse("devices"), Some(Route::Devices));
+    assert_eq!(Route::parse("dev"), None);
+    assert_eq!(Route::parse("home"), None);
+
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.terminal_width = 140;
+        press(&mut app, KeyCode::Char(':'));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::CommandLine(state)
+                if state.candidates.len() == 11
+                    && state.candidates.first().map(|candidate| candidate.route)
+                        == Some(Route::Devices)
+        ));
+
+        let _ = app.update(Event::Input(InputEvent::Paste("dvcs".to_owned())));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::CommandLine(state)
+                if state.candidates.first().map(|candidate| candidate.route)
+                    == Some(Route::Devices)
+        ));
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("audit".to_owned())));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::CommandLine(state)
+                if state.candidates.first().map(|candidate| candidate.route)
+                    == Some(Route::Activity)
+        ));
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.current_route(), Route::Activity);
+    }
+}
+
+#[test]
 fn refresh_removal_repairs_selection_without_discarding_active_input() {
     let app = mock_app();
     assert!(app.is_some());
@@ -353,17 +395,20 @@ fn quit_and_ctrl_c_follow_task_rules() {
 }
 
 #[test]
-fn command_filter_and_browser_history_restore_and_branch() {
+fn fuzzy_navigation_filter_and_browser_history_restore_and_branch() {
     let app = mock_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
         load_app(&mut app);
         press(&mut app, KeyCode::Char(':'));
-        let _ = app.update(Event::Input(InputEvent::Paste(
-            "devices owner:alice online:true".to_owned(),
-        )));
+        let _ = app.update(Event::Input(InputEvent::Paste("dvcs".to_owned())));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current_route(), Route::Devices);
+        press(&mut app, KeyCode::Char('/'));
+        let _ = app.update(Event::Input(InputEvent::Paste(
+            "owner:alice online:true".to_owned(),
+        )));
+        press(&mut app, KeyCode::Enter);
         assert_eq!(app.views.devices.filter_draft, "owner:alice online:true");
 
         press(&mut app, KeyCode::Char('['));

@@ -19,6 +19,7 @@ pub enum StyleRole {
     TextInverse,
     TextLink,
     TextCode,
+    SectionHeading,
     KeyHint,
     KeyHintDisabled,
     Prompt,
@@ -60,7 +61,7 @@ pub enum StyleRole {
 }
 
 impl StyleRole {
-    pub const ALL: [Self; 54] = [
+    pub const ALL: [Self; 55] = [
         Self::Canvas,
         Self::Surface,
         Self::SurfaceRaised,
@@ -77,6 +78,7 @@ impl StyleRole {
         Self::TextInverse,
         Self::TextLink,
         Self::TextCode,
+        Self::SectionHeading,
         Self::KeyHint,
         Self::KeyHintDisabled,
         Self::Prompt,
@@ -158,9 +160,11 @@ impl StyleRole {
             Self::Canvas | Self::Surface | Self::TextPrimary | Self::BorderNormal => {
                 Modifier::empty()
             }
-            Self::SurfaceRaised | Self::BorderFocused | Self::Focus | Self::Prompt => {
-                Modifier::BOLD
-            }
+            Self::SurfaceRaised
+            | Self::BorderFocused
+            | Self::Focus
+            | Self::Prompt
+            | Self::PromptCursor => Modifier::BOLD,
             Self::SurfaceInset | Self::TextCode => Modifier::ITALIC,
             Self::Backdrop | Self::TextDisabled | Self::StateDisabled => {
                 Modifier::DIM.union(Modifier::CROSSED_OUT)
@@ -174,9 +178,10 @@ impl StyleRole {
             | Self::RiskDestructive
             | Self::TaskFailed
             | Self::DiffRemoved => Modifier::BOLD.union(Modifier::REVERSED),
-            Self::TextInverse | Self::PromptCursor | Self::CompletionSelected | Self::Selection => {
-                Modifier::REVERSED
-            }
+            Self::TextInverse
+            | Self::SectionHeading
+            | Self::CompletionSelected
+            | Self::Selection => Modifier::REVERSED,
             Self::TextLink
             | Self::KeyHint
             | Self::CompletionMatch

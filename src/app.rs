@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
 use sha2::{Digest, Sha256};
 
 use crate::action::{self, ActionContext, ActionId, Capability};
@@ -152,17 +154,17 @@ impl Route {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
-            "overview" | "ov" | "home" => Some(Self::Overview),
-            "local" | "self" => Some(Self::Local),
-            "devices" | "device" | "dev" | "nodes" => Some(Self::Devices),
-            "users" | "user" => Some(Self::Users),
-            "routes" | "route" | "rt" => Some(Self::Routes),
+            "overview" => Some(Self::Overview),
+            "local" => Some(Self::Local),
+            "devices" => Some(Self::Devices),
+            "users" => Some(Self::Users),
+            "routes" => Some(Self::Routes),
             "dns" => Some(Self::Dns),
-            "access" | "policy" | "acl" | "grants" => Some(Self::Access),
-            "credentials" | "credential" | "keys" | "auth" => Some(Self::Credentials),
-            "activity" | "tasks" | "logs" | "events" => Some(Self::Activity),
-            "settings" | "config" => Some(Self::Settings),
-            "services" | "service" | "serve" | "funnel" => Some(Self::Services),
+            "access" => Some(Self::Access),
+            "credentials" => Some(Self::Credentials),
+            "activity" => Some(Self::Activity),
+            "settings" => Some(Self::Settings),
+            "services" => Some(Self::Services),
             _ => None,
         }
     }
@@ -202,11 +204,20 @@ pub struct CompletionCandidate {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NavigationCandidate {
+    pub route: Route,
+    pub label: String,
+    pub description: String,
+    pub label_matches: Vec<u32>,
+    pub description_matches: Vec<u32>,
+    score: u32,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CommandLineState {
     pub editor: LineEditorState,
     pub generation: u64,
-    pub candidates: Vec<CompletionCandidate>,
-    pub selected_completion: Option<usize>,
+    pub candidates: Vec<NavigationCandidate>,
     pub error: Option<String>,
 }
 
@@ -736,8 +747,6 @@ pub enum ShutdownState {
 pub struct App {
     pub view_history: ViewHistory,
     pub interaction: InteractionMode,
-    pub command_history: Vec<String>,
-    command_history_cursor: Option<usize>,
     next_completion_generation: u64,
     pub focus: Focus,
     pub overlays: Vec<Overlay>,
@@ -889,8 +898,6 @@ impl App {
         Self {
             view_history: ViewHistory::new(Route::Overview),
             interaction: InteractionMode::Normal,
-            command_history: Vec::new(),
-            command_history_cursor: None,
             next_completion_generation: 0,
             focus: Focus::Collection,
             overlays: Vec::new(),
@@ -1608,14 +1615,14 @@ impl App {
             return self.handle_interaction_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         }
         let candidate_index = usize::from(mouse.row.saturating_sub(area.y));
-        match &mut self.interaction {
-            InteractionMode::CommandLine(state)
-                if candidate_index < state.candidates.len().min(6) =>
-            {
-                if let Some(candidate) = state.candidates.get(candidate_index) {
-                    apply_completion(&mut state.editor, candidate);
-                    state.selected_completion = Some(candidate_index);
-                }
+        let clicked_route = match &mut self.interaction {
+            InteractionMode::CommandLine(state) => {
+                crate::ui::components::interaction_shell::navigation_route_at(
+                    state,
+                    area,
+                    mouse.column,
+                    mouse.row,
+                )
             }
             InteractionMode::FilterLine(state)
                 if candidate_index < state.candidates.len().min(6) =>
@@ -1639,11 +1646,14 @@ impl App {
                     }
                     x = end.saturating_add(2);
                 }
+                None
             }
             InteractionMode::Normal
             | InteractionMode::HelpSheet(_)
-            | InteractionMode::CommandLine(_)
-            | InteractionMode::FilterLine(_) => {}
+            | InteractionMode::FilterLine(_) => None,
+        };
+        if let Some(route) = clicked_route {
+            return self.open_navigation_route(route);
         }
         Vec::new()
     }
@@ -1995,23 +2005,10 @@ impl App {
     fn handle_command_line_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.code == KeyCode::Esc {
             self.interaction = InteractionMode::Normal;
-            self.command_history_cursor = None;
             return Vec::new();
         }
         if key.code == KeyCode::Enter {
-            let input = match &self.interaction {
-                InteractionMode::CommandLine(state) => state.editor.input.clone(),
-                _ => String::new(),
-            };
-            return self.accept_command(&input);
-        }
-        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-            self.complete_command(key.code == KeyCode::BackTab);
-            return Vec::new();
-        }
-        if matches!(key.code, KeyCode::Up | KeyCode::Down) {
-            self.recall_command(key.code == KeyCode::Up);
-            return Vec::new();
+            return self.accept_navigation();
         }
         let edited = if let InteractionMode::CommandLine(state) = &mut self.interaction {
             edit_line(&mut state.editor, key)
@@ -2021,9 +2018,7 @@ impl App {
         if edited {
             if let InteractionMode::CommandLine(state) = &mut self.interaction {
                 state.error = None;
-                state.selected_completion = None;
             }
-            self.command_history_cursor = None;
             self.refresh_command_completions();
         }
         Vec::new()
@@ -2224,37 +2219,8 @@ impl App {
         Vec::new()
     }
 
-    fn command_candidates(&self, input: &str) -> Vec<CompletionCandidate> {
-        if let Some((route, filter)) = input.split_once(' ')
-            && Route::parse(route) == Some(Route::Devices)
-        {
-            return self.filter_candidates(filter);
-        }
-        let fragment = input.split_whitespace().next().map_or("", |value| value);
-        let mut candidates = route_completion_catalog()
-            .into_iter()
-            .filter(|candidate| completion_matches(&candidate.insertion, fragment))
-            .collect::<Vec<_>>();
-        if let Some(name_fragment) = fragment.strip_prefix("view:") {
-            candidates = self
-                .saved_views
-                .as_ref()
-                .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names)
-                .into_iter()
-                .filter(|name| completion_matches(name, name_fragment))
-                .take(100)
-                .map(|name| CompletionCandidate {
-                    id: format!("saved:{name}"),
-                    insertion: format!("view:{name}"),
-                    label: format!("view:{name}"),
-                    description: "Saved view".to_owned(),
-                    alias: false,
-                })
-                .collect();
-        }
-        sort_completion_candidates(&mut candidates, fragment);
-        candidates.truncate(100);
-        candidates
+    fn command_candidates(&self, input: &str) -> Vec<NavigationCandidate> {
+        navigation_candidates(input.trim())
     }
 
     fn filter_candidates(&self, input: &str) -> Vec<CompletionCandidate> {
@@ -2329,25 +2295,16 @@ impl App {
         if let InteractionMode::CommandLine(state) = &mut self.interaction {
             state.candidates = candidates;
             state.generation = generation;
+            state.error = state
+                .candidates
+                .is_empty()
+                .then(|| "No matching view".to_owned());
         }
     }
 
     fn advance_completion_generation(&mut self) -> u64 {
         self.next_completion_generation = self.next_completion_generation.saturating_add(1);
         self.next_completion_generation
-    }
-
-    fn complete_command(&mut self, reverse: bool) {
-        let InteractionMode::CommandLine(state) = &mut self.interaction else {
-            return;
-        };
-        cycle_completion(
-            &mut state.editor,
-            &state.candidates,
-            &mut state.selected_completion,
-            reverse,
-            true,
-        );
     }
 
     fn complete_filter(&mut self, reverse: bool) {
@@ -2361,28 +2318,6 @@ impl App {
             reverse,
             false,
         );
-    }
-
-    fn recall_command(&mut self, older: bool) {
-        if self.command_history.is_empty() {
-            return;
-        }
-        let last = self.command_history.len().saturating_sub(1);
-        let next = match (self.command_history_cursor, older) {
-            (None, true) => last,
-            (Some(current), true) => current.saturating_sub(1),
-            (Some(current), false) => current.saturating_add(1).min(last),
-            (None, false) => return,
-        };
-        self.command_history_cursor = Some(next);
-        if let Some(input) = self.command_history.get(next).cloned()
-            && let InteractionMode::CommandLine(state) = &mut self.interaction
-        {
-            state.editor = LineEditorState::new(input);
-            state.selected_completion = None;
-            state.error = None;
-        }
-        self.refresh_command_completions();
     }
 
     fn handle_text_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
@@ -2744,90 +2679,30 @@ impl App {
         Vec::new()
     }
 
-    fn accept_command(&mut self, input: &str) -> Vec<Effect> {
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            self.interaction = InteractionMode::Normal;
-            return Vec::new();
-        }
-        if let Some(name) = trimmed.strip_prefix("view:") {
-            let name = name.trim();
-            let known = self
-                .saved_views
-                .as_ref()
-                .is_some_and(|saved_views| saved_views.store.apply(name).is_ok());
-            if !known {
-                if let InteractionMode::CommandLine(state) = &mut self.interaction {
-                    state.error = Some(format!("unknown saved view: {name}"));
-                }
-                return Vec::new();
+    fn accept_navigation(&mut self) -> Vec<Effect> {
+        let route = match &self.interaction {
+            InteractionMode::CommandLine(state) => {
+                state.candidates.first().map(|candidate| candidate.route)
             }
-            self.interaction = InteractionMode::Normal;
-            self.remember_command(trimmed);
-            return self.apply_saved_view_operation(SavedViewMutation::Apply {
-                name: name.to_owned(),
-            });
-        }
-        let (route_text, filter_text) =
-            trimmed.split_once(' ').map_or((trimmed, ""), |parts| parts);
-        let Some(route) = Route::parse(route_text) else {
+            _ => None,
+        };
+        let Some(route) = route else {
             if let InteractionMode::CommandLine(state) = &mut self.interaction {
-                state.error = Some("unknown route".to_owned());
+                state.error = Some("No matching view".to_owned());
             }
             return Vec::new();
         };
-        if !filter_text.trim().is_empty() && route != Route::Devices && route != Route::Activity {
-            if let InteractionMode::CommandLine(state) = &mut self.interaction {
-                state.error = Some("filters are available for devices only".to_owned());
-            }
-            return Vec::new();
-        }
-        let parsed_filter = if !filter_text.trim().is_empty() && route == Route::Devices {
-            match filter::parse(filter_text) {
-                Ok(expression) => Some(expression),
-                Err(error) => {
-                    if let InteractionMode::CommandLine(state) = &mut self.interaction {
-                        state.error = Some(error.to_string());
-                    }
-                    return Vec::new();
-                }
-            }
-        } else {
-            None
-        };
-        self.interaction = InteractionMode::Normal;
-        self.remember_command(trimmed);
-        let same_route = self.current_route() == route;
-        if same_route {
-            self.capture_current_frame();
-        }
-        self.navigate(route);
-        if route == Route::Activity {
-            self.task_filter = filter_text.trim().to_owned();
-            self.tasks.select_filtered_first(&self.task_filter);
-        }
-        if let Some(expression) = parsed_filter {
-            self.views.devices.filter_draft = filter_text.to_owned();
-            self.views.devices.applied_filter = expression;
-            self.reconcile_selection(None);
-        }
-        let frame = self.current_view_frame();
-        if same_route {
-            let _ = self.view_history.append(frame);
-        } else {
-            self.view_history.replace_current(frame);
-        }
-        Vec::new()
+        self.open_navigation_route(route)
     }
 
-    fn remember_command(&mut self, command: &str) {
-        if self.command_history.last().map(String::as_str) != Some(command) {
-            self.command_history.push(command.to_owned());
-            if self.command_history.len() > 100 {
-                self.command_history.remove(0);
-            }
+    fn open_navigation_route(&mut self, route: Route) -> Vec<Effect> {
+        self.interaction = InteractionMode::Normal;
+        if self.current_route() == route {
+            self.focus = Focus::Collection;
+            return Vec::new();
         }
-        self.command_history_cursor = None;
+        self.navigate(route);
+        Vec::new()
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
@@ -2997,7 +2872,6 @@ impl App {
                     editor: LineEditorState::new(String::new()),
                     generation,
                     candidates,
-                    selected_completion: None,
                     error: None,
                 });
                 Vec::new()
@@ -13421,39 +13295,89 @@ fn policy_disallows_exit_override(policy: &[SystemPolicyEntry]) -> bool {
     })
 }
 
-fn route_completion_catalog() -> Vec<CompletionCandidate> {
-    let mut candidates = Vec::new();
-    for route in [
-        Route::Overview,
-        Route::Local,
-        Route::Devices,
-        Route::Users,
-        Route::Routes,
-        Route::Dns,
-        Route::Access,
-        Route::Credentials,
-        Route::Activity,
-        Route::Settings,
-        Route::Services,
-    ] {
-        candidates.push(CompletionCandidate {
-            id: format!("route:{}", route.label()),
-            insertion: route.label().to_owned(),
-            label: route.label().to_owned(),
-            description: format!("{} view", route.label()),
-            alias: false,
+fn navigation_candidates(query: &str) -> Vec<NavigationCandidate> {
+    let pattern = (!query.is_empty()).then(|| {
+        Pattern::new(
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        )
+    });
+    let mut matcher = Matcher::new(MatcherConfig::DEFAULT);
+    let mut candidates = navigation_catalog()
+        .into_iter()
+        .filter_map(|(route, label, description)| {
+            let Some(pattern) = &pattern else {
+                return Some(NavigationCandidate {
+                    route,
+                    label: label.to_owned(),
+                    description: description.to_owned(),
+                    label_matches: Vec::new(),
+                    description_matches: Vec::new(),
+                    score: 0,
+                });
+            };
+            let searchable = format!("{label} {description}");
+            let mut characters = Vec::new();
+            let haystack = Utf32Str::new(&searchable, &mut characters);
+            let mut indices = Vec::new();
+            let score = pattern.indices(haystack, &mut matcher, &mut indices)?;
+            indices.sort_unstable();
+            indices.dedup();
+            let label_length = u32::try_from(label.chars().count()).map_or(u32::MAX, |value| value);
+            let description_offset = label_length.saturating_add(1);
+            let label_matches = indices
+                .iter()
+                .copied()
+                .filter(|index| *index < label_length)
+                .collect();
+            let description_matches = indices
+                .into_iter()
+                .filter_map(|index| index.checked_sub(description_offset))
+                .collect();
+            Some(NavigationCandidate {
+                route,
+                label: label.to_owned(),
+                description: description.to_owned(),
+                label_matches,
+                description_matches,
+                score,
+            })
+        })
+        .collect::<Vec<_>>();
+    if pattern.is_some() {
+        candidates.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| navigation_rank(left.route).cmp(&navigation_rank(right.route)))
         });
-        for alias in route_aliases(route) {
-            candidates.push(CompletionCandidate {
-                id: format!("alias:{}:{alias}", route.label()),
-                insertion: (*alias).to_owned(),
-                label: (*alias).to_owned(),
-                description: format!("Alias for {}", route.label()),
-                alias: true,
-            });
-        }
     }
     candidates
+}
+
+fn navigation_catalog() -> [(Route, &'static str, &'static str); 11] {
+    [
+        (Route::Devices, "devices", "Machines & status"),
+        (Route::Local, "local", "This machine"),
+        (Route::Services, "services", "Serve & Funnel"),
+        (Route::Users, "users", "Members"),
+        (Route::Routes, "routes", "Network routes"),
+        (Route::Dns, "dns", "Name resolution"),
+        (Route::Access, "access", "Policies"),
+        (Route::Credentials, "credentials", "Keys & tokens"),
+        (Route::Activity, "activity", "Tasks & audit"),
+        (Route::Overview, "overview", "Fleet summary"),
+        (Route::Settings, "settings", "Configuration"),
+    ]
+}
+
+fn navigation_rank(route: Route) -> usize {
+    navigation_catalog()
+        .iter()
+        .position(|(candidate, _, _)| *candidate == route)
+        .map_or(usize::MAX, |index| index)
 }
 
 fn completion_matches(value: &str, fragment: &str) -> bool {
@@ -14924,22 +14848,6 @@ fn redacted_argv(args: &[std::ffi::OsString]) -> Vec<String> {
             redactor.text(&value)
         })
         .collect()
-}
-
-fn route_aliases(route: Route) -> &'static [&'static str] {
-    match route {
-        Route::Overview => &["ov", "home"],
-        Route::Local => &["self"],
-        Route::Devices => &["device", "dev", "nodes"],
-        Route::Users => &["user"],
-        Route::Routes => &["route", "rt"],
-        Route::Dns => &[],
-        Route::Access => &["policy", "acl", "grants"],
-        Route::Credentials => &["credential", "keys", "auth"],
-        Route::Activity => &["tasks", "logs", "events"],
-        Route::Settings => &["config"],
-        Route::Services => &["service", "serve", "funnel"],
-    }
 }
 
 fn apply_admin_result<T>(

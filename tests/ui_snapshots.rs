@@ -12,7 +12,7 @@ use tale::event::{Event, InputEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
 use tale::ui;
-use tale::ui::theme::{ColorCapability, Theme, ThemeId};
+use tale::ui::theme::{ColorCapability, StyleRole, Theme, ThemeId};
 
 fn mock_app() -> Option<App> {
     let root = PathBuf::from("/fictional/tale-snapshots");
@@ -113,8 +113,8 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             let lines = lines_at(&app, width, height);
             assert!(lines.is_some());
             if let Some(lines) = lines {
-                assert!(lines.last().is_some_and(|line| line.contains(": dev")));
-                assert!(lines.last().is_some_and(|line| line.contains('█')));
+                assert!(lines.iter().any(|line| line.contains(": dev")));
+                assert!(lines.iter().any(|line| line.contains('▏')));
             }
 
             press(&mut app, KeyCode::Esc);
@@ -322,6 +322,40 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
 }
 
 #[test]
+fn command_caret_keeps_the_prompt_surface_background() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("e".to_owned())));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let layout = tale::ui::layout::compute(area, &app);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).ok();
+        assert!(terminal.is_some());
+        if let Some(terminal) = terminal.as_mut() {
+            assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+            let prompt_y = layout
+                .footer
+                .y
+                .saturating_add(layout.footer.height.saturating_sub(2));
+            let input_cell = terminal.backend().buffer().cell((2, prompt_y));
+            let caret_cell = terminal.backend().buffer().cell((3, prompt_y));
+            assert!(input_cell.is_some());
+            assert!(caret_cell.is_some());
+            if let (Some(input_cell), Some(caret_cell)) = (input_cell, caret_cell) {
+                assert_eq!(caret_cell.symbol(), "▏");
+                assert_eq!(caret_cell.bg, input_cell.bg);
+                assert_eq!(
+                    Some(caret_cell.bg),
+                    app.theme.style(StyleRole::SurfaceRaised).bg
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
     let keyboard = populated_app();
     assert!(keyboard.is_some());
@@ -423,6 +457,19 @@ fn mouse_footer_completion_transient_and_outside_cancel_match_keys() {
         })));
         assert!(matches!(app.interaction, InteractionMode::Normal));
 
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("dev".to_owned())));
+        let layout = tale::ui::layout::compute(ratatui::layout::Rect::new(0, 0, 80, 24), &app);
+        let _ = app.update(Event::Input(InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: layout.footer.y.saturating_add(3),
+            modifiers: KeyModifiers::NONE,
+        })));
+        assert_eq!(app.current_route(), Route::Devices);
+        assert!(matches!(app.interaction, InteractionMode::Normal));
+
+        app.set_route(Route::Overview);
         press(&mut app, KeyCode::Char('a'));
         let _ = app.update(Event::Input(InputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),

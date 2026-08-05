@@ -7,28 +7,12 @@ use crate::action::{self, ActionContext};
 use crate::app::{
     App, CopyField, Focus, InteractionMode, Route, TransientKind, TransientMenuState,
 };
-use crate::ui::theme;
+use crate::ui::{layout, text, theme};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let lines = match &app.interaction {
         InteractionMode::Normal => normal_lines(app, area.width),
-        InteractionMode::CommandLine(state) => {
-            let mut lines = completion_lines(
-                app,
-                &state.candidates,
-                state.selected_completion,
-                area.height.saturating_sub(1),
-            );
-            lines.push(prompt_line(
-                app,
-                ':',
-                &state.editor.input,
-                state.editor.cursor,
-                state.error.as_deref(),
-                area.width,
-            ));
-            lines
-        }
+        InteractionMode::CommandLine(state) => navigation_lines(app, state, area),
         InteractionMode::FilterLine(state) => {
             let mut lines = completion_lines(
                 app,
@@ -100,6 +84,242 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     vec![Line::from(action::footer_hints(context, width).join("  "))]
 }
 
+fn navigation_lines(
+    app: &App,
+    state: &crate::app::CommandLineState,
+    area: Rect,
+) -> Vec<Line<'static>> {
+    const GRID_HEIGHT: usize = 9;
+    let sections = navigation_sections(&state.candidates);
+    let columns = layout::navigation_columns(area.width).min(sections.len().max(1));
+    let separator_width = columns.saturating_sub(1).saturating_mul(2);
+    let available_width = usize::from(area.width).saturating_sub(separator_width);
+    let cell_width = available_width / columns;
+    let mut lines = vec![navigation_header(app), Line::default()];
+    let grid_start = lines.len();
+    for (band, section_row) in sections.chunks(columns).enumerate() {
+        if band > 0 {
+            lines.push(Line::default());
+        }
+        let height = section_row
+            .iter()
+            .map(|section| section.candidates.len().saturating_add(1))
+            .max()
+            .map_or(0, |value| value);
+        for row in 0..height {
+            let mut spans = Vec::new();
+            for column in 0..columns {
+                if column > 0 {
+                    spans.push(Span::raw("  "));
+                }
+                if let Some(section) = section_row.get(column) {
+                    spans.extend(navigation_section_line(app, section, row, cell_width));
+                } else {
+                    spans.push(Span::raw(" ".repeat(cell_width)));
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    while lines.len().saturating_sub(grid_start) < GRID_HEIGHT {
+        lines.push(Line::default());
+    }
+    lines.push(Line::default());
+    lines.push(prompt_line(
+        app,
+        ':',
+        &state.editor.input,
+        state.editor.cursor,
+        state.error.as_deref(),
+        area.width,
+    ));
+    lines.push(navigation_hints(app));
+    lines
+}
+
+fn navigation_header(app: &App) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("Views", app.theme.style(theme::StyleRole::Focus)),
+        Span::raw("   "),
+        Span::styled("Esc", app.theme.style(theme::StyleRole::KeyHint)),
+        Span::styled(" Close", app.theme.style(theme::StyleRole::TextMuted)),
+    ])
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum NavigationSectionKind {
+    Fleet,
+    Local,
+    Network,
+    Operations,
+}
+
+impl NavigationSectionKind {
+    const fn for_route(route: Route) -> Self {
+        match route {
+            Route::Overview | Route::Devices | Route::Users => Self::Fleet,
+            Route::Local | Route::Services => Self::Local,
+            Route::Routes | Route::Dns | Route::Access => Self::Network,
+            Route::Credentials | Route::Activity | Route::Settings => Self::Operations,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Fleet => "Fleet",
+            Self::Local => "Local",
+            Self::Network => "Network",
+            Self::Operations => "Operations",
+        }
+    }
+}
+
+struct NavigationSection<'a> {
+    kind: NavigationSectionKind,
+    candidates: Vec<&'a crate::app::NavigationCandidate>,
+}
+
+fn navigation_sections(
+    candidates: &[crate::app::NavigationCandidate],
+) -> Vec<NavigationSection<'_>> {
+    let mut sections: Vec<NavigationSection<'_>> = Vec::new();
+    for candidate in candidates {
+        let kind = NavigationSectionKind::for_route(candidate.route);
+        if let Some(section) = sections.iter_mut().find(|section| section.kind == kind) {
+            section.candidates.push(candidate);
+        } else {
+            sections.push(NavigationSection {
+                kind,
+                candidates: vec![candidate],
+            });
+        }
+    }
+    sections
+}
+
+fn navigation_section_line(
+    app: &App,
+    section: &NavigationSection<'_>,
+    row: usize,
+    width: usize,
+) -> Vec<Span<'static>> {
+    if row == 0 {
+        let heading = format!(" {} ", section.kind.label());
+        let padding = width.saturating_sub(heading.chars().count());
+        return vec![
+            Span::styled(heading, app.theme.style(theme::StyleRole::SectionHeading)),
+            Span::styled(
+                " ".repeat(padding),
+                app.theme.style(theme::StyleRole::SurfaceRaised),
+            ),
+        ];
+    }
+    let command_width = section
+        .candidates
+        .iter()
+        .map(|candidate| candidate.label.chars().count())
+        .max()
+        .map_or(0, |value| value);
+    section.candidates.get(row.saturating_sub(1)).map_or_else(
+        || vec![Span::raw(" ".repeat(width))],
+        |candidate| navigation_cell(app, candidate, command_width, width),
+    )
+}
+
+fn navigation_cell(
+    app: &App,
+    candidate: &crate::app::NavigationCandidate,
+    command_width: usize,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let label_length = candidate.label.chars().count();
+    let prefix_width = command_width.saturating_add(1);
+    let description_budget = width.saturating_sub(prefix_width);
+    let description = text::ellipsize(&candidate.description, description_budget);
+    let used = prefix_width.saturating_add(description.chars().count());
+    let mut spans = Vec::new();
+    for (index, character) in candidate.label.chars().enumerate() {
+        let style = if candidate
+            .label_matches
+            .contains(&u32::try_from(index).map_or(u32::MAX, |i| i))
+        {
+            app.theme.style(theme::StyleRole::KeyHint)
+        } else {
+            app.theme.style(theme::StyleRole::TextPrimary)
+        };
+        spans.push(Span::styled(character.to_string(), style));
+    }
+    spans.push(Span::styled(
+        " ".repeat(command_width.saturating_sub(label_length)),
+        app.theme.style(theme::StyleRole::TextPrimary),
+    ));
+    spans.push(Span::styled(
+        " ",
+        app.theme.style(theme::StyleRole::TextMuted),
+    ));
+    for (index, character) in description.chars().enumerate() {
+        let style = if candidate
+            .description_matches
+            .contains(&u32::try_from(index).map_or(u32::MAX, |i| i))
+        {
+            app.theme.style(theme::StyleRole::Focus)
+        } else {
+            app.theme.style(theme::StyleRole::TextMuted)
+        };
+        spans.push(Span::styled(character.to_string(), style));
+    }
+    spans.push(Span::styled(
+        " ".repeat(width.saturating_sub(used)),
+        app.theme.style(theme::StyleRole::SurfaceRaised),
+    ));
+    spans
+}
+
+pub fn navigation_route_at(
+    state: &crate::app::CommandLineState,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<Route> {
+    let sections = navigation_sections(&state.candidates);
+    let columns = layout::navigation_columns(area.width).min(sections.len().max(1));
+    let separator_width = columns.saturating_sub(1).saturating_mul(2);
+    let cell_width = usize::from(area.width).saturating_sub(separator_width) / columns;
+    let stride = cell_width.saturating_add(2);
+    let relative_x = usize::from(column.saturating_sub(area.x));
+    let section_column = relative_x / stride.max(1);
+    if section_column >= columns || relative_x % stride.max(1) >= cell_width {
+        return None;
+    }
+    let relative_y = usize::from(row.saturating_sub(area.y));
+    let mut band_y = 2_usize;
+    for section_row in sections.chunks(columns) {
+        let height = section_row
+            .iter()
+            .map(|section| section.candidates.len().saturating_add(1))
+            .max()?;
+        if relative_y >= band_y && relative_y < band_y.saturating_add(height) {
+            let candidate_row = relative_y.saturating_sub(band_y).checked_sub(1)?;
+            return section_row
+                .get(section_column)?
+                .candidates
+                .get(candidate_row)
+                .map(|candidate| candidate.route);
+        }
+        band_y = band_y.saturating_add(height).saturating_add(1);
+    }
+    None
+}
+
+fn navigation_hints(app: &App) -> Line<'static> {
+    let key = app.theme.style(theme::StyleRole::KeyHint);
+    let label = app.theme.style(theme::StyleRole::TextMuted);
+    Line::from(vec![
+        Span::styled("Enter", key),
+        Span::styled(" Open best match", label),
+    ])
+}
+
 fn completion_lines(
     app: &App,
     candidates: &[crate::app::CompletionCandidate],
@@ -165,7 +385,12 @@ fn prompt_line(
             format!("{prefix} {}{before}", if clipped_left { "‹" } else { "" }),
             app.theme.style(theme::StyleRole::Prompt),
         ),
-        Span::styled("█", app.theme.style(theme::StyleRole::PromptCursor)),
+        Span::styled(
+            "▏",
+            app.theme
+                .style(theme::StyleRole::SurfaceRaised)
+                .patch(app.theme.style(theme::StyleRole::PromptCursor)),
+        ),
         Span::styled(
             format!("{after}{}", if clipped_right { "›" } else { "" }),
             app.theme.style(theme::StyleRole::Prompt),

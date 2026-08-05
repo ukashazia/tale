@@ -45,9 +45,7 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
     };
     let interaction_height = match &app.interaction {
         InteractionMode::Normal => 1,
-        InteractionMode::CommandLine(state) => {
-            u16::try_from(state.candidates.len().min(6).saturating_add(1)).map_or(7, |value| value)
-        }
+        InteractionMode::CommandLine(_) => navigation_palette_height(),
         InteractionMode::FilterLine(state) => {
             u16::try_from(state.candidates.len().min(6).saturating_add(1)).map_or(7, |value| value)
         }
@@ -86,4 +84,18 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
         notification: vertical[3],
         footer: vertical[4],
     }
+}
+
+pub const fn navigation_columns(width: u16) -> usize {
+    if width >= 120 {
+        3
+    } else if width >= 60 {
+        2
+    } else {
+        1
+    }
+}
+
+pub const fn navigation_palette_height() -> u16 {
+    14
 }
