@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tale::domain::source::{ExecutableSource, LocalState};
-use tale::local::client::{ClientError, LocalClient, ResolvedExecutable};
+use tale::local::client::{ClientError, LocalCliClient, ResolvedExecutable};
 use tale::local::process::Cancellation;
 
 #[test]
@@ -26,14 +26,6 @@ fn version_output_errors_are_classified_as_unsupported_client() {
         unknown_flag.state("1.0.0"),
         LocalState::UnsupportedClient { .. }
     ));
-    let status_output = ClientError::UnsupportedOutput {
-        operation: "status".to_owned(),
-        detail: "required self node was not returned".to_owned(),
-    };
-    assert!(matches!(
-        status_output.state("1.98.9"),
-        LocalState::DaemonUnavailable { .. }
-    ));
 }
 
 #[cfg(unix)]
@@ -48,6 +40,12 @@ async fn discovery_probes_each_feature_once_and_keeps_unavailable_features_local
         std::process::id()
     ));
     let body = r#"
+case "$1" in
+  --socket)
+    if [ "$2" != "/fictional/tailscaled.sock" ]; then exit 3; fi
+    shift 2
+    ;;
+esac
 case "$1" in
   version)
     if [ "$2" != "--json" ] || [ "$3" != "--daemon" ]; then exit 2; fi
@@ -80,9 +78,10 @@ esac
     permissions.set_mode(0o755);
     assert!(fs::set_permissions(&path, permissions).is_ok());
 
-    let discovered = LocalClient::discover(
+    let discovered = LocalCliClient::discover(
         ResolvedExecutable {
             path: path.clone(),
+            socket_path: Some(PathBuf::from("/fictional/tailscaled.sock")),
             source: ExecutableSource::Path,
         },
         Duration::from_secs(2),
@@ -92,19 +91,16 @@ esac
     assert!(discovered.is_ok());
     if let Ok(executable) = discovered {
         assert_eq!(executable.version, "1.98.9");
-        assert!(executable.capabilities.status_json);
+        assert_eq!(
+            executable.socket_path,
+            Some(PathBuf::from("/fictional/tailscaled.sock"))
+        );
         assert!(executable.capabilities.ping);
         assert!(executable.capabilities.netcheck_json);
         assert!(executable.capabilities.netcheck_json_line);
         assert!(executable.capabilities.dns_status_json);
         assert!(executable.capabilities.dns_query_json);
         assert!(!executable.capabilities.whois_json);
-        let client = LocalClient::new(executable, Duration::from_secs(2));
-        let snapshot = client.status(1_754_000_000, &Cancellation::new()).await;
-        assert!(snapshot.is_ok());
-        if let Ok(snapshot) = snapshot {
-            assert_eq!(snapshot.self_node.id.0, "nodekey:self");
-        }
     }
     let _ = fs::remove_file(path);
 }
@@ -114,6 +110,7 @@ fn resolved_executable_keeps_the_invoked_path_without_canonicalization() {
     let path = PathBuf::from("/tmp/path with spaces/tailscale");
     let resolved = ResolvedExecutable {
         path: path.clone(),
+        socket_path: None,
         source: ExecutableSource::Cli,
     };
     assert_eq!(resolved.path, path);

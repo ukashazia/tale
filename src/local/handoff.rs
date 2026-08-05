@@ -12,17 +12,21 @@ use crate::local::process::LocalOperation;
 pub enum HandoffCommand {
     Login {
         executable: OsString,
+        socket_path: Option<OsString>,
     },
     Logout {
         executable: OsString,
+        socket_path: Option<OsString>,
     },
     Ssh {
         executable: OsString,
+        socket_path: Option<OsString>,
         username: Option<String>,
         host: String,
     },
     Nc {
         executable: OsString,
+        socket_path: Option<OsString>,
         host: String,
         port: u16,
     },
@@ -40,29 +44,73 @@ impl HandoffCommand {
 
     pub fn executable(&self) -> &OsString {
         match self {
-            Self::Login { executable }
-            | Self::Logout { executable }
+            Self::Login { executable, .. }
+            | Self::Logout { executable, .. }
             | Self::Ssh { executable, .. }
             | Self::Nc { executable, .. } => executable,
         }
     }
 
     pub fn args(&self) -> Vec<OsString> {
-        match self {
-            Self::Login { .. } => vec![OsString::from("login")],
-            Self::Logout { .. } => vec![OsString::from("logout")],
-            Self::Ssh { username, host, .. } => {
+        let (socket_path, mut args) = match self {
+            Self::Login { socket_path, .. } => (socket_path, vec![OsString::from("login")]),
+            Self::Logout { socket_path, .. } => (socket_path, vec![OsString::from("logout")]),
+            Self::Ssh {
+                socket_path,
+                username,
+                host,
+                ..
+            } => {
                 let target = username
                     .as_deref()
                     .map_or_else(|| host.clone(), |username| format!("{username}@{host}"));
-                vec![OsString::from("ssh"), OsString::from(target)]
+                (
+                    socket_path,
+                    vec![OsString::from("ssh"), OsString::from(target)],
+                )
             }
-            Self::Nc { host, port, .. } => vec![
-                OsString::from("nc"),
-                OsString::from(host),
-                OsString::from(port.to_string()),
-            ],
+            Self::Nc {
+                socket_path,
+                host,
+                port,
+                ..
+            } => (
+                socket_path,
+                vec![
+                    OsString::from("nc"),
+                    OsString::from(host),
+                    OsString::from(port.to_string()),
+                ],
+            ),
+        };
+        if let Some(socket_path) = socket_path {
+            args.insert(0, socket_path.clone());
+            args.insert(0, OsString::from("--socket"));
         }
+        args
+    }
+
+    pub fn with_socket_path(mut self, path: &Path) -> Self {
+        let socket_path = Some(path.as_os_str().to_os_string());
+        match &mut self {
+            Self::Login {
+                socket_path: target,
+                ..
+            }
+            | Self::Logout {
+                socket_path: target,
+                ..
+            }
+            | Self::Ssh {
+                socket_path: target,
+                ..
+            }
+            | Self::Nc {
+                socket_path: target,
+                ..
+            } => *target = socket_path,
+        }
+        self
     }
 }
 
@@ -125,6 +173,7 @@ pub fn ssh_command(
     }
     Ok(HandoffCommand::Ssh {
         executable: executable.as_os_str().to_os_string(),
+        socket_path: None,
         username: username.map(ToOwned::to_owned),
         host: host.to_owned(),
     })
@@ -139,6 +188,7 @@ pub fn nc_command(
     let port = parse_nc_port(port)?;
     Ok(HandoffCommand::Nc {
         executable: executable.as_os_str().to_os_string(),
+        socket_path: None,
         host: host.to_owned(),
         port,
     })
@@ -147,12 +197,14 @@ pub fn nc_command(
 pub fn login_command(executable: &Path) -> HandoffCommand {
     HandoffCommand::Login {
         executable: executable.as_os_str().to_os_string(),
+        socket_path: None,
     }
 }
 
 pub fn logout_command(executable: &Path) -> HandoffCommand {
     HandoffCommand::Logout {
         executable: executable.as_os_str().to_os_string(),
+        socket_path: None,
     }
 }
 

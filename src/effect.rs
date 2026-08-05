@@ -191,13 +191,14 @@ pub enum Effect {
         resolution: ExecutableResolution,
         timeout: Duration,
     },
-    StartLocalStatus {
-        generation: u64,
-        executable: LocalExecutable,
+    StartLocalObservation {
+        socket_path: PathBuf,
         timeout: Duration,
+        reconcile_interval: Duration,
     },
-    StartLocalPreferences {
-        executable: LocalExecutable,
+    StartLocalSnapshotRefresh {
+        generation: u64,
+        socket_path: PathBuf,
         timeout: Duration,
     },
     StartLocalAccounts {
@@ -239,7 +240,7 @@ pub enum Effect {
         request: ServiceActionRequest,
     },
     CancelLocalDiscovery,
-    CancelLocalStatus,
+    CancelLocalObservation,
     CancelTask {
         task_id: TaskId,
     },

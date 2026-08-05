@@ -1,11 +1,12 @@
 pub mod accounts;
 pub mod certificates;
 pub mod client;
+pub mod daemon;
 pub mod diagnostics;
 pub mod dto;
 pub mod handoff;
+pub mod ipn;
 pub mod policy;
-pub mod preferences;
 pub mod process;
 pub mod services;
 pub mod transfers;

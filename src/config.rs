@@ -33,6 +33,7 @@ pub struct EnvironmentValues {
     pub profile: Option<String>,
     pub access_token_present: bool,
     pub tailscale_path: Option<String>,
+    pub tailscale_socket: Option<PathBuf>,
     pub no_color: bool,
 }
 
@@ -43,6 +44,7 @@ impl EnvironmentValues {
             profile: std::env::var("TALE_PROFILE").ok(),
             access_token_present: std::env::var_os("TALE_ACCESS_TOKEN").is_some(),
             tailscale_path: std::env::var("TALE_TAILSCALE_PATH").ok(),
+            tailscale_socket: std::env::var_os("TALE_TAILSCALE_SOCKET").map(PathBuf::from),
             no_color: std::env::var_os("NO_COLOR").is_some(),
         }
     }
@@ -68,11 +70,13 @@ pub struct ResolvedConfig {
 pub struct LocalConfig {
     pub enabled: bool,
     pub tailscale_path: String,
-    pub refresh_interval: Duration,
+    pub socket_path: PathBuf,
+    pub reconcile_interval: Duration,
     pub command_timeout: Duration,
     pub enabled_source: ValueSource,
     pub tailscale_path_source: ValueSource,
-    pub refresh_interval_source: ValueSource,
+    pub socket_path_source: ValueSource,
+    pub reconcile_interval_source: ValueSource,
     pub command_timeout_source: ValueSource,
 }
 
@@ -241,7 +245,8 @@ struct FileConfig {
 struct FileLocal {
     enabled: Option<bool>,
     tailscale_path: Option<String>,
-    refresh_interval: Option<Duration>,
+    tailscale_socket: Option<PathBuf>,
+    reconcile_interval: Option<Duration>,
     command_timeout: Option<Duration>,
 }
 
@@ -350,6 +355,25 @@ pub fn resolve(
         ValueSource::Default
     };
 
+    let socket_path = match cli
+        .tailscale_socket
+        .clone()
+        .or_else(|| environment.tailscale_socket.clone())
+        .or_else(|| file.local.tailscale_socket.clone())
+    {
+        Some(path) => path,
+        None => crate::local::daemon::documented_socket_path(),
+    };
+    let socket_path_source = if cli.tailscale_socket.is_some() {
+        ValueSource::Cli
+    } else if environment.tailscale_socket.is_some() {
+        ValueSource::Environment
+    } else if file.local.tailscale_socket.is_some() {
+        ValueSource::File
+    } else {
+        ValueSource::Default
+    };
+
     let color = if environment.no_color {
         ColorMode::None
     } else {
@@ -379,17 +403,19 @@ pub fn resolve(
         local: LocalConfig {
             enabled: local_enabled,
             tailscale_path,
-            refresh_interval: file
+            socket_path,
+            reconcile_interval: file
                 .local
-                .refresh_interval
-                .map_or(Duration::from_secs(2), |value| value),
+                .reconcile_interval
+                .map_or(Duration::from_secs(30), |value| value),
             command_timeout: file
                 .local
                 .command_timeout
                 .map_or(Duration::from_secs(10), |value| value),
             enabled_source: local_enabled_source,
             tailscale_path_source,
-            refresh_interval_source: source_for(file.local.refresh_interval.is_some()),
+            socket_path_source,
+            reconcile_interval_source: source_for(file.local.reconcile_interval.is_some()),
             command_timeout_source: source_for(file.local.command_timeout.is_some()),
         },
         admin: AdminConfig {
@@ -631,19 +657,21 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
         &[
             "enabled",
             "tailscale_path",
-            "refresh_interval",
+            "socket_path",
+            "reconcile_interval",
             "command_timeout",
         ],
     )?;
     let local = FileLocal {
         enabled: optional_bool(local_table, "enabled", "local.enabled")?,
         tailscale_path: optional_string(local_table, "tailscale_path", "local.tailscale_path")?,
-        refresh_interval: optional_duration(
+        tailscale_socket: optional_path(local_table, "socket_path", "local.socket_path")?,
+        reconcile_interval: optional_duration(
             local_table,
-            "refresh_interval",
-            "local.refresh_interval",
-            Duration::from_millis(500),
-            Duration::from_secs(300),
+            "reconcile_interval",
+            "local.reconcile_interval",
+            Duration::from_secs(5),
+            Duration::from_secs(600),
         )?,
         command_timeout: optional_duration(
             local_table,
@@ -813,6 +841,14 @@ fn optional_string(
             })
             .map(Some),
     }
+}
+
+fn optional_path(
+    table: &Table<'_>,
+    key: &str,
+    field: &str,
+) -> Result<Option<PathBuf>, ConfigError> {
+    optional_string(table, key, field).map(|value| value.map(PathBuf::from))
 }
 
 fn required_string(table: &Table<'_>, key: &str, field: &str) -> Result<String, ConfigError> {
@@ -1022,9 +1058,14 @@ impl ResolvedConfig {
                 source: self.local.tailscale_path_source,
             },
             SettingDisplay {
-                name: "local.refresh_interval",
-                value: format_duration(self.local.refresh_interval),
-                source: self.local.refresh_interval_source,
+                name: "local.socket_path",
+                value: self.local.socket_path.display().to_string(),
+                source: self.local.socket_path_source,
+            },
+            SettingDisplay {
+                name: "local.reconcile_interval",
+                value: format_duration(self.local.reconcile_interval),
+                source: self.local.reconcile_interval_source,
             },
             SettingDisplay {
                 name: "local.command_timeout",

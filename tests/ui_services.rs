@@ -268,6 +268,7 @@ fn local_app() -> Option<App> {
         read_only: false,
         no_local: false,
         tailscale_path: Some("/fictional/tailscale".into()),
+        tailscale_socket: None,
         mock: false,
     };
     let environment = EnvironmentValues {
@@ -275,6 +276,7 @@ fn local_app() -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: true,
     };
     let paths = PathEnvironment {
@@ -294,6 +296,7 @@ fn local_app() -> Option<App> {
     app.local_capabilities = capabilities;
     app.local_executable = Some(LocalExecutable {
         path: "/fictional/tailscale".into(),
+        socket_path: None,
         source: ExecutableSource::Cli,
         version: "1.98.9".to_owned(),
         daemon_version: Some("1.98.9".to_owned()),

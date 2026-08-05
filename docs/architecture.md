@@ -2,7 +2,8 @@
 
 ## Architectural decision
 
-Tale is one Rust binary with two adapters and one domain/UI core:
+Tale is one Rust binary with a LocalAPI observer, a Local CLI adapter, an
+admin adapter, and one domain/UI core:
 
 ```text
                          ┌─────────────────────────────┐
@@ -12,16 +13,25 @@ terminal input ────────▶ │ App state + update reducer  │ �
                     ┌───────────────────┴───────────────────┐
                     ▼                                       ▼
           ┌──────────────────┐                    ┌──────────────────┐
-          │ Local CLI adapter│                    │ Control API client│
-          │ local device     │                    │ tailnet resources │
+          │ LocalAPI observer│                    │ Control API client│
+          │ local daemon     │                    │ tailnet resources │
           └────────┬─────────┘                    └────────┬─────────┘
-                   ▼                                       ▼
-             tailscale process                       HTTPS API
+                   │                                       ▼
+             UDS / named pipe                         HTTPS API
+
+          ┌──────────────────┐
+          │ Local CLI adapter│
+          │ typed operations │
+          └────────┬─────────┘
+                   ▼
+             tailscale process
 ```
 
-There is no generic backend/repository framework. The local and admin sources
-have different semantics and return explicit source models. Composition happens
-in small domain functions where a view genuinely needs both.
+There is no generic backend/repository framework. The local daemon, local CLI,
+and admin sources have different semantics and return explicit source models.
+Composition happens in small domain functions where a view genuinely needs
+both. A working daemon endpoint is enough for read-only local observation; CLI
+discovery is an independent capability for mutations and process-backed work.
 
 ## Runtime model
 
@@ -74,8 +84,10 @@ src/
     health.rs
   local/
     mod.rs
-    client.rs             typed tailscale argv construction
-    dto.rs                versioned CLI output boundary
+    daemon.rs              LocalAPI HTTP/1 snapshots and watch transport
+    ipn.rs                 bounded watch framing and invalidation scheduling
+    client.rs              typed tailscale argv construction
+    dto.rs                 versioned CLI output boundary
     process.rs            bounded non-shell runner
   admin/
     mod.rs
@@ -374,4 +386,3 @@ a locked dependency list. Each is selected in the phase that first needs it.
 The project uses `cargo fmt --all --check`, strict Clippy, unit/contract tests,
 and documentation link/format checks as the baseline. Exact commands are added
 with the first implementation slice.
-

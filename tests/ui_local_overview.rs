@@ -8,7 +8,7 @@ use tale::app::{App, Route, SourceMode};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::event::{Event, LocalEvent};
-use tale::local::dto::decode_status;
+use tale::local::daemon::decode_status;
 use tale::paths::{PathEnvironment, Platform};
 
 const STATUS: &str = include_str!("fixtures/tailscale/1.98.9/linux/status.json");
@@ -96,6 +96,7 @@ fn local_app() -> Option<App> {
         read_only: false,
         no_local: false,
         tailscale_path: Some(PathBuf::from("tailscale")),
+        tailscale_socket: None,
         mock: false,
     };
     let environment = EnvironmentValues {
@@ -103,6 +104,7 @@ fn local_app() -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: true,
     };
     let paths = PathEnvironment {

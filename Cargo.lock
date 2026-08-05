@@ -1982,11 +1982,15 @@ name = "tale"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "bytes",
  "clap",
  "clap_complete",
  "clap_mangen",
  "criterion",
  "crossterm",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "keyring",
  "libc",
  "ratatui",

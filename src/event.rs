@@ -308,10 +308,20 @@ pub enum LocalEvent {
         generation: u64,
         failure: LocalFailure,
     },
+    PreferencesStarted {
+        generation: u64,
+        attempted_at: Timestamp,
+    },
     PreferencesSucceeded {
+        generation: u64,
         preferences: Box<LocalPreferences>,
     },
     PreferencesFailed {
+        generation: u64,
+        failure: LocalFailure,
+    },
+    WatcherConnected,
+    WatcherDisconnected {
         failure: LocalFailure,
     },
     AccountsSucceeded {

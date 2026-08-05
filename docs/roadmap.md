@@ -243,9 +243,10 @@ without creating an API credential.
 - Record command availability without trying legacy command forms.
 - Show remediation through copyable text; never install, start, or elevate.
 
-#### 2.2 Status contract
+#### 2.2 LocalAPI status contract
 
-- Invoke `tailscale status --json` with bounded output and timeout.
+- Read `/localapi/v0/status` through the pinned LocalAPI contract with bounded
+  output and timeout; use the watch stream only as an invalidation source.
 - Decode the self node, peers, users, stable IDs, addresses, OS, liveness,
   connection path, traffic counters, routes, and optional metadata used by the
   UI.
@@ -283,21 +284,23 @@ without creating an API credential.
 
 #### 2.6 Refresh and degradation
 
-- Refresh local status on the configured interval without overlap.
-- Pause polling during interactive overlays that require stable input.
-- Show refresh progress only when it exceeds a short perceptual threshold.
-- Back off after repeated daemon failures while keeping manual refresh active.
-- Return immediately to normal cadence after a successful manual refresh.
+- Connect the pinned LocalAPI watch before the initial status and preference
+  reads, and use notifications only to invalidate authoritative snapshots.
+- Coalesce targeted status and preference reads with bounded debounce,
+  generations, dirty follow-up reads, and a periodic reconciliation read.
+- Reconnect with bounded backoff after watch failure while retaining last-good
+  snapshots and marking them stale.
+- Keep manual refresh targeted and independent of the watch stream.
 
 ### Views completed in this phase
 
 - Overview: local source health and peer summary.
-- Local: read-only current-node identity and observed preferences where a stable
-  documented command exposes them.
+- Local: read-only current-node identity and observed preferences from the
+  pinned LocalAPI contract, with CLI-backed actions kept separate.
 - Devices: local collection, inspector, filtering, sorting, and diagnostics.
 - DNS: local status and query tool.
 - Activity: real local diagnostic tasks.
-- Settings: local executable and refresh settings.
+- Settings: local executable, daemon socket, and reconciliation settings.
 
 ### Phase gate
 
@@ -335,9 +338,8 @@ without memorizing Tailscale flags.
 #### 3.2 Connection and preferences
 
 - Before building preference forms, record the exact current-value contract:
-  use documented CLI output or the individually stable LocalAPI preferences
-  method after a focused transport decision. Do not adopt undocumented
-  `tailscale debug` output merely because another TUI parses it.
+  use the pinned LocalAPI preferences contract in Decision 0004. Do not adopt
+  undocumented `tailscale debug` output merely because another TUI parses it.
 - Connect and disconnect the current client.
 - Read and edit accept-routes, accept-DNS, shields-up, Tailscale SSH server,
   auto-update preference, posture reporting, hostname, and supported forwarding

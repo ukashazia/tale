@@ -47,7 +47,7 @@ _tale() {
 
     case "${cmd}" in
         tale)
-            opts="-h -V --profile --config --view --read-only --no-local --tailscale-path --help --version auth config doctor"
+            opts="-h -V --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help --version auth config doctor"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -69,6 +69,10 @@ _tale() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --tailscale-socket)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -77,7 +81,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__auth)
-            opts="-h --profile --config --view --read-only --no-local --tailscale-path --help add remove status"
+            opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help add remove status"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -96,6 +100,10 @@ _tale() {
                     return 0
                     ;;
                 --tailscale-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-socket)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -107,7 +115,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__auth__subcmd__add)
-            opts="-h --config --view --read-only --no-local --tailscale-path --help"
+            opts="-h --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -122,6 +130,10 @@ _tale() {
                     return 0
                     ;;
                 --tailscale-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-socket)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -133,7 +145,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__auth__subcmd__remove)
-            opts="-h --config --view --read-only --no-local --tailscale-path --help"
+            opts="-h --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -148,6 +160,10 @@ _tale() {
                     return 0
                     ;;
                 --tailscale-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-socket)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -159,7 +175,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__auth__subcmd__status)
-            opts="-h --config --view --read-only --no-local --tailscale-path --help"
+            opts="-h --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -177,6 +193,10 @@ _tale() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --tailscale-socket)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -185,7 +205,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__config)
-            opts="-h --profile --config --view --read-only --no-local --tailscale-path --help path check"
+            opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help path check"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -207,6 +227,10 @@ _tale() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --tailscale-socket)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -215,7 +239,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__config__subcmd__check)
-            opts="-h --profile --config --view --read-only --no-local --tailscale-path --help"
+            opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -234,6 +258,10 @@ _tale() {
                     return 0
                     ;;
                 --tailscale-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-socket)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -245,7 +273,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__config__subcmd__path)
-            opts="-h --profile --config --view --read-only --no-local --tailscale-path --help"
+            opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -267,6 +295,10 @@ _tale() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --tailscale-socket)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -275,7 +307,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__doctor)
-            opts="-h --output --profile --config --view --read-only --no-local --tailscale-path --help"
+            opts="-h --output --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -298,6 +330,10 @@ _tale() {
                     return 0
                     ;;
                 --tailscale-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-socket)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

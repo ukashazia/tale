@@ -110,8 +110,15 @@ pub async fn list(
     path: &std::path::Path,
     timeout: Duration,
     cancellation: &Cancellation,
+    socket_path: Option<&std::path::Path>,
 ) -> Result<Vec<LocalAccount>, AccountError> {
-    let result = process::run(list_command(path, timeout), cancellation)
+    let command = match socket_path {
+        Some(socket_path) => {
+            list_command(path, timeout).with_socket_path(socket_path.as_os_str().to_os_string())
+        }
+        None => list_command(path, timeout),
+    };
+    let result = process::run(command, cancellation)
         .await
         .map_err(process_error)?;
     if result.exit_status != Some(0) {

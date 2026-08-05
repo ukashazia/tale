@@ -24,6 +24,8 @@ fn every_phase_one_flag_and_subcommand_parses() {
         "--no-local",
         "--tailscale-path",
         "/fictional/tailscale",
+        "--tailscale-socket",
+        "/fictional/tailscaled.sock",
         "--mock",
     ]);
     assert!(cli.is_some());
@@ -34,6 +36,10 @@ fn every_phase_one_flag_and_subcommand_parses() {
         assert!(cli.read_only);
         assert!(cli.no_local);
         assert!(cli.tailscale_path.is_some());
+        assert_eq!(
+            cli.tailscale_socket.as_deref(),
+            Some(std::path::Path::new("/fictional/tailscaled.sock"))
+        );
         assert!(cli.mock);
     }
 

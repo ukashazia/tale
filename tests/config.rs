@@ -28,6 +28,7 @@ fn cli(config: Option<PathBuf>) -> Cli {
         read_only: false,
         no_local: false,
         tailscale_path: None,
+        tailscale_socket: None,
         mock: false,
     }
 }
@@ -38,6 +39,7 @@ fn environment() -> EnvironmentValues {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: false,
     }
 }
@@ -69,17 +71,19 @@ fn precedence_is_cli_then_environment_then_file_then_default() {
     let file = root.join("config.toml");
     let write = fs::write(
         &file,
-        "read_only = false\n[local]\nenabled = true\ntailscale_path = \"file-binary\"\nrefresh_interval = \"1s\"\n[ui]\ncolor = \"auto\"\n",
+        "read_only = false\n[local]\nenabled = true\ntailscale_path = \"file-binary\"\nsocket_path = \"file.sock\"\nreconcile_interval = \"5s\"\n[ui]\ncolor = \"auto\"\n",
     );
     assert!(write.is_ok());
 
     let mut env = environment();
     env.tailscale_path = Some("environment-binary".to_owned());
+    env.tailscale_socket = Some(PathBuf::from("environment.sock"));
     env.no_color = true;
     let mut command = cli(Some(file.clone()));
     command.read_only = true;
     command.no_local = true;
     command.tailscale_path = Some(PathBuf::from("cli-binary"));
+    command.tailscale_socket = Some(PathBuf::from("cli.sock"));
     let resolved = config::resolve(&command, &env, &path_environment(Platform::Unix, &root));
     assert!(resolved.is_ok());
     if let Ok(resolved) = resolved {
@@ -89,10 +93,31 @@ fn precedence_is_cli_then_environment_then_file_then_default() {
         assert_eq!(resolved.local.enabled_source, ValueSource::Cli);
         assert_eq!(resolved.local.tailscale_path, "cli-binary");
         assert_eq!(resolved.local.tailscale_path_source, ValueSource::Cli);
+        assert_eq!(resolved.local.socket_path, PathBuf::from("cli.sock"));
+        assert_eq!(resolved.local.socket_path_source, ValueSource::Cli);
         assert_eq!(resolved.ui.color, config::ColorMode::None);
         assert_eq!(resolved.ui.color_source, ValueSource::Environment);
-        assert_eq!(resolved.local.refresh_interval.as_secs(), 1);
+        assert_eq!(resolved.local.reconcile_interval.as_secs(), 5);
     }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn removed_local_polling_setting_is_an_unknown_field() {
+    let root =
+        std::env::temp_dir().join(format!("tale-removed-local-setting-{}", std::process::id()));
+    let _ = fs::create_dir_all(&root);
+    let file = root.join("config.toml");
+    let write = fs::write(&file, "[local]\nrefresh_interval = \"30s\"\n");
+    assert!(write.is_ok());
+    let resolved = config::resolve(
+        &cli(Some(file)),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(
+        matches!(resolved, Err(config::ConfigError::UnknownField(field)) if field == "local.refresh_interval")
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -109,7 +134,7 @@ fn missing_config_uses_defaults_and_does_not_write() {
     assert!(resolved.is_ok());
     if let Ok(resolved) = resolved {
         assert_eq!(resolved.history.max_tasks, 200);
-        assert_eq!(resolved.local.refresh_interval.as_secs(), 2);
+        assert_eq!(resolved.local.reconcile_interval.as_secs(), 30);
     }
     assert!(!file.exists());
     assert!(!root.exists());
@@ -141,7 +166,7 @@ fn every_documented_duration_boundary_is_checked() {
     let root = std::env::temp_dir().join(format!("tale-duration-{}", std::process::id()));
     let _ = fs::create_dir_all(&root);
     let file = root.join("config.toml");
-    let write = fs::write(&file, "[local]\nrefresh_interval = \"499ms\"\n");
+    let write = fs::write(&file, "[local]\nreconcile_interval = \"499ms\"\n");
     assert!(write.is_ok());
     let invalid = config::resolve(
         &cli(Some(file.clone())),
@@ -151,7 +176,7 @@ fn every_documented_duration_boundary_is_checked() {
     assert!(invalid.is_err());
     let write = fs::write(
         &file,
-        "[local]\nrefresh_interval = \"500ms\"\ncommand_timeout = \"10m\"\n[admin]\nrefresh_interval = \"30m\"\nrequest_timeout = \"2m\"\n[history]\nmax_tasks = 5000\n",
+        "[local]\nreconcile_interval = \"5s\"\ncommand_timeout = \"10m\"\n[admin]\nrefresh_interval = \"30m\"\nrequest_timeout = \"2m\"\n[history]\nmax_tasks = 5000\n",
     );
     assert!(write.is_ok());
     let valid = config::resolve(

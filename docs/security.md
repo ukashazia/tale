@@ -27,8 +27,11 @@ private certificate material.
 
 ## Transport and URL controls
 
-The HTTP client uses maintained `reqwest` rustls defaults for certificate and
-hostname verification. Credentials are Bearer headers only. URL paths and
+The hosted HTTP client uses maintained `reqwest` rustls defaults for certificate
+and hostname verification. The local daemon client uses maintained HTTP/1
+machinery over the configured Unix socket or Windows named pipe; it sends the
+pinned capability and Host headers, bounds bodies and watch frames at 32 MiB,
+and never logs peer data. Credentials are Bearer headers only. URL paths and
 queries are constructed through typed URL APIs; request failures are scoped to
 the affected resource. Response bodies are bounded before storing error text,
 and redaction occurs before diagnostic persistence. No credential-bearing

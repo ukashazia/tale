@@ -48,6 +48,7 @@ Environment variables do not map generically onto TOML keys.
 | `TALE_PROFILE` | select an admin profile for this run |
 | `TALE_ACCESS_TOKEN` | ephemeral access token for the selected profile; never persisted |
 | `TALE_TAILSCALE_PATH` | override the local executable for this run |
+| `TALE_TAILSCALE_SOCKET` | override the local daemon socket or named pipe for this run |
 | `NO_COLOR` | force color mode `none` |
 | `VISUAL`, `EDITOR` | external policy editor, in that order |
 
@@ -55,7 +56,7 @@ Environment variables do not map generically onto TOML keys.
 
 ```text
 tale [--profile NAME] [--read-only] [--no-local] [--view ROUTE]
-     [--config PATH] [--tailscale-path PATH] [--mock]
+     [--config PATH] [--tailscale-path PATH] [--tailscale-socket PATH] [--mock]
 
 tale auth add PROFILE
 tale auth remove PROFILE
@@ -89,7 +90,8 @@ read_only = false
 [local]
 enabled = true
 tailscale_path = "tailscale"
-refresh_interval = "2s"
+socket_path = "/var/run/tailscale/tailscaled.sock"
+reconcile_interval = "30s"
 command_timeout = "10s"
 
 [admin]
@@ -137,7 +139,8 @@ setting.
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | when false, do not detect or invoke the CLI |
 | `tailscale_path` | path/string | `tailscale` | executable name or absolute path; never a command string |
-| `refresh_interval` | duration | `2s` | 500ms–5m |
+| `socket_path` | path/string | platform default | one Unix socket or Windows named pipe; no probing |
+| `reconcile_interval` | duration | `30s` | 5s–10m |
 | `command_timeout` | duration | `10s` | 1s–10m; streaming/interactive commands have explicit policies |
 
 ### Admin fields

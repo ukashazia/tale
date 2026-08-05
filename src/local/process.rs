@@ -19,7 +19,6 @@ const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 pub enum LocalOperation {
     Version,
     Help(String),
-    Status,
     Up,
     Down,
     Set,
@@ -60,7 +59,6 @@ impl LocalOperation {
         match self {
             Self::Version => "version".to_owned(),
             Self::Help(command) => format!("{command} help"),
-            Self::Status => "status".to_owned(),
             Self::Up => "up".to_owned(),
             Self::Down => "down".to_owned(),
             Self::Set => "set".to_owned(),
@@ -114,6 +112,7 @@ pub struct LocalCommand {
     pub executable: OsString,
     pub operation: LocalOperation,
     pub args: Vec<OsString>,
+    pub socket_path: Option<OsString>,
     pub stdin: StdinMode,
     pub stdout_mode: OutputMode,
     pub stderr_mode: OutputMode,
@@ -129,6 +128,7 @@ impl fmt::Debug for LocalCommand {
             .debug_struct("LocalCommand")
             .field("operation", &self.operation)
             .field("arg_count", &self.args.len())
+            .field("has_socket_path", &self.socket_path.is_some())
             .field("stdin", &self.stdin)
             .field("stdout_mode", &self.stdout_mode)
             .field("stderr_mode", &self.stderr_mode)
@@ -150,6 +150,7 @@ impl LocalCommand {
             executable: executable.into(),
             operation,
             args,
+            socket_path: None,
             stdin: StdinMode::Closed,
             stdout_mode: OutputMode::Collect,
             stderr_mode: OutputMode::Collect,
@@ -184,6 +185,11 @@ impl LocalCommand {
 
     pub fn redact_arg(mut self, index: usize) -> Self {
         self.redactions.push(index);
+        self
+    }
+
+    pub fn with_socket_path(mut self, path: impl Into<OsString>) -> Self {
+        self.socket_path = Some(path.into());
         self
     }
 }
@@ -380,6 +386,9 @@ pub fn decode_utf8(bytes: &[u8]) -> Result<&str, LocalProcessError> {
 
 fn spawn(command: &LocalCommand) -> Result<Child, LocalProcessError> {
     let mut process = Command::new(&command.executable);
+    if let Some(socket_path) = command.socket_path.as_ref() {
+        process.arg("--socket").arg(socket_path);
+    }
     process
         .args(&command.args)
         .stdin(Stdio::null())

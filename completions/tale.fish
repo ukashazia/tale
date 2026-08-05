@@ -1,6 +1,6 @@
 # Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
 function __fish_tale_global_optspecs
-    string join \n profile= config= view= read-only no-local tailscale-path= h/help V/version
+    string join \n profile= config= view= read-only no-local tailscale-path= tailscale-socket= h/help V/version
 end
 
 function __fish_tale_needs_command
@@ -28,6 +28,7 @@ complete -c tale -n "__fish_tale_needs_command" -l profile -r
 complete -c tale -n "__fish_tale_needs_command" -l config -r -F
 complete -c tale -n "__fish_tale_needs_command" -l view -r
 complete -c tale -n "__fish_tale_needs_command" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_needs_command" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_needs_command" -l read-only
 complete -c tale -n "__fish_tale_needs_command" -l no-local
 complete -c tale -n "__fish_tale_needs_command" -s h -l help -d 'Print help'
@@ -39,6 +40,7 @@ complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subc
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -s h -l help -d 'Print help'
@@ -48,18 +50,21 @@ complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subc
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -s h -l help -d 'Print help'
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -s h -l help -d 'Print help'
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -s h -l help -d 'Print help'
@@ -67,6 +72,7 @@ complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_su
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -s h -l help -d 'Print help'
@@ -76,6 +82,7 @@ complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcom
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -s h -l help -d 'Print help'
@@ -83,6 +90,7 @@ complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcom
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -s h -l help -d 'Print help'
@@ -91,6 +99,7 @@ complete -c tale -n "__fish_tale_using_subcommand doctor" -l profile -r
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l tailscale-socket -r -F
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand doctor" -s h -l help -d 'Print help'

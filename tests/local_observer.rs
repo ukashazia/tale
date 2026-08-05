@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use tale::action::ActionId;
 use tale::app::{App, SourceMode};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
@@ -16,12 +15,13 @@ use tale::event::{Event, LocalEvent};
 use tale::local::client::{
     ClientError, ExecutableError, ExecutableResolution, HostPlatform, resolve_executable,
 };
+use tale::local::daemon::decode_status;
 use tale::local::diagnostics::{
     DnsRecordType, WhoisProtocol, parse_dns_query, parse_dns_status, parse_netcheck_json,
     parse_netcheck_lines, parse_ping_line, parse_whois, summarize_ping, validate_dns_query,
     validate_whois_target,
 };
-use tale::local::dto::{decode_status, decode_version};
+use tale::local::dto::decode_version;
 use tale::local::process::LocalProcessError;
 use tale::paths::{PathEnvironment, Platform};
 
@@ -368,6 +368,7 @@ fn executable_resolution_obeys_precedence_and_platform_rules() {
         environment_path: Some(env.clone().into_os_string()),
         config_path: Some(config.clone()),
         path: Some(path_dir.clone().into_os_string()),
+        socket_path: None,
         platform: HostPlatform::Unix,
     };
     let resolved = resolve_executable(&input);
@@ -406,6 +407,7 @@ fn executable_resolution_obeys_precedence_and_platform_rules() {
         cli_path: None,
         environment_path: None,
         config_path: None,
+        socket_path: None,
         path: Some(windows_dir.clone().into_os_string()),
         platform: HostPlatform::Windows,
     });
@@ -414,6 +416,7 @@ fn executable_resolution_obeys_precedence_and_platform_rules() {
         cli_path: Some(root.join("missing")),
         environment_path: None,
         config_path: None,
+        socket_path: None,
         path: None,
         platform: HostPlatform::Unix,
     });
@@ -433,6 +436,7 @@ fn no_local_bootstrap_has_no_local_effect() {
         read_only: false,
         no_local: true,
         tailscale_path: Some(root.join("does not exist")),
+        tailscale_socket: None,
         mock: false,
     };
     let environment = EnvironmentValues {
@@ -440,6 +444,7 @@ fn no_local_bootstrap_has_no_local_effect() {
         profile: None,
         access_token_present: false,
         tailscale_path: Some(root.join("environment").to_string_lossy().into_owned()),
+        tailscale_socket: None,
         no_color: false,
     };
     let paths = PathEnvironment {
@@ -468,6 +473,7 @@ fn no_local_bootstrap_has_no_local_effect() {
         read_only: false,
         no_local: false,
         tailscale_path: Some(root.join("does not exist")),
+        tailscale_socket: None,
         mock: true,
     };
     let mock_config = config::resolve(&mock_cli, &environment, &paths);
@@ -518,80 +524,47 @@ fn redacted_diagnostic_report_is_deterministic_and_secret_free() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn refresh_backoff_is_bounded_manual_and_resets_after_success() {
+async fn watcher_disconnect_marks_resources_stale_and_refresh_is_targeted() {
     tokio::time::advance(std::time::Duration::from_secs(1)).await;
     let app = local_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
-        let base = std::time::Instant::now();
         let _ = app.bootstrap_effects();
-        let _ = app.update(Event::Tick(base));
-        for generation in 1..=10 {
-            app.local_resource.begin(generation, timestamp());
-            let _ = app.update(Event::Local(Box::new(LocalEvent::StatusFailed {
-                generation,
-                failure: LocalFailure::new(
-                    LocalFailureKind::DaemonUnavailable,
-                    "status",
-                    "daemon unavailable",
-                    "fixture failure",
-                    true,
-                ),
-            })));
-            let due = app.local_refresh_due_at();
-            assert!(due.is_some());
-            if let Some(due) = due {
-                let delay = due.checked_duration_since(base);
-                assert!(delay.is_some());
-                if let Some(delay) = delay {
-                    if generation == 1 {
-                        assert_eq!(delay.as_secs(), 2);
-                    }
-                    if generation == 2 {
-                        assert_eq!(delay.as_secs(), 4);
-                    }
-                    if generation == 10 {
-                        assert_eq!(delay.as_secs(), 60);
-                    }
-                }
-            }
-        }
-        assert_eq!(app.local_resource.consecutive_failures, 10);
-        app.local_executable = Some(LocalExecutable {
-            path: PathBuf::from("tailscale"),
-            source: ExecutableSource::Path,
-            version: "1.98.9".to_owned(),
-            daemon_version: None,
-            build: None,
-            capabilities: LocalCapabilities::all_supported(),
-        });
-        app.local_capabilities = LocalCapabilities::all_supported();
-        let generation = app.local_resource.generation.saturating_add(1);
-        let _ = app.update(Event::Local(Box::new(LocalEvent::StatusStarted {
-            generation,
-            attempted_at: timestamp(),
-        })));
-        let effects = app.dispatch_action(ActionId::ViewRefresh);
-        assert!(
-            effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::CancelLocalStatus))
-        );
-        assert!(
-            effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::StartLocalStatus { .. }))
-        );
         let snapshot = decode_status(STATUS, "1.98.9".to_owned(), None, timestamp());
         assert!(snapshot.is_ok());
         if let Ok(snapshot) = snapshot {
-            let generation = app.local_resource.generation;
+            let generation = 1;
             let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
                 generation,
                 snapshot: Box::new(snapshot),
             })));
-            assert_eq!(app.local_resource.consecutive_failures, 0);
             assert_eq!(app.local_resource.status, LocalResourceStatus::Fresh);
+            let _ = app.update(Event::Local(Box::new(LocalEvent::WatcherDisconnected {
+                failure: LocalFailure::new(
+                    LocalFailureKind::DaemonUnavailable,
+                    "watch-ipn-bus",
+                    "watcher disconnected",
+                    "fixture disconnect",
+                    true,
+                ),
+            })));
+            assert_eq!(app.local_resource.status, LocalResourceStatus::Stale);
+            assert!(app.local_resource.snapshot.is_some());
+            app.local_executable = Some(LocalExecutable {
+                path: PathBuf::from("tailscale"),
+                socket_path: None,
+                source: ExecutableSource::Path,
+                version: "1.98.9".to_owned(),
+                daemon_version: None,
+                build: None,
+                capabilities: LocalCapabilities::all_supported(),
+            });
+            let effects = app.dispatch_action(tale::action::ActionId::ViewRefresh);
+            assert!(
+                effects
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::StartLocalSnapshotRefresh { .. }))
+            );
         }
     }
 }
@@ -609,6 +582,7 @@ fn local_app() -> Option<App> {
         read_only: false,
         no_local: false,
         tailscale_path: None,
+        tailscale_socket: None,
         mock: false,
     };
     let environment = EnvironmentValues {
@@ -616,6 +590,7 @@ fn local_app() -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: false,
     };
     let paths = PathEnvironment {

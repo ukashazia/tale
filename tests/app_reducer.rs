@@ -27,6 +27,7 @@ fn mock_app() -> Option<App> {
         read_only: false,
         no_local: false,
         tailscale_path: None,
+        tailscale_socket: None,
         mock: true,
     };
     let environment = EnvironmentValues {
@@ -34,6 +35,7 @@ fn mock_app() -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: false,
     };
     let paths = PathEnvironment {
@@ -281,6 +283,7 @@ fn service_task_success_verifies_and_failure_preserves_snapshot() {
         app.local_capabilities = capabilities;
         app.local_executable = Some(LocalExecutable {
             path: PathBuf::from("/fictional/tailscale"),
+            socket_path: None,
             source: ExecutableSource::Cli,
             version: "1.98.9".to_owned(),
             daemon_version: None,
@@ -406,6 +409,7 @@ fn stale_service_refresh_cannot_replace_newer_data_and_read_only_blocks_dispatch
         app.local_capabilities = capabilities;
         app.local_executable = Some(LocalExecutable {
             path: PathBuf::from("/fictional/tailscale"),
+            socket_path: None,
             source: ExecutableSource::Cli,
             version: "1.98.9".to_owned(),
             daemon_version: None,

@@ -96,6 +96,7 @@ fn mock_app() -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: false,
     };
     let root = std::path::PathBuf::from("/fictional/tale-bench");

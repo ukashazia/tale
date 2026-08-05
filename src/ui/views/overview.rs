@@ -102,8 +102,9 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
             }
         )),
         Line::from(format!(
-            "local        {} · {} devices · {}",
-            app.local_state.label(),
+            "local        daemon {} · CLI {} · {} devices · {}",
+            app.local_daemon_state.label(),
+            app.local_cli_state.label(),
             local_devices,
             app.local_resource.status.label()
         )),
@@ -176,11 +177,7 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .filter(|device| matches!(device.path, ConnectionPath::PeerRelay { .. }))
         .count();
-    let state = match app.local_resource.status {
-        crate::domain::source::LocalResourceStatus::Loading => "discovering".to_owned(),
-        crate::domain::source::LocalResourceStatus::Stale => "stale".to_owned(),
-        _ => app.local_state.label().to_owned(),
-    };
+    let state = app.local_daemon_state.label().to_owned();
     let version_mismatch = app
         .local_executable
         .as_ref()
@@ -217,8 +214,9 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = vec![
         Line::from("Overview · local source"),
         Line::from(format!(
-            "local       {} · {}",
+            "local       daemon {} · CLI {} · {}",
             state,
+            app.local_cli_state.label(),
             app.local_resource.status.label()
         )),
         Line::from(format!("node        {} · {}", self_name, tailnet)),

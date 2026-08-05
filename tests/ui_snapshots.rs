@@ -23,6 +23,7 @@ fn mock_app() -> Option<App> {
         read_only: false,
         no_local: false,
         tailscale_path: None,
+        tailscale_socket: None,
         mock: true,
     };
     let environment = EnvironmentValues {
@@ -30,6 +31,7 @@ fn mock_app() -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: false,
     };
     let paths = PathEnvironment {

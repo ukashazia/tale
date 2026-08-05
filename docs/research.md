@@ -27,17 +27,17 @@ local, cloud-derived, stale, forbidden, plan-restricted, or unavailable.
 The documented Tailscale CLI provides the broadest cross-platform local control
 surface. Relevant command families include:
 
-- `status --json`, `ip`, `whois`, `dns`, and `metrics` for inspection;
+- `status`, `ip`, `whois`, `dns`, and `metrics` for inspection;
 - `ping` and `netcheck` for connection diagnosis;
 - `up`, `down`, `set`, `switch`, `login`, and `logout` for client state;
 - `ssh` and `nc` for connections;
 - `serve`, `funnel`, `file`, and `drive` for exposing or transferring data;
 - `cert`, `bugreport`, `syspolicy`, `lock`, and `update` for specialized tasks.
 
-The CLI documentation explicitly warns that `status --json` can change. Tale
-therefore owns a narrow decoding boundary, keeps captured fixtures per supported
-client version, preserves unknown fields, and fails a refresh without damaging
-the last good snapshot when required fields no longer decode.
+Tale's pinned LocalAPI contract owns the authoritative status decoding boundary.
+Captured status and preference fixtures remain labeled by exact Tailscale
+version and platform; unknown fields are preserved by the decoder, and a
+failed read never damages the last good snapshot.
 
 ### LocalAPI
 
@@ -46,11 +46,11 @@ maturity note are unstable. The source currently marks status and preferences
 methods stable, while the LocalAPI router itself still describes the `/v0/`
 surface as an internal implementation detail.
 
-Tale will not bind directly to undocumented LocalAPI methods in the first
-implementation. The official CLI already handles socket discovery, platform
-differences, daemon permissions, and interactive operations. A direct LocalAPI
-integration is eligible only for an individually documented stable method and
-only when it materially improves the product.
+Specification 11 binds only the individually reviewed read contract recorded
+in Decision 0004: status, preferences, and `watch-ipn-bus` over the selected
+local socket or named pipe. The official CLI remains responsible for
+socket-aligned mutations, interactive operations, and commands without an
+approved LocalAPI contract.
 
 ### Control API
 

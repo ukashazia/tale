@@ -15,15 +15,17 @@ use tale::domain::route::{
     AdvertisementRequest, ExitNodeRequest, ExitNodeSelection, parse_route_set,
     parse_static_endpoints,
 };
-use tale::domain::source::{ExecutableSource, LocalCapabilities, LocalExecutable};
+use tale::domain::source::{
+    ExecutableSource, LocalCapabilities, LocalDaemonState, LocalExecutable,
+};
 use tale::effect::Effect;
 use tale::event::{Event, InputEvent, LocalEvent};
 use tale::local::accounts::decode_accounts;
-use tale::local::client::{down_command, up_command};
-use tale::local::policy::{SystemPolicyEntry, decode_policy};
-use tale::local::preferences::{
-    advertisement_command, decode_preferences, exit_node_command, set_command,
+use tale::local::client::{
+    advertisement_command, down_command, exit_node_command, set_command, up_command,
 };
+use tale::local::daemon::decode_preferences;
+use tale::local::policy::{SystemPolicyEntry, decode_policy};
 use tale::paths::{PathEnvironment, Platform};
 
 const STATUS: &str = include_str!("fixtures/tailscale/1.98.9/linux/status.json");
@@ -41,6 +43,7 @@ fn app(read_only: bool) -> Option<App> {
         read_only,
         no_local: false,
         tailscale_path: None,
+        tailscale_socket: None,
         mock: false,
     };
     let environment = EnvironmentValues {
@@ -48,6 +51,7 @@ fn app(read_only: bool) -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: false,
     };
     let paths = PathEnvironment {
@@ -70,6 +74,7 @@ fn prepared_app() -> Option<App> {
     app.source_mode = SourceMode::Local;
     let executable = LocalExecutable {
         path: PathBuf::from("/bin/tailscale"),
+        socket_path: None,
         source: ExecutableSource::Cli,
         version: "1.98.9".to_owned(),
         daemon_version: Some("1.98.9".to_owned()),
@@ -78,7 +83,7 @@ fn prepared_app() -> Option<App> {
     };
     app.local_executable = Some(executable);
     app.local_capabilities = LocalCapabilities::all_supported();
-    let snapshot = tale::local::dto::decode_status(
+    let snapshot = tale::local::daemon::decode_status(
         STATUS,
         "1.98.9".to_owned(),
         Some("1.98.9".to_owned()),
@@ -89,6 +94,7 @@ fn prepared_app() -> Option<App> {
         generation: 1,
         snapshot: Box::new(snapshot),
     })));
+    app.local_daemon_state = LocalDaemonState::Live;
     app.local_preferences = decode_preferences(PREFS, 1_754_000_000).ok()?;
     Some(app)
 }
@@ -323,7 +329,7 @@ fn account_change_clears_old_selection_and_needs_login_opens_login_choice() {
 
         assert!(app.mutation_lock.hold(22));
         app.mutation_in_flight = Some(22);
-        let needs_login = tale::local::dto::decode_status(
+        let needs_login = tale::local::daemon::decode_status(
             r#"{"BackendState":"NeedsLogin","Self":{"ID":"nodekey:self"}}"#,
             "1.98.9".to_owned(),
             None,

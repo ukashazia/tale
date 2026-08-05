@@ -259,8 +259,12 @@ fn safe_configuration_values(config: &ResolvedConfig) -> BTreeMap<String, String
         },
     );
     values.insert(
-        "local.refresh_interval".to_owned(),
-        format_duration(config.local.refresh_interval),
+        "local.socket_path".to_owned(),
+        config.local.socket_path.display().to_string(),
+    );
+    values.insert(
+        "local.reconcile_interval".to_owned(),
+        format_duration(config.local.reconcile_interval),
     );
     values.insert(
         "local.command_timeout".to_owned(),

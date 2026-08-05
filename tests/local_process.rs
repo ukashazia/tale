@@ -228,7 +228,7 @@ mod unix_process_tests {
         if let Some(path) = path {
             let command = LocalCommand::new(
                 path.as_os_str().to_os_string(),
-                LocalOperation::Status,
+                LocalOperation::Netcheck,
                 Vec::new(),
             );
             let result = run(command, &Cancellation::new()).await;

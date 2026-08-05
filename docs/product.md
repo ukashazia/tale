@@ -30,9 +30,12 @@ user to memorize Tailscale flags, API endpoints, or every keyboard shortcut.
 
 ### Local mode
 
-Always attempted at startup. It requires an installed Tailscale client but no
-Control API credential. It presents the local node, reachable peers, connection
-paths, local preferences, accounts, diagnostics, and local actions.
+Always attempted at startup when local integration is enabled. Daemon
+observation requires the documented LocalAPI socket or named pipe, but does
+not require the Tailscale executable. It presents the local node, reachable
+peers, connection paths, and preferences. An installed, supported CLI is
+additionally required for accounts, diagnostics, mutations, and other
+process-backed actions.
 
 ### Admin mode
 
@@ -78,11 +81,11 @@ The UI presents these top-level resources:
 | Resource | Meaning | Primary source |
 | --- | --- | --- |
 | Overview | actionable summary, alerts, recent tasks | composed |
-| Local | current client, preferences, accounts, addresses | local CLI |
-| Devices | nodes registered with or visible to the tailnet | local CLI + Control API |
+| Local | current client, preferences, accounts, addresses | LocalAPI + CLI where needed |
+| Devices | nodes registered with or visible to the tailnet | LocalAPI + Control API |
 | Users | members, roles, status, owned devices | Control API |
-| Routes | subnet routes, exit nodes, advertisers, approval state | local CLI + Control API |
-| DNS | MagicDNS, resolvers, split DNS, search paths, query tool | local CLI + Control API |
+| Routes | subnet routes, exit nodes, advertisers, approval state | LocalAPI + Control API |
+| DNS | MagicDNS, resolvers, split DNS, search paths, query tool | LocalAPI + CLI diagnostics + Control API |
 | Access | policy source, validation, tests, preview, change diff | Control API |
 | Services | Serve, Funnel, Taildrive, declared and discovered services | local CLI; API where documented |
 | Credentials | auth keys and supported trust credentials | Control API |
@@ -255,4 +258,3 @@ features are explicitly enumerated, and the following are true:
 - every failure explains the failing source and the next safe action;
 - the interface remains complete at 80x24 using drill-down views;
 - core workflows require neither a mouse nor a Nerd Font.
-

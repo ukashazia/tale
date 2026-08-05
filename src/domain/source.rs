@@ -24,7 +24,6 @@ impl ExecutableSource {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub struct LocalCapabilities {
-    pub status_json: bool,
     pub ping: bool,
     pub netcheck_json: bool,
     pub netcheck_json_line: bool,
@@ -60,7 +59,6 @@ pub struct LocalCapabilities {
 impl LocalCapabilities {
     pub const fn all_supported() -> Self {
         Self {
-            status_json: true,
             ping: true,
             netcheck_json: true,
             netcheck_json_line: true,
@@ -115,11 +113,70 @@ impl LocalCapabilities {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct LocalExecutable {
     pub path: PathBuf,
+    pub socket_path: Option<PathBuf>,
     pub source: ExecutableSource,
     pub version: String,
     pub daemon_version: Option<String>,
     pub build: Option<String>,
     pub capabilities: LocalCapabilities,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum LocalDaemonState {
+    Disabled,
+    Mock,
+    Connecting,
+    Live,
+    Reconnecting,
+    Unavailable { detail: String },
+    PermissionDenied { detail: String },
+    Unsupported { detail: String },
+}
+
+impl LocalDaemonState {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Mock => "mock",
+            Self::Connecting => "connecting",
+            Self::Live => "live",
+            Self::Reconnecting => "reconnecting",
+            Self::Unavailable { .. } => "unavailable",
+            Self::PermissionDenied { .. } => "permission denied",
+            Self::Unsupported { .. } => "unsupported",
+        }
+    }
+
+    pub const fn is_live(&self) -> bool {
+        matches!(self, Self::Live)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum LocalCliState {
+    Disabled,
+    Mock,
+    Discovering,
+    Available,
+    Missing,
+    PermissionDenied,
+    Unsupported { detail: String },
+    Unavailable { detail: String },
+}
+
+impl LocalCliState {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Mock => "mock",
+            Self::Discovering => "discovering",
+            Self::Available => "available",
+            Self::Missing => "missing",
+            Self::PermissionDenied => "permission denied",
+            Self::Unsupported { .. } => "unsupported",
+            Self::Unavailable { .. } => "unavailable",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -302,6 +359,82 @@ impl LocalResource {
 }
 
 impl Default for LocalResource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalPreferencesResource {
+    pub snapshot: Option<super::preference::LocalPreferences>,
+    pub status: LocalResourceStatus,
+    pub last_attempt_at: Option<Timestamp>,
+    pub last_success_at: Option<Timestamp>,
+    pub failure: Option<LocalFailure>,
+    pub generation: u64,
+    pub consecutive_failures: u32,
+}
+
+impl LocalPreferencesResource {
+    pub const fn new() -> Self {
+        Self {
+            snapshot: None,
+            status: LocalResourceStatus::NeverLoaded,
+            last_attempt_at: None,
+            last_success_at: None,
+            failure: None,
+            generation: 0,
+            consecutive_failures: 0,
+        }
+    }
+
+    pub fn begin(&mut self, generation: u64, attempted_at: Timestamp) {
+        self.generation = generation;
+        self.last_attempt_at = Some(attempted_at);
+        self.status = LocalResourceStatus::Loading;
+        self.failure = None;
+    }
+
+    pub fn succeed(
+        &mut self,
+        generation: u64,
+        snapshot: super::preference::LocalPreferences,
+    ) -> bool {
+        if generation < self.generation {
+            return false;
+        }
+        self.generation = generation;
+        self.last_success_at = Some(snapshot.want_running.observed_at);
+        self.snapshot = Some(snapshot);
+        self.status = LocalResourceStatus::Fresh;
+        self.failure = None;
+        self.consecutive_failures = 0;
+        true
+    }
+
+    pub fn fail(&mut self, generation: u64, failure: LocalFailure) -> bool {
+        if generation < self.generation {
+            return false;
+        }
+        self.generation = generation;
+        self.status = if self.snapshot.is_some() {
+            LocalResourceStatus::Stale
+        } else {
+            LocalResourceStatus::Failed
+        };
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.failure = Some(failure);
+        true
+    }
+
+    pub fn mark_stale(&mut self) {
+        if self.snapshot.is_some() && self.status == LocalResourceStatus::Fresh {
+            self.status = LocalResourceStatus::Stale;
+        }
+    }
+}
+
+impl Default for LocalPreferencesResource {
     fn default() -> Self {
         Self::new()
     }

@@ -31,6 +31,9 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub tailscale_path: Option<PathBuf>,
 
+    #[arg(long, global = true, value_name = "PATH")]
+    pub tailscale_socket: Option<PathBuf>,
+
     #[arg(long)]
     #[arg(hide = true)]
     pub mock: bool,

@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::domain::Timestamp;
-use crate::domain::preference::{LocalPreferences, PreferenceRequest};
-use crate::domain::route::{AdvertisementRequest, ExitNodeRequest};
-use crate::domain::source::LocalSnapshot;
+use crate::domain::preference::PreferenceRequest;
+use crate::domain::route::{
+    AdvertisementRequest, ExitNodeRequest, ExitNodeSelection, format_route_set,
+    format_static_endpoints,
+};
 use crate::domain::source::{
     ExecutableSource, LocalCapabilities, LocalExecutable, LocalFailure, LocalFailureKind,
     LocalState,
@@ -17,11 +18,147 @@ use crate::domain::source::{
 use super::accounts::AccountError;
 use super::dto;
 use super::policy::PolicyError;
-use super::preferences::{
-    PreferenceClient, PreferenceCommandError, PreferenceError, PreferencePlatform,
-    advertisement_command, exit_node_command, set_command,
-};
 use super::process::{self, Cancellation, LocalCommand, LocalOperation, LocalProcessError};
+
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+pub enum PreferenceCommandError {
+    #[error("no preference fields were changed")]
+    EmptyRequest,
+    #[error("enabling the app connector requires explicit mac-app-connector risk acceptance")]
+    MissingMacAppConnectorRisk,
+    #[error("mac-app-connector risk acceptance requires connector=true")]
+    UnexpectedMacAppConnectorRisk,
+    #[error("{field} must be non-empty")]
+    EmptyText { field: String },
+}
+
+pub fn set_command(
+    path: &Path,
+    timeout: Duration,
+    request: &PreferenceRequest,
+) -> Result<LocalCommand, PreferenceCommandError> {
+    if request.is_empty() {
+        return Err(PreferenceCommandError::EmptyRequest);
+    }
+    let mut args = vec![OsString::from("set")];
+    if let Some(value) = request.accept_dns {
+        args.push(OsString::from(format!("--accept-dns={value}")));
+    }
+    if let Some(value) = request.accept_routes {
+        args.push(OsString::from(format!("--accept-routes={value}")));
+    }
+    if let Some(value) = request.shields_up {
+        args.push(OsString::from(format!("--shields-up={value}")));
+    }
+    if let Some(value) = request.ssh {
+        args.push(OsString::from(format!("--ssh={value}")));
+    }
+    if let Some(value) = request.automatic_update {
+        args.push(OsString::from(format!("--auto-update={value}")));
+    }
+    if let Some(value) = request.update_check {
+        args.push(OsString::from(format!("--update-check={value}")));
+    }
+    if let Some(value) = request.report_posture {
+        args.push(OsString::from(format!("--report-posture={value}")));
+    }
+    if let Some(value) = request.hostname.as_deref() {
+        validate_text(value, "hostname")?;
+        args.push(OsString::from(format!("--hostname={value}")));
+    }
+    if let Some(value) = request.nickname.as_deref() {
+        validate_text(value, "nickname")?;
+        args.push(OsString::from(format!("--nickname={value}")));
+    }
+    if let Some(value) = request.web_client {
+        args.push(OsString::from(format!("--webclient={value}")));
+    }
+    Ok(
+        LocalCommand::new(path.as_os_str().to_os_string(), LocalOperation::Set, args)
+            .with_timeout(timeout),
+    )
+}
+
+pub fn exit_node_command(
+    path: &Path,
+    timeout: Duration,
+    request: &ExitNodeRequest,
+) -> LocalCommand {
+    let target = match &request.selection {
+        ExitNodeSelection::None => String::new(),
+        ExitNodeSelection::Device { target, .. } => target.clone(),
+        ExitNodeSelection::AutoAny => "auto:any".to_owned(),
+    };
+    LocalCommand::new(
+        path.as_os_str().to_os_string(),
+        LocalOperation::Set,
+        vec![
+            OsString::from("set"),
+            OsString::from(format!("--exit-node={target}")),
+            OsString::from(format!(
+                "--exit-node-allow-lan-access={}",
+                request.allow_lan_access && !matches!(&request.selection, ExitNodeSelection::None)
+            )),
+        ],
+    )
+    .with_timeout(timeout)
+}
+
+pub fn advertisement_command(
+    path: &Path,
+    timeout: Duration,
+    request: &AdvertisementRequest,
+) -> Result<LocalCommand, PreferenceCommandError> {
+    if request.is_empty() {
+        return Err(PreferenceCommandError::EmptyRequest);
+    }
+    if request.advertise_connector == Some(true) && !request.accept_mac_app_connector_risk {
+        return Err(PreferenceCommandError::MissingMacAppConnectorRisk);
+    }
+    if request.accept_mac_app_connector_risk && request.advertise_connector != Some(true) {
+        return Err(PreferenceCommandError::UnexpectedMacAppConnectorRisk);
+    }
+    let mut args = vec![OsString::from("set")];
+    if let Some(routes) = request.canonical_routes() {
+        args.push(OsString::from(format!(
+            "--advertise-routes={}",
+            format_route_set(&routes)
+        )));
+    }
+    if let Some(value) = request.advertise_exit_node {
+        args.push(OsString::from(format!("--advertise-exit-node={value}")));
+    }
+    if let Some(value) = request.advertise_connector {
+        args.push(OsString::from(format!("--advertise-connector={value}")));
+        if value && request.accept_mac_app_connector_risk {
+            args.push(OsString::from("--accept-risk=mac-app-connector"));
+        }
+    }
+    if let Some(port) = request.relay_server_port {
+        let value = port.map_or_else(String::new, |port| port.to_string());
+        args.push(OsString::from(format!("--relay-server-port={value}")));
+    }
+    if let Some(endpoints) = request.relay_server_static_endpoints.as_deref() {
+        args.push(OsString::from(format!(
+            "--relay-server-static-endpoints={}",
+            format_static_endpoints(endpoints)
+        )));
+    }
+    Ok(
+        LocalCommand::new(path.as_os_str().to_os_string(), LocalOperation::Set, args)
+            .with_timeout(timeout),
+    )
+}
+
+fn validate_text(value: &str, field: &str) -> Result<(), PreferenceCommandError> {
+    if value.is_empty() {
+        Err(PreferenceCommandError::EmptyText {
+            field: field.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum HostPlatform {
@@ -34,6 +171,7 @@ pub struct ExecutableResolution {
     pub cli_path: Option<PathBuf>,
     pub environment_path: Option<OsString>,
     pub config_path: Option<PathBuf>,
+    pub socket_path: Option<PathBuf>,
     pub path: Option<OsString>,
     pub platform: HostPlatform,
 }
@@ -41,6 +179,7 @@ pub struct ExecutableResolution {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ResolvedExecutable {
     pub path: PathBuf,
+    pub socket_path: Option<PathBuf>,
     pub source: ExecutableSource,
 }
 
@@ -76,10 +215,6 @@ pub enum ClientError {
         detail: String,
     },
     #[error("{0}")]
-    Preferences(PreferenceError),
-    #[error("{0}")]
-    PreferenceCommand(PreferenceCommandError),
-    #[error("{0}")]
     Accounts(AccountError),
     #[error("{0}")]
     Policy(PolicyError),
@@ -92,8 +227,6 @@ impl ClientError {
             Self::UnsupportedCommand(operation)
             | Self::UnsupportedOutput { operation, .. }
             | Self::NonZero { operation, .. } => operation.clone(),
-            Self::Preferences(error) => error.operation().to_owned(),
-            Self::PreferenceCommand(_) => "preferences".to_owned(),
             Self::Accounts(_) => "accounts".to_owned(),
             Self::Policy(_) => "system policy".to_owned(),
         }
@@ -178,33 +311,6 @@ impl ClientError {
                     true,
                 )
             }
-            Self::Preferences(error) => LocalFailure::new(
-                match error {
-                    PreferenceError::PermissionDenied => LocalFailureKind::PermissionDenied,
-                    PreferenceError::UnsupportedPlatform { .. }
-                    | PreferenceError::UnsupportedVersion { .. }
-                    | PreferenceError::HttpStatus {
-                        status: 404 | 405 | 501,
-                    } => LocalFailureKind::UnsupportedClient,
-                    PreferenceError::TimedOut => LocalFailureKind::TimedOut,
-                    PreferenceError::Cancelled => LocalFailureKind::Cancelled,
-                    PreferenceError::Connection { .. } => LocalFailureKind::DaemonUnavailable,
-                    PreferenceError::HttpStatus { .. }
-                    | PreferenceError::InvalidResponse { .. }
-                    | PreferenceError::InvalidJson { .. } => LocalFailureKind::InvalidOutput,
-                },
-                operation,
-                "local preferences could not be read",
-                bounded_detail(&error.to_string()),
-                true,
-            ),
-            Self::PreferenceCommand(error) => LocalFailure::new(
-                LocalFailureKind::InvalidOutput,
-                operation,
-                "local preference request was invalid",
-                bounded_detail(&error.to_string()),
-                false,
-            ),
             Self::Accounts(error) => LocalFailure::new(
                 error.failure_kind(),
                 operation,
@@ -265,44 +371,20 @@ impl ClientError {
             Self::Process(error) => LocalState::DaemonUnavailable {
                 detail: bounded_detail(&error.to_string()),
             },
-            Self::Preferences(error) => match error {
-                PreferenceError::PermissionDenied => LocalState::PermissionDenied {
-                    operation: self.operation(),
-                    detail: "the LocalAPI denied preference access".to_owned(),
-                },
-                PreferenceError::UnsupportedPlatform { .. }
-                | PreferenceError::UnsupportedVersion { .. }
-                | PreferenceError::HttpStatus {
-                    status: 404 | 405 | 501,
-                } => LocalState::UnsupportedClient {
-                    version: version.to_owned(),
-                    reason: self.to_string(),
-                },
-                PreferenceError::InvalidJson { .. } | PreferenceError::InvalidResponse { .. } => {
-                    LocalState::DaemonUnavailable {
-                        detail: self.to_string(),
-                    }
-                }
-                _ => LocalState::DaemonUnavailable {
-                    detail: self.to_string(),
-                },
+            Self::Accounts(_) | Self::Policy(_) => LocalState::DaemonUnavailable {
+                detail: self.to_string(),
             },
-            Self::PreferenceCommand(_) | Self::Accounts(_) | Self::Policy(_) => {
-                LocalState::DaemonUnavailable {
-                    detail: self.to_string(),
-                }
-            }
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalClient {
+pub struct LocalCliClient {
     pub executable: LocalExecutable,
     pub timeout: Duration,
 }
 
-impl LocalClient {
+impl LocalCliClient {
     pub fn new(executable: LocalExecutable, timeout: Duration) -> Self {
         Self {
             executable,
@@ -310,56 +392,14 @@ impl LocalClient {
         }
     }
 
-    pub async fn status(
-        &self,
-        observed_at: Timestamp,
-        cancellation: &Cancellation,
-    ) -> Result<LocalSnapshot, ClientError> {
-        if !self.executable.capabilities.status_json {
-            return Err(ClientError::UnsupportedCommand("status --json".to_owned()));
-        }
-        let result = process::run(
-            status_command(&self.executable.path, self.timeout),
-            cancellation,
-        )
-        .await
-        .map_err(ClientError::Process)?;
-        if result.exit_status != Some(0) {
-            if !result.stdout.is_empty()
-                && let Ok(snapshot) = dto::decode_status(
-                    process::decode_utf8(&result.stdout).map_err(ClientError::Process)?,
-                    self.executable.version.clone(),
-                    self.executable.daemon_version.clone(),
-                    observed_at,
-                )
-            {
-                return Ok(snapshot);
-            }
-            return Err(ClientError::NonZero {
-                operation: result.operation.label(),
-                status: result.exit_status,
-                detail: bounded_output(&result.stderr),
-            });
-        }
-        let stdout = process::decode_utf8(&result.stdout).map_err(ClientError::Process)?;
-        dto::decode_status(
-            stdout,
-            self.executable.version.clone(),
-            self.executable.daemon_version.clone(),
-            observed_at,
-        )
-        .map_err(|detail| ClientError::UnsupportedOutput {
-            operation: result.operation.label(),
-            detail,
-        })
-    }
-
     pub async fn version(
         path: &Path,
         timeout: Duration,
         cancellation: &Cancellation,
+        socket_path: Option<&Path>,
     ) -> Result<VersionInfo, ClientError> {
-        let result = process::run(version_command(path, timeout), cancellation)
+        let command = apply_socket_path(version_command(path, timeout), socket_path);
+        let result = process::run(command, cancellation)
             .await
             .map_err(ClientError::Process)?;
         if result.exit_status != Some(0) {
@@ -376,26 +416,12 @@ impl LocalClient {
         })
     }
 
-    pub async fn preferences(
-        &self,
-        observed_at: Timestamp,
-        cancellation: &Cancellation,
-    ) -> Result<LocalPreferences, ClientError> {
-        PreferenceClient::new(
-            self.executable.version.clone(),
-            PreferencePlatform::current(),
-            self.timeout,
-        )
-        .get_prefs(observed_at, cancellation)
-        .await
-        .map_err(ClientError::Preferences)
-    }
-
     pub async fn run_command(
         &self,
         command: LocalCommand,
         cancellation: &Cancellation,
     ) -> Result<process::LocalCommandResult, ClientError> {
+        let command = apply_socket_path(command, self.executable.socket_path.as_deref());
         let result = process::run(command, cancellation)
             .await
             .map_err(ClientError::Process)?;
@@ -414,8 +440,13 @@ impl LocalClient {
         request: &PreferenceRequest,
         cancellation: &Cancellation,
     ) -> Result<process::LocalCommandResult, ClientError> {
-        let command = set_command(&self.executable.path, self.timeout, request)
-            .map_err(ClientError::PreferenceCommand)?;
+        let command =
+            set_command(&self.executable.path, self.timeout, request).map_err(|error| {
+                ClientError::UnsupportedOutput {
+                    operation: "preferences".to_owned(),
+                    detail: error.to_string(),
+                }
+            })?;
         self.run_command(command, cancellation).await
     }
 
@@ -436,8 +467,12 @@ impl LocalClient {
         request: &AdvertisementRequest,
         cancellation: &Cancellation,
     ) -> Result<process::LocalCommandResult, ClientError> {
-        let command = advertisement_command(&self.executable.path, self.timeout, request)
-            .map_err(ClientError::PreferenceCommand)?;
+        let command = advertisement_command(&self.executable.path, self.timeout, request).map_err(
+            |error| ClientError::UnsupportedOutput {
+                operation: "advertisements".to_owned(),
+                detail: error.to_string(),
+            },
+        )?;
         self.run_command(command, cancellation).await
     }
 
@@ -446,10 +481,23 @@ impl LocalClient {
         timeout: Duration,
         cancellation: &Cancellation,
     ) -> Result<LocalExecutable, ClientError> {
-        let version = Self::version(&resolution.path, timeout, cancellation).await?;
-        let capabilities = probe_capabilities(&resolution.path, timeout, cancellation).await;
+        let version = Self::version(
+            &resolution.path,
+            timeout,
+            cancellation,
+            resolution.socket_path.as_deref(),
+        )
+        .await?;
+        let capabilities = probe_capabilities(
+            &resolution.path,
+            timeout,
+            cancellation,
+            resolution.socket_path.as_deref(),
+        )
+        .await;
         Ok(LocalExecutable {
             path: resolution.path,
+            socket_path: resolution.socket_path,
             source: resolution.source,
             version: version.version,
             daemon_version: version.daemon_version,
@@ -472,13 +520,11 @@ pub fn version_command(path: &Path, timeout: Duration) -> LocalCommand {
     .with_timeout(timeout)
 }
 
-pub fn status_command(path: &Path, timeout: Duration) -> LocalCommand {
-    LocalCommand::new(
-        path.as_os_str().to_os_string(),
-        LocalOperation::Status,
-        vec![OsString::from("status"), OsString::from("--json")],
-    )
-    .with_timeout(timeout)
+fn apply_socket_path(mut command: LocalCommand, socket_path: Option<&Path>) -> LocalCommand {
+    if let Some(socket_path) = socket_path {
+        command = command.with_socket_path(socket_path.as_os_str().to_os_string());
+    }
+    command
 }
 
 pub fn up_command(path: &Path, timeout: Duration) -> LocalCommand {
@@ -502,32 +548,37 @@ pub fn down_command(path: &Path, timeout: Duration, accept_lose_ssh: bool) -> Lo
 pub fn resolve_executable(
     input: &ExecutableResolution,
 ) -> Result<ResolvedExecutable, ExecutableError> {
-    if let Some(path) = input.cli_path.as_deref() {
-        return resolve_explicit(path, ExecutableSource::Cli, input.platform);
-    }
-    if let Some(path) = input.environment_path.as_deref() {
+    let result = if let Some(path) = input.cli_path.as_deref() {
+        resolve_explicit(path, ExecutableSource::Cli, input.platform)
+    } else if let Some(path) = input.environment_path.as_deref() {
         let path = PathBuf::from(path);
-        return resolve_explicit_or_path(&path, ExecutableSource::Environment, input);
-    }
-    if let Some(path) = input.config_path.as_deref() {
-        return resolve_explicit_or_path(path, ExecutableSource::Config, input);
-    }
-    search_path(
-        OsStr::new("tailscale"),
-        input.path.as_deref(),
-        input.platform,
-    )
+        resolve_explicit_or_path(&path, ExecutableSource::Environment, input)
+    } else if let Some(path) = input.config_path.as_deref() {
+        resolve_explicit_or_path(path, ExecutableSource::Config, input)
+    } else {
+        search_path(
+            OsStr::new("tailscale"),
+            input.path.as_deref(),
+            input.platform,
+        )
+    }?;
+    Ok(ResolvedExecutable {
+        socket_path: input.socket_path.clone(),
+        ..result
+    })
 }
 
 pub fn process_resolution(
     cli_path: Option<PathBuf>,
     environment_path: Option<OsString>,
     config_path: Option<PathBuf>,
+    socket_path: Option<PathBuf>,
 ) -> ExecutableResolution {
     ExecutableResolution {
         cli_path,
         environment_path,
         config_path,
+        socket_path,
         path: std::env::var_os("PATH"),
         platform: if cfg!(windows) {
             HostPlatform::Windows
@@ -541,40 +592,40 @@ async fn probe_capabilities(
     path: &Path,
     timeout: Duration,
     cancellation: &Cancellation,
+    socket_path: Option<&Path>,
 ) -> LocalCapabilities {
-    let status = help_available(path, "status", timeout, cancellation).await;
-    let ping = help_available(path, "ping", timeout, cancellation).await;
-    let netcheck = help_available(path, "netcheck", timeout, cancellation).await;
-    let dns_status = help_available(path, "dns status", timeout, cancellation).await;
-    let dns_query = help_available(path, "dns query", timeout, cancellation).await;
-    let whois = help_available(path, "whois", timeout, cancellation).await;
-    let connect = help_available(path, "up", timeout, cancellation).await;
-    let disconnect = help_available(path, "down", timeout, cancellation).await;
-    let set = help_available(path, "set", timeout, cancellation).await;
-    let accounts = help_available(path, "switch", timeout, cancellation).await;
-    let account_login = help_available(path, "login", timeout, cancellation).await;
-    let account_logout = help_available(path, "logout", timeout, cancellation).await;
-    let account_remove = help_available(path, "switch remove", timeout, cancellation).await;
-    let syspolicy = help_available(path, "syspolicy", timeout, cancellation).await;
-    let ssh = help_available(path, "ssh", timeout, cancellation).await;
-    let nc = help_available(path, "nc", timeout, cancellation).await;
-    let serve_help = help_output(path, "serve", timeout, cancellation).await;
-    let serve =
-        serve_help.is_some() && help_available(path, "serve status", timeout, cancellation).await;
-    let funnel_help = help_output(path, "funnel", timeout, cancellation).await;
-    let funnel =
-        funnel_help.is_some() && help_available(path, "funnel status", timeout, cancellation).await;
-    let taildrop = help_available(path, "file cp", timeout, cancellation).await
-        && help_available(path, "file get", timeout, cancellation).await;
-    let drive = help_available(path, "drive list", timeout, cancellation).await
-        && help_available(path, "drive share", timeout, cancellation).await
-        && help_available(path, "drive rename", timeout, cancellation).await
-        && help_available(path, "drive unshare", timeout, cancellation).await;
-    let certificate = help_available(path, "cert", timeout, cancellation).await;
-    let metrics = help_available(path, "metrics", timeout, cancellation).await;
-    let bugreport = help_available(path, "bugreport", timeout, cancellation).await;
+    let ping = help_available(path, "ping", timeout, cancellation, socket_path).await;
+    let netcheck = help_available(path, "netcheck", timeout, cancellation, socket_path).await;
+    let dns_status = help_available(path, "dns status", timeout, cancellation, socket_path).await;
+    let dns_query = help_available(path, "dns query", timeout, cancellation, socket_path).await;
+    let whois = help_available(path, "whois", timeout, cancellation, socket_path).await;
+    let connect = help_available(path, "up", timeout, cancellation, socket_path).await;
+    let disconnect = help_available(path, "down", timeout, cancellation, socket_path).await;
+    let set = help_available(path, "set", timeout, cancellation, socket_path).await;
+    let accounts = help_available(path, "switch", timeout, cancellation, socket_path).await;
+    let account_login = help_available(path, "login", timeout, cancellation, socket_path).await;
+    let account_logout = help_available(path, "logout", timeout, cancellation, socket_path).await;
+    let account_remove =
+        help_available(path, "switch remove", timeout, cancellation, socket_path).await;
+    let syspolicy = help_available(path, "syspolicy", timeout, cancellation, socket_path).await;
+    let ssh = help_available(path, "ssh", timeout, cancellation, socket_path).await;
+    let nc = help_available(path, "nc", timeout, cancellation, socket_path).await;
+    let serve_help = help_output(path, "serve", timeout, cancellation, socket_path).await;
+    let serve = serve_help.is_some()
+        && help_available(path, "serve status", timeout, cancellation, socket_path).await;
+    let funnel_help = help_output(path, "funnel", timeout, cancellation, socket_path).await;
+    let funnel = funnel_help.is_some()
+        && help_available(path, "funnel status", timeout, cancellation, socket_path).await;
+    let taildrop = help_available(path, "file cp", timeout, cancellation, socket_path).await
+        && help_available(path, "file get", timeout, cancellation, socket_path).await;
+    let drive = help_available(path, "drive list", timeout, cancellation, socket_path).await
+        && help_available(path, "drive share", timeout, cancellation, socket_path).await
+        && help_available(path, "drive rename", timeout, cancellation, socket_path).await
+        && help_available(path, "drive unshare", timeout, cancellation, socket_path).await;
+    let certificate = help_available(path, "cert", timeout, cancellation, socket_path).await;
+    let metrics = help_available(path, "metrics", timeout, cancellation, socket_path).await;
+    let bugreport = help_available(path, "bugreport", timeout, cancellation, socket_path).await;
     LocalCapabilities {
-        status_json: status,
         ping,
         netcheck_json: netcheck,
         netcheck_json_line: netcheck,
@@ -627,8 +678,9 @@ async fn help_available(
     command: &str,
     timeout: Duration,
     cancellation: &Cancellation,
+    socket_path: Option<&Path>,
 ) -> bool {
-    help_output(path, command, timeout, cancellation)
+    help_output(path, command, timeout, cancellation, socket_path)
         .await
         .is_some()
 }
@@ -638,6 +690,7 @@ async fn help_output(
     command: &str,
     timeout: Duration,
     cancellation: &Cancellation,
+    socket_path: Option<&Path>,
 ) -> Option<String> {
     let mut args = command
         .split_ascii_whitespace()
@@ -645,9 +698,12 @@ async fn help_output(
         .collect::<Vec<_>>();
     args.push(OsString::from("--help"));
     let operation = LocalOperation::Help(command.to_owned());
-    let command = LocalCommand::new(path.as_os_str().to_os_string(), operation, args)
-        .with_timeout(timeout)
-        .with_limits(64 * 1024, 64 * 1024);
+    let command = apply_socket_path(
+        LocalCommand::new(path.as_os_str().to_os_string(), operation, args)
+            .with_timeout(timeout)
+            .with_limits(64 * 1024, 64 * 1024),
+        socket_path,
+    );
     match process::run(command, cancellation).await {
         Ok(result) if result.exit_status == Some(0) => {
             Some(process::decode_utf8(&result.stdout).map_or_else(|_| String::new(), str::to_owned))
@@ -690,6 +746,7 @@ fn resolve_explicit(
     }
     Ok(ResolvedExecutable {
         path: candidate,
+        socket_path: None,
         source,
     })
 }
@@ -710,6 +767,7 @@ fn search_path(
         if is_executable(&candidate, platform) {
             return Ok(ResolvedExecutable {
                 path: candidate,
+                socket_path: None,
                 source: ExecutableSource::Path,
             });
         }

@@ -6,12 +6,13 @@ or publishing a support bundle.
 
 ## Executable and daemon
 
-Use `tale config path` and verify the configured Tailscale executable. A missing
-or denied executable is a local capability error. A stopped or unavailable
-daemon is different from a missing executable; start or repair Tailscale using
+Use `tale config path` and verify the configured Tailscale socket or named pipe.
+The LocalAPI endpoint is the source for status and preferences; a missing or
+denied CLI is an independent capability error. A stopped or unavailable daemon
+is different from a missing executable; start or repair Tailscale using
 the operating system’s normal administrator-approved procedure, then refresh
 Tale. Do not grant broad permissions or run Tale as root merely to hide the
-error.
+error. Tale does not probe alternate endpoints or fall back to CLI status.
 
 ## Authentication, scopes, and plan restrictions
 

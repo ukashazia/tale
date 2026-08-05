@@ -34,6 +34,7 @@ fn admin_app() -> Option<App> {
         read_only: true,
         no_local: true,
         tailscale_path: None,
+        tailscale_socket: None,
         mock: false,
     };
     let environment = EnvironmentValues {
@@ -41,6 +42,7 @@ fn admin_app() -> Option<App> {
         profile: None,
         access_token_present: false,
         tailscale_path: None,
+        tailscale_socket: None,
         no_color: false,
     };
     let paths = PathEnvironment {

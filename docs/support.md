@@ -20,7 +20,9 @@ advertised as cross-platform or as supporting a real Tailscale client family.
 The host observed for this review was macOS on `aarch64-apple-darwin`, with
 Cargo 1.97.0 and macOS 26.6.0. `tailscale` was not installed. The committed
 local fixture family is Tailscale 1.98.9 on Linux. It is fictional or reviewed
-redacted test data, not a live tailnet capture.
+redacted test data, not a live tailnet capture. The LocalAPI contract and watch
+framing are exercised by a Unix-socket fake daemon; no real daemon or tailnet
+is contacted.
 
 ## Client and API scope
 

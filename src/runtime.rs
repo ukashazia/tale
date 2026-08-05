@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,7 +46,7 @@ use crate::event::{
     self as app_event, AdminEvent, CredentialEvent, CredentialRevocationResult, Event, InputEvent,
     OperationalResult, PolicyApplyResult, PolicyEvent, ShutdownReason, SourceEvent, TaskEvent,
 };
-use crate::local::client::{self, LocalClient};
+use crate::local::client::{self, LocalCliClient};
 use crate::local::diagnostics;
 use crate::local::process::{
     self, Cancellation, LocalOperation, LocalProcessError, OutputStream, ProcessLine,
@@ -228,7 +228,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     let stop = StopFlag::new();
     let mut tasks: JoinSet<()> = JoinSet::new();
     let mut cancellations: HashMap<TaskId, Cancellation> = HashMap::new();
-    let mut local_status_cancellation: Option<Cancellation> = None;
+    let mut local_observation_cancellation: Option<Cancellation> = None;
     let mut local_discovery_cancellation: Option<Cancellation> = None;
     let mut local_services_refresh_cancellation: Option<Cancellation> = None;
     let mut admin_refresh_cancellation: Option<Cancellation> = None;
@@ -253,7 +253,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             queue: &queue,
             tasks: &mut tasks,
             cancellations: &mut cancellations,
-            local_status_cancellation: &mut local_status_cancellation,
+            local_observation_cancellation: &mut local_observation_cancellation,
             local_discovery_cancellation: &mut local_discovery_cancellation,
             local_services_refresh_cancellation: &mut local_services_refresh_cancellation,
             admin_refresh_cancellation: &mut admin_refresh_cancellation,
@@ -307,7 +307,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     for cancellation in cancellations.values() {
         cancellation.cancel();
     }
-    if let Some(cancellation) = local_status_cancellation {
+    if let Some(cancellation) = local_observation_cancellation {
         cancellation.cancel();
     }
     if let Some(cancellation) = local_discovery_cancellation {
@@ -343,7 +343,7 @@ struct DispatchContext<'a, T: TerminalDriver> {
     queue: &'a EventQueue,
     tasks: &'a mut JoinSet<()>,
     cancellations: &'a mut HashMap<TaskId, Cancellation>,
-    local_status_cancellation: &'a mut Option<Cancellation>,
+    local_observation_cancellation: &'a mut Option<Cancellation>,
     local_discovery_cancellation: &'a mut Option<Cancellation>,
     local_services_refresh_cancellation: &'a mut Option<Cancellation>,
     admin_refresh_cancellation: &'a mut Option<Cancellation>,
@@ -358,7 +358,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
     let queue = context.queue;
     let tasks = &mut *context.tasks;
     let cancellations = &mut *context.cancellations;
-    let local_status_cancellation = &mut *context.local_status_cancellation;
+    let local_observation_cancellation = &mut *context.local_observation_cancellation;
     let local_discovery_cancellation = &mut *context.local_discovery_cancellation;
     let local_services_refresh_cancellation = &mut *context.local_services_refresh_cancellation;
     let admin_refresh_cancellation = &mut *context.admin_refresh_cancellation;
@@ -1029,7 +1029,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     .await;
                 match client::resolve_executable(&resolution) {
                     Ok(resolved) => {
-                        match LocalClient::discover(resolved, timeout, &cancellation).await {
+                        match LocalCliClient::discover(resolved, timeout, &cancellation).await {
                             Ok(executable) => {
                                 queue
                                     .send(local_event(LocalEvent::DiscoverySucceeded {
@@ -1082,32 +1082,63 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 }
             });
         }
-        Effect::StartLocalStatus {
-            generation,
-            executable,
+        Effect::StartLocalObservation {
+            socket_path,
             timeout,
+            reconcile_interval,
         } => {
-            if let Some(previous) = local_status_cancellation.take() {
+            if let Some(previous) = local_observation_cancellation.take() {
                 previous.cancel();
             }
             let queue = queue.clone();
             let cancellation = Cancellation::new();
-            *local_status_cancellation = Some(cancellation.clone());
+            *local_observation_cancellation = Some(cancellation.clone());
             tasks.spawn(async move {
-                let attempted_at = crate::local::now();
+                let (sender, mut receiver) = mpsc::channel(128);
+                let client = crate::local::daemon::LocalDaemonClient::new(socket_path, timeout);
+                let observer = tokio::spawn(crate::local::ipn::run(
+                    client,
+                    crate::local::ipn::ObserverConfig { reconcile_interval },
+                    cancellation.clone(),
+                    sender,
+                ));
+                while let Some(event) = receiver.recv().await {
+                    queue.send(local_event(observer_event(event))).await;
+                }
+                let _ = observer.await;
+            });
+        }
+        Effect::StartLocalSnapshotRefresh {
+            generation,
+            socket_path,
+            timeout,
+        } => {
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                let client = crate::local::daemon::LocalDaemonClient::new(socket_path, timeout);
+                let cancellation = Cancellation::new();
                 queue
                     .send(local_event(LocalEvent::StatusStarted {
                         generation,
-                        attempted_at,
+                        attempted_at: crate::local::now(),
                     }))
                     .await;
-                let client = LocalClient::new(executable.clone(), timeout);
-                match client.status(crate::local::now(), &cancellation).await {
-                    Ok(snapshot) => {
+                queue
+                    .send(local_event(LocalEvent::PreferencesStarted {
+                        generation,
+                        attempted_at: crate::local::now(),
+                    }))
+                    .await;
+                let (status, preferences) = tokio::join!(
+                    client.status(&cancellation),
+                    client.preferences(&cancellation),
+                );
+                match status {
+                    Ok(value) => {
                         queue
                             .send(local_event(LocalEvent::StatusSucceeded {
                                 generation,
-                                snapshot: Box::new(snapshot),
+                                snapshot: Box::new(value.snapshot),
                             }))
                             .await;
                     }
@@ -1120,29 +1151,19 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                             .await;
                     }
                 }
-            });
-        }
-        Effect::StartLocalPreferences {
-            executable,
-            timeout,
-        } => {
-            let queue = queue.clone();
-            tasks.spawn(async move {
-                let client = LocalClient::new(executable, timeout);
-                match client
-                    .preferences(crate::local::now(), &Cancellation::new())
-                    .await
-                {
-                    Ok(preferences) => {
+                match preferences {
+                    Ok(value) => {
                         queue
                             .send(local_event(LocalEvent::PreferencesSucceeded {
-                                preferences: Box::new(preferences),
+                                generation,
+                                preferences: Box::new(value.preferences),
                             }))
                             .await;
                     }
                     Err(error) => {
                         queue
                             .send(local_event(LocalEvent::PreferencesFailed {
+                                generation,
                                 failure: error.failure(),
                             }))
                             .await;
@@ -1156,7 +1177,14 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
         } => {
             let queue = queue.clone();
             tasks.spawn(async move {
-                match accounts::list(&executable.path, timeout, &Cancellation::new()).await {
+                match accounts::list(
+                    &executable.path,
+                    timeout,
+                    &Cancellation::new(),
+                    executable.socket_path.as_deref(),
+                )
+                .await
+                {
                     Ok(accounts) => {
                         queue
                             .send(local_event(LocalEvent::AccountsSucceeded { accounts }))
@@ -1184,7 +1212,14 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
         } => {
             let queue = queue.clone();
             tasks.spawn(async move {
-                match policy::list(&executable.path, timeout, &Cancellation::new()).await {
+                match policy::list(
+                    &executable.path,
+                    timeout,
+                    &Cancellation::new(),
+                    executable.socket_path.as_deref(),
+                )
+                .await
+                {
                     Ok(entries) => {
                         queue
                             .send(local_event(LocalEvent::PolicySucceeded { entries }))
@@ -1371,8 +1406,8 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 cancellation.cancel();
             }
         }
-        Effect::CancelLocalStatus => {
-            if let Some(cancellation) = local_status_cancellation.as_ref() {
+        Effect::CancelLocalObservation => {
+            if let Some(cancellation) = local_observation_cancellation.as_ref() {
                 cancellation.cancel();
             }
         }
@@ -4780,6 +4815,7 @@ async fn read_serve_status(
     let result = run_service_command(
         services::serve_status_command(&executable.path, timeout),
         cancellation,
+        executable.socket_path.as_deref(),
     )
     .await
     .map_err(|error| error.failure)?;
@@ -4817,6 +4853,7 @@ async fn read_funnel_status(
     let result = run_service_command(
         services::funnel_status_command(&executable.path, timeout),
         cancellation,
+        executable.socket_path.as_deref(),
     )
     .await
     .map_err(|error| error.failure)?;
@@ -4857,6 +4894,7 @@ async fn read_taildrop_targets(
     let result = run_service_command(
         transfers::taildrop_targets_command(&executable.path, timeout),
         cancellation,
+        executable.socket_path.as_deref(),
     )
     .await
     .map_err(|error| error.failure)?;
@@ -4904,6 +4942,7 @@ async fn read_taildrive_shares(
     let result = run_service_command(
         transfers::drive_list_command(&executable.path, timeout),
         cancellation,
+        executable.socket_path.as_deref(),
     )
     .await
     .map_err(|error| error.failure)?;
@@ -4960,7 +4999,12 @@ async fn run_service_task(
             } else {
                 match services::mapping_command(&executable.path, timeout, &mapping, true) {
                     Ok(command) => {
-                        let run = run_service_command(command, &cancellation).await;
+                        let run = run_service_command(
+                            command,
+                            &cancellation,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
                         outcome_from_run(run, |run| async {
                             verify_serve_mapping(&executable, timeout, &cancellation, mapping, run)
                                 .await
@@ -4986,6 +5030,7 @@ async fn run_service_task(
                 let run = run_service_command(
                     services::serve_reset_command(&executable.path, timeout),
                     &cancellation,
+                    executable.socket_path.as_deref(),
                 )
                 .await;
                 outcome_from_run(run, |run| async {
@@ -5007,7 +5052,12 @@ async fn run_service_task(
             } else {
                 match services::mapping_command(&executable.path, timeout, &mapping, true) {
                     Ok(command) => {
-                        let run = run_service_command(command, &cancellation).await;
+                        let run = run_service_command(
+                            command,
+                            &cancellation,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
                         outcome_from_run(run, |run| async {
                             verify_funnel_mapping(&executable, timeout, &cancellation, mapping, run)
                                 .await
@@ -5033,6 +5083,7 @@ async fn run_service_task(
                 let run = run_service_command(
                     services::funnel_reset_command(&executable.path, timeout),
                     &cancellation,
+                    executable.socket_path.as_deref(),
                 )
                 .await;
                 outcome_from_run(run, |run| async {
@@ -5072,8 +5123,14 @@ async fn run_service_task(
                                 "one or more selected files are missing or no longer regular files",
                             ))
                         } else {
-                            let (run, filenames) =
-                                run_transfer_command(command, &cancellation, &queue, task_id).await;
+                            let (run, filenames) = run_transfer_command(
+                                command,
+                                &cancellation,
+                                &queue,
+                                task_id,
+                                executable.socket_path.as_deref(),
+                            )
+                            .await;
                             match run {
                                 Ok(run) => Ok((
                                     ServiceTaskData::Transfer {
@@ -5131,8 +5188,14 @@ async fn run_service_task(
                     request.wait,
                 ) {
                     Ok(command) => {
-                        let (run, filenames) =
-                            run_transfer_command(command, &cancellation, &queue, task_id).await;
+                        let (run, filenames) = run_transfer_command(
+                            command,
+                            &cancellation,
+                            &queue,
+                            task_id,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
                         match run {
                             Ok(run) => Ok((
                                 ServiceTaskData::Transfer {
@@ -5184,7 +5247,12 @@ async fn run_service_task(
                     &path,
                 ) {
                     Ok(command) => {
-                        let run = run_service_command(command, &cancellation).await;
+                        let run = run_service_command(
+                            command,
+                            &cancellation,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
                         outcome_from_run(run, |run| async {
                             verify_drive_share(
                                 &executable,
@@ -5225,7 +5293,12 @@ async fn run_service_task(
                     &normalized_name,
                 ) {
                     Ok(command) => {
-                        let run = run_service_command(command, &cancellation).await;
+                        let run = run_service_command(
+                            command,
+                            &cancellation,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
                         outcome_from_run(run, |run| async {
                             verify_drive_rename(
                                 &executable,
@@ -5257,7 +5330,12 @@ async fn run_service_task(
             } else {
                 match transfers::drive_unshare_command(&executable.path, timeout, &name) {
                     Ok(command) => {
-                        let run = run_service_command(command, &cancellation).await;
+                        let run = run_service_command(
+                            command,
+                            &cancellation,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
                         outcome_from_run(run, |run| async {
                             verify_drive_unshare(&executable, timeout, &cancellation, name, run)
                                 .await
@@ -5281,7 +5359,13 @@ async fn run_service_task(
                 ))
             } else {
                 match certificates::certificate_command(&executable.path, timeout, &request) {
-                    Ok(command) => match run_service_command(command, &cancellation).await {
+                    Ok(command) => match run_service_command(
+                        command,
+                        &cancellation,
+                        executable.socket_path.as_deref(),
+                    )
+                    .await
+                    {
                         Ok(run) => match certificates::verify_certificate_outputs(
                             &request,
                             crate::local::now(),
@@ -5318,6 +5402,7 @@ async fn run_service_task(
                 match run_service_command(
                     services::metrics_command(&executable.path, timeout, 256 * 1024),
                     &cancellation,
+                    executable.socket_path.as_deref(),
                 )
                 .await
                 {
@@ -5346,7 +5431,13 @@ async fn run_service_task(
                     request.note.as_deref(),
                     request.diagnose,
                 ) {
-                    Ok(command) => match run_service_command(command, &cancellation).await {
+                    Ok(command) => match run_service_command(
+                        command,
+                        &cancellation,
+                        executable.socket_path.as_deref(),
+                    )
+                    .await
+                    {
                         Ok(run) => match process::decode_utf8(&run.stdout)
                             .map_err(|error| {
                                 annotate_service_failure(
@@ -5615,12 +5706,17 @@ async fn run_transfer_command(
     cancellation: &Cancellation,
     queue: &EventQueue,
     task_id: TaskId,
+    socket_path: Option<&Path>,
 ) -> (
     Result<crate::local::process::LocalCommandResult, ServiceRunError>,
     Vec<String>,
 ) {
     let (sender, mut receiver) = mpsc::channel(64);
-    let future = process::run_lines(command, cancellation, sender);
+    let future = process::run_lines(
+        local_cli_command(command, socket_path),
+        cancellation,
+        sender,
+    );
     tokio::pin!(future);
     let mut lines = Vec::new();
     let result = loop {
@@ -5668,7 +5764,9 @@ async fn run_transfer_command(
 async fn run_service_command(
     command: crate::local::process::LocalCommand,
     cancellation: &Cancellation,
+    socket_path: Option<&Path>,
 ) -> Result<crate::local::process::LocalCommandResult, ServiceRunError> {
+    let command = local_cli_command(command, socket_path);
     let operation = command.operation.label();
     match process::run(command, cancellation).await {
         Ok(result) if result.exit_status == Some(0) => Ok(result),
@@ -5678,6 +5776,16 @@ async fn run_service_command(
         Err(error) => Err(ServiceRunError {
             failure: service_failure_from_process(&operation, error),
         }),
+    }
+}
+
+fn local_cli_command(
+    command: crate::local::process::LocalCommand,
+    socket_path: Option<&Path>,
+) -> crate::local::process::LocalCommand {
+    match socket_path {
+        Some(path) => command.with_socket_path(path.as_os_str().to_os_string()),
+        None => command,
     }
 }
 
@@ -5778,7 +5886,12 @@ async fn run_local_mutation(
     cancellation: Cancellation,
 ) {
     let action_id = mutation.action_id();
-    let client = LocalClient::new(executable.clone(), timeout);
+    let client = LocalCliClient::new(executable.clone(), timeout);
+    let socket_path = match executable.socket_path.clone() {
+        Some(path) => path,
+        None => crate::local::daemon::documented_socket_path(),
+    };
+    let daemon = crate::local::daemon::LocalDaemonClient::new(socket_path, timeout);
     queue
         .send(Event::Task(Box::new(TaskEvent::Started { task_id })))
         .await;
@@ -5792,7 +5905,7 @@ async fn run_local_mutation(
             client::down_command(&executable.path, timeout, *accept_lose_ssh)
         }
         LocalMutation::Preferences(request) => {
-            match crate::local::preferences::set_command(&executable.path, timeout, request) {
+            match client::set_command(&executable.path, timeout, request) {
                 Ok(command) => command,
                 Err(error) => {
                     send_mutation_result(
@@ -5819,14 +5932,10 @@ async fn run_local_mutation(
             }
         }
         LocalMutation::ExitNode(request) => {
-            crate::local::preferences::exit_node_command(&executable.path, timeout, request)
+            client::exit_node_command(&executable.path, timeout, request)
         }
         LocalMutation::Advertisements(request) => {
-            match crate::local::preferences::advertisement_command(
-                &executable.path,
-                timeout,
-                request,
-            ) {
+            match client::advertisement_command(&executable.path, timeout, request) {
                 Ok(command) => command,
                 Err(error) => {
                     send_mutation_result(
@@ -5942,51 +6051,53 @@ async fn run_local_mutation(
     let mut read_error = None;
     match &mutation {
         LocalMutation::Connect | LocalMutation::Disconnect { .. } => {
-            match client
-                .status(crate::local::now(), &Cancellation::new())
-                .await
-            {
-                Ok(value) => snapshot = Some(Box::new(value)),
+            match daemon.status(&Cancellation::new()).await {
+                Ok(value) => snapshot = Some(Box::new(value.snapshot)),
                 Err(error) => read_error = Some(error.failure().detail),
             }
         }
         LocalMutation::Preferences(_)
         | LocalMutation::ExitNode(_)
         | LocalMutation::Advertisements(_) => {
-            match client
-                .preferences(crate::local::now(), &Cancellation::new())
-                .await
-            {
-                Ok(value) => preferences = Some(Box::new(value)),
+            match daemon.preferences(&Cancellation::new()).await {
+                Ok(value) => preferences = Some(Box::new(value.preferences)),
                 Err(error) => read_error = Some(error.failure().detail),
             }
         }
         LocalMutation::AccountSwitch { .. } | LocalMutation::AccountRemove { .. } => {
-            match accounts::list(&executable.path, timeout, &Cancellation::new()).await {
+            match accounts::list(
+                &executable.path,
+                timeout,
+                &Cancellation::new(),
+                executable.socket_path.as_deref(),
+            )
+            .await
+            {
                 Ok(value) => account_values = Some(value),
                 Err(error) => read_error = Some(safe_operator_detail(&error.to_string())),
             }
             if read_error.is_none() {
-                match client
-                    .status(crate::local::now(), &Cancellation::new())
-                    .await
-                {
-                    Ok(value) => snapshot = Some(Box::new(value)),
+                match daemon.status(&Cancellation::new()).await {
+                    Ok(value) => snapshot = Some(Box::new(value.snapshot)),
                     Err(error) => read_error = Some(error.failure().detail),
                 }
             }
             if read_error.is_none() {
-                match client
-                    .preferences(crate::local::now(), &Cancellation::new())
-                    .await
-                {
-                    Ok(value) => preferences = Some(Box::new(value)),
+                match daemon.preferences(&Cancellation::new()).await {
+                    Ok(value) => preferences = Some(Box::new(value.preferences)),
                     Err(error) => read_error = Some(error.failure().detail),
                 }
             }
         }
         LocalMutation::SyspolicyReload => {
-            match policy::list(&executable.path, timeout, &Cancellation::new()).await {
+            match policy::list(
+                &executable.path,
+                timeout,
+                &Cancellation::new(),
+                executable.socket_path.as_deref(),
+            )
+            .await
+            {
                 Ok(value) => policy_values = Some(value),
                 Err(error) => read_error = Some(safe_operator_detail(&error.to_string())),
             }
@@ -6371,6 +6482,57 @@ fn local_event(event: LocalEvent) -> Event {
     Event::Local(Box::new(event))
 }
 
+fn observer_event(event: crate::local::ipn::ObserverEvent) -> LocalEvent {
+    match event {
+        crate::local::ipn::ObserverEvent::WatcherConnected => LocalEvent::WatcherConnected,
+        crate::local::ipn::ObserverEvent::WatcherDisconnected { failure } => {
+            LocalEvent::WatcherDisconnected { failure }
+        }
+        crate::local::ipn::ObserverEvent::StatusStarted {
+            generation,
+            attempted_at,
+        } => LocalEvent::StatusStarted {
+            generation,
+            attempted_at,
+        },
+        crate::local::ipn::ObserverEvent::StatusSucceeded {
+            generation,
+            snapshot,
+        } => LocalEvent::StatusSucceeded {
+            generation,
+            snapshot,
+        },
+        crate::local::ipn::ObserverEvent::StatusFailed {
+            generation,
+            failure,
+        } => LocalEvent::StatusFailed {
+            generation,
+            failure,
+        },
+        crate::local::ipn::ObserverEvent::PreferencesStarted {
+            generation,
+            attempted_at,
+        } => LocalEvent::PreferencesStarted {
+            generation,
+            attempted_at,
+        },
+        crate::local::ipn::ObserverEvent::PreferencesSucceeded {
+            generation,
+            preferences,
+        } => LocalEvent::PreferencesSucceeded {
+            generation,
+            preferences,
+        },
+        crate::local::ipn::ObserverEvent::PreferencesFailed {
+            generation,
+            failure,
+        } => LocalEvent::PreferencesFailed {
+            generation,
+            failure,
+        },
+    }
+}
+
 async fn run_local_diagnostic(
     queue: EventQueue,
     task_id: TaskId,
@@ -6388,6 +6550,7 @@ async fn run_local_diagnostic(
                 diagnostics::DiagnosticRequest::Ping { target },
                 command,
                 cancellation,
+                executable.socket_path.as_deref(),
             )
             .await;
         }
@@ -6403,6 +6566,7 @@ async fn run_local_diagnostic(
                 diagnostics::DiagnosticRequest::Netcheck { live },
                 command,
                 cancellation,
+                executable.socket_path.as_deref(),
             )
             .await;
         }
@@ -6414,6 +6578,7 @@ async fn run_local_diagnostic(
                 diagnostics::DiagnosticRequest::DnsStatus,
                 command,
                 cancellation,
+                executable.socket_path.as_deref(),
             )
             .await;
         }
@@ -6426,6 +6591,7 @@ async fn run_local_diagnostic(
                 diagnostics::DiagnosticRequest::DnsQuery { name, record_type },
                 command,
                 cancellation,
+                executable.socket_path.as_deref(),
             )
             .await;
         }
@@ -6437,6 +6603,7 @@ async fn run_local_diagnostic(
                 diagnostics::DiagnosticRequest::Whois { target, protocol },
                 command,
                 cancellation,
+                executable.socket_path.as_deref(),
             )
             .await;
         }
@@ -6449,9 +6616,14 @@ async fn run_streaming_diagnostic(
     request: diagnostics::DiagnosticRequest,
     command: process::LocalCommand,
     cancellation: Cancellation,
+    socket_path: Option<&Path>,
 ) {
     let (sender, receiver) = mpsc::channel::<ProcessLine>(128);
-    let process = process::run_lines(command, &cancellation, sender);
+    let process = process::run_lines(
+        local_cli_command(command, socket_path),
+        &cancellation,
+        sender,
+    );
     tokio::pin!(process);
     let mut receiver = Some(receiver);
     let mut stream = StreamAccumulator::new();
@@ -6642,8 +6814,9 @@ async fn run_collected_diagnostic(
     request: diagnostics::DiagnosticRequest,
     command: process::LocalCommand,
     cancellation: Cancellation,
+    socket_path: Option<&Path>,
 ) {
-    let result = match process::run(command, &cancellation).await {
+    let result = match process::run(local_cli_command(command, socket_path), &cancellation).await {
         Ok(result) => result,
         Err(error) => {
             finish_diagnostic_error(queue, task_id, error).await;

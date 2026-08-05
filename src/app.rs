@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,8 +66,9 @@ use crate::domain::service::{
     ServiceFailureKind, ServiceMapping, ServiceResourceStatus, ServiceSection, ServiceTaskData,
 };
 use crate::domain::source::{
-    LocalCapabilities, LocalExecutable, LocalFailure, LocalFailureKind, LocalResource,
-    LocalResourceStatus, LocalSnapshot, LocalState,
+    LocalCapabilities, LocalCliState, LocalDaemonState, LocalExecutable, LocalFailure,
+    LocalFailureKind, LocalPreferencesResource, LocalResource, LocalResourceStatus, LocalSnapshot,
+    LocalState,
 };
 use crate::domain::transfer::{
     TaildriveShare, TaildropConflict, TaildropReceiveRequest, TaildropSendRequest, TaildropTarget,
@@ -614,7 +615,10 @@ pub struct App {
     pub task_filter: String,
     pub composed_devices: Vec<ComposedDevice>,
     pub local_resource: LocalResource,
+    pub local_preferences_resource: LocalPreferencesResource,
     pub local_state: LocalState,
+    pub local_daemon_state: LocalDaemonState,
+    pub local_cli_state: LocalCliState,
     pub local_executable: Option<LocalExecutable>,
     pub local_capabilities: LocalCapabilities,
     pub services_snapshot: LocalServicesSnapshot,
@@ -647,10 +651,8 @@ pub struct App {
     pub interactive_handoff_active: bool,
     render_invalidated: bool,
     local_discovery_in_flight: bool,
-    local_status_in_flight: bool,
+    local_watcher_connected: bool,
     local_services_refresh_in_flight: bool,
-    local_next_refresh: Option<Instant>,
-    local_last_tick: Option<Instant>,
     admin_refresh_in_flight: bool,
     admin_next_refresh: Option<Instant>,
     admin_generation: u64,
@@ -681,6 +683,20 @@ impl App {
             LocalState::DaemonUnavailable {
                 detail: "local client discovery pending".to_owned(),
             }
+        };
+        let local_daemon_state = if config.mock {
+            LocalDaemonState::Mock
+        } else if source_mode == SourceMode::Unavailable {
+            LocalDaemonState::Disabled
+        } else {
+            LocalDaemonState::Connecting
+        };
+        let local_cli_state = if config.mock {
+            LocalCliState::Mock
+        } else if source_mode == SourceMode::Unavailable {
+            LocalCliState::Disabled
+        } else {
+            LocalCliState::Discovering
         };
         let selected_profile = config.profile.clone();
         let (tailnet, profile_read_only) = selected_profile
@@ -747,7 +763,10 @@ impl App {
             task_filter: String::new(),
             composed_devices: Vec::new(),
             local_resource: LocalResource::new(),
+            local_preferences_resource: LocalPreferencesResource::new(),
             local_state,
+            local_daemon_state,
+            local_cli_state,
             local_executable: None,
             local_capabilities: LocalCapabilities::default(),
             services_snapshot: LocalServicesSnapshot::new(),
@@ -784,10 +803,8 @@ impl App {
             interactive_handoff_active: false,
             render_invalidated: true,
             local_discovery_in_flight: false,
-            local_status_in_flight: false,
+            local_watcher_connected: false,
             local_services_refresh_in_flight: false,
-            local_next_refresh: None,
-            local_last_tick: None,
             admin_refresh_in_flight: false,
             admin_next_refresh: None,
             admin_generation: 0,
@@ -819,11 +836,13 @@ impl App {
         }
         self.local_resource.generation = 1;
         self.local_resource.begin(1, self.now);
+        self.local_preferences_resource.begin(1, self.now);
         self.local_discovery_in_flight = true;
-        self.local_next_refresh = Some(instant_after(
-            Instant::now(),
-            self.resolved_config.local.refresh_interval,
-        ));
+        effects.push(Effect::StartLocalObservation {
+            socket_path: self.resolved_config.local.socket_path.clone(),
+            timeout: self.resolved_config.local.command_timeout,
+            reconcile_interval: self.resolved_config.local.reconcile_interval,
+        });
         effects.push(Effect::StartLocalDiscovery {
             generation: 1,
             resolution: local_resolution(&self.resolved_config),
@@ -1308,7 +1327,6 @@ impl App {
         } else {
             crate::local::now()
         };
-        self.local_last_tick = Some(tick);
         self.notifications
             .retain(|notification| notification.expires_at > self.now);
         if self.tasks.has_active() {
@@ -1321,15 +1339,6 @@ impl App {
             && self.admin_next_refresh.is_some_and(|due| tick >= due)
         {
             effects.extend(self.start_admin_refresh());
-        }
-        if self.source_mode == SourceMode::Local
-            && !self.interactive_handoff_active
-            && !self.local_discovery_in_flight
-            && !self.local_status_in_flight
-            && self.overlays.is_empty()
-            && self.local_next_refresh.is_some_and(|due| tick >= due)
-        {
-            effects.extend(self.start_refresh(false));
         }
         effects
     }
@@ -3193,6 +3202,12 @@ impl App {
         if is_service_write_action(action_id) && self.resolved_config.read_only {
             return Some("read-only mode blocks local service mutations".to_owned());
         }
+        if is_local_verification_mutation(action_id) && !self.local_daemon_state.is_live() {
+            return Some(
+                "local daemon observation is not live; mutation verification is unavailable"
+                    .to_owned(),
+            );
+        }
         if is_taildrive_action(action_id)
             && action_id != ActionId::ServicesDriveEnableAlpha
             && !self.alpha_local_features
@@ -3280,6 +3295,9 @@ impl App {
             return false;
         }
         if is_service_write_action(action_id) && self.resolved_config.read_only {
+            return false;
+        }
+        if is_local_verification_mutation(action_id) && !self.local_daemon_state.is_live() {
             return false;
         }
         if matches!(
@@ -4833,7 +4851,10 @@ impl App {
                 admin_batch: None,
                 service_request: None,
                 operational_mutation: None,
-                handoff: Some(handoff::login_command(&executable.path)),
+                handoff: Some(local_handoff_command(
+                    handoff::login_command(&executable.path),
+                    executable.socket_path.as_deref(),
+                )),
                 prompt: "Open Tailscale login in the terminal; Tale will not collect credentials."
                     .to_owned(),
                 required_phrase: None,
@@ -4858,7 +4879,10 @@ impl App {
             admin_batch: None,
             service_request: None,
             operational_mutation: None,
-            handoff: Some(handoff::logout_command(&executable.path)),
+            handoff: Some(local_handoff_command(
+                handoff::logout_command(&executable.path),
+                executable.socket_path.as_deref(),
+            )),
             prompt: "Log out this local account; the node key will be invalidated and reauthentication will be required.".to_owned(),
             required_phrase: Some("LOGOUT".to_owned()),
             input: String::new(),
@@ -5994,6 +6018,7 @@ impl App {
         };
         match command {
             Ok(command) => {
+                let command = local_handoff_command(command, executable.socket_path.as_deref());
                 let redacted_argv = redacted_argv(&command.args());
                 self.overlays.pop();
                 self.overlays
@@ -7257,25 +7282,20 @@ impl App {
                 if self.local_discovery_in_flight {
                     effects.push(Effect::CancelLocalDiscovery);
                 }
-                if self.local_status_in_flight {
-                    effects.push(Effect::CancelLocalStatus);
-                }
                 self.local_resource.begin(generation, self.now);
-                self.local_status_in_flight = false;
                 self.local_discovery_in_flight = false;
-                self.local_next_refresh = None;
-                if let Some(executable) = self.local_executable.clone() {
-                    self.local_status_in_flight = true;
-                    effects.push(Effect::StartLocalStatus {
-                        generation,
-                        executable,
-                        timeout: self.resolved_config.local.command_timeout,
-                    });
-                } else {
+                self.local_preferences_resource.begin(generation, self.now);
+                if self.local_executable.is_none() {
                     self.local_discovery_in_flight = true;
                     effects.push(Effect::StartLocalDiscovery {
                         generation,
                         resolution: local_resolution(&self.resolved_config),
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                } else {
+                    effects.push(Effect::StartLocalSnapshotRefresh {
+                        generation,
+                        socket_path: self.resolved_config.local.socket_path.clone(),
                         timeout: self.resolved_config.local.command_timeout,
                     });
                 }
@@ -10352,13 +10372,22 @@ impl App {
                 self.local_discovery_in_flight = false;
                 self.local_executable = Some(executable.clone());
                 self.local_capabilities = executable.capabilities;
-                self.local_status_in_flight = true;
-                self.local_resource.begin(generation, self.now);
-                return vec![Effect::StartLocalStatus {
-                    generation,
-                    executable,
-                    timeout: self.resolved_config.local.command_timeout,
-                }];
+                self.local_cli_state = LocalCliState::Available;
+                let mut effects = Vec::new();
+                if self.local_capabilities.accounts {
+                    effects.push(Effect::StartLocalAccounts {
+                        executable: executable.clone(),
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                }
+                if self.local_capabilities.syspolicy {
+                    effects.push(Effect::StartLocalPolicy {
+                        executable,
+                        timeout: self.resolved_config.local.command_timeout,
+                    });
+                }
+                effects.extend(self.start_services_refresh());
+                return effects;
             }
             LocalEvent::DiscoveryFailed {
                 generation,
@@ -10368,28 +10397,24 @@ impl App {
                     return Vec::new();
                 }
                 self.local_discovery_in_flight = false;
-                self.local_status_in_flight = false;
-                self.local_state = state_for_failure(&failure, self.local_executable.as_ref());
-                self.local_resource.fail(generation, failure.clone());
-                let service_failure = service_failure_from_local_failure(&failure);
-                self.devices_resource.health = if self.local_resource.snapshot.is_some() {
-                    SourceHealth::Stale
-                } else {
-                    SourceHealth::Error
+                self.local_cli_state = match failure.kind {
+                    LocalFailureKind::ExecutableMissing => LocalCliState::Missing,
+                    LocalFailureKind::ExecutableDenied | LocalFailureKind::PermissionDenied => {
+                        LocalCliState::PermissionDenied
+                    }
+                    LocalFailureKind::UnsupportedClient => LocalCliState::Unsupported {
+                        detail: failure.detail,
+                    },
+                    _ => LocalCliState::Unavailable {
+                        detail: failure.detail,
+                    },
                 };
-                self.devices_resource.error = Some(failure.detail);
-                self.update_composed_devices();
-                self.services_snapshot
-                    .certificate_domains
-                    .fail(self.services_snapshot.generation, service_failure);
-                self.schedule_failure_backoff();
             }
             LocalEvent::StatusStarted {
                 generation,
                 attempted_at,
             } => {
                 if generation >= self.local_resource.generation {
-                    self.local_status_in_flight = true;
                     self.local_resource.begin(generation, attempted_at);
                 }
             }
@@ -10400,8 +10425,10 @@ impl App {
                 if generation < self.local_resource.generation {
                     return Vec::new();
                 }
-                self.local_status_in_flight = false;
                 let snapshot = *snapshot;
+                if self.local_watcher_connected {
+                    self.local_daemon_state = LocalDaemonState::Live;
+                }
                 self.local_state = snapshot.backend_state.clone();
                 self.apply_local_snapshot(&snapshot);
                 self.services_snapshot.command_version = Some(snapshot.client_version.clone());
@@ -10412,42 +10439,10 @@ impl App {
                 );
                 self.local_resource.succeed(generation, snapshot);
                 self.update_composed_devices();
-                self.local_capabilities.status_json = true;
-                self.local_next_refresh = self
-                    .local_last_tick
-                    .map(|tick| instant_after(tick, self.resolved_config.local.refresh_interval))
-                    .or_else(|| {
-                        Some(instant_after(
-                            Instant::now(),
-                            self.resolved_config.local.refresh_interval,
-                        ))
-                    });
                 let mut effects = Vec::new();
-                if self.local_capabilities.set
-                    && let Some(executable) = self.local_executable.clone()
+                if self.local_executable.is_some()
+                    && self.local_cli_state == LocalCliState::Available
                 {
-                    effects.push(Effect::StartLocalPreferences {
-                        executable,
-                        timeout: self.resolved_config.local.command_timeout,
-                    });
-                }
-                if self.local_capabilities.accounts
-                    && let Some(executable) = self.local_executable.clone()
-                {
-                    effects.push(Effect::StartLocalAccounts {
-                        executable,
-                        timeout: self.resolved_config.local.command_timeout,
-                    });
-                }
-                if self.local_capabilities.syspolicy
-                    && let Some(executable) = self.local_executable.clone()
-                {
-                    effects.push(Effect::StartLocalPolicy {
-                        executable,
-                        timeout: self.resolved_config.local.command_timeout,
-                    });
-                }
-                if self.local_executable.is_some() {
                     effects.extend(self.start_services_refresh());
                 }
                 return effects;
@@ -10459,7 +10454,17 @@ impl App {
                 if generation < self.local_resource.generation {
                     return Vec::new();
                 }
-                self.local_status_in_flight = false;
+                self.local_daemon_state = match failure.kind {
+                    LocalFailureKind::PermissionDenied => LocalDaemonState::PermissionDenied {
+                        detail: failure.detail.clone(),
+                    },
+                    LocalFailureKind::UnsupportedClient => LocalDaemonState::Unsupported {
+                        detail: failure.detail.clone(),
+                    },
+                    _ => LocalDaemonState::Unavailable {
+                        detail: failure.detail.clone(),
+                    },
+                };
                 self.local_state = state_for_failure(&failure, self.local_executable.as_ref());
                 self.local_resource.fail(generation, failure.clone());
                 let service_failure = service_failure_from_local_failure(&failure);
@@ -10473,23 +10478,67 @@ impl App {
                 self.services_snapshot
                     .certificate_domains
                     .fail(self.services_snapshot.generation, service_failure);
-                self.schedule_failure_backoff();
             }
-            LocalEvent::PreferencesSucceeded { preferences } => {
-                self.local_preferences = *preferences;
-                apply_system_policy_editability(&mut self.local_preferences, &self.system_policy);
+            LocalEvent::PreferencesStarted {
+                generation,
+                attempted_at,
+            } => {
+                if generation >= self.local_preferences_resource.generation {
+                    self.local_preferences_resource
+                        .begin(generation, attempted_at);
+                }
             }
-            LocalEvent::PreferencesFailed { failure } => {
-                self.local_preferences = match failure.kind {
-                    crate::domain::source::LocalFailureKind::UnsupportedClient => {
-                        LocalPreferences::unavailable(self.now)
+            LocalEvent::PreferencesSucceeded {
+                generation,
+                preferences,
+            } => {
+                if self
+                    .local_preferences_resource
+                    .succeed(generation, *preferences)
+                {
+                    if let Some(preferences) = self.local_preferences_resource.snapshot.clone() {
+                        self.local_preferences = preferences;
                     }
-                    crate::domain::source::LocalFailureKind::PermissionDenied => {
-                        LocalPreferences::permission_denied(self.now)
-                    }
-                    _ => LocalPreferences::empty(self.now),
+                    apply_system_policy_editability(
+                        &mut self.local_preferences,
+                        &self.system_policy,
+                    );
+                }
+            }
+            LocalEvent::PreferencesFailed {
+                generation,
+                failure,
+            } => {
+                if self
+                    .local_preferences_resource
+                    .fail(generation, failure.clone())
+                {
+                    self.devices_resource.error = Some(failure.detail.clone());
+                }
+            }
+            LocalEvent::WatcherConnected => {
+                self.local_watcher_connected = true;
+                self.local_daemon_state = LocalDaemonState::Connecting;
+            }
+            LocalEvent::WatcherDisconnected { failure } => {
+                self.local_watcher_connected = false;
+                self.local_daemon_state = match failure.kind {
+                    LocalFailureKind::PermissionDenied => LocalDaemonState::PermissionDenied {
+                        detail: failure.detail.clone(),
+                    },
+                    LocalFailureKind::UnsupportedClient => LocalDaemonState::Unsupported {
+                        detail: failure.detail.clone(),
+                    },
+                    _ => LocalDaemonState::Reconnecting,
                 };
-                self.devices_resource.error = Some(failure.detail.clone());
+                self.local_resource.mark_stale();
+                self.local_preferences_resource.mark_stale();
+                self.devices_resource.health = if self.local_resource.snapshot.is_some() {
+                    SourceHealth::Stale
+                } else {
+                    SourceHealth::Loading
+                };
+                self.devices_resource.error = Some(failure.detail);
             }
             LocalEvent::AccountsSucceeded { accounts } => {
                 self.local_accounts = accounts;
@@ -10527,18 +10576,6 @@ impl App {
                     &mutation,
                     LocalMutation::AccountSwitch { .. } | LocalMutation::AccountRemove { .. }
                 );
-                let preference_read_required = matches!(
-                    &mutation,
-                    LocalMutation::Preferences(_)
-                        | LocalMutation::ExitNode(_)
-                        | LocalMutation::Advertisements(_)
-                );
-                let preference_read_failed = preference_read_required
-                    && preferences.is_none()
-                    && !matches!(
-                        &result,
-                        crate::domain::mutation::MutationResult::CancelledBeforeDispatch { .. }
-                    );
                 let account_refresh_required = account_changed
                     && !matches!(
                         &result,
@@ -10588,9 +10625,6 @@ impl App {
                 }
                 if let Some(preferences) = preferences {
                     self.local_preferences = *preferences;
-                }
-                if preference_read_failed {
-                    self.local_preferences = LocalPreferences::empty(self.now);
                 }
                 if let Some(accounts) = accounts {
                     self.local_accounts = accounts;
@@ -11041,10 +11075,6 @@ impl App {
         self.apply_local_snapshot(&snapshot);
         let _ = self.local_resource.succeed(generation, snapshot);
         self.update_composed_devices();
-        self.local_next_refresh = Some(instant_after(
-            Instant::now(),
-            self.resolved_config.local.refresh_interval,
-        ));
     }
 
     fn invalidate_local_state(&mut self) {
@@ -11075,30 +11105,11 @@ impl App {
         let generation = self.local_resource.generation.saturating_add(1);
         self.local_resource.generation = generation;
         self.local_discovery_in_flight = true;
-        self.local_status_in_flight = false;
-        self.local_next_refresh = None;
         vec![Effect::StartLocalDiscovery {
             generation,
             resolution: local_resolution(&self.resolved_config),
             timeout: self.resolved_config.local.command_timeout,
         }]
-    }
-
-    fn schedule_failure_backoff(&mut self) {
-        let failures = self.local_resource.consecutive_failures;
-        let interval = self.resolved_config.local.refresh_interval;
-        let exponent = failures.saturating_sub(1).min(6);
-        let multiplier = 1_u32.checked_shl(exponent).map_or(u32::MAX, |value| value);
-        let delay = interval
-            .checked_mul(multiplier)
-            .map_or(Duration::from_secs(60), |value| {
-                value.min(Duration::from_secs(60))
-            });
-        let base = match self.local_last_tick {
-            Some(value) => value,
-            None => Instant::now(),
-        };
-        self.local_next_refresh = Some(instant_after(base, delay));
     }
 
     fn reconcile_selection(&mut self, replacement: Option<&Vec<Device>>) {
@@ -11733,10 +11744,6 @@ impl App {
 
     pub const fn render_invalidated(&self) -> bool {
         self.render_invalidated
-    }
-
-    pub const fn local_refresh_due_at(&self) -> Option<Instant> {
-        self.local_next_refresh
     }
 
     pub fn has_active_spinner(&self) -> bool {
@@ -12915,6 +12922,20 @@ fn is_mutating_action(action_id: ActionId) -> bool {
     )
 }
 
+fn is_local_verification_mutation(action_id: ActionId) -> bool {
+    matches!(
+        action_id,
+        ActionId::LocalConnect
+            | ActionId::LocalDisconnect
+            | ActionId::LocalPreferencesEdit
+            | ActionId::LocalExitNodeSelect
+            | ActionId::LocalRoutesEditAdvertisements
+            | ActionId::LocalAccountSwitch
+            | ActionId::LocalAccountRemove
+            | ActionId::LocalSyspolicyReload
+    )
+}
+
 fn is_admin_action(action_id: ActionId) -> bool {
     matches!(
         action_id,
@@ -13805,13 +13826,13 @@ fn mutation_metadata(
             *accept_lose_ssh,
         )),
         LocalMutation::Preferences(request) => {
-            crate::local::preferences::set_command(path, timeout, request).ok()
+            crate::local::client::set_command(path, timeout, request).ok()
         }
-        LocalMutation::ExitNode(request) => Some(crate::local::preferences::exit_node_command(
+        LocalMutation::ExitNode(request) => Some(crate::local::client::exit_node_command(
             path, timeout, request,
         )),
         LocalMutation::Advertisements(request) => {
-            crate::local::preferences::advertisement_command(path, timeout, request).ok()
+            crate::local::client::advertisement_command(path, timeout, request).ok()
         }
         LocalMutation::AccountSwitch { account_id } => {
             crate::local::accounts::switch_command(path, timeout, account_id).ok()
@@ -14004,12 +14025,20 @@ fn local_resolution(config: &ResolvedConfig) -> ExecutableResolution {
         cli_path,
         environment_path,
         config_path,
+        socket_path: Some(config.local.socket_path.clone()),
         path: std::env::var_os("PATH"),
         platform: if cfg!(windows) {
             HostPlatform::Windows
         } else {
             HostPlatform::Unix
         },
+    }
+}
+
+fn local_handoff_command(command: HandoffCommand, socket_path: Option<&Path>) -> HandoffCommand {
+    match socket_path {
+        Some(path) => command.with_socket_path(path),
+        None => command,
     }
 }
 

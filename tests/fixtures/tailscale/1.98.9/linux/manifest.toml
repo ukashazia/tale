@@ -12,8 +12,8 @@ stdout_file = "version.json"
 stderr_file = ""
 
 [[fixtures]]
-command = "tailscale status"
-arguments = ["status", "--json"]
+command = "LocalAPI GET /localapi/v0/status"
+arguments = ["GET", "/localapi/v0/status"]
 exit_code = 0
 stdout_file = "status.json"
 stderr_file = ""

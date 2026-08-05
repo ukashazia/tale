@@ -150,7 +150,10 @@ history, and are removed from memory when the view closes.
 
 Every resource detail has a Sources section. A value may show:
 
-- `local · 1s` — local CLI snapshot observed one second ago;
+- `local daemon · live · 1s` — LocalAPI snapshot observed one second ago;
+- `local daemon · reconnecting · last good 12s` — last-good LocalAPI data is retained;
+- `local daemon · permission denied` — the configured endpoint cannot be read;
+- `local CLI · unavailable` — process-backed actions are unavailable independently;
 - `admin · 18s` — Control API snapshot observed 18 seconds ago;
 - `stale · 4m · refresh failed` — last good value retained after failure;
 - `not returned` — source succeeded but omitted the optional field;
@@ -163,17 +166,18 @@ The overview header reports source health separately. There is no single green
 
 ### First run: local client available
 
-1. Tale detects `tailscale` and requests version and status.
+1. Tale connects to the configured LocalAPI endpoint and bootstraps status and preferences.
 2. It opens Overview in local mode without asking for credentials.
-3. The header says `admin: not configured` and offers `:settings` or the
+3. If available, Tale separately discovers `tailscale` for CLI-backed actions.
+4. The header says `admin: not configured` and offers `:settings` or the
    action `Add admin profile`; it does not block the peer list.
-4. The footer teaches navigation from the current context.
+5. The footer teaches navigation from the current context.
 
-### First run: local client missing or daemon unavailable
+### First run: local CLI missing or daemon unavailable
 
 1. Tale renders a diagnostic state rather than exiting into raw stderr.
-2. It distinguishes missing executable, permission denial, stopped daemon, and
-   logged-out client.
+2. It distinguishes missing CLI, endpoint permission/transport failure, stopped
+   daemon, and logged-out client.
 3. If an admin profile exists, admin mode remains available.
 4. Remediation is copyable. Tale does not install, start, or elevate anything.
 
@@ -205,7 +209,7 @@ The overview header reports source health separately. There is no single green
 2. Select an eligible exit node; list latency and online state are visible.
 3. Choose LAN-access behavior.
 4. Review the old and new exit-node settings.
-5. Apply, then re-read local status and preferences.
+5. Apply, then re-read authoritative LocalAPI status and preferences.
 6. If verification differs, show the daemon's actual state and retain the task
    as failed; never leave an optimistic state behind.
 

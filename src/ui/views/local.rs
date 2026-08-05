@@ -155,11 +155,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn local_display_state(app: &App) -> String {
-    match app.local_resource.status {
-        crate::domain::source::LocalResourceStatus::Loading => "discovering".to_owned(),
-        crate::domain::source::LocalResourceStatus::Stale => "stale".to_owned(),
-        _ => app.local_state.label().to_owned(),
-    }
+    let freshness = match app.local_resource.status {
+        crate::domain::source::LocalResourceStatus::Stale => " · stale",
+        _ => "",
+    };
+    format!(
+        "daemon {} · CLI {}{}",
+        app.local_daemon_state.label(),
+        app.local_cli_state.label(),
+        freshness
+    )
 }
 
 fn preference_line<T: std::fmt::Display>(

@@ -14,11 +14,23 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .as_deref()
         .map_or("none", |value| value);
     let local_source = if app.source_mode == crate::app::SourceMode::Local {
-        match app.local_resource.status {
-            crate::domain::source::LocalResourceStatus::Loading => "local: discovering".to_owned(),
-            crate::domain::source::LocalResourceStatus::Stale => "local: stale".to_owned(),
-            _ => format!("local: {}", app.local_state.label()),
-        }
+        let freshness = if matches!(
+            app.local_daemon_state,
+            crate::domain::source::LocalDaemonState::Reconnecting
+        ) {
+            match app.local_resource.last_success_at {
+                Some(last_good) => format!(" · last good {}s", app.now.saturating_sub(last_good)),
+                None => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        format!(
+            "local daemon · {}{} · local CLI · {}",
+            app.local_daemon_state.label(),
+            freshness,
+            app.local_cli_state.label()
+        )
     } else {
         format!("source: {}", app.source_mode.label())
     };
