@@ -1,7 +1,7 @@
 # Tale support matrix
 
 This is the sole document that makes a support claim. Evidence was reviewed on
-2026-08-05. A row is not Supported unless its complete core-flow matrix has
+2026-08-06. A row is not Supported unless its complete core-flow matrix has
 passed on the named target, client, keyring, and terminal combination.
 
 ## Current claim
@@ -13,16 +13,17 @@ advertised as cross-platform or as supporting a real Tailscale client family.
 | --- | --- | --- | --- |
 | `x86_64-unknown-linux-gnu` | Experimental | Linux Tailscale 1.98.9 fixtures and fake-adapter tests | No release runner, real daemon, real keyring, or named terminal evidence |
 | `aarch64-unknown-linux-gnu` | Experimental | Same parser/fixture family only | No ARM64 Linux runner or real-client evidence |
-| `aarch64-apple-darwin` | Experimental | Local development host and mock/fake tests | No real Tailscale client, LocalAPI, keyring, or named-terminal evidence |
+| `aarch64-apple-darwin` | Experimental | Local development host, Tailscale 1.98.9 version output, and mock/fake tests | No real LocalAPI session, mutation matrix, keyring, or named-terminal evidence |
 | `x86_64-apple-darwin` | Omitted | No target evidence | Build and core-flow evidence required before inclusion |
 | `x86_64-pc-windows-msvc` | Omitted | No Windows runner or signal/keyring/terminal evidence | Unix behavior is not emulated on Windows |
 
 The host observed for this review was macOS on `aarch64-apple-darwin`, with
-Cargo 1.97.0 and macOS 26.6.0. `tailscale` was not installed. The committed
-local fixture family is Tailscale 1.98.9 on Linux. It is fictional or reviewed
-redacted test data, not a live tailnet capture. The LocalAPI contract and watch
-framing are exercised by a Unix-socket fake daemon; no real daemon or tailnet
-is contacted.
+Cargo 1.97.1 and macOS 26.6.0. `tailscale version` reported 1.98.9; no LocalAPI
+connection, tailnet read, or mutation was authorized or performed. The
+committed fixture family remains Tailscale 1.98.9 on Linux. It is fictional or
+reviewed redacted test data, not a live tailnet capture. The LocalAPI contract,
+watch framing, monotonic reconnect generations, and cancellation are exercised
+by a Unix-socket fake daemon.
 
 ## Client and API scope
 

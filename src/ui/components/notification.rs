@@ -6,14 +6,19 @@ use crate::app::App;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let text = app.notifications.last().map_or_else(
+    let text = app.runtime_error.as_ref().map_or_else(
         || {
-            app.copied_value.as_ref().map_or_else(
-                || option_string_or_empty(app.devices_resource.error.clone()),
-                |value| format!("copied: {value}"),
+            app.notifications.last().map_or_else(
+                || {
+                    app.copied_value.as_ref().map_or_else(
+                        || option_string_or_empty(app.devices_resource.error.clone()),
+                        |value| format!("copied: {value}"),
+                    )
+                },
+                |notification| notification.message.clone(),
             )
         },
-        |notification| notification.message.clone(),
+        Clone::clone,
     );
     if text.is_empty() {
         return;

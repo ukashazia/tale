@@ -38,3 +38,22 @@ blocked where the evidence is unavailable on the release host.
 Automated rows are run with fictional data and no operator credentials. The
 remaining real-environment evidence is a release blocker and is not converted
 to a pass by this file.
+
+## Specification 14 integrated journeys
+
+These scripted rows compose reducer, fake-adapter, rendered-buffer, and cleanup
+assertions. They do not claim real platform support.
+
+| Journey | Deterministic script evidence | Result |
+| --- | --- | --- |
+| A — daemon-only first run | `fake_localapi_checks_headers_endpoints_and_chunked_watch`, `observer_accepts_watch_before_bootstrap_reads_and_cancels_idle_stream`, missing-CLI capability tests, and source render assertions | PASS |
+| B — restart during interaction | `reconnect_keeps_read_generations_monotonic`, `stale_watcher_generation_cannot_replace_current_connection_state`, and `refresh_removal_repairs_selection_without_discarding_active_input` | PASS |
+| C — verified local mutation | exact socket argv tests plus `repeated_confirmation_dispatches_only_one_mutation`, verification-mismatch reducer assertions, and no optimistic state tests | PASS |
+| D — command, completion, and history branch | `command_filter_and_browser_history_restore_and_branch`, completion-generation/resize test, and rendered bottom-prompt assertions | PASS |
+| E — transient/help/capability change | registry/transient reducer tests, dynamic availability checks at dispatch, clipboard-label redaction, help filtering, and four-viewport buffers | PASS |
+| F — semantic theme matrix | exhaustive theme roles, 48 theme/capability buffers, Settings preview cancel/apply isolation, and Reset-only no-color assertions | PASS |
+| G — concurrent source isolation | admin resource last-good tests, local last-good tests, exact-ID composition, and combined source/failure buffer assertions | PASS |
+| H — exit and terminal safety | runtime render/input failure cleanup, PTY restoration, handoff restoration, process reaping, bounded queue, and cancellation tests | PASS |
+
+Optional real LocalAPI observation and every named-terminal/platform row remain
+`NOT PROVEN`; they are intentionally separate from these deterministic passes.

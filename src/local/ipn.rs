@@ -1,8 +1,11 @@
 use std::future::pending;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 use crate::domain::source::{LocalFailure, LocalFailureKind};
 use crate::local::daemon::{
@@ -24,8 +27,11 @@ const RECONNECT_DELAYS: [Duration; 5] = [
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ObserverEvent {
-    WatcherConnected,
+    WatcherConnected {
+        generation: u64,
+    },
     WatcherDisconnected {
+        generation: u64,
         failure: LocalFailure,
     },
     StatusStarted {
@@ -57,6 +63,72 @@ pub enum ObserverEvent {
 #[derive(Debug, Clone)]
 pub struct ObserverConfig {
     pub reconcile_interval: Duration,
+    pub generation: u64,
+    pub initial_status_generation: u64,
+    pub initial_preferences_generation: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReadSerializers {
+    status: Arc<Mutex<()>>,
+    preferences: Arc<Mutex<()>>,
+    status_generation: Arc<AtomicU64>,
+    preferences_generation: Arc<AtomicU64>,
+}
+
+impl ReadSerializers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn ensure_generations(&self, status: u64, preferences: u64) {
+        self.status_generation.fetch_max(status, Ordering::AcqRel);
+        self.preferences_generation
+            .fetch_max(preferences, Ordering::AcqRel);
+    }
+
+    pub fn reserve_status_generation(&self, minimum: u64) -> u64 {
+        reserve_generation(&self.status_generation, minimum)
+    }
+
+    pub fn reserve_preferences_generation(&self, minimum: u64) -> u64 {
+        reserve_generation(&self.preferences_generation, minimum)
+    }
+
+    pub async fn status(
+        &self,
+        client: &LocalDaemonClient,
+        cancellation: &Cancellation,
+    ) -> Result<crate::local::daemon::LocalStatusSnapshot, LocalDaemonError> {
+        let _guard = tokio::select! {
+            guard = self.status.lock() => guard,
+            () = cancellation_wait(cancellation) => return Err(LocalDaemonError::Cancelled),
+        };
+        client.status(cancellation).await
+    }
+
+    pub async fn preferences(
+        &self,
+        client: &LocalDaemonClient,
+        cancellation: &Cancellation,
+    ) -> Result<crate::local::daemon::LocalPreferenceSnapshot, LocalDaemonError> {
+        let _guard = tokio::select! {
+            guard = self.preferences.lock() => guard,
+            () = cancellation_wait(cancellation) => return Err(LocalDaemonError::Cancelled),
+        };
+        client.preferences(cancellation).await
+    }
+}
+
+fn reserve_generation(counter: &AtomicU64, minimum: u64) -> u64 {
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        let next = current.saturating_add(1).max(minimum);
+        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return next,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -129,13 +201,18 @@ pub async fn run(
     config: ObserverConfig,
     cancellation: Cancellation,
     sender: mpsc::Sender<ObserverEvent>,
+    serializers: ReadSerializers,
 ) {
     let mut reconnect_attempt = 0usize;
+    serializers.ensure_generations(
+        config.initial_status_generation,
+        config.initial_preferences_generation,
+    );
     loop {
         if cancellation.is_cancelled() {
             return;
         }
-        let result = run_session(&client, &config, &cancellation, &sender).await;
+        let result = run_session(&client, &config, &cancellation, &sender, &serializers).await;
         let (reset, failure) = match result {
             SessionResult::Cancelled => return,
             SessionResult::Finished {
@@ -156,7 +233,15 @@ pub async fn run(
                 true,
             ),
         };
-        if !send(&sender, ObserverEvent::WatcherDisconnected { failure }).await {
+        if !send(
+            &sender,
+            ObserverEvent::WatcherDisconnected {
+                generation: config.generation,
+                failure,
+            },
+        )
+        .await
+        {
             return;
         }
         if cancellation.is_cancelled() {
@@ -184,6 +269,7 @@ async fn run_session(
     config: &ObserverConfig,
     cancellation: &Cancellation,
     sender: &mpsc::Sender<ObserverEvent>,
+    serializers: &ReadSerializers,
 ) -> SessionResult {
     let mut watch = match client.watch(NotifyWatchMask::tale(), cancellation).await {
         Ok(watch) => watch,
@@ -195,14 +281,19 @@ async fn run_session(
             };
         }
     };
-    if !send(sender, ObserverEvent::WatcherConnected).await {
+    if !send(
+        sender,
+        ObserverEvent::WatcherConnected {
+            generation: config.generation,
+        },
+    )
+    .await
+    {
         return SessionResult::Cancelled;
     }
 
     let connected_at = Instant::now();
     let mut reads: JoinSet<ReadResult> = JoinSet::new();
-    let mut status_generation = 0u64;
-    let mut preferences_generation = 0u64;
     let mut status_active = false;
     let mut preferences_active = false;
     let mut status_dirty = false;
@@ -218,8 +309,8 @@ async fn run_session(
         client,
         cancellation,
         sender,
+        serializers,
         &mut reads,
-        &mut status_generation,
         &mut status_active,
         &mut preferences_active,
         &mut status_dirty,
@@ -231,8 +322,8 @@ async fn run_session(
         client,
         cancellation,
         sender,
+        serializers,
         &mut reads,
-        &mut preferences_generation,
         &mut status_active,
         &mut preferences_active,
         &mut status_dirty,
@@ -342,8 +433,8 @@ async fn run_session(
                                 client,
                                 cancellation,
                                 sender,
+                                serializers,
                                 &mut reads,
-                                &mut status_generation,
                                 &mut status_active,
                                 &mut preferences_active,
                                 &mut status_dirty,
@@ -381,8 +472,8 @@ async fn run_session(
                                 client,
                                 cancellation,
                                 sender,
+                                serializers,
                                 &mut reads,
-                                &mut preferences_generation,
                                 &mut status_active,
                                 &mut preferences_active,
                                 &mut status_dirty,
@@ -418,8 +509,8 @@ async fn run_session(
                                 client,
                                 cancellation,
                                 sender,
+                                serializers,
                                 &mut reads,
-                                &mut status_generation,
                                 &mut status_active,
                                 &mut preferences_active,
                                 &mut status_dirty,
@@ -434,8 +525,8 @@ async fn run_session(
                                 client,
                                 cancellation,
                                 sender,
+                                serializers,
                                 &mut reads,
-                                &mut preferences_generation,
                                 &mut status_active,
                                 &mut preferences_active,
                                 &mut status_dirty,
@@ -454,8 +545,8 @@ async fn run_session(
                         client,
                         cancellation,
                         sender,
+                        serializers,
                         &mut reads,
-                        &mut status_generation,
                         &mut status_active,
                         &mut preferences_active,
                         &mut status_dirty,
@@ -468,8 +559,8 @@ async fn run_session(
                         client,
                         cancellation,
                         sender,
+                        serializers,
                         &mut reads,
-                        &mut preferences_generation,
                         &mut status_active,
                         &mut preferences_active,
                         &mut status_dirty,
@@ -498,8 +589,8 @@ async fn start_read(
     client: &LocalDaemonClient,
     cancellation: &Cancellation,
     sender: &mpsc::Sender<ObserverEvent>,
+    serializers: &ReadSerializers,
     reads: &mut JoinSet<ReadResult>,
-    generation: &mut u64,
     status_active: &mut bool,
     preferences_active: &mut bool,
     status_dirty: &mut bool,
@@ -513,8 +604,7 @@ async fn start_read(
             *preferences_dirty = true;
         }
         ResourceKind::Status => {
-            *generation = generation.saturating_add(1);
-            let value = *generation;
+            let value = serializers.reserve_status_generation(0);
             *status_active = true;
             if !send(
                 sender,
@@ -529,16 +619,16 @@ async fn start_read(
             }
             let client = client.clone();
             let cancellation = cancellation.clone();
+            let serializers = serializers.clone();
             reads.spawn(async move {
                 ReadResult::Status {
                     generation: value,
-                    result: Box::new(client.status(&cancellation).await),
+                    result: Box::new(serializers.status(&client, &cancellation).await),
                 }
             });
         }
         ResourceKind::Preferences => {
-            *generation = generation.saturating_add(1);
-            let value = *generation;
+            let value = serializers.reserve_preferences_generation(0);
             *preferences_active = true;
             if !send(
                 sender,
@@ -553,10 +643,11 @@ async fn start_read(
             }
             let client = client.clone();
             let cancellation = cancellation.clone();
+            let serializers = serializers.clone();
             reads.spawn(async move {
                 ReadResult::Preferences {
                     generation: value,
-                    result: Box::new(client.preferences(&cancellation).await),
+                    result: Box::new(serializers.preferences(&client, &cancellation).await),
                 }
             });
         }
@@ -587,16 +678,20 @@ async fn cancellation_wait(cancellation: &Cancellation) {
 
 async fn sleep_until(deadline: Option<Instant>) {
     match deadline {
-        Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => pending::<()>().await,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DEBOUNCE_WINDOW, MAX_DEBOUNCE_WINDOW, PendingInvalidations, reconnect_delay};
+    use super::{
+        DEBOUNCE_WINDOW, MAX_DEBOUNCE_WINDOW, PendingInvalidations, ReadSerializers,
+        reconnect_delay,
+    };
     use crate::local::daemon::WatchInvalidation;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     #[test]
     fn reconnect_delays_follow_the_pinned_sequence() {
@@ -620,5 +715,17 @@ mod tests {
             assert_eq!(pending.due_at().duration_since(now), DEBOUNCE_WINDOW);
             assert!(MAX_DEBOUNCE_WINDOW > DEBOUNCE_WINDOW);
         }
+    }
+
+    #[test]
+    fn read_generations_share_one_monotonic_sequence_across_callers() {
+        let serializers = ReadSerializers::new();
+        serializers.ensure_generations(10, 20);
+        assert_eq!(serializers.reserve_status_generation(0), 11);
+        assert_eq!(serializers.reserve_status_generation(50), 50);
+        assert_eq!(serializers.reserve_status_generation(0), 51);
+        assert_eq!(serializers.reserve_preferences_generation(0), 21);
+        assert_eq!(serializers.reserve_preferences_generation(40), 40);
+        assert_eq!(serializers.reserve_preferences_generation(0), 41);
     }
 }

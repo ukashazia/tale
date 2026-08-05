@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{future::pending, time::Instant};
@@ -12,7 +13,7 @@ use tale::local::daemon::{
     LOCAL_API_CAPABILITY, LOCAL_API_HOST, LocalDaemonClient, NewlineJsonDecoder, NotifyWatchMask,
     WatchInvalidation,
 };
-use tale::local::ipn::{ObserverConfig, ObserverEvent};
+use tale::local::ipn::{ObserverConfig, ObserverEvent, ReadSerializers};
 use tale::local::process::Cancellation;
 
 const STATUS: &str = include_str!("fixtures/tailscale/1.98.9/linux/status.json");
@@ -239,14 +240,18 @@ async fn observer_accepts_watch_before_bootstrap_reads_and_cancels_idle_stream()
         client,
         ObserverConfig {
             reconcile_interval: Duration::from_secs(30),
+            generation: 7,
+            initial_status_generation: 0,
+            initial_preferences_generation: 0,
         },
         cancellation.clone(),
         sender,
+        ReadSerializers::new(),
     ));
     let connected = tokio::time::timeout(Duration::from_secs(2), receiver.recv()).await;
     assert!(matches!(
         connected,
-        Ok(Some(ObserverEvent::WatcherConnected))
+        Ok(Some(ObserverEvent::WatcherConnected { generation: 7 }))
     ));
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut status_succeeded = false;
@@ -268,6 +273,113 @@ async fn observer_accepts_watch_before_bootstrap_reads_and_cancels_idle_stream()
     cancellation.cancel();
     let joined = tokio::time::timeout(Duration::from_secs(1), observer).await;
     assert!(joined.is_ok());
+    server.abort();
+    let _ = server.await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn reconnect_keeps_read_generations_monotonic() {
+    let path = socket_path("reconnect-generations");
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path);
+    assert!(listener.is_ok());
+    let Ok(listener) = listener else {
+        return;
+    };
+    let watches = Arc::new(AtomicUsize::new(0));
+    let server_watches = Arc::clone(&watches);
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = listener.accept().await;
+            let Ok((mut stream, _)) = accepted else {
+                return;
+            };
+            let request = read_request(&mut stream).await;
+            let Some(request) = request else {
+                continue;
+            };
+            let first_line = request
+                .lines()
+                .next()
+                .map_or_else(String::new, str::to_owned);
+            let watches = Arc::clone(&server_watches);
+            tokio::spawn(async move {
+                if first_line.contains("watch-ipn-bus") {
+                    let attempt = watches.fetch_add(1, Ordering::AcqRel);
+                    let header = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTailscale-Version: 1.98.9\r\n\r\n";
+                    if stream.write_all(header).await.is_err() {
+                        return;
+                    }
+                    if attempt == 0 {
+                        let _ = stream.write_all(b"0\r\n\r\n").await;
+                    } else {
+                        let mut closed = [0_u8; 1];
+                        let _ = stream.read(&mut closed).await;
+                    }
+                } else if first_line.contains("/localapi/v0/status") {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nTailscale-Version: 1.98.9\r\n\r\n",
+                        STATUS.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes()).await;
+                    let _ = stream.write_all(STATUS.as_bytes()).await;
+                } else if first_line.contains("/localapi/v0/prefs") {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nTailscale-Version: 1.98.9\r\n\r\n",
+                        PREFS.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes()).await;
+                    let _ = stream.write_all(PREFS).await;
+                }
+            });
+        }
+    });
+
+    let cancellation = Cancellation::new();
+    let client = LocalDaemonClient::new(path.clone(), Duration::from_secs(2));
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+    let observer = tokio::spawn(tale::local::ipn::run(
+        client,
+        ObserverConfig {
+            reconcile_interval: Duration::from_secs(30),
+            generation: 9,
+            initial_status_generation: 10,
+            initial_preferences_generation: 20,
+        },
+        cancellation.clone(),
+        sender,
+        ReadSerializers::new(),
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut status_generations = Vec::new();
+        let mut preference_generations = Vec::new();
+        while status_generations.len() < 2 || preference_generations.len() < 2 {
+            let event = receiver.recv().await?;
+            match event {
+                ObserverEvent::StatusStarted { generation, .. } => {
+                    status_generations.push(generation);
+                }
+                ObserverEvent::PreferencesStarted { generation, .. } => {
+                    preference_generations.push(generation);
+                }
+                _ => {}
+            }
+        }
+        Some((status_generations, preference_generations))
+    })
+    .await;
+    assert!(matches!(
+        result,
+        Ok(Some((status, preferences)))
+            if status == vec![11, 12] && preferences == vec![21, 22]
+    ));
+    cancellation.cancel();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), observer)
+            .await
+            .is_ok()
+    );
     server.abort();
     let _ = server.await;
     let _ = std::fs::remove_file(path);

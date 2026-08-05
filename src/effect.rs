@@ -196,6 +196,9 @@ pub enum Effect {
         timeout: Duration,
     },
     StartLocalObservation {
+        generation: u64,
+        initial_status_generation: u64,
+        initial_preferences_generation: u64,
         socket_path: PathBuf,
         timeout: Duration,
         reconcile_interval: Duration,

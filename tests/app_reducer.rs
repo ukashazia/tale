@@ -12,7 +12,7 @@ use tale::domain::service::{
     ServiceActionRequest, ServiceFailure, ServiceFailureKind, ServiceMapping, ServiceTaskData,
 };
 use tale::domain::source::{ExecutableSource, LocalCapabilities, LocalExecutable};
-use tale::event::{Event, InputEvent, ServicesEvent, SourceEvent, TaskEvent};
+use tale::event::{Event, InputEvent, LocalEvent, ServicesEvent, SourceEvent, TaskEvent};
 use tale::mock::{self, MOCK_NOW};
 use tale::paths::{PathEnvironment, Platform};
 use tale::task::{Progress, TaskState};
@@ -103,6 +103,134 @@ fn stale_generation_cannot_replace_newer_snapshot_or_metadata() {
         assert!(update.is_empty());
         assert_eq!(app.devices_resource.snapshot[0].id, before);
         assert_eq!(app.devices_resource.health, before_health);
+    }
+}
+
+#[test]
+fn stale_watcher_generation_cannot_replace_current_connection_state() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.source_mode = SourceMode::Local;
+        let effects = app.bootstrap_effects();
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            tale::effect::Effect::StartLocalObservation { generation: 1, .. }
+        )));
+        let _ = app.update(Event::Local(Box::new(LocalEvent::WatcherConnected {
+            generation: 1,
+        })));
+        assert!(matches!(
+            app.local_daemon_state,
+            tale::domain::source::LocalDaemonState::Connecting
+        ));
+
+        let failure = tale::domain::source::LocalFailure::new(
+            tale::domain::source::LocalFailureKind::DaemonUnavailable,
+            "watch-ipn-bus",
+            "fictional disconnect",
+            "fictional old observer",
+            true,
+        );
+        let _ = app.update(Event::Local(Box::new(LocalEvent::WatcherDisconnected {
+            generation: 0,
+            failure: failure.clone(),
+        })));
+        assert!(matches!(
+            app.local_daemon_state,
+            tale::domain::source::LocalDaemonState::Connecting
+        ));
+        let _ = app.update(Event::Local(Box::new(LocalEvent::WatcherDisconnected {
+            generation: 1,
+            failure,
+        })));
+        assert!(matches!(
+            app.local_daemon_state,
+            tale::domain::source::LocalDaemonState::Reconnecting
+        ));
+    }
+}
+
+#[test]
+fn completion_generations_advance_and_resize_preserves_editor_state() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        press(&mut app, KeyCode::Char(':'));
+        let initial_generation = match &app.interaction {
+            InteractionMode::CommandLine(state) => state.generation,
+            _ => 0,
+        };
+        let _ = app.update(Event::Input(InputEvent::Paste("de".to_owned())));
+        let (edited_generation, input, cursor) = match &app.interaction {
+            InteractionMode::CommandLine(state) => (
+                state.generation,
+                state.editor.input.clone(),
+                state.editor.cursor,
+            ),
+            _ => (0, String::new(), 0),
+        };
+        assert!(edited_generation > initial_generation);
+        let _ = app.update(Event::Input(InputEvent::Resize {
+            width: 60,
+            height: 18,
+        }));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::CommandLine(state)
+                if state.generation == edited_generation
+                    && state.editor.input == input
+                    && state.editor.cursor == cursor
+        ));
+    }
+}
+
+#[test]
+fn refresh_removal_repairs_selection_without_discarding_active_input() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Devices);
+        let selected = app
+            .devices_resource
+            .snapshot
+            .get(3)
+            .map(|device| device.id.clone());
+        assert!(selected.is_some());
+        app.views.devices.selected_id = selected.clone();
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("devices".to_owned())));
+        press(&mut app, KeyCode::Left);
+        let before = match &app.interaction {
+            InteractionMode::CommandLine(state) => (
+                state.editor.input.clone(),
+                state.editor.cursor,
+                state.generation,
+            ),
+            _ => (String::new(), 0, 0),
+        };
+        let devices = mock::devices()
+            .into_iter()
+            .filter(|device| Some(&device.id) != selected.as_ref())
+            .collect();
+        let _ = app.update(Event::Source(SourceEvent::LoadSucceeded {
+            generation: 2,
+            devices,
+            observed_at: MOCK_NOW.saturating_add(1),
+        }));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::CommandLine(state)
+                if state.editor.input == before.0
+                    && state.editor.cursor == before.1
+                    && state.generation == before.2
+        ));
+        assert_ne!(app.views.devices.selected_id, selected);
+        assert_eq!(
+            app.runtime_error.as_deref(),
+            Some("selected resource no longer exists; selection was repaired")
+        );
     }
 }
 

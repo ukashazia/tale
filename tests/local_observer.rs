@@ -540,6 +540,7 @@ async fn watcher_disconnect_marks_resources_stale_and_refresh_is_targeted() {
             })));
             assert_eq!(app.local_resource.status, LocalResourceStatus::Fresh);
             let _ = app.update(Event::Local(Box::new(LocalEvent::WatcherDisconnected {
+                generation: 1,
                 failure: LocalFailure::new(
                     LocalFailureKind::DaemonUnavailable,
                     "watch-ipn-bus",

@@ -204,6 +204,7 @@ pub struct CompletionCandidate {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CommandLineState {
     pub editor: LineEditorState,
+    pub generation: u64,
     pub candidates: Vec<CompletionCandidate>,
     pub selected_completion: Option<usize>,
     pub error: Option<String>,
@@ -222,6 +223,7 @@ pub struct FilterRestoration {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FilterLineState {
     pub editor: LineEditorState,
+    pub generation: u64,
     pub candidates: Vec<CompletionCandidate>,
     pub selected_completion: Option<usize>,
     pub error: Option<String>,
@@ -736,6 +738,7 @@ pub struct App {
     pub interaction: InteractionMode,
     pub command_history: Vec<String>,
     command_history_cursor: Option<usize>,
+    next_completion_generation: u64,
     pub focus: Focus,
     pub overlays: Vec<Overlay>,
     pub views: Views,
@@ -813,6 +816,7 @@ pub struct App {
     pub interactive_handoff_active: bool,
     render_invalidated: bool,
     local_discovery_in_flight: bool,
+    local_observer_generation: u64,
     local_watcher_connected: bool,
     local_services_refresh_in_flight: bool,
     admin_refresh_in_flight: bool,
@@ -887,6 +891,7 @@ impl App {
             interaction: InteractionMode::Normal,
             command_history: Vec::new(),
             command_history_cursor: None,
+            next_completion_generation: 0,
             focus: Focus::Collection,
             overlays: Vec::new(),
             views: Views {
@@ -970,6 +975,7 @@ impl App {
             interactive_handoff_active: false,
             render_invalidated: true,
             local_discovery_in_flight: false,
+            local_observer_generation: 0,
             local_watcher_connected: false,
             local_services_refresh_in_flight: false,
             admin_refresh_in_flight: false,
@@ -1005,7 +1011,11 @@ impl App {
         self.local_resource.begin(1, self.now);
         self.local_preferences_resource.begin(1, self.now);
         self.local_discovery_in_flight = true;
+        self.local_observer_generation = self.local_observer_generation.saturating_add(1);
         effects.push(Effect::StartLocalObservation {
+            generation: self.local_observer_generation,
+            initial_status_generation: self.local_resource.generation,
+            initial_preferences_generation: self.local_preferences_resource.generation,
             socket_path: self.resolved_config.local.socket_path.clone(),
             timeout: self.resolved_config.local.command_timeout,
             reconcile_interval: self.resolved_config.local.reconcile_interval,
@@ -2179,14 +2189,17 @@ impl App {
             _ => return Vec::new(),
         };
         if self.current_route() == Route::Activity {
+            let generation = self.advance_completion_generation();
             self.task_filter = input;
             self.tasks.select_filtered_first(&self.task_filter);
             if let InteractionMode::FilterLine(state) = &mut self.interaction {
                 state.error = None;
                 state.candidates.clear();
+                state.generation = generation;
             }
             return Vec::new();
         }
+        let generation = self.advance_completion_generation();
         match filter::parse(&input) {
             Ok(expression) => {
                 self.views.devices.filter_draft = input.clone();
@@ -2196,6 +2209,7 @@ impl App {
                 if let InteractionMode::FilterLine(state) = &mut self.interaction {
                     state.error = None;
                     state.candidates = candidates;
+                    state.generation = generation;
                 }
             }
             Err(error) => {
@@ -2203,6 +2217,7 @@ impl App {
                 if let InteractionMode::FilterLine(state) = &mut self.interaction {
                     state.error = Some(error.to_string());
                     state.candidates = candidates;
+                    state.generation = generation;
                 }
             }
         }
@@ -2309,10 +2324,17 @@ impl App {
             InteractionMode::CommandLine(state) => state.editor.input.clone(),
             _ => return,
         };
+        let generation = self.advance_completion_generation();
         let candidates = self.command_candidates(&input);
         if let InteractionMode::CommandLine(state) = &mut self.interaction {
             state.candidates = candidates;
+            state.generation = generation;
         }
+    }
+
+    fn advance_completion_generation(&mut self) -> u64 {
+        self.next_completion_generation = self.next_completion_generation.saturating_add(1);
+        self.next_completion_generation
     }
 
     fn complete_command(&mut self, reverse: bool) {
@@ -2969,9 +2991,12 @@ impl App {
         match action_id {
             ActionId::AppQuit => self.handle_quit_key(),
             ActionId::ViewCommandLine => {
+                let candidates = self.command_candidates("");
+                let generation = self.advance_completion_generation();
                 self.interaction = InteractionMode::CommandLine(CommandLineState {
                     editor: LineEditorState::new(String::new()),
-                    candidates: self.command_candidates(""),
+                    generation,
+                    candidates,
                     selected_completion: None,
                     error: None,
                 });
@@ -2995,9 +3020,12 @@ impl App {
                     task_filter: self.task_filter.clone(),
                     task_selection: self.tasks.selected,
                 };
+                let candidates = self.filter_candidates("");
+                let generation = self.advance_completion_generation();
                 self.interaction = InteractionMode::FilterLine(FilterLineState {
                     editor: LineEditorState::new(input),
-                    candidates: self.filter_candidates(""),
+                    generation,
+                    candidates,
                     selected_completion: None,
                     error: None,
                     restoration,
@@ -11275,11 +11303,20 @@ impl App {
                     self.devices_resource.error = Some(failure.detail.clone());
                 }
             }
-            LocalEvent::WatcherConnected => {
+            LocalEvent::WatcherConnected { generation } => {
+                if generation != self.local_observer_generation {
+                    return Vec::new();
+                }
                 self.local_watcher_connected = true;
                 self.local_daemon_state = LocalDaemonState::Connecting;
             }
-            LocalEvent::WatcherDisconnected { failure } => {
+            LocalEvent::WatcherDisconnected {
+                generation,
+                failure,
+            } => {
+                if generation != self.local_observer_generation {
+                    return Vec::new();
+                }
                 self.local_watcher_connected = false;
                 self.local_daemon_state = match failure.kind {
                     LocalFailureKind::PermissionDenied => LocalDaemonState::PermissionDenied {
@@ -11893,6 +11930,10 @@ impl App {
             self.views.devices.selected_id = devices
                 .get(target.min(devices.len().saturating_sub(1)))
                 .map(|device| device.id.clone());
+            if selected_id.is_some() {
+                self.runtime_error =
+                    Some("selected resource no longer exists; selection was repaired".to_owned());
+            }
         } else {
             let visible = self.visible_indices();
             if let Some(id) = selected_id

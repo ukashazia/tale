@@ -6,7 +6,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::hint::black_box;
-use tale::app::{App, Route};
+use tale::action::ActionId;
+use tale::app::{App, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::Timestamp;
@@ -259,6 +260,86 @@ fn bench_mock_startup(c: &mut Criterion) {
     });
 }
 
+fn bench_command_completion(c: &mut Criterion) {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    for (index, device) in app.devices_resource.snapshot.iter_mut().enumerate() {
+        device.owner = Some(format!("owner-{index:05}@example.test"));
+    }
+    c.bench_function("command_completion_100_candidates", |bench| {
+        bench.iter(|| {
+            app.interaction = InteractionMode::Normal;
+            let _ = app.dispatch_action(ActionId::ViewCommandLine);
+            let _ = app.update(Event::Input(InputEvent::Paste("devices owner:".to_owned())));
+            let count = match &app.interaction {
+                InteractionMode::CommandLine(state) => state.candidates.len(),
+                _ => 0,
+            };
+            black_box(count);
+        });
+    });
+}
+
+fn bench_transient_and_help_open(c: &mut Criterion) {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    c.bench_function("transient_open_to_render_request", |bench| {
+        bench.iter(|| {
+            app.interaction = InteractionMode::Normal;
+            black_box(
+                app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+                    KeyCode::Char('a'),
+                    KeyModifiers::NONE,
+                ))))
+                .len(),
+            );
+            black_box(app.render_invalidated());
+        });
+    });
+    c.bench_function("help_open_to_render_request", |bench| {
+        bench.iter(|| {
+            app.interaction = InteractionMode::Normal;
+            black_box(
+                app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+                    KeyCode::Char('?'),
+                    KeyModifiers::NONE,
+                ))))
+                .len(),
+            );
+            black_box(app.render_invalidated());
+        });
+    });
+}
+
+fn bench_history_restore(c: &mut Criterion) {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    for index in 0..100 {
+        app.set_route(if index % 2 == 0 {
+            Route::Overview
+        } else {
+            Route::Devices
+        });
+    }
+    let back = Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('['),
+        KeyModifiers::NONE,
+    )));
+    let forward = Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char(']'),
+        KeyModifiers::NONE,
+    )));
+    c.bench_function("history_back_forward_5000_row_view", |bench| {
+        bench.iter(|| {
+            black_box(app.update(back.clone()).len());
+            black_box(app.update(forward.clone()).len());
+        });
+    });
+}
+
 criterion_group!(
     phase9,
     bench_filter,
@@ -269,6 +350,9 @@ criterion_group!(
     bench_render_compact,
     bench_theme_switch,
     bench_input_dispatch,
-    bench_mock_startup
+    bench_mock_startup,
+    bench_command_completion,
+    bench_transient_and_help_open,
+    bench_history_restore
 );
 criterion_main!(phase9);

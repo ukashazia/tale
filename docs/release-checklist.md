@@ -1,12 +1,14 @@
 # Tale release checklist
 
 This checklist is an evidence record, not a publication command. Reviewed
-2026-08-05. The current candidate is blocked from a Supported 1.0 claim until
+2026-08-06. The current candidate is blocked from a Supported 1.0 claim until
 the missing platform, client, terminal, keyring, memory, and release-runner
 evidence is supplied.
 
 The prior phase evidence is recorded in
 `docs/phase-gates-2026-08-05.md`.
+Post-v1 integration evidence is recorded in
+`docs/phase-gates-2026-08-06-post-v1.md`.
 
 The local benchmark record is
 [phase9-2026-08-05.md](benchmarks/phase9-2026-08-05.md).

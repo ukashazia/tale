@@ -34,6 +34,11 @@ platform or client combination as supported.
 - [07 — Access, credentials, and audit security](docs/specs/07-access-security.md)
 - [08 — Operational depth](docs/specs/08-operational-depth.md)
 - [09 — Tale 1.0 hardening](docs/specs/09-one-zero-hardening.md)
+- [10 — Tale 1.0 independent release audit](docs/specs/10-v1-release-audit.md)
+- [11 — Local daemon event transport](docs/specs/11-local-daemon-event-transport.md)
+- [12 — Interaction shell and navigation](docs/specs/12-interaction-shell-and-navigation.md)
+- [13 — Semantic theme system](docs/specs/13-semantic-theme-system.md)
+- [14 — Post-1.0 integration hardening](docs/specs/14-post-v1-integration-hardening.md)
 
 Each specification is an implementation contract for one roadmap phase. It
 defines feature behavior, code ownership, adapter boundaries, actions, error
@@ -43,9 +48,22 @@ states, tests, manual journeys, and the phase exit gate.
 
 Tale uses supported Tailscale surfaces instead of scraping the admin console:
 
-- the installed `tailscale` command for local-node state and operations;
+- the configured LocalAPI socket or named pipe for local status, preferences,
+  peer observation, and event-driven invalidation;
+- the installed `tailscale` command only for typed local operations whose
+  LocalAPI mutation contract is intentionally not adopted;
 - the documented Tailscale Control API for tailnet-wide inventory and
   administration.
+
+Local daemon observation, local CLI execution, and admin API access are
+independent capabilities. Tale subscribes before its initial LocalAPI reads,
+coalesces event invalidations into authoritative reads, retains last-good data
+during reconnect, and never falls back to CLI status observation. The bottom
+interaction shell uses `:` and `/` inline editors, `a`/`y` transient mnemonic
+menus, `?` contextual help, and `[`/`]` bounded view history. Built-in
+`tailscale-dark`, `tailscale-light`, and `terminal` themes preserve the same
+state, source, and risk meanings through truecolor, reduced-color, and no-color
+projections.
 
 If Tailscale exposes a feature only in the web console, Tale reports that
 limitation plainly. It does not emulate the console through browser automation

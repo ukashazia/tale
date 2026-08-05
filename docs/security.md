@@ -1,6 +1,6 @@
 # Tale security review
 
-Reviewed 2026-08-05. Secret memory is zeroized on drop where the owning type
+Reviewed 2026-08-06. Secret memory is zeroized on drop where the owning type
 uses `zeroize`; zeroization is best-effort and is not presented as protection
 from an already privileged process, allocator copies, or OS paging.
 
@@ -41,7 +41,9 @@ The hosted HTTP client uses maintained `reqwest` rustls defaults for certificate
 and hostname verification. The local daemon client uses maintained HTTP/1
 machinery over the configured Unix socket or Windows named pipe; it sends the
 pinned capability and Host headers, bounds bodies and watch frames at 32 MiB,
-and never logs peer data. Credentials are Bearer headers only. URL paths and
+serializes status and preference reads per resource across reconciliation,
+manual refresh, and mutation verification, and never logs peer data.
+Credentials are Bearer headers only. URL paths and
 queries are constructed through typed URL APIs; request failures are scoped to
 the affected resource. Response bodies are bounded before storing error text,
 and redaction occurs before diagnostic persistence. No credential-bearing
@@ -67,7 +69,7 @@ executable source by the scanner.
 
 `Cargo.lock` is committed. `deny.toml` is the policy input for `cargo-deny`:
 unknown registries and git sources are denied, and only reviewed permissive
-licenses are allowed. The 2026-08-05 run passes advisory and source checks but
+licenses are allowed. The 2026-08-06 run passes advisory and source checks but
 has four explicit transitive license decisions pending; see
 `docs/dependencies-2026-08-05.md`. An unavailable advisory database or checker
 is a release blocker; it is not silently treated as a pass.

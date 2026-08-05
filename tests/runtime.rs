@@ -5,7 +5,7 @@ use tale::app::App;
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::error::TaleError;
-use tale::event::{Event, InputEvent, SourceEvent, TaskEvent};
+use tale::event::{Event, InputEvent, ShutdownReason, SourceEvent, TaskEvent};
 use tale::paths::{PathEnvironment, Platform};
 use tale::runtime::{EventQueue, TerminalDriver};
 use tale::task::TaskId;
@@ -221,5 +221,45 @@ async fn event_source_failure_restores_the_terminal_before_returning_the_error()
             ));
         }
         assert_eq!(driver.restores, 1);
+    }
+}
+
+#[tokio::test]
+async fn shutdown_restores_terminal_with_each_bottom_interaction_active() {
+    for key in [None, Some(':'), Some('/'), Some('a'), Some('?')] {
+        let app = mock_app();
+        assert!(app.is_some());
+        if let Some(mut app) = app {
+            app.set_route(tale::app::Route::Devices);
+            let _ = app.update(Event::Source(SourceEvent::LoadSucceeded {
+                generation: 1,
+                devices: tale::mock::devices(),
+                observed_at: tale::mock::MOCK_NOW,
+            }));
+            if let Some(key) = key {
+                let _ = app.update(Event::Input(InputEvent::Key(
+                    crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Char(key),
+                        crossterm::event::KeyModifiers::NONE,
+                    ),
+                )));
+            }
+            let queue = EventQueue::new();
+            queue
+                .send(Event::ShutdownRequested(ShutdownReason::Signal))
+                .await;
+            let mut driver = FakeDriver {
+                fail_draw: false,
+                draws: 0,
+                restores: 0,
+            };
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                tale::runtime::run_with_driver_and_queue(&mut app, &mut driver, queue),
+            )
+            .await;
+            assert!(matches!(result, Ok(Ok(()))));
+            assert_eq!(driver.restores, 1);
+        }
     }
 }

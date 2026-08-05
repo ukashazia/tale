@@ -48,6 +48,7 @@ use crate::event::{
 };
 use crate::local::client::{self, LocalCliClient};
 use crate::local::diagnostics;
+use crate::local::ipn::ReadSerializers;
 use crate::local::process::{
     self, Cancellation, LocalOperation, LocalProcessError, OutputStream, ProcessLine,
 };
@@ -234,6 +235,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     let mut admin_refresh_cancellation: Option<Cancellation> = None;
     let mut admin_token_managers: BTreeMap<String, Arc<TokenManager>> = BTreeMap::new();
     let mut mutation_cancellations: HashMap<u64, Cancellation> = HashMap::new();
+    let local_read_serializers = ReadSerializers::new();
     let handoff_input_gate = Arc::new(AtomicBool::new(true));
     let mut terminal_suspended = false;
 
@@ -259,6 +261,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             admin_refresh_cancellation: &mut admin_refresh_cancellation,
             admin_token_managers: &mut admin_token_managers,
             mutation_cancellations: &mut mutation_cancellations,
+            local_read_serializers: &local_read_serializers,
             terminal,
             handoff_input_gate: &handoff_input_gate,
             terminal_suspended: &mut terminal_suspended,
@@ -349,6 +352,7 @@ struct DispatchContext<'a, T: TerminalDriver> {
     admin_refresh_cancellation: &'a mut Option<Cancellation>,
     admin_token_managers: &'a mut BTreeMap<String, Arc<TokenManager>>,
     mutation_cancellations: &'a mut HashMap<u64, Cancellation>,
+    local_read_serializers: &'a ReadSerializers,
     terminal: &'a mut T,
     handoff_input_gate: &'a Arc<AtomicBool>,
     terminal_suspended: &'a mut bool,
@@ -364,6 +368,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
     let admin_refresh_cancellation = &mut *context.admin_refresh_cancellation;
     let admin_token_managers = &mut *context.admin_token_managers;
     let mutation_cancellations = &mut *context.mutation_cancellations;
+    let local_read_serializers = context.local_read_serializers;
     let terminal = &mut *context.terminal;
     let handoff_input_gate = context.handoff_input_gate;
     let terminal_suspended = &mut *context.terminal_suspended;
@@ -1099,6 +1104,9 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             });
         }
         Effect::StartLocalObservation {
+            generation,
+            initial_status_generation,
+            initial_preferences_generation,
             socket_path,
             timeout,
             reconcile_interval,
@@ -1109,19 +1117,39 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             let queue = queue.clone();
             let cancellation = Cancellation::new();
             *local_observation_cancellation = Some(cancellation.clone());
+            let serializers = local_read_serializers.clone();
             tasks.spawn(async move {
                 let (sender, mut receiver) = mpsc::channel(128);
                 let client = crate::local::daemon::LocalDaemonClient::new(socket_path, timeout);
                 let observer = tokio::spawn(crate::local::ipn::run(
                     client,
-                    crate::local::ipn::ObserverConfig { reconcile_interval },
+                    crate::local::ipn::ObserverConfig {
+                        reconcile_interval,
+                        generation,
+                        initial_status_generation,
+                        initial_preferences_generation,
+                    },
                     cancellation.clone(),
                     sender,
+                    serializers,
                 ));
                 while let Some(event) = receiver.recv().await {
                     queue.send(local_event(observer_event(event))).await;
                 }
-                let _ = observer.await;
+                if observer.await.is_err() && !cancellation.is_cancelled() {
+                    queue
+                        .send(local_event(LocalEvent::WatcherDisconnected {
+                            generation,
+                            failure: LocalFailure::new(
+                                LocalFailureKind::Transport,
+                                "local observer",
+                                "local observer worker failed",
+                                "the observer ended unexpectedly; all details were suppressed",
+                                true,
+                            ),
+                        }))
+                        .await;
+                }
             });
         }
         Effect::StartLocalSnapshotRefresh {
@@ -1130,30 +1158,33 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let queue = queue.clone();
+            let serializers = local_read_serializers.clone();
             tasks.spawn(async move {
                 let client = crate::local::daemon::LocalDaemonClient::new(socket_path, timeout);
                 let cancellation = Cancellation::new();
+                let status_generation = serializers.reserve_status_generation(generation);
+                let preferences_generation = serializers.reserve_preferences_generation(generation);
                 queue
                     .send(local_event(LocalEvent::StatusStarted {
-                        generation,
+                        generation: status_generation,
                         attempted_at: crate::local::now(),
                     }))
                     .await;
                 queue
                     .send(local_event(LocalEvent::PreferencesStarted {
-                        generation,
+                        generation: preferences_generation,
                         attempted_at: crate::local::now(),
                     }))
                     .await;
                 let (status, preferences) = tokio::join!(
-                    client.status(&cancellation),
-                    client.preferences(&cancellation),
+                    serializers.status(&client, &cancellation),
+                    serializers.preferences(&client, &cancellation),
                 );
                 match status {
                     Ok(value) => {
                         queue
                             .send(local_event(LocalEvent::StatusSucceeded {
-                                generation,
+                                generation: status_generation,
                                 snapshot: Box::new(value.snapshot),
                             }))
                             .await;
@@ -1161,7 +1192,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     Err(error) => {
                         queue
                             .send(local_event(LocalEvent::StatusFailed {
-                                generation,
+                                generation: status_generation,
                                 failure: error.failure(),
                             }))
                             .await;
@@ -1171,7 +1202,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     Ok(value) => {
                         queue
                             .send(local_event(LocalEvent::PreferencesSucceeded {
-                                generation,
+                                generation: preferences_generation,
                                 preferences: Box::new(value.preferences),
                             }))
                             .await;
@@ -1179,7 +1210,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     Err(error) => {
                         queue
                             .send(local_event(LocalEvent::PreferencesFailed {
-                                generation,
+                                generation: preferences_generation,
                                 failure: error.failure(),
                             }))
                             .await;
@@ -1268,8 +1299,9 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             let cancellation = Cancellation::new();
             cancellations.insert(task_id, cancellation.clone());
             mutation_cancellations.insert(mutation_id, cancellation.clone());
+            let serializers = local_read_serializers.clone();
             tasks.spawn(async move {
-                run_local_mutation(
+                run_local_mutation(LocalMutationTask {
                     queue,
                     task_id,
                     mutation_id,
@@ -1277,7 +1309,8 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     timeout,
                     mutation,
                     cancellation,
-                )
+                    serializers,
+                })
                 .await;
             });
         }
@@ -5892,7 +5925,7 @@ fn unsupported_service(operation: &str, detail: &str) -> ServiceFailure {
     )
 }
 
-async fn run_local_mutation(
+struct LocalMutationTask {
     queue: EventQueue,
     task_id: TaskId,
     mutation_id: u64,
@@ -5900,7 +5933,20 @@ async fn run_local_mutation(
     timeout: Duration,
     mutation: LocalMutation,
     cancellation: Cancellation,
-) {
+    serializers: ReadSerializers,
+}
+
+async fn run_local_mutation(context: LocalMutationTask) {
+    let LocalMutationTask {
+        queue,
+        task_id,
+        mutation_id,
+        executable,
+        timeout,
+        mutation,
+        cancellation,
+        serializers,
+    } = context;
     let action_id = mutation.action_id();
     let client = LocalCliClient::new(executable.clone(), timeout);
     let socket_path = match executable.socket_path.clone() {
@@ -6067,7 +6113,8 @@ async fn run_local_mutation(
     let mut read_error = None;
     match &mutation {
         LocalMutation::Connect | LocalMutation::Disconnect { .. } => {
-            match daemon.status(&Cancellation::new()).await {
+            serializers.reserve_status_generation(0);
+            match serializers.status(&daemon, &cancellation).await {
                 Ok(value) => snapshot = Some(Box::new(value.snapshot)),
                 Err(error) => read_error = Some(error.failure().detail),
             }
@@ -6075,7 +6122,8 @@ async fn run_local_mutation(
         LocalMutation::Preferences(_)
         | LocalMutation::ExitNode(_)
         | LocalMutation::Advertisements(_) => {
-            match daemon.preferences(&Cancellation::new()).await {
+            serializers.reserve_preferences_generation(0);
+            match serializers.preferences(&daemon, &cancellation).await {
                 Ok(value) => preferences = Some(Box::new(value.preferences)),
                 Err(error) => read_error = Some(error.failure().detail),
             }
@@ -6084,7 +6132,7 @@ async fn run_local_mutation(
             match accounts::list(
                 &executable.path,
                 timeout,
-                &Cancellation::new(),
+                &cancellation,
                 executable.socket_path.as_deref(),
             )
             .await
@@ -6093,13 +6141,15 @@ async fn run_local_mutation(
                 Err(error) => read_error = Some(safe_operator_detail(&error.to_string())),
             }
             if read_error.is_none() {
-                match daemon.status(&Cancellation::new()).await {
+                serializers.reserve_status_generation(0);
+                match serializers.status(&daemon, &cancellation).await {
                     Ok(value) => snapshot = Some(Box::new(value.snapshot)),
                     Err(error) => read_error = Some(error.failure().detail),
                 }
             }
             if read_error.is_none() {
-                match daemon.preferences(&Cancellation::new()).await {
+                serializers.reserve_preferences_generation(0);
+                match serializers.preferences(&daemon, &cancellation).await {
                     Ok(value) => preferences = Some(Box::new(value.preferences)),
                     Err(error) => read_error = Some(error.failure().detail),
                 }
@@ -6109,7 +6159,7 @@ async fn run_local_mutation(
             match policy::list(
                 &executable.path,
                 timeout,
-                &Cancellation::new(),
+                &cancellation,
                 executable.socket_path.as_deref(),
             )
             .await
@@ -6500,10 +6550,16 @@ fn local_event(event: LocalEvent) -> Event {
 
 fn observer_event(event: crate::local::ipn::ObserverEvent) -> LocalEvent {
     match event {
-        crate::local::ipn::ObserverEvent::WatcherConnected => LocalEvent::WatcherConnected,
-        crate::local::ipn::ObserverEvent::WatcherDisconnected { failure } => {
-            LocalEvent::WatcherDisconnected { failure }
+        crate::local::ipn::ObserverEvent::WatcherConnected { generation } => {
+            LocalEvent::WatcherConnected { generation }
         }
+        crate::local::ipn::ObserverEvent::WatcherDisconnected {
+            generation,
+            failure,
+        } => LocalEvent::WatcherDisconnected {
+            generation,
+            failure,
+        },
         crate::local::ipn::ObserverEvent::StatusStarted {
             generation,
             attempted_at,

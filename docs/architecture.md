@@ -58,7 +58,11 @@ Required properties:
 - bounded channels and bounded output buffers;
 - cancellation tokens for refreshes, streams, and child operations;
 - monotonically increasing request generations per resource;
+- one observer generation per resolved endpoint; late watcher state from a
+  cancelled observer is discarded;
 - stale results are discarded when a newer generation exists;
+- status and preference reads are serialized independently across watcher
+  reconciliation, explicit refresh, and mutation verification;
 - one active mutation per resource identity;
 - terminal rendering never waits on network or process I/O;
 - terminal cleanup is owned by an RAII session guard and also runs on ordinary
@@ -150,6 +154,13 @@ Snapshots are replaced atomically after successful decoding. A failed refresh
 updates resource metadata but preserves the last successful snapshot. Selection
 is tracked by opaque domain ID, never row index, so sorting and refreshes do not
 silently select another resource.
+
+Observer read generations remain monotonic across daemon reconnects. Reconnect
+never restarts a resource generation at one, and watcher connection events carry
+the observer generation so a replaced endpoint cannot be marked disconnected by
+its predecessor. If a refresh removes the selected stable identity, the reducer
+chooses the deterministic neighboring row and reports the repair without
+closing or editing the active command/filter/help/transient surface.
 
 Each history frame stores only presentation intent: route, focus, stable resource
 identity, scroll anchor, filter, sort, Services section, and saved-view identity.

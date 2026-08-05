@@ -324,8 +324,11 @@ pub enum LocalEvent {
         generation: u64,
         failure: LocalFailure,
     },
-    WatcherConnected,
+    WatcherConnected {
+        generation: u64,
+    },
     WatcherDisconnected {
+        generation: u64,
         failure: LocalFailure,
     },
     AccountsSucceeded {
