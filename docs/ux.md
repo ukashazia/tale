@@ -51,7 +51,8 @@ Wide terminals use a collection-and-inspector layout:
 - Command, filter, transient, completion, and help surfaces grow upward from
   the final terminal row. Only alerts and confirmations are centered modals.
 
-The terminal's existing background is the default surface. Borders communicate
+The `terminal` theme preserves the terminal's existing background; the two
+Tailscale-inspired themes paint explicit warm canvases. Borders communicate
 focus, not decoration. Color is semantic and never the only state signal.
 
 ## Navigation contract
@@ -274,12 +275,21 @@ Tailnet Lock signing is a different action and is never offered as â€œapprove.â€
 
 ## Visual language
 
-- Default background is `Reset`; Tale does not paint a full opaque canvas.
-- Focus uses a stronger border and title, selection uses reverse video or bold,
-  and active input has a visible cursor.
-- Green means verified healthy/success, yellow means attention/stale, red means
-  failed/destructive, blue/cyan means informational or selected. Text or symbols
-  accompany every color.
+- `tailscale-dark` is the default warm dark canvas, `tailscale-light` is an
+  explicit warm light canvas, and `terminal` preserves terminal defaults for
+  neutral surfaces. All three support truecolor, ANSI-256, ANSI-16, and
+  no-color.
+- Focus is a stronger consistent border/cursor; selection is a filled or
+  reversed current-resource marker. They are separate and remain visible when
+  combined.
+- Green means verified healthy/success, never pending. Yellow/orange means
+  warning, stale, relay, or reversible caution. Red means failure,
+  destructive risk, or public exposure. Blue/cyan means focus, navigation,
+  information, or local provenance. Purple plus a label means admin/combined
+  provenance. Text and stable symbols accompany every color.
+- Composition precedence is safety, active focus/cursor, selection,
+  danger/public/destructive risk, operational state, source, then base
+  text/surface. Lower meanings remain in explicit labels or symbols.
 - ASCII is the baseline. Unicode symbols are optional and must preserve column
   alignment. Nerd Font glyphs are never required.
 - Animation is limited to a spinner for active tasks and a brief success marker.
@@ -293,6 +303,9 @@ Tailnet Lock signing is a different action and is never offered as â€œapprove.â€
 - Every mouse operation has a keyboard equivalent.
 - Mouse capture is off by default so terminal selection continues to work.
 - `NO_COLOR` disables semantic colors but preserves text markers.
+- Settings â†’ Appearance previews the three built-ins immediately. `Enter`
+  applies for the session, `Esc` restores the exact prior theme, and the sheet
+  identifies `ui.theme` as the persistence key.
 - Focus order follows visual order.
 - Help names actions, not just keys.
 - Forms keep invalid input and explain the correction; they do not clear it.

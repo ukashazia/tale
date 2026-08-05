@@ -12,6 +12,7 @@ use tale::event::{Event, InputEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
 use tale::ui;
+use tale::ui::theme::{ColorCapability, Theme, ThemeId};
 
 fn mock_app() -> Option<App> {
     let root = PathBuf::from("/fictional/tale-snapshots");
@@ -442,6 +443,90 @@ fn all_color_and_symbol_modes_render_compact_keyboard_surfaces() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
+    for theme_id in ThemeId::ALL {
+        for capability in ColorCapability::ALL {
+            for scene in 0..5 {
+                for (width, height) in [(160, 45), (110, 30), (80, 24), (60, 18), (59, 17)] {
+                    let app = populated_app();
+                    assert!(app.is_some());
+                    let Some(mut app) = app else {
+                        return;
+                    };
+                    app.theme = Theme::new(theme_id, capability);
+                    match scene {
+                        1 => {
+                            press(&mut app, KeyCode::Char(':'));
+                            let _ = app.update(Event::Input(InputEvent::Paste(
+                                "unknown-route".to_owned(),
+                            )));
+                            press(&mut app, KeyCode::Enter);
+                        }
+                        2 => press(&mut app, KeyCode::Char('a')),
+                        3 => press(&mut app, KeyCode::Char('?')),
+                        4 => {
+                            app.set_route(Route::Settings);
+                            let effects = app.dispatch_action(ActionId::SettingsAppearance);
+                            assert!(effects.is_empty());
+                        }
+                        _ => {}
+                    }
+                    let backend = TestBackend::new(width, height);
+                    let mut terminal = match Terminal::new(backend) {
+                        Ok(terminal) => terminal,
+                        Err(_) => return,
+                    };
+                    assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+                    let buffer = terminal.backend().buffer();
+                    let mut has_tale = false;
+                    let mut has_non_reset = false;
+                    for y in 0..height {
+                        for x in 0..width {
+                            if let Some(cell) = buffer.cell((x, y)) {
+                                has_tale |= cell.symbol() == "T";
+                                has_non_reset |= cell.fg != ratatui::style::Color::Reset
+                                    || cell.bg != ratatui::style::Color::Reset;
+                                if capability == ColorCapability::None {
+                                    assert_eq!(cell.fg, ratatui::style::Color::Reset);
+                                    assert_eq!(cell.bg, ratatui::style::Color::Reset);
+                                }
+                            }
+                        }
+                    }
+                    assert!(has_tale);
+                    if capability != ColorCapability::None
+                        && !(theme_id == ThemeId::Terminal && (width < 60 || height < 18))
+                    {
+                        assert!(has_non_reset);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn settings_appearance_preview_renders_state_source_and_risk_labels() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.set_route(Route::Settings);
+        let effects = app.dispatch_action(ActionId::SettingsAppearance);
+        assert!(effects.is_empty());
+        let lines = lines_at(&app, 80, 24);
+        assert!(lines.is_some());
+        if let Some(lines) = lines {
+            let rendered = lines.join("\n");
+            assert!(rendered.contains("tailscale-dark"));
+            assert!(rendered.contains("healthy"));
+            assert!(rendered.contains("danger/public"));
+            assert!(rendered.contains("local+admin"));
+            assert!(rendered.contains("ui.theme"));
         }
     }
 }

@@ -16,6 +16,7 @@ use tale::event::{Event, InputEvent, ServicesEvent, SourceEvent, TaskEvent};
 use tale::mock::{self, MOCK_NOW};
 use tale::paths::{PathEnvironment, Platform};
 use tale::task::{Progress, TaskState};
+use tale::ui::theme::ThemeId;
 
 fn mock_app() -> Option<App> {
     let root = PathBuf::from("/fictional/tale-reducer");
@@ -595,6 +596,37 @@ fn stale_service_refresh_cannot_replace_newer_data_and_read_only_blocks_dispatch
         app.set_route(Route::Services);
         let _ = app.dispatch_action(tale::action::ActionId::ServicesFunnelReset);
         assert!(app.runtime_error.is_some());
+        assert!(app.tasks.all().is_empty());
+    }
+}
+
+#[test]
+fn appearance_preview_cancel_and_session_apply_are_state_isolated() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.set_route(Route::Settings);
+        let original = app.theme;
+        let route = app.current_route();
+        let history_len = app.view_history.frames.len();
+        let source_mode = app.source_mode;
+
+        let effects = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
+        assert!(effects.is_empty());
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.theme.id(), ThemeId::TailscaleLight);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.theme, original);
+
+        let effects = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
+        assert!(effects.is_empty());
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.theme.id(), ThemeId::TailscaleLight);
+        assert!(app.overlays.is_empty());
+        assert_eq!(app.current_route(), route);
+        assert_eq!(app.view_history.frames.len(), history_len);
+        assert_eq!(app.source_mode, source_mode);
         assert!(app.tasks.all().is_empty());
     }
 }

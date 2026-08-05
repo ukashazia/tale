@@ -62,6 +62,8 @@ fn doctor_support_bundle_is_allowlisted_and_deterministic() {
         }
         assert!(text.contains("redaction"));
         assert!(text.contains("schema_version"));
+        assert!(text.contains("ui.theme"));
+        assert!(text.contains("ui.color.resolved"));
     }
 }
 

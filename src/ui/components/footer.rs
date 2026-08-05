@@ -23,7 +23,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     let hints = action::footer_hints(context, area.width);
     frame.render_widget(
-        Paragraph::new(Line::from(hints.join("  "))).style(theme::normal(app)),
+        Paragraph::new(Line::from(hints.join("  ")))
+            .style(app.theme.style(theme::StyleRole::KeyHint)),
         area,
     );
 }

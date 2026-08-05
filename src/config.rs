@@ -8,6 +8,8 @@ use crate::cli::{Cli, Command, ConfigCommand};
 use crate::paths::{self, PathEnvironment, PathError, Paths};
 use thiserror::Error;
 
+use crate::ui::theme::{ColorCapability, ThemeId};
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ValueSource {
     Cli,
@@ -107,6 +109,15 @@ impl ColorMode {
             Self::TrueColor => "truecolor",
         }
     }
+
+    pub const fn capability(self) -> ColorCapability {
+        match self {
+            Self::Auto | Self::TrueColor => ColorCapability::TrueColor,
+            Self::Ansi256 => ColorCapability::Ansi256,
+            Self::Ansi16 => ColorCapability::Ansi16,
+            Self::None => ColorCapability::None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -160,6 +171,7 @@ impl TimeZoneMode {
 
 #[derive(Debug, Clone)]
 pub struct UiConfig {
+    pub theme: ThemeId,
     pub color: ColorMode,
     pub symbols: SymbolsMode,
     pub mouse: bool,
@@ -167,6 +179,7 @@ pub struct UiConfig {
     pub time_zone: TimeZoneMode,
     pub relative_times: bool,
     pub show_footer: bool,
+    pub theme_source: ValueSource,
     pub color_source: ValueSource,
     pub symbols_source: ValueSource,
     pub mouse_source: ValueSource,
@@ -258,6 +271,7 @@ struct FileAdmin {
 
 #[derive(Debug, Clone, Default)]
 struct FileUi {
+    theme: Option<ThemeId>,
     color: Option<ColorMode>,
     symbols: Option<SymbolsMode>,
     mouse: Option<bool>,
@@ -431,6 +445,7 @@ pub fn resolve(
             request_timeout_source: source_for(file.admin.request_timeout.is_some()),
         },
         ui: UiConfig {
+            theme: file.ui.theme.unwrap_or(ThemeId::TailscaleDark),
             color,
             symbols: file.ui.symbols.map_or(SymbolsMode::Auto, |value| value),
             mouse: file.ui.mouse.is_some_and(|value| value),
@@ -441,6 +456,7 @@ pub fn resolve(
             time_zone: file.ui.time_zone.map_or(TimeZoneMode::Local, |value| value),
             relative_times: file.ui.relative_times.is_none_or(|value| value),
             show_footer: file.ui.show_footer.is_none_or(|value| value),
+            theme_source: source_for(file.ui.theme.is_some()),
             color_source,
             symbols_source: source_for(file.ui.symbols.is_some()),
             mouse_source: source_for(file.ui.mouse.is_some()),
@@ -710,6 +726,7 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
         ui_table,
         "ui",
         &[
+            "theme",
             "color",
             "symbols",
             "mouse",
@@ -720,6 +737,7 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
         ],
     )?;
     let ui = FileUi {
+        theme: optional_enum(ui_table, "theme", "ui.theme", ThemeId::parse)?,
         color: optional_enum(ui_table, "color", "ui.color", parse_color)?,
         symbols: optional_enum(ui_table, "symbols", "ui.symbols", parse_symbols)?,
         mouse: optional_bool(ui_table, "mouse", "ui.mouse")?,
@@ -1081,6 +1099,11 @@ impl ResolvedConfig {
                 name: "admin.request_timeout",
                 value: format_duration(self.admin.request_timeout),
                 source: self.admin.request_timeout_source,
+            },
+            SettingDisplay {
+                name: "ui.theme",
+                value: self.ui.theme.as_str().to_owned(),
+                source: self.ui.theme_source,
             },
             SettingDisplay {
                 name: "ui.color",

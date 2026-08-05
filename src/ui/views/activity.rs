@@ -3,6 +3,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::app::App;
 use crate::ui::components::{inspector, task_view};
+use crate::ui::theme::StyleRole;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let regions = Layout::default()
@@ -24,11 +25,14 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             crate::ui::views::webhooks::summary(app)
         );
         frame.render_widget(
-            ratatui::widgets::Paragraph::new(detail).block(
-                ratatui::widgets::Block::default()
-                    .borders(ratatui::widgets::Borders::ALL)
-                    .title("task detail"),
-            ),
+            ratatui::widgets::Paragraph::new(detail)
+                .style(app.theme.style(StyleRole::Surface))
+                .block(
+                    ratatui::widgets::Block::default()
+                        .borders(ratatui::widgets::Borders::ALL)
+                        .border_style(app.theme.style(StyleRole::BorderNormal))
+                        .title("task detail"),
+                ),
             regions[1],
         );
     } else {
@@ -41,9 +45,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 crate::ui::views::log_streams::summary(app),
                 crate::ui::views::webhooks::summary(app)
             ))
+            .style(app.theme.style(StyleRole::Surface))
             .block(
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
+                    .border_style(app.theme.style(StyleRole::BorderNormal))
                     .title("task detail"),
             ),
             regions[1],

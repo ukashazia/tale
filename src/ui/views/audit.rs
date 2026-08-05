@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(lines.join("\n"))
-            .style(theme::normal(app))
+            .style(app.theme.style(theme::StyleRole::Surface))
             .block(
                 Block::default()
                     .borders(Borders::ALL)

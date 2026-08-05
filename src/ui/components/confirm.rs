@@ -52,8 +52,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
     let text = format!("risk: {risk}\n{text}");
     frame.render_widget(
         Paragraph::new(text)
-            .style(theme::normal(app))
-            .block(Block::default().borders(Borders::ALL).title("confirm")),
+            .style(app.theme.style(theme::StyleRole::TextPrimary))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderDanger))
+                    .title("confirm"),
+            ),
         area,
     );
 }

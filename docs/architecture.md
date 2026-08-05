@@ -46,6 +46,13 @@ Use a Model–Update–View event loop:
 Only the reducer mutates UI state. Background tasks never hold mutable references
 to widgets or selections.
 
+Rendering receives one immutable resolved semantic theme. Views request
+`StyleRole` values and cannot construct Ratatui colors; only `src/ui/theme/`
+owns numeric palettes and capability projection. Composition applies base,
+source, state, risk, selection, focus, then secret/redaction safety. A Settings
+preview swaps only the in-memory theme and requests a complete frame; it does
+not perform I/O, restart adapters, clone sources, or change view history.
+
 Required properties:
 
 - bounded channels and bounded output buffers;
@@ -97,7 +104,10 @@ src/
   ui/
     mod.rs
     layout.rs
-    theme.rs
+    theme/
+      mod.rs              immutable theme and typed composition
+      role.rs             exhaustive roles and non-color signals
+      projection.rs       private projection tokens
     text.rs
     components/
       table.rs

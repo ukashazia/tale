@@ -14,11 +14,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         InteractionMode::Normal => normal_lines(app, area.width),
         InteractionMode::CommandLine(state) => {
             let mut lines = completion_lines(
+                app,
                 &state.candidates,
                 state.selected_completion,
                 area.height.saturating_sub(1),
             );
             lines.push(prompt_line(
+                app,
                 ':',
                 &state.editor.input,
                 state.editor.cursor,
@@ -29,11 +31,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
         InteractionMode::FilterLine(state) => {
             let mut lines = completion_lines(
+                app,
                 &state.candidates,
                 state.selected_completion,
                 area.height.saturating_sub(1),
             );
             lines.push(prompt_line(
+                app,
                 '/',
                 &state.editor.input,
                 state.editor.cursor,
@@ -45,12 +49,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         InteractionMode::Transient(state) => transient_lines(app, state, area.width),
         InteractionMode::HelpSheet(state) => help_lines(app, &state.query, state.scroll, area),
     };
-    frame.render_widget(Paragraph::new(lines).style(theme::normal(app)), area);
+    frame.render_widget(
+        Paragraph::new(lines).style(app.theme.style(theme::StyleRole::SurfaceRaised)),
+        area,
+    );
 }
 
 pub fn render_minimum(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let prompt = match &app.interaction {
         InteractionMode::CommandLine(state) => Some(prompt_line(
+            app,
             ':',
             &state.editor.input,
             state.editor.cursor,
@@ -58,6 +66,7 @@ pub fn render_minimum(frame: &mut Frame<'_>, app: &App, area: Rect) {
             area.width,
         )),
         InteractionMode::FilterLine(state) => Some(prompt_line(
+            app,
             '/',
             &state.editor.input,
             state.editor.cursor,
@@ -77,7 +86,7 @@ pub fn render_minimum(frame: &mut Frame<'_>, app: &App, area: Rect) {
             height: 1,
         };
         frame.render_widget(
-            Paragraph::new(prompt).style(theme::normal(app)),
+            Paragraph::new(prompt).style(app.theme.style(theme::StyleRole::Prompt)),
             prompt_area,
         );
     }
@@ -92,6 +101,7 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 fn completion_lines(
+    app: &App,
     candidates: &[crate::app::CompletionCandidate],
     selected: Option<usize>,
     available: u16,
@@ -102,12 +112,20 @@ fn completion_lines(
         .take(limit)
         .enumerate()
         .map(|(index, candidate)| {
-            Line::from(format!(
-                "{} {:<16} {}{}",
-                if selected == Some(index) { ">" } else { " " },
-                candidate.label,
-                candidate.description,
-                if candidate.alias { " · alias" } else { "" }
+            let role = if selected == Some(index) {
+                theme::StyleRole::CompletionSelected
+            } else {
+                theme::StyleRole::CompletionMatch
+            };
+            Line::from(Span::styled(
+                format!(
+                    "{} {:<16} {}{}",
+                    if selected == Some(index) { ">" } else { " " },
+                    candidate.label,
+                    candidate.description,
+                    if candidate.alias { " · alias" } else { "" }
+                ),
+                app.theme.style(role),
             ))
         })
         .collect::<Vec<_>>();
@@ -121,6 +139,7 @@ fn completion_lines(
 }
 
 fn prompt_line(
+    app: &App,
     prefix: char,
     input: &str,
     cursor: usize,
@@ -142,15 +161,21 @@ fn prompt_line(
     let clipped_right = keep_after < after_chars.len();
     let after = after_chars[..keep_after].iter().collect::<String>();
     let mut spans = vec![
-        Span::raw(format!(
-            "{prefix} {}{before}",
-            if clipped_left { "‹" } else { "" }
-        )),
-        Span::raw("█"),
-        Span::raw(format!("{after}{}", if clipped_right { "›" } else { "" })),
+        Span::styled(
+            format!("{prefix} {}{before}", if clipped_left { "‹" } else { "" }),
+            app.theme.style(theme::StyleRole::Prompt),
+        ),
+        Span::styled("█", app.theme.style(theme::StyleRole::PromptCursor)),
+        Span::styled(
+            format!("{after}{}", if clipped_right { "›" } else { "" }),
+            app.theme.style(theme::StyleRole::Prompt),
+        ),
     ];
     if let Some(error) = error {
-        spans.push(Span::raw(format!("  {error}")));
+        spans.push(Span::styled(
+            format!("  {error}"),
+            app.theme.style(theme::StyleRole::StateDanger),
+        ));
     }
     Line::from(spans)
 }

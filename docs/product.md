@@ -73,6 +73,9 @@ not block admin work, and an expired API credential must not block local work.
 9. **Terminal-native, not terminal-themed web UI.** Keyboard flow, immediate
    filtering, external-editor handoff, copy operations, and bounded history are
    first-class.
+10. **Meaning before hue.** Semantic roles consistently identify hierarchy,
+    focus, source, freshness, risk, task state, secrets, and redaction; labels
+    and symbols preserve every distinction without color.
 
 ## Resource model
 

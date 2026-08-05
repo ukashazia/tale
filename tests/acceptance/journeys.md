@@ -31,6 +31,9 @@ blocked where the evidence is unavailable on the release host.
 | 22 | Navigate after back and prove the forward branch is discarded | `command_filter_and_browser_history_restore_and_branch` | Not required: process-local mock interaction |
 | 23 | Quit immediately when safe and confirm with active tasks | `quit_and_ctrl_c_follow_task_rules` and terminal restoration tests | Blocked: no additional named real terminal evidence |
 | 24 | Use mouse footer/completion/transient/cancellation parity | mouse and bottom-buffer UI tests; mouse remains opt-in | Blocked: no named real terminal mouse evidence |
+| 25 | Render every built-in theme and capability at every required viewport | 48 complete sanitized buffers; cell colors/modifiers/symbols and Reset-only no-color assertions | Blocked: no named terminal emulator screenshots |
+| 26 | Preview, cancel, then session-apply Appearance | reducer isolation and Settings preview buffer tests | Not required: memory-only process state |
+| 27 | Preserve semantic state, source, risk, diff, secret, and redaction without color | exhaustive role/signal/projection and source-policy tests | Blocked: manual accessibility review on a named terminal |
 
 Automated rows are run with fictional data and no operator credentials. The
 remaining real-environment evidence is a release blocker and is not converted

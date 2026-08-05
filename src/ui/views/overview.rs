@@ -56,7 +56,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     append_health(&mut lines, app);
     frame.render_widget(
         Paragraph::new(lines)
-            .style(theme::normal(app))
+            .style(app.theme.style(theme::StyleRole::Surface))
             .block(Block::default().borders(Borders::ALL).title("overview")),
         area,
     );
@@ -143,7 +143,7 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
     ));
     frame.render_widget(
         Paragraph::new(lines)
-            .style(theme::normal(app))
+            .style(app.theme.style(theme::StyleRole::Surface))
             .block(Block::default().borders(Borders::ALL).title("overview")),
         area,
     );
@@ -249,7 +249,7 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
     append_health(&mut lines, app);
     frame.render_widget(
         Paragraph::new(lines)
-            .style(theme::normal(app))
+            .style(app.theme.style(theme::StyleRole::Surface))
             .block(Block::default().borders(Borders::ALL).title("overview")),
         area,
     );

@@ -99,6 +99,7 @@ refresh_interval = "30s"
 request_timeout = "15s"
 
 [ui]
+theme = "tailscale-dark"
 color = "auto"
 symbols = "auto"
 mouse = false
@@ -125,6 +126,16 @@ credential = "audit"
 All fields are optional except `tailnet` and `credential` inside a declared
 profile. Unknown fields are errors so misspellings cannot silently weaken a
 setting.
+
+`ui.theme` accepts exactly `tailscale-dark` (default), `tailscale-light`, or
+`terminal`. There are no aliases or fallback names. `terminal` preserves the
+terminal's default foreground/background for neutral surfaces while retaining
+semantic accents permitted by `ui.color`. Settings can preview and apply a
+theme for the current process; Tale does not edit this key automatically.
+
+`ui.color` accepts `auto`, `truecolor`, `ansi256`, `ansi16`, or `none`.
+`NO_COLOR` forces `none` with environment provenance regardless of the theme.
+Theme selection never upgrades the resolved capability.
 
 ### Root fields
 
@@ -158,6 +169,7 @@ Tests inject their transport without using user configuration.
 
 | Field | Values | Default |
 | --- | --- | --- |
+| `theme` | `tailscale-dark`, `tailscale-light`, `terminal` | `tailscale-dark` |
 | `color` | `auto`, `none`, `ansi16`, `ansi256`, `truecolor` | `auto` |
 | `symbols` | `auto`, `ascii`, `unicode` | `auto` |
 | `mouse` | bool | `false` |

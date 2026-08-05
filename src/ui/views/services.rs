@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, Focus};
@@ -45,13 +45,15 @@ fn render_collection(frame: &mut Frame<'_>, app: &App, area: Rect) {
         section_status(app),
     )));
     if app.resolved_config.read_only {
-        lines.push(Line::from("mode: read-only · local mutations disabled"));
+        lines.push(Line::from(Span::styled(
+            "mode: read-only · local mutations disabled",
+            app.theme.style(theme::StyleRole::StateDisabled),
+        )));
     }
     if let Some(failure) = section_failure(app) {
-        lines.push(Line::from(format!(
-            "error: {} · {}",
-            failure.kind.label(),
-            failure.detail
+        lines.push(Line::from(Span::styled(
+            format!("error: {} · {}", failure.kind.label(), failure.detail),
+            app.theme.style(theme::StyleRole::StateDanger),
         )));
     }
     match app.views.services.section {
@@ -73,13 +75,16 @@ fn render_collection(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ServiceSection::Funnel => {
             if let Some(status) = app.services_snapshot.funnel.value.as_ref() {
                 lines.extend(status.mappings.iter().enumerate().map(|(index, mapping)| {
-                    Line::from(format!(
-                        "{} PUBLIC {}:{}{} → {}",
-                        marker(index, app.views.services.selected),
-                        mapping.listener.label(),
-                        mapping.listener.port(),
-                        mapping.mount,
-                        mapping.backend.argument()
+                    Line::from(Span::styled(
+                        format!(
+                            "{} ◆ PUBLIC {}:{}{} → {}",
+                            marker(index, app.views.services.selected),
+                            mapping.listener.label(),
+                            mapping.listener.port(),
+                            mapping.mount,
+                            mapping.backend.argument()
+                        ),
+                        app.theme.style(theme::StyleRole::StatePublic),
                     ))
                 }));
             }
@@ -113,11 +118,13 @@ fn render_collection(frame: &mut Frame<'_>, app: &App, area: Rect) {
         "j/k select · [/] section · a actions · Enter inspector",
     ));
     frame.render_widget(
-        Paragraph::new(lines).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("local services"),
-        ),
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("local services"),
+            ),
         area,
     );
 }
@@ -144,10 +151,9 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
     ];
     if let Some(failure) = section_failure(app) {
-        lines.push(Line::from(format!(
-            "error: {} · {}",
-            failure.kind.label(),
-            failure.detail
+        lines.push(Line::from(Span::styled(
+            format!("error: {} · {}", failure.kind.label(), failure.detail),
+            app.theme.style(theme::StyleRole::StateDanger),
         )));
     }
     match section {
@@ -175,7 +181,10 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
         ServiceSection::Funnel => {
             if let Some(mapping) = app.selected_service_mapping() {
-                lines.push(Line::from("PUBLIC       yes"));
+                lines.push(Line::from(Span::styled(
+                    "◆ PUBLIC     yes · public exposure",
+                    app.theme.style(theme::StyleRole::StatePublic),
+                )));
                 lines.push(Line::from(format!(
                     "listener    {}:{}",
                     mapping.listener.label(),
@@ -250,11 +259,13 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     lines.push(Line::from("a actions · Esc collection"));
     frame.render_widget(
-        Paragraph::new(lines).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("service inspector"),
-        ),
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("service inspector"),
+            ),
         area,
     );
 }

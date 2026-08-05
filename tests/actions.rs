@@ -78,6 +78,21 @@ fn every_required_action_is_registered() {
 }
 
 #[test]
+fn every_action_risk_maps_to_an_explicit_semantic_role() {
+    for spec in action::all_actions() {
+        let role = spec.risk.style_role();
+        assert!(matches!(
+            role,
+            tale::ui::theme::StyleRole::RiskObserve
+                | tale::ui::theme::StyleRole::RiskReversible
+                | tale::ui::theme::StyleRole::RiskDisruptive
+                | tale::ui::theme::StyleRole::RiskDestructive
+        ));
+        assert!(!role.signal().label.is_empty());
+    }
+}
+
+#[test]
 fn every_phase_four_action_is_registered_with_required_risk_metadata() {
     let registered: Vec<_> = action::phase_four_actions()
         .into_iter()

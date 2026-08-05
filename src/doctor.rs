@@ -278,7 +278,16 @@ fn safe_configuration_values(config: &ResolvedConfig) -> BTreeMap<String, String
         "admin.request_timeout".to_owned(),
         format_duration(config.admin.request_timeout),
     );
+    values.insert("ui.theme".to_owned(), config.ui.theme.as_str().to_owned());
     values.insert("ui.color".to_owned(), config.ui.color.as_str().to_owned());
+    values.insert(
+        "ui.color.resolved".to_owned(),
+        format!(
+            "{} ({})",
+            config.ui.color.capability().as_str(),
+            config.ui.color_source.label()
+        ),
+    );
     values.insert(
         "ui.symbols".to_owned(),
         config.ui.symbols.as_str().to_owned(),

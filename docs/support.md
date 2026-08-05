@@ -46,6 +46,12 @@ clipboard, paste, or Unicode rendering. Therefore no terminal is Supported.
 The dated matrix is recorded in
 `docs/terminal-evidence-2026-08-05.md`.
 
+Specification 13's sanitized 48-frame semantic-theme buffer matrix is recorded
+in `docs/theme-evidence-2026-08-05.md`. It proves deterministic Ratatui cell
+output for the three built-ins and four projections, including Reset-only
+no-color. It is not named-emulator manual evidence and does not promote any
+platform or terminal to Supported.
+
 The `keyring` dependency is covered by isolated fake-store contract tests. No
 real macOS, Linux, or Windows keyring backend is Supported. External-editor
 values are parsed as arguments with `shlex`; Tale never invokes a shell.

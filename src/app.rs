@@ -91,6 +91,7 @@ use crate::local::policy::SystemPolicyEntry;
 use crate::local::{certificates, services, transfers};
 use crate::mock::{MOCK_NOW, MockLoadScenario, MockTaskBehavior};
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
+use crate::ui::theme::{Theme, ThemeId};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SourceMode {
@@ -105,6 +106,14 @@ impl SourceMode {
             Self::Mock => "mock",
             Self::Local => "local",
             Self::Unavailable => "local unavailable",
+        }
+    }
+
+    pub const fn style_role(self) -> crate::ui::theme::StyleRole {
+        match self {
+            Self::Mock => crate::ui::theme::StyleRole::StateInfo,
+            Self::Local => crate::ui::theme::StyleRole::SourceLocal,
+            Self::Unavailable => crate::ui::theme::StyleRole::StateDisabled,
         }
     }
 }
@@ -454,6 +463,12 @@ pub struct ServiceSectionPickerState {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct AppearanceState {
+    pub original: Theme,
+    pub selected: ThemeId,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum HandoffInputKind {
     Ssh,
     Nc,
@@ -515,6 +530,7 @@ pub enum Overlay {
     OperatorForm(OperatorFormState),
     ServiceForm(ServiceFormState),
     ServiceSectionPicker(ServiceSectionPickerState),
+    Appearance(AppearanceState),
     AccountPicker(AccountPickerState),
     HandoffInput(HandoffInputState),
     PolicyEditor,
@@ -778,6 +794,8 @@ pub struct App {
     pub tasks: TaskStore,
     pub notifications: Vec<Notification>,
     pub resolved_config: ResolvedConfig,
+    /// Immutable visual language used by the next complete frame.
+    pub theme: Theme,
     pub shutdown_state: ShutdownState,
     pub source_mode: SourceMode,
     pub terminal_width: u16,
@@ -812,6 +830,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: ResolvedConfig) -> Self {
+        let theme = Theme::new(config.ui.theme, config.ui.color.capability());
         let source_mode = if config.mock {
             SourceMode::Mock
         } else if config.no_local || !config.local.enabled {
@@ -929,6 +948,7 @@ impl App {
             tasks: TaskStore::new(),
             notifications: Vec::new(),
             resolved_config: config,
+            theme,
             shutdown_state: ShutdownState::Running,
             source_mode,
             terminal_width: 80,
@@ -1897,6 +1917,7 @@ impl App {
                 state.input.push_str(text);
                 state.error = None;
             }
+            Overlay::Appearance(_) => {}
             _ => {}
         }
         Vec::new()
@@ -2566,6 +2587,30 @@ impl App {
                 self.overlays.push(Overlay::ServiceSectionPicker(state));
                 Vec::new()
             }
+            Overlay::Appearance(mut state) => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        let current = ThemeId::ALL
+                            .iter()
+                            .position(|id| *id == state.selected)
+                            .map_or(0, |index| index);
+                        state.selected =
+                            ThemeId::ALL[(current + 1).min(ThemeId::ALL.len().saturating_sub(1))];
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        let current = ThemeId::ALL
+                            .iter()
+                            .position(|id| *id == state.selected)
+                            .map_or(0, |index| index);
+                        state.selected = ThemeId::ALL[current.saturating_sub(1)];
+                    }
+                    KeyCode::Enter => return Vec::new(),
+                    _ => {}
+                }
+                self.theme = Theme::new(state.selected, self.theme.capability());
+                self.overlays.push(Overlay::Appearance(state));
+                Vec::new()
+            }
             Overlay::HandoffInput(state) => {
                 self.overlays.push(Overlay::HandoffInput(state));
                 Vec::new()
@@ -2652,6 +2697,10 @@ impl App {
 
     fn pop_overlay(&mut self) -> Vec<Effect> {
         if let Some(overlay) = self.overlays.pop() {
+            if let Overlay::Appearance(state) = overlay {
+                self.theme = state.original;
+                return Vec::new();
+            }
             if matches!(overlay, Overlay::SecretResult) {
                 return self.close_secret_result();
             }
@@ -3071,6 +3120,13 @@ impl App {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ));
+                Vec::new()
+            }
+            ActionId::SettingsAppearance => {
+                self.overlays.push(Overlay::Appearance(AppearanceState {
+                    original: self.theme,
+                    selected: self.theme.id(),
+                }));
                 Vec::new()
             }
             ActionId::CollectionMoveUp => {
@@ -3521,6 +3577,7 @@ impl App {
             | ActionId::AdminLogStreamDelete
             | ActionId::AdminNetworkLogsSettings => self.phase_eight_mutation_available(action_id),
             ActionId::SettingsInspectCapabilities => self.admin.profile.is_some(),
+            ActionId::SettingsAppearance => true,
             ActionId::AdminPolicyEdit
             | ActionId::AdminPolicyEditorReopen
             | ActionId::AdminPolicyCandidateDiscard
@@ -9808,6 +9865,7 @@ impl App {
                 ActionId::AdminNetworkLogsSettings,
             ]),
             Route::Settings => actions.extend([
+                ActionId::SettingsAppearance,
                 ActionId::AdminLogStreamReplace,
                 ActionId::AdminLogStreamDelete,
                 ActionId::AdminNetworkLogsSettings,
@@ -12436,6 +12494,7 @@ impl App {
             Overlay::OperatorForm(_) => "local operator form",
             Overlay::ServiceForm(_) => "local service form",
             Overlay::ServiceSectionPicker(_) => "service section",
+            Overlay::Appearance(_) => "appearance",
             Overlay::AccountPicker(_) => "local accounts",
             Overlay::HandoffInput(_) => "terminal handoff",
             Overlay::PolicyEditor => "policy workflow",
@@ -13899,6 +13958,7 @@ fn is_admin_action(action_id: ActionId) -> bool {
             | ActionId::ActivityOpenActor
             | ActionId::ActivityOpenTarget
             | ActionId::SettingsInspectCapabilities
+            | ActionId::SettingsAppearance
             | ActionId::AdminDeviceRename
             | ActionId::AdminDeviceTagsReplace
             | ActionId::AdminDeviceApprove

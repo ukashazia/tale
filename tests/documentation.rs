@@ -107,3 +107,20 @@ fn local_markdown_links_resolve_without_network_access() {
         }
     }
 }
+
+#[test]
+fn semantic_theme_decision_ledger_and_evidence_are_present() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in [
+        "docs/decisions/0005-semantic-theme-system.md",
+        "docs/design/theme-token-ledger.md",
+        "docs/theme-evidence-2026-08-05.md",
+    ] {
+        let contents = fs::read_to_string(root.join(relative));
+        assert!(contents.is_ok(), "missing {relative}");
+        if let Ok(contents) = contents {
+            assert!(contents.contains("tailscale-dark"));
+            assert!(contents.contains("no-color") || contents.contains("no color"));
+        }
+    }
+}

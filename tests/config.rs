@@ -5,6 +5,7 @@ use clap::Parser;
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues, ValueSource};
 use tale::paths::{self, PathEnvironment, Platform};
+use tale::ui::theme::ThemeId;
 
 fn path_environment(platform: Platform, root: &Path) -> PathEnvironment {
     PathEnvironment {
@@ -99,6 +100,47 @@ fn precedence_is_cli_then_environment_then_file_then_default() {
         assert_eq!(resolved.ui.color_source, ValueSource::Environment);
         assert_eq!(resolved.local.reconcile_interval.as_secs(), 5);
     }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn theme_is_strict_and_defaults_to_tailscale_dark() {
+    let root = std::env::temp_dir().join(format!("tale-theme-config-{}", std::process::id()));
+    let _ = fs::create_dir_all(&root);
+    let missing = config::resolve(
+        &cli(Some(root.join("missing.toml"))),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(missing.is_ok());
+    if let Ok(resolved) = missing {
+        assert_eq!(resolved.ui.theme, ThemeId::TailscaleDark);
+        assert_eq!(resolved.ui.theme_source, ValueSource::Default);
+    }
+
+    let file = root.join("config.toml");
+    assert!(fs::write(&file, "[ui]\ntheme = \"tailscale-light\"\n").is_ok());
+    let light = config::resolve(
+        &cli(Some(file.clone())),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(light.is_ok());
+    if let Ok(resolved) = light {
+        assert_eq!(resolved.ui.theme, ThemeId::TailscaleLight);
+        assert_eq!(resolved.ui.theme_source, ValueSource::File);
+    }
+
+    assert!(fs::write(&file, "[ui]\ntheme = \"dark\"\n").is_ok());
+    let invalid = config::resolve(
+        &cli(Some(file)),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(matches!(
+        invalid,
+        Err(config::ConfigError::InvalidField { field, .. }) if field == "ui.theme"
+    ));
     let _ = fs::remove_dir_all(root);
 }
 

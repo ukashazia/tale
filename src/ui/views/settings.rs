@@ -7,6 +7,26 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut values = app.resolved_config.settings();
+    values.push(crate::config::SettingDisplay {
+        name: "ui.theme.session",
+        value: app.theme.id().as_str().to_owned(),
+        source: crate::config::ValueSource::Default,
+    });
+    values.push(crate::config::SettingDisplay {
+        name: "ui.color.resolved",
+        value: format!(
+            "{} ({})",
+            app.theme.capability().as_str(),
+            if app.resolved_config.ui.color == crate::config::ColorMode::Auto {
+                "auto policy"
+            } else if app.resolved_config.ui.color == crate::config::ColorMode::None {
+                "NO_COLOR or configured"
+            } else {
+                "configured"
+            }
+        ),
+        source: app.resolved_config.ui.color_source,
+    });
     if let Some(profile) = app.admin.profile.as_deref() {
         values.push(crate::config::SettingDisplay {
             name: "profile.selected",
@@ -159,11 +179,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ))
     });
     frame.render_widget(
-        List::new(items).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("settings · read-only"),
-        ),
+        List::new(items)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("settings · read-only"),
+            ),
         area,
     );
 }

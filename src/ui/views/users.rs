@@ -53,11 +53,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )));
     }
     frame.render_widget(
-        List::new(items).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("users · admin"),
-        ),
+        List::new(items)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("users · admin"),
+            ),
         area,
     );
 }

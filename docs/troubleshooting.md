@@ -4,6 +4,17 @@ Tale reports the smallest affected capability and preserves the last-good
 snapshot where one exists. Recovery never requires `sudo`, a downloaded script,
 or publishing a support bundle.
 
+## Theme or color output is wrong
+
+Run `tale config check` and inspect Settings for configured theme provenance and
+the resolved capability reason. Valid themes are exactly `tailscale-dark`,
+`tailscale-light`, and `terminal`; valid color policies are `auto`,
+`truecolor`, `ansi256`, `ansi16`, and `none`. `NO_COLOR` intentionally forces
+Reset-only cells. Use `terminal` when the emulator's own background should
+remain unpainted, or force `ansi16`/`none` when a multiplexer advertises more
+color support than it reliably renders. Tale does not probe background
+appearance automatically.
+
 ## Executable and daemon
 
 Use `tale config path` and verify the configured Tailscale socket or named pipe.

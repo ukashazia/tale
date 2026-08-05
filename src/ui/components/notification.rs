@@ -19,9 +19,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     let style = if app.devices_resource.health == crate::domain::SourceHealth::Error {
-        theme::error(app)
+        app.theme.style(theme::StyleRole::StateDanger)
     } else {
-        theme::attention(app)
+        app.theme.style(theme::StyleRole::StateWarning)
     };
     frame.render_widget(Paragraph::new(text).style(style), area);
 }

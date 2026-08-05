@@ -15,12 +15,18 @@ from an already privileged process, allocator copies, or OS paging.
 | Webhook signing secret | Secret result produced by the rotate action | One-time display/copy | Not included in webhook inventory, audit text, task output, or doctor | Dropped when the result closes or its owner is dropped |
 | Log-stream destination credentials | Secret-bearing log-stream draft/action boundary | Authenticated destination request | Destination inventory and errors contain classification, not secret material | Dropped after request construction; failure is scoped to the stream |
 | Clipboard copy | Clipboard adapter receives only the explicitly selected field or secret bytes | Direct `y` field key or explicit one-time-secret copy | UI acknowledgement stores the field label only; copied bytes never enter notifications, task history, logs, or diagnostics | Copy failure retains the active transient/secret result; clipboard lifetime is owned by the OS |
+| Private certificate key path/content boundary | Certificate request accepts a path; content is bounded and temporary | Certificate issuance request | Path is not a secret value in doctor; key bytes never enter ordinary logs/exports | Temporary file cleanup and bounded-read errors are explicit |
+| Policy and audit content | Domain DTOs and bounded file buffers | Preview, validation, audit correlation, filtered export | Sensitive content is redacted before reports; not included in doctor | Bounded collections are released with their task/state owner |
 
 Command history contains only successful route/filter text, is bounded to 100,
 and is never persisted. View frames cannot represent form input, task payloads,
 adapter state, credentials, clipboard bytes, or one-time secret results.
-| Private certificate key path/content boundary | Certificate request accepts a path; content is bounded and temporary | Certificate issuance request | Path is not a secret value in doctor; key bytes never enter ordinary logs/exports | Temporary file cleanup and bounded-read errors are explicit |
-| Policy and audit content | Domain DTOs and bounded file buffers | Preview, validation, audit correlation, filtered export | Sensitive content is redacted before reports; not included in doctor | Bounded collections are released with their task/state owner |
+
+Theme data is a closed set of static built-ins. It cannot contain user-derived
+escape sequences, paths, credentials, or secret values. Redaction styling uses
+a fixed placeholder and never reveals secret length through per-character
+colors. Theme preview is memory-only and performs no adapter, filesystem,
+clipboard, keyring, network, or process operation.
 
 Every diagnostic and support path is allowlisted. `doctor` includes only safe
 metadata, pseudonymized profile/credential names, classifications, and the

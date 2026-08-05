@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem};
 
 use crate::app::App;
@@ -14,12 +15,21 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             crate::task::TaskState::Cancelling => "~",
             crate::task::TaskState::Queued | crate::task::TaskState::Running => "*",
         };
-        ListItem::new(format!(
-            "{marker} {} {} [{}]",
-            task.id,
-            task.target_label,
-            task.state.label()
-        ))
+        let role = match task.state {
+            crate::task::TaskState::Succeeded => theme::StyleRole::TaskSucceeded,
+            crate::task::TaskState::Failed => theme::StyleRole::TaskFailed,
+            crate::task::TaskState::Cancelled => theme::StyleRole::TaskCancelled,
+            crate::task::TaskState::Cancelling => theme::StyleRole::TaskRunning,
+            crate::task::TaskState::Queued => theme::StyleRole::TaskQueued,
+            crate::task::TaskState::Running => theme::StyleRole::TaskRunning,
+        };
+        ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{marker} {}", task.state.label()),
+                app.theme.style(role),
+            ),
+            Span::raw(format!("  {} {}", task.id, task.target_label)),
+        ]))
     });
     let title = if app.task_filter.is_empty() {
         "task history".to_owned()
@@ -28,8 +38,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     frame.render_widget(
         List::new(items)
-            .style(theme::normal(app))
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                    .title(title),
+            ),
         area,
     );
 }

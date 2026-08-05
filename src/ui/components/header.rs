@@ -48,18 +48,35 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         local_source
     };
     let line = Line::from(vec![
-        Span::styled("Tale", theme::title()),
-        Span::raw(format!(
-            " · {profile}{} · {source}",
-            if app.admin.profile.is_some() && app.admin.profile_read_only {
-                " · read-only"
+        Span::styled("Tale", app.theme.style(theme::StyleRole::TextPrimary)),
+        Span::styled(
+            format!(
+                " · {profile}{} · {source}",
+                if app.admin.profile.is_some() && app.admin.profile_read_only {
+                    " · read-only"
+                } else {
+                    ""
+                }
+            ),
+            app.theme.style(if app.admin.profile.is_some() {
+                theme::StyleRole::SourceCombined
             } else {
-                ""
-            }
-        )),
-        Span::raw(format!(" · tasks: {}", app.tasks.all().len())),
+                app.source_mode.style_role()
+            }),
+        ),
+        Span::styled(
+            format!(" · tasks: {}", app.tasks.all().len()),
+            app.theme.style(if app.tasks.has_active() {
+                theme::StyleRole::TaskRunning
+            } else {
+                theme::StyleRole::TextMuted
+            }),
+        ),
     ]);
-    frame.render_widget(Paragraph::new(line).style(theme::normal(app)), area);
+    frame.render_widget(
+        Paragraph::new(line).style(app.theme.style(theme::StyleRole::Surface)),
+        area,
+    );
 }
 
 fn admin_freshness(app: &App) -> &'static str {
@@ -161,24 +178,36 @@ pub fn render_route_line(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .observed_at
                 .map_or("loading", |_| "local")
         );
-        frame.render_widget(Paragraph::new(line).style(theme::title()), area);
+        frame.render_widget(
+            Paragraph::new(line).style(app.theme.style(theme::StyleRole::TextPrimary)),
+            area,
+        );
         return;
     }
     if app.current_route() == crate::app::Route::Users {
         let count = app.admin.users.snapshot.as_ref().map_or(0, Vec::len);
         let line = format!("users  {count}  source:{}", app.admin.users.state.label());
-        frame.render_widget(Paragraph::new(line).style(theme::title()), area);
+        frame.render_widget(
+            Paragraph::new(line).style(app.theme.style(theme::StyleRole::TextPrimary)),
+            area,
+        );
         return;
     }
     if app.current_route() == crate::app::Route::Routes {
         let count = app.admin.route_observations().len();
         let line = format!("routes  {count}  source:{}", app.admin.routes.state.label());
-        frame.render_widget(Paragraph::new(line).style(theme::title()), area);
+        frame.render_widget(
+            Paragraph::new(line).style(app.theme.style(theme::StyleRole::TextPrimary)),
+            area,
+        );
         return;
     }
     if app.current_route() == crate::app::Route::Access {
         let line = format!("access  source:{}", app.admin.policy.state.label());
-        frame.render_widget(Paragraph::new(line).style(theme::title()), area);
+        frame.render_widget(
+            Paragraph::new(line).style(app.theme.style(theme::StyleRole::TextPrimary)),
+            area,
+        );
         return;
     }
     if app.current_route() == crate::app::Route::Credentials {
@@ -192,7 +221,10 @@ pub fn render_route_line(frame: &mut Frame<'_>, app: &App, area: Rect) {
             "credentials  {count}  source:{}",
             app.admin.credentials.state.label()
         );
-        frame.render_widget(Paragraph::new(line).style(theme::title()), area);
+        frame.render_widget(
+            Paragraph::new(line).style(app.theme.style(theme::StyleRole::TextPrimary)),
+            area,
+        );
         return;
     }
     if app.current_route() == crate::app::Route::Dns {
@@ -201,7 +233,10 @@ pub fn render_route_line(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.admin.nameservers.state.label(),
             app.local_resource.status.label()
         );
-        frame.render_widget(Paragraph::new(line).style(theme::title()), area);
+        frame.render_widget(
+            Paragraph::new(line).style(app.theme.style(theme::StyleRole::TextPrimary)),
+            area,
+        );
         return;
     }
     let filter = if app.views.devices.filter_draft.is_empty() {
@@ -215,5 +250,8 @@ pub fn render_route_line(frame: &mut Frame<'_>, app: &App, area: Rect) {
         "{route}{filter}  {count}/{total}  source:{}",
         app.devices_resource.health.label()
     );
-    frame.render_widget(Paragraph::new(line).style(theme::title()), area);
+    frame.render_widget(
+        Paragraph::new(line).style(app.theme.style(theme::StyleRole::TextPrimary)),
+        area,
+    );
 }

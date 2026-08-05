@@ -18,7 +18,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(device) = app.selected_device() else {
         frame.render_widget(
             Paragraph::new("No device selected")
-                .block(Block::default().borders(Borders::ALL).title("inspector")),
+                .style(app.theme.style(theme::StyleRole::Surface))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                        .title("inspector"),
+                ),
             area,
         );
         return;
@@ -44,7 +50,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 &device.display_name,
                 usize::from(area.width.saturating_sub(4)),
             ),
-            theme::title(),
+            app.theme.style(theme::StyleRole::TextPrimary),
         )),
         Line::from(format!("id       {}", device.id)),
         Line::from(format!("hostname {}", device.hostname)),
@@ -79,14 +85,19 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from("source   mock · deterministic fictional data"),
     ];
     let style = if app.focus == crate::app::Focus::Inspector {
-        theme::focused()
+        app.theme.style(theme::StyleRole::BorderFocused)
     } else {
-        theme::normal(app)
+        app.theme.style(theme::StyleRole::BorderNormal)
     };
     frame.render_widget(
         Paragraph::new(lines)
-            .style(style)
-            .block(Block::default().borders(Borders::ALL).title("inspector")),
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style)
+                    .title("inspector"),
+            ),
         area,
     );
 }
@@ -95,7 +106,13 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(device) = app.selected_device() else {
         frame.render_widget(
             Paragraph::new("No device selected")
-                .block(Block::default().borders(Borders::ALL).title("inspector")),
+                .style(app.theme.style(theme::StyleRole::Surface))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                        .title("inspector"),
+                ),
             area,
         );
         return;
@@ -112,7 +129,7 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 &device.display_name,
                 usize::from(area.width.saturating_sub(4)),
             ),
-            theme::title(),
+            app.theme.style(theme::StyleRole::TextPrimary),
         )),
         Line::from(format!("id          {}", device.id)),
         Line::from(format!(
@@ -158,11 +175,14 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from("identity composition uses the exact stable node ID only"),
     ];
     frame.render_widget(
-        Paragraph::new(lines).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("inspector · combined"),
-        ),
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                    .title("inspector · combined"),
+            ),
         area,
     );
 }
@@ -171,7 +191,13 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(device) = app.selected_local_device() else {
         frame.render_widget(
             Paragraph::new("No device selected")
-                .block(Block::default().borders(Borders::ALL).title("inspector")),
+                .style(app.theme.style(theme::StyleRole::Surface))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                        .title("inspector"),
+                ),
             area,
         );
         return;
@@ -197,7 +223,7 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 &device.display_name,
                 usize::from(area.width.saturating_sub(4)),
             ),
-            theme::title(),
+            app.theme.style(theme::StyleRole::TextPrimary),
         )),
         Line::from(format!("id          {}", device.id)),
         Line::from(format!("hostname    {}", device.hostname)),
@@ -273,14 +299,19 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
     ];
     let style = if app.focus == crate::app::Focus::Inspector {
-        theme::focused()
+        app.theme.style(theme::StyleRole::BorderFocused)
     } else {
-        theme::normal(app)
+        app.theme.style(theme::StyleRole::BorderNormal)
     };
     frame.render_widget(
         Paragraph::new(lines)
-            .style(style)
-            .block(Block::default().borders(Borders::ALL).title("inspector")),
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style)
+                    .title("inspector"),
+            ),
         area,
     );
 }

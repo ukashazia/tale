@@ -85,6 +85,7 @@ pub enum ActionId {
     ActivityOpenActor,
     ActivityOpenTarget,
     SettingsInspectCapabilities,
+    SettingsAppearance,
     AdminDeviceRename,
     AdminDeviceTagsReplace,
     AdminDeviceApprove,
@@ -235,6 +236,7 @@ impl ActionId {
             Self::ActivityOpenActor => "activity.open_actor",
             Self::ActivityOpenTarget => "activity.open_target",
             Self::SettingsInspectCapabilities => "settings.inspect_capabilities",
+            Self::SettingsAppearance => "settings.appearance",
             Self::AdminDeviceRename => "admin.device.rename",
             Self::AdminDeviceTagsReplace => "admin.device.tags.replace",
             Self::AdminDeviceApprove => "admin.device.approve",
@@ -385,6 +387,7 @@ impl ActionId {
             Self::ActivityOpenActor,
             Self::ActivityOpenTarget,
             Self::SettingsInspectCapabilities,
+            Self::SettingsAppearance,
             Self::AdminDeviceRename,
             Self::AdminDeviceTagsReplace,
             Self::AdminDeviceApprove,
@@ -499,6 +502,15 @@ impl Risk {
             Self::Reversible => "reversible",
             Self::Disruptive => "disruptive",
             Self::DestructiveOrSecret => "destructive or secret",
+        }
+    }
+
+    pub const fn style_role(self) -> crate::ui::theme::StyleRole {
+        match self {
+            Self::Observe => crate::ui::theme::StyleRole::RiskObserve,
+            Self::Reversible => crate::ui::theme::StyleRole::RiskReversible,
+            Self::Disruptive => crate::ui::theme::StyleRole::RiskDisruptive,
+            Self::DestructiveOrSecret => crate::ui::theme::StyleRole::RiskDestructive,
         }
     }
 }
@@ -1913,6 +1925,16 @@ pub fn phase_five_actions() -> Vec<ActionSpec> {
             id: ActionId::SettingsInspectCapabilities,
             label: "Inspect capabilities",
             description: "Inspect observed endpoint capabilities",
+            contexts: ROOT,
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::SettingsAppearance,
+            label: "Appearance",
+            description: "Preview and apply a built-in theme for this session",
             contexts: ROOT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,

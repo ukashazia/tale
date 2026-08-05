@@ -20,6 +20,7 @@ use tale::event::{Event, InputEvent};
 use tale::mock;
 use tale::paths::PathEnvironment;
 use tale::ui;
+use tale::ui::theme::{ColorCapability, Theme, ThemeId};
 
 const NOW: Timestamp = 1_775_000_000;
 
@@ -203,6 +204,29 @@ fn bench_render_compact(c: &mut Criterion) {
     });
 }
 
+fn bench_theme_switch(c: &mut Criterion) {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    let backend = TestBackend::new(160, 45);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(_) => return,
+    };
+    let mut index = 0_usize;
+    c.bench_function("theme_switch_to_160x45_frame", |bench| {
+        bench.iter(|| {
+            app.theme = Theme::new(
+                ThemeId::ALL[index % ThemeId::ALL.len()],
+                ColorCapability::TrueColor,
+            );
+            index = index.saturating_add(1);
+            let result = terminal.draw(|frame| ui::render(frame, &app));
+            black_box(result.is_ok());
+        });
+    });
+}
+
 fn bench_input_dispatch(c: &mut Criterion) {
     let Some(mut app) = mock_app() else {
         return;
@@ -243,6 +267,7 @@ criterion_group!(
     bench_health,
     bench_render,
     bench_render_compact,
+    bench_theme_switch,
     bench_input_dispatch,
     bench_mock_startup
 );

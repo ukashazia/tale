@@ -64,11 +64,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     }
     frame.render_widget(
-        Paragraph::new(lines).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("advertisements"),
-        ),
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("advertisements"),
+            ),
         area,
     );
 }
@@ -123,11 +125,13 @@ pub fn render_admin(frame: &mut Frame<'_>, app: &App, area: Rect) {
         "Advertised and enabled routes are separate server observations; no local approval is inferred.",
     ));
     frame.render_widget(
-        Paragraph::new(lines).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("routes · admin"),
-        ),
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("routes · admin"),
+            ),
         area,
     );
 }

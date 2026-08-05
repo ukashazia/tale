@@ -34,11 +34,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let source = source.chars().take(8_000).collect::<String>();
         lines.extend(source.lines().map(|line| {
             let style = if line.trim_start().starts_with("//") {
-                theme::attention(app)
+                app.theme.style(theme::StyleRole::StateWarning)
             } else if line.contains('"') {
-                theme::focused()
+                app.theme.style(theme::StyleRole::Focus)
             } else {
-                theme::normal(app)
+                app.theme.style(theme::StyleRole::TextPrimary)
             };
             Line::from(Span::styled(line.to_owned(), style))
         }));
@@ -57,11 +57,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .map(|line| Line::from(line.to_owned())),
     );
     frame.render_widget(
-        Paragraph::new(lines).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("access · preserved HuJSON source · read-only"),
-        ),
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("access · preserved HuJSON source · read-only"),
+            ),
         area,
     );
 }

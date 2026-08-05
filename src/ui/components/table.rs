@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 
 use crate::app::App;
@@ -91,7 +92,7 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         vec!["S", "NAME", "OWNER/TAGS", "OS", "PATH", "SEEN"]
     };
-    let header = Row::new(header_values).style(theme::title());
+    let header = Row::new(header_values).style(app.theme.style(theme::StyleRole::TextPrimary));
     let widths = if local_traffic {
         vec![
             ConstraintWidth::Fixed(2),
@@ -164,10 +165,11 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Table::new(rows, constraints)
             .header(header)
             .column_spacing(1)
-            .style(theme::normal(app))
+            .style(app.theme.style(theme::StyleRole::Surface))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
                     .title(if app.admin.profile.is_some() {
                         "devices · local + admin"
                     } else {
@@ -198,7 +200,7 @@ fn render_registered_columns(frame: &mut Frame<'_>, app: &App, area: Rect) {
         });
     let mut headers = vec!["S".to_owned()];
     headers.extend(app.views.devices.columns.iter().cloned());
-    let header = Row::new(headers).style(theme::title());
+    let header = Row::new(headers).style(app.theme.style(theme::StyleRole::TextPrimary));
     let mut widths = vec![ConstraintWidth::Fixed(2)];
     widths.extend(
         app.views
@@ -215,10 +217,11 @@ fn render_registered_columns(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Table::new(rows, constraints)
             .header(header)
             .column_spacing(1)
-            .style(theme::normal(app))
+            .style(app.theme.style(theme::StyleRole::Surface))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
                     .title("devices · saved columns"),
             ),
         area,
@@ -269,11 +272,19 @@ fn registered_device_row(app: &App, device: &Device, selected: bool, width: u16)
             Cell::from(text::ellipsize(&value, usize::from(width.max(12))))
         })
         .collect::<Vec<_>>();
-    let mut values = vec![Cell::from(marker.to_owned())];
+    let marker_role = match device.liveness {
+        Liveness::Online => theme::StyleRole::StateHealthy,
+        Liveness::Offline => theme::StyleRole::StateOffline,
+        Liveness::Unknown => theme::StyleRole::StateUnknown,
+    };
+    let mut values = vec![Cell::from(Span::styled(
+        marker.to_owned(),
+        app.theme.style(marker_role),
+    ))];
     values.extend(cells);
     let row = Row::new(values);
     if selected {
-        row.style(theme::selected(app))
+        row.style(app.theme.style(theme::StyleRole::Selection))
     } else {
         row
     }
@@ -330,8 +341,16 @@ fn device_row(
         }
     };
     let name_width = usize::from(width.saturating_sub(45));
+    let marker_role = match device.liveness {
+        Liveness::Online => theme::StyleRole::StateHealthy,
+        Liveness::Offline => theme::StyleRole::StateOffline,
+        Liveness::Unknown => theme::StyleRole::StateUnknown,
+    };
     let mut cells = vec![
-        Cell::from(marker.to_owned()),
+        Cell::from(Span::styled(
+            marker.to_owned(),
+            app.theme.style(marker_role),
+        )),
         Cell::from(text::ellipsize(&device.display_name, name_width.max(8))),
         Cell::from(text::ellipsize(&owner_tags, 22)),
         Cell::from(text::ellipsize(device.os.label(), 9)),
@@ -450,7 +469,7 @@ fn device_row(
     }
     let row = Row::new(cells);
     if selected {
-        row.style(theme::selected(app))
+        row.style(app.theme.style(theme::StyleRole::Selection))
     } else {
         row
     }

@@ -181,8 +181,13 @@ pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Ope
             "{hint}{preference_status}{candidates}{ordered}{secret_hint}\n\nreplacement: {}{}\nEnter previews   Esc cancels",
             input, error
         ))
-        .style(theme::normal(app))
-        .block(Block::default().borders(Borders::ALL).title(title)),
+        .style(app.theme.style(theme::StyleRole::SurfaceRaised))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.style(theme::StyleRole::BorderFocused))
+                .title(title),
+        ),
         area,
     );
 }
@@ -221,10 +226,11 @@ pub fn render_accounts(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Acc
         Paragraph::new(format!(
             "{lines}\n\nj/k select   Enter preview   Esc cancels"
         ))
-        .style(theme::normal(app))
+        .style(app.theme.style(theme::StyleRole::SurfaceRaised))
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(app.theme.style(theme::StyleRole::BorderFocused))
                 .title("local accounts"),
         ),
         area,
@@ -245,10 +251,11 @@ pub fn render_handoff(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Hand
             "host: {}\n{}\n> {}{}\nEnter previews   Esc cancels",
             state.host, label, state.input, error
         ))
-        .style(theme::normal(app))
+        .style(app.theme.style(theme::StyleRole::SurfaceRaised))
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(app.theme.style(theme::StyleRole::BorderFocused))
                 .title("terminal handoff"),
         ),
         area,
@@ -286,10 +293,11 @@ pub fn render_service(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Serv
             "{hint}\n\n> {}{}\nEnter previews   Esc cancels",
             state.input, error
         ))
-        .style(theme::normal(app))
+        .style(app.theme.style(theme::StyleRole::SurfaceRaised))
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(app.theme.style(theme::StyleRole::BorderFocused))
                 .title("local service form"),
         ),
         area,

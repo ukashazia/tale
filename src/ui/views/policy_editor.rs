@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
@@ -7,7 +8,11 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(workflow) = app.policy_workflow.as_ref() else {
-        frame.render_widget(Paragraph::new("no policy workflow is open"), area);
+        frame.render_widget(
+            Paragraph::new("? no policy workflow is open")
+                .style(app.theme.style(theme::StyleRole::StateUnknown)),
+            area,
+        );
         return;
     };
     let summary = workflow.summary();
@@ -155,9 +160,23 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         lines.push(String::new());
         lines.extend(diff.text.lines().take(200).map(str::to_owned));
     }
+    let lines = lines.into_iter().map(|line| {
+        let role = if line.starts_with('+') {
+            theme::StyleRole::DiffAdded
+        } else if line.starts_with('-') {
+            theme::StyleRole::DiffRemoved
+        } else if line.starts_with("diff:") {
+            theme::StyleRole::DiffChanged
+        } else if line.contains("failed") || line.starts_with("diagnostic") {
+            theme::StyleRole::StateDanger
+        } else {
+            theme::StyleRole::TextPrimary
+        };
+        Line::from(Span::styled(line, app.theme.style(role)))
+    });
     frame.render_widget(
-        Paragraph::new(lines.join("\n"))
-            .style(theme::normal(app))
+        Paragraph::new(lines.collect::<Vec<_>>())
+            .style(app.theme.style(theme::StyleRole::SurfaceInset))
             .block(
                 Block::default()
                     .borders(Borders::ALL)

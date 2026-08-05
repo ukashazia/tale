@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, batch: &BatchMutatio
     );
     frame.render_widget(
         Paragraph::new(format!("{summary}\n\n{}", lines.join("\n")))
-            .style(theme::normal(app))
+            .style(app.theme.style(theme::StyleRole::TextPrimary))
             .block(
                 Block::default()
                     .borders(Borders::ALL)

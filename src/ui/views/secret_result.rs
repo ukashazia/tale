@@ -7,7 +7,11 @@ use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(result) = app.secret_result.as_ref() else {
-        frame.render_widget(Paragraph::new("the one-time result is closed"), area);
+        frame.render_widget(
+            Paragraph::new("### redacted · the one-time result is closed")
+                .style(app.theme.style(theme::StyleRole::Redacted)),
+            area,
+        );
         return;
     };
     let metadata = result.metadata();
@@ -34,11 +38,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         metadata.warning,
     );
     frame.render_widget(
-        Paragraph::new(text).style(theme::normal(app)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("secret result · closes permanently"),
-        ),
+        Paragraph::new(text)
+            .style(app.theme.style(theme::StyleRole::Secret))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("secret result · closes permanently"),
+            ),
         area,
     );
 }

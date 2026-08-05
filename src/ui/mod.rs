@@ -5,11 +5,16 @@ pub mod theme;
 pub mod views;
 
 use ratatui::Frame;
+use ratatui::widgets::Block;
 
 use crate::app::{App, Route};
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    frame.render_widget(
+        Block::default().style(app.theme.style(theme::StyleRole::Canvas)),
+        area,
+    );
     let layout = layout::compute(area, app);
     if layout.minimum {
         let message = format!(
@@ -17,7 +22,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             area.width, area.height
         );
         frame.render_widget(
-            components::panel::paragraph(message, "minimum size", theme::title()),
+            components::panel::paragraph(
+                message,
+                "minimum size",
+                app.theme.style(theme::StyleRole::SurfaceRaised),
+            ),
             area,
         );
         components::interaction_shell::render_minimum(frame, app, area);
