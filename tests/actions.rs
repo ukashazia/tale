@@ -197,6 +197,13 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
     );
     let footer = action::footer_hints(ActionContext::Collection, 20);
     assert!(footer.last().is_some_and(|hint| hint == "? more"));
+    let footer = action::footer_hints(ActionContext::Collection, 100);
+    assert!(footer.first().is_some_and(|hint| hint == "k up"));
+    assert!(footer.iter().any(|hint| hint == ": command"));
+    assert_eq!(
+        footer.iter().filter(|hint| hint.starts_with("? ")).count(),
+        1
+    );
 
     let app = mock_app();
     assert!(app.is_some());
@@ -224,7 +231,7 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
 #[test]
 fn binding_type_labels_are_stable() {
     assert_eq!(Binding::Char(':').label(), ":");
-    assert_eq!(Binding::Ctrl('d').label(), "Ctrl+d");
+    assert_eq!(Binding::Ctrl('d').label(), "C-d");
     assert_eq!(Binding::Enter.label(), "Enter");
 }
 

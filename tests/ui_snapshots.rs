@@ -192,6 +192,9 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
                 }
                 assert!(lines.iter().any(|line| line.contains("Navigation")));
                 assert!(lines.iter().any(|line| line.contains("Current view")));
+                if width >= 80 {
+                    assert!(lines.iter().any(|line| line.contains(": command")));
+                }
                 assert!(!lines.iter().any(|line| line.contains("[disabled:")));
                 assert!(!lines.iter().any(|line| line.contains("Simulation")));
                 assert!(!lines.iter().any(|line| line.contains("service section")));
@@ -212,6 +215,37 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             assert!(lines.is_some());
             if let Some(lines) = lines {
                 assert!(lines.last().is_some_and(|line| line.contains("/ ")));
+            }
+        }
+    }
+}
+
+#[test]
+fn quick_footer_separates_accent_keys_from_muted_help() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(app) = app {
+        let backend = TestBackend::new(100, 30);
+        let terminal = Terminal::new(backend).ok();
+        assert!(terminal.is_some());
+        if let Some(mut terminal) = terminal {
+            let drawn = terminal.draw(|frame| ui::render(frame, &app));
+            assert!(drawn.is_ok());
+            let buffer = terminal.backend().buffer();
+            let key = buffer.cell((0, 29));
+            let label = buffer.cell((2, 29));
+            assert!(key.is_some());
+            assert!(label.is_some());
+            if let (Some(key), Some(label)) = (key, label) {
+                assert_eq!(key.symbol(), "k");
+                assert_eq!(label.symbol(), "u");
+                if let Some(expected) = app.theme.style(StyleRole::KeyHint).fg {
+                    assert_eq!(key.fg, expected);
+                }
+                if let Some(expected) = app.theme.style(StyleRole::TextMuted).fg {
+                    assert_eq!(label.fg, expected);
+                }
+                assert_ne!(key.modifier, label.modifier);
             }
         }
     }

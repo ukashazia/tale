@@ -1563,10 +1563,12 @@ impl App {
             {
                 let context = self.action_context();
                 let mut x = layout.footer.x;
-                for (action_id, hint) in action::footer_actions(context, layout.footer.width) {
-                    let end = x.saturating_add(u16::try_from(hint.len()).map_or(u16::MAX, |v| v));
+                for hint in action::footer_actions(context, layout.footer.width) {
+                    let end = x.saturating_add(
+                        u16::try_from(hint.width()).map_or(u16::MAX, |value| value),
+                    );
                     if mouse.column >= x && mouse.column < end {
-                        return action_id.map_or_else(Vec::new, |id| self.dispatch_action(id));
+                        return self.dispatch_action(hint.action_id);
                     }
                     x = end.saturating_add(2);
                 }

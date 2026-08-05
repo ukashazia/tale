@@ -373,7 +373,11 @@ Unavailable and route-irrelevant bindings are omitted. The sheet does not
 duplicate entries from the action and copy catalogs; their `a` and `y` gateway
 bindings are the discoverable entries here. Groups use aligned, responsive
 columns and blank rows between vertical bands. Key hints, section headings, and
-descriptions use distinct semantic color roles. The sheet:
+descriptions use distinct semantic color roles.
+
+The quick footer uses the same key-hint and muted-description roles and compact
+labels. Control chords render as `C-<key>`; descriptions should be one word,
+using a hyphenated compound or at most two words only when necessary. The sheet:
 
 - grows upward from the footer;
 - grows to fit its grouped grid, bounded by the available frame;

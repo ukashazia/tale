@@ -81,7 +81,31 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         return vec![Line::default()];
     }
     let context = context(app);
-    vec![Line::from(action::footer_hints(context, width).join("  "))]
+    let mut spans = Vec::new();
+    for (index, hint) in action::footer_actions(context, width)
+        .into_iter()
+        .enumerate()
+    {
+        if index > 0 {
+            spans.push(Span::styled(
+                "  ",
+                app.theme.style(theme::StyleRole::SurfaceRaised),
+            ));
+        }
+        spans.push(Span::styled(
+            hint.key,
+            app.theme.style(theme::StyleRole::KeyHint),
+        ));
+        spans.push(Span::styled(
+            " ",
+            app.theme.style(theme::StyleRole::SurfaceRaised),
+        ));
+        spans.push(Span::styled(
+            hint.label,
+            app.theme.style(theme::StyleRole::TextMuted),
+        ));
+    }
+    vec![Line::from(spans)]
 }
 
 fn navigation_lines(
@@ -815,9 +839,10 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
                 })
                 .filter_map(|spec| {
                     let binding = spec.default_bindings.first()?;
+                    let label = action::compact_help_label(spec.id)?;
                     Some(HelpItem {
                         key: binding.label(),
-                        label: spec.label,
+                        label,
                     })
                 })
                 .collect::<Vec<_>>();

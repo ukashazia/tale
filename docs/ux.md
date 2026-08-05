@@ -111,7 +111,9 @@ Navigation, Current view, Search & commands, Data, and Global. It does not
 duplicate the action or copy catalogs: `a` and `y` lead to those dedicated
 menus. Keys use the key-hint role, headings use the section role, and labels use
 muted text. Every listed key closes help and immediately performs its normal
-action; `Esc` and `?` close without acting.
+action; `Esc` and `?` close without acting. The sheet and quick footer use the
+same compact lower-case vocabulary (`: command`, `C-d page-down`) and color
+keys separately from their muted one-word descriptions.
 
 The `:` palette supports Unicode-safe editing and true fuzzy matching. It has no
 selection cursor; `Enter` opens the highest-scoring result. The `/` editor applies every valid

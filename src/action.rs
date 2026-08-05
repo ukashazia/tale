@@ -551,10 +551,10 @@ impl Binding {
                 'h' => "h",
                 _ => "key",
             },
-            Self::Ctrl('d') => "Ctrl+d",
-            Self::Ctrl('u') => "Ctrl+u",
+            Self::Ctrl('d') => "C-d",
+            Self::Ctrl('u') => "C-u",
             Self::Enter => "Enter",
-            Self::Ctrl(_) => "Ctrl+key",
+            Self::Ctrl(_) => "C-key",
         }
     }
 
@@ -631,7 +631,7 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             id: ActionId::AppQuit,
             label: "Quit",
             description: "Quit Tale",
-            contexts: ROOT,
+            contexts: GLOBAL,
             selection_rule: SelectionRule::None,
             default_bindings: BIND_Q,
             capability: Capability::Available,
@@ -1172,28 +1172,132 @@ pub fn validate_transient_sequences(actions: &[ActionId]) -> Result<(), String> 
 pub fn footer_hints(context: ActionContext, width: u16) -> Vec<String> {
     footer_actions(context, width)
         .into_iter()
-        .map(|(_, hint)| hint)
+        .map(|hint| hint.text())
         .collect()
 }
 
-pub fn footer_actions(context: ActionContext, width: u16) -> Vec<(Option<ActionId>, String)> {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct FooterHint {
+    pub action_id: ActionId,
+    pub key: &'static str,
+    pub label: &'static str,
+}
+
+impl FooterHint {
+    pub fn text(self) -> String {
+        format!("{} {}", self.key, self.label)
+    }
+
+    pub fn width(self) -> usize {
+        self.key
+            .chars()
+            .count()
+            .saturating_add(1)
+            .saturating_add(self.label.chars().count())
+    }
+}
+
+pub fn footer_actions(context: ActionContext, width: u16) -> Vec<FooterHint> {
     let mut used = 0usize;
     let mut hints = Vec::new();
-    for spec in all_actions() {
-        if !spec.contexts.contains(&context) || spec.default_bindings.is_empty() {
+    let mut specs = all_actions()
+        .into_iter()
+        .filter(|spec| {
+            spec.contexts.contains(&context)
+                && !spec.default_bindings.is_empty()
+                && !matches!(
+                    spec.id,
+                    ActionId::ViewHelp
+                        | ActionId::ServicesSectionNext
+                        | ActionId::ServicesSectionPrevious
+                )
+        })
+        .collect::<Vec<_>>();
+    specs.sort_by_key(|spec| footer_priority(spec.id));
+    let mut hidden = false;
+    for spec in specs {
+        let Some(label) = compact_help_label(spec.id) else {
             continue;
-        }
-        let binding = spec.default_bindings[0].label();
-        let hint = format!("{} {}", binding, spec.label);
+        };
+        let hint = FooterHint {
+            action_id: spec.id,
+            key: spec.default_bindings[0].label(),
+            label,
+        };
         let separator = if hints.is_empty() { 0 } else { 2 };
-        if used + separator + hint.len() + 8 > usize::from(width) {
-            hints.push((Some(ActionId::ViewHelp), "? more".to_owned()));
+        if used
+            .saturating_add(separator)
+            .saturating_add(hint.width())
+            .saturating_add(8)
+            > usize::from(width)
+        {
+            hidden = true;
             break;
         }
-        used += separator + hint.len();
-        hints.push((Some(spec.id), hint));
+        used += separator + hint.width();
+        hints.push(hint);
     }
+    hints.push(FooterHint {
+        action_id: ActionId::ViewHelp,
+        key: "?",
+        label: if hidden { "more" } else { "help" },
+    });
     hints
+}
+
+const fn footer_priority(id: ActionId) -> u8 {
+    match id {
+        ActionId::CollectionMoveUp => 0,
+        ActionId::CollectionMoveDown => 1,
+        ActionId::CollectionOpen => 2,
+        ActionId::TaskCancel => 3,
+        ActionId::ViewFilter => 4,
+        ActionId::CollectionSort => 5,
+        ActionId::CollectionWideColumns => 6,
+        ActionId::ResourceActions => 7,
+        ActionId::ResourceCopy => 8,
+        ActionId::ViewCommandLine => 9,
+        ActionId::ViewRefresh => 10,
+        ActionId::ViewRefreshAll => 11,
+        ActionId::ViewTasks => 12,
+        ActionId::ViewHistoryBack => 13,
+        ActionId::ViewHistoryForward => 14,
+        ActionId::AppQuit => 15,
+        ActionId::CollectionFirst => 16,
+        ActionId::CollectionLast => 17,
+        ActionId::CollectionPageUp => 18,
+        ActionId::CollectionPageDown => 19,
+        _ => u8::MAX,
+    }
+}
+
+pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
+    match id {
+        ActionId::AppQuit => Some("quit"),
+        ActionId::ViewCommandLine => Some("command"),
+        ActionId::ViewFilter => Some("filter"),
+        ActionId::ViewRefresh => Some("refresh"),
+        ActionId::ViewRefreshAll => Some("refresh-all"),
+        ActionId::ViewHelp => Some("help"),
+        ActionId::ViewTasks => Some("tasks"),
+        ActionId::ViewHistoryBack => Some("back"),
+        ActionId::ViewHistoryForward => Some("forward"),
+        ActionId::CollectionMoveUp => Some("up"),
+        ActionId::CollectionMoveDown => Some("down"),
+        ActionId::CollectionFirst => Some("first"),
+        ActionId::CollectionLast => Some("last"),
+        ActionId::CollectionPageUp => Some("page-up"),
+        ActionId::CollectionPageDown => Some("page-down"),
+        ActionId::CollectionOpen => Some("open"),
+        ActionId::CollectionSort => Some("sort"),
+        ActionId::CollectionWideColumns => Some("columns"),
+        ActionId::ResourceActions => Some("actions"),
+        ActionId::ResourceCopy => Some("copy"),
+        ActionId::TaskCancel => Some("cancel"),
+        ActionId::ServicesSectionNext => Some("next-section"),
+        ActionId::ServicesSectionPrevious => Some("prev-section"),
+        _ => None,
+    }
 }
 
 pub fn phase_two_actions() -> Vec<ActionSpec> {

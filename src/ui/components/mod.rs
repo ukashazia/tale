@@ -1,6 +1,5 @@
 pub mod batch_result;
 pub mod confirm;
-pub mod footer;
 pub mod form;
 pub mod header;
 pub mod inspector;
