@@ -132,7 +132,10 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             let lines = lines_at(&app, width, height);
             assert!(lines.is_some());
             if let Some(lines) = lines {
-                assert!(lines.last().is_some_and(|line| line.contains("Actions")));
+                assert!(lines.iter().any(|line| line.contains("Actions")));
+                assert!(lines.iter().any(|line| line.contains("Simulation")));
+                assert!(lines.iter().any(|line| line.contains("Views")));
+                assert!(!lines.iter().any(|line| line.contains("[disabled:")));
                 assert!(
                     !lines.iter().take(usize::from(height / 2)).any(|line| {
                         line.contains("Actions ›") || line.contains("Esc cancel")
@@ -147,7 +150,23 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
                 assert!(
                     lines
                         .last()
-                        .is_some_and(|line| line.contains("Actions › v"))
+                        .is_some_and(|line| line.contains("v …  waiting for next key"))
+                );
+                assert!(lines.iter().any(|line| line.contains("Simulation")));
+                assert!(lines.iter().any(|line| line.contains("Views")));
+                assert!(lines.iter().any(|line| line.contains("Esc Back")));
+            }
+
+            press(&mut app, KeyCode::Esc);
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(lines.iter().any(|line| line.contains("Actions")));
+                assert!(lines.iter().any(|line| line.contains("Esc Close")));
+                assert!(
+                    !lines
+                        .iter()
+                        .any(|line| line.contains("waiting for next key"))
                 );
             }
 
@@ -471,10 +490,11 @@ fn mouse_footer_completion_transient_and_outside_cancel_match_keys() {
 
         app.set_route(Route::Overview);
         press(&mut app, KeyCode::Char('a'));
+        let layout = tale::ui::layout::compute(ratatui::layout::Rect::new(0, 0, 80, 24), &app);
         let _ = app.update(Event::Input(InputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 10,
-            row: 23,
+            column: 1,
+            row: layout.footer.y.saturating_add(3),
             modifiers: KeyModifiers::NONE,
         })));
         assert_eq!(app.tasks.all().len(), 1);

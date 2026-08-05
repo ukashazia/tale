@@ -1,6 +1,6 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-use crate::app::{App, Focus, InteractionMode};
+use crate::app::{App, Focus, InteractionMode, TransientKind};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum LayoutMode {
@@ -49,7 +49,12 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
         InteractionMode::FilterLine(state) => {
             u16::try_from(state.candidates.len().min(6).saturating_add(1)).map_or(7, |value| value)
         }
-        InteractionMode::Transient(_) => 1,
+        InteractionMode::Transient(state) => match state.kind {
+            TransientKind::Action => {
+                crate::ui::components::interaction_shell::action_menu_height(state, area.width)
+            }
+            TransientKind::Copy => 1,
+        },
         InteractionMode::HelpSheet(_) => area.height.saturating_mul(3) / 5,
     }
     .max(1)
@@ -98,4 +103,14 @@ pub const fn navigation_columns(width: u16) -> usize {
 
 pub const fn navigation_palette_height() -> u16 {
     14
+}
+
+pub const fn action_menu_columns(width: u16) -> usize {
+    if width >= 160 {
+        5
+    } else if width >= 80 {
+        4
+    } else {
+        3
+    }
 }

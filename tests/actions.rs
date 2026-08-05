@@ -262,3 +262,16 @@ fn transient_sequences_and_reserved_history_bindings_are_stable() {
         Some(ActionId::ViewHistoryForward)
     );
 }
+
+#[test]
+fn every_transient_action_has_an_explicit_menu_group() {
+    for id in ActionId::all() {
+        if action::transient_sequence(*id).is_some() {
+            assert!(
+                action::transient_group(*id).is_some(),
+                "missing group for {}",
+                id.as_str()
+            );
+        }
+    }
+}

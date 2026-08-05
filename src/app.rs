@@ -1614,6 +1614,27 @@ impl App {
         if !contains_point(area, mouse.column, mouse.row) {
             return self.handle_interaction_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         }
+        if let InteractionMode::Transient(state) = &self.interaction
+            && state.kind == TransientKind::Action
+        {
+            let action_id = crate::ui::components::interaction_shell::action_menu_action_at(
+                state,
+                area,
+                mouse.column,
+                mouse.row,
+            );
+            let Some(action_id) = action_id else {
+                return Vec::new();
+            };
+            if let Some(reason) = self.action_unavailable_reason(action_id) {
+                if let InteractionMode::Transient(state) = &mut self.interaction {
+                    state.message = Some(reason);
+                }
+                return Vec::new();
+            }
+            self.interaction = InteractionMode::Normal;
+            return self.dispatch_action(action_id);
+        }
         let candidate_index = usize::from(mouse.row.saturating_sub(area.y));
         let clicked_route = match &mut self.interaction {
             InteractionMode::CommandLine(state) => {
@@ -1634,7 +1655,10 @@ impl App {
                 return self.update_live_filter();
             }
             InteractionMode::Transient(state) => {
-                let keys = transient_click_keys(state);
+                if state.kind != TransientKind::Copy {
+                    return Vec::new();
+                }
+                let keys = copy_click_keys(&state.fields);
                 let mut x = area.x;
                 for (key, label) in keys {
                     let end = x.saturating_add(u16::try_from(label.len()).map_or(u16::MAX, |v| v));
@@ -2077,6 +2101,14 @@ impl App {
 
     fn handle_transient_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.code == KeyCode::Esc {
+            if let InteractionMode::Transient(state) = &mut self.interaction
+                && state.kind == TransientKind::Action
+                && state.prefix.is_some()
+            {
+                state.prefix = None;
+                state.message = None;
+                return Vec::new();
+            }
             self.interaction = InteractionMode::Normal;
             return Vec::new();
         }
@@ -2149,6 +2181,9 @@ impl App {
         }
         if let InteractionMode::Transient(state) = &mut self.interaction {
             state.message = Some(format!("unknown key: {sequence}"));
+            if state.kind == TransientKind::Action {
+                state.prefix = None;
+            }
         }
         Vec::new()
     }
@@ -13549,41 +13584,14 @@ fn apply_completion(editor: &mut LineEditorState, candidate: &CompletionCandidat
     editor.cursor = start.saturating_add(candidate.insertion.len());
 }
 
-fn transient_click_keys(state: &TransientMenuState) -> Vec<(char, String)> {
-    match state.kind {
-        TransientKind::Action => {
-            let mut entries = vec![(char::MAX, "Actions".to_owned())];
-            for id in &state.actions {
-                let Some(sequence) = action::transient_sequence(*id) else {
-                    continue;
-                };
-                if let Some(prefix) = state.prefix {
-                    if !sequence.starts_with(prefix) || sequence.len() != 2 {
-                        continue;
-                    }
-                } else if sequence.len() == 2 {
-                    let key = sequence.chars().next().map_or(' ', |value| value);
-                    if entries.iter().any(|(existing, _)| *existing == key) {
-                        continue;
-                    }
-                    entries.push((key, format!("{key} …")));
-                    continue;
-                }
-                let key = sequence.chars().last().map_or(' ', |value| value);
-                let label = action::find_action(*id).map_or(id.as_str(), |spec| spec.label);
-                entries.push((key, format!("{key} {label}")));
-            }
-            entries
-        }
-        TransientKind::Copy => state
-            .fields
-            .iter()
-            .map(|field| {
-                let key = copy_field_key(*field);
-                (key, format!("{key} {}", field.label()))
-            })
-            .collect(),
-    }
+fn copy_click_keys(fields: &[CopyField]) -> Vec<(char, String)> {
+    fields
+        .iter()
+        .map(|field| {
+            let key = copy_field_key(*field);
+            (key, format!("{key} {}", field.label()))
+        })
+        .collect()
 }
 
 fn longest_common_prefix(values: &[&str]) -> Option<String> {

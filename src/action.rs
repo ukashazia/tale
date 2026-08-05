@@ -988,6 +988,156 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TransientGroup {
+    Simulation,
+    Machine,
+    Account,
+    Diagnostics,
+    Handoff,
+    Serve,
+    Funnel,
+    Taildrop,
+    Taildrive,
+    Certificates,
+    Monitoring,
+    Device,
+    User,
+    Routing,
+    Dns,
+    SplitDns,
+    Views,
+    Data,
+    Health,
+    Explorer,
+    Flows,
+    Webhooks,
+    Logging,
+    Danger,
+}
+
+impl TransientGroup {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Simulation => "Simulation",
+            Self::Machine => "Machine",
+            Self::Account => "Account",
+            Self::Diagnostics => "Diagnostics",
+            Self::Handoff => "Handoff",
+            Self::Serve => "Serve",
+            Self::Funnel => "Funnel",
+            Self::Taildrop => "Taildrop",
+            Self::Taildrive => "Taildrive",
+            Self::Certificates => "Certificates",
+            Self::Monitoring => "Monitoring",
+            Self::Device => "Device",
+            Self::User => "User",
+            Self::Routing => "Routing",
+            Self::Dns => "DNS",
+            Self::SplitDns => "Split DNS",
+            Self::Views => "Views",
+            Self::Data => "Data",
+            Self::Health => "Health",
+            Self::Explorer => "Explorer",
+            Self::Flows => "Flows",
+            Self::Webhooks => "Webhooks",
+            Self::Logging => "Logging",
+            Self::Danger => "Danger",
+        }
+    }
+}
+
+pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
+    match id {
+        ActionId::MockSuccess
+        | ActionId::MockFailure
+        | ActionId::MockCancellable
+        | ActionId::MockNonCancellable => Some(TransientGroup::Simulation),
+        ActionId::LocalConnect
+        | ActionId::LocalDisconnect
+        | ActionId::LocalPreferencesEdit
+        | ActionId::LocalExitNodeSelect
+        | ActionId::LocalRoutesEditAdvertisements
+        | ActionId::LocalSyspolicyReload => Some(TransientGroup::Machine),
+        ActionId::LocalAccountSwitch
+        | ActionId::LocalAccountLogin
+        | ActionId::LocalAccountLogout => Some(TransientGroup::Account),
+        ActionId::LocalAccountRemove
+        | ActionId::AdminDeviceRevokeApproval
+        | ActionId::AdminDeviceKeyExpireNow
+        | ActionId::AdminDeviceDelete
+        | ActionId::AdminUserSuspend
+        | ActionId::AdminUserDelete
+        | ActionId::AdminWebhookRotateSecret
+        | ActionId::AdminWebhookDelete
+        | ActionId::AdminLogStreamDelete => Some(TransientGroup::Danger),
+        ActionId::LocalProbeConnection
+        | ActionId::LocalWhois
+        | ActionId::DiagnosticCopy
+        | ActionId::LocalNetcheck
+        | ActionId::LocalNetcheckLive
+        | ActionId::LocalDnsStatus
+        | ActionId::LocalDnsQuery => Some(TransientGroup::Diagnostics),
+        ActionId::LocalSshOpen | ActionId::LocalNcOpen => Some(TransientGroup::Handoff),
+        ActionId::ServicesServeRefresh
+        | ActionId::ServicesServeCreate
+        | ActionId::ServicesServeEdit
+        | ActionId::ServicesServeReset => Some(TransientGroup::Serve),
+        ActionId::ServicesFunnelRefresh
+        | ActionId::ServicesFunnelCreate
+        | ActionId::ServicesFunnelEdit
+        | ActionId::ServicesFunnelReset => Some(TransientGroup::Funnel),
+        ActionId::ServicesTaildropSend | ActionId::ServicesTaildropReceive => {
+            Some(TransientGroup::Taildrop)
+        }
+        ActionId::ServicesDriveRefresh
+        | ActionId::ServicesDriveShare
+        | ActionId::ServicesDriveRename
+        | ActionId::ServicesDriveUnshare
+        | ActionId::ServicesDriveEnableAlpha => Some(TransientGroup::Taildrive),
+        ActionId::ServicesCertificateObtain => Some(TransientGroup::Certificates),
+        ActionId::ServicesMetricsRefresh | ActionId::ServicesBugReportCreate => {
+            Some(TransientGroup::Monitoring)
+        }
+        ActionId::AdminDeviceRename
+        | ActionId::AdminDeviceTagsReplace
+        | ActionId::AdminDeviceApprove
+        | ActionId::AdminDeviceKeyExpiryConfigure => Some(TransientGroup::Device),
+        ActionId::AdminUserApprove | ActionId::AdminUserRoleChange | ActionId::AdminUserRestore => {
+            Some(TransientGroup::User)
+        }
+        ActionId::AdminRoutesReplaceApprovals => Some(TransientGroup::Routing),
+        ActionId::AdminDnsPreferencesEdit
+        | ActionId::AdminDnsNameserversReplace
+        | ActionId::AdminDnsSearchPathsReplace => Some(TransientGroup::Dns),
+        ActionId::AdminDnsSplitCreate
+        | ActionId::AdminDnsSplitEdit
+        | ActionId::AdminDnsSplitRemove => Some(TransientGroup::SplitDns),
+        ActionId::SavedViewCreate
+        | ActionId::SavedViewReplace
+        | ActionId::SavedViewRename
+        | ActionId::SavedViewDelete
+        | ActionId::SavedViewApply => Some(TransientGroup::Views),
+        ActionId::CollectionExport => Some(TransientGroup::Data),
+        ActionId::OverviewHealthOpenResource | ActionId::OverviewHealthRunSuggestedAction => {
+            Some(TransientGroup::Health)
+        }
+        ActionId::AccessExplorerAsk | ActionId::AccessExplorerOpenRule => {
+            Some(TransientGroup::Explorer)
+        }
+        ActionId::ActivityFlowsSelectWindow
+        | ActionId::ActivityFlowsAggregate
+        | ActionId::ActivityFlowsOpenDevice => Some(TransientGroup::Flows),
+        ActionId::AdminWebhookCreate | ActionId::AdminWebhookEdit | ActionId::AdminWebhookTest => {
+            Some(TransientGroup::Webhooks)
+        }
+        ActionId::AdminLogStreamReplace | ActionId::AdminNetworkLogsSettings => {
+            Some(TransientGroup::Logging)
+        }
+        _ => None,
+    }
+}
+
 pub fn validate_transient_sequences(actions: &[ActionId]) -> Result<(), String> {
     let mut sequences = std::collections::BTreeMap::new();
     for id in actions {

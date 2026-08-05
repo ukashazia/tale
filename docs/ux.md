@@ -99,9 +99,12 @@ the `a` prefix and still require their typed confirmation.
 
 The footer, transient menus, and bottom help sheet are generated from the action
 registry. When space is insufficient the footer ends with `? more`; it never
-truncates a key while leaving a misleading label. Disabled actions remain
-visible with their capability reason. Transients do not use row selection,
-arrows, or a timeout; `Esc` cancels and an unknown key leaves the menu open.
+truncates a key while leaving a misleading label. The `a` menu is a tall adaptive
+grid of semantic groups. It shows complete one- and two-key sequences at once;
+disabled actions remain visible as dimmed, crossed-out entries and report their
+reason only when invoked. Transients do not use row selection, arrows, or a
+timeout. `Esc` first clears a pending two-key prefix, then closes the menu; an
+unknown key leaves the menu open.
 
 The `:` palette supports Unicode-safe editing and true fuzzy matching. It has no
 selection cursor; `Enter` opens the highest-scoring result. The `/` editor applies every valid

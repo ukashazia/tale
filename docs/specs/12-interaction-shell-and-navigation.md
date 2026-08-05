@@ -133,7 +133,18 @@ filter with error:
 │ / owner:"alice online:true        unclosed quote at column 7     │
 
 transient:
-│ Actions  r refresh  p ping  e exit node  s services  Esc cancel  │
+│ Actions   ? Help   Esc Close                                    │
+│                                                                │
+│ Machine             Account              Diagnostics           │
+│ c connect           a s switch           g ping                │
+│ d disconnect        a l login            d n netcheck          │
+│ p preferences       a o logout           d q dns query         │
+│                                                                │
+│ Handoff             Views                Danger                │
+│ h s ssh             v c create           a r remove account    │
+│ h n netcat          v a apply                                  │
+│                                                                │
+│ Keys activate immediately                                      │
 ```
 
 Rules:
@@ -141,7 +152,8 @@ Rules:
 - normal mode uses one footer row;
 - navigation mode reserves a stable-height adaptive grid with its prompt and hints;
 - filter mode replaces the normal row with its prompt and completion tray;
-- transient mode replaces that row with its key menu;
+- action-transient mode reserves a tall adaptive grouped grid; copy remains a
+  compact one-row key menu;
 - navigation uses three group columns at 120 columns and two at supported widths
   below that;
 - the navigation grid reserves two group bands, so filtering never moves the prompt;
@@ -285,21 +297,25 @@ one-time-result content.
 
 ### Invocation
 
-`a` enters `TransientKind::Action`; `y` enters `TransientKind::Copy`. The bottom
-bar immediately displays the available next keys. The user does not navigate a
-list with arrows or `j`/`k`.
+`a` enters `TransientKind::Action`; `y` enters `TransientKind::Copy`. The action
+surface expands upward into an adaptive grid of intact semantic groups. It uses
+five columns at 160 columns, four at 80, and three at the minimum supported width.
+The user does not navigate a list with arrows or `j`/`k`.
 
-Pressing a displayed leaf key invokes that action. Pressing a displayed prefix
-key replaces the row with the next group and a breadcrumb:
+Every one- and two-key sequence is visible from the start. Pressing a displayed
+leaf key invokes that action. Pressing the first key of a two-key sequence keeps
+the full grid in place, emphasizes matching entries, subordinates non-matches,
+and shows the pending key in the status row:
 
 ```text
-Actions › service  s serve  f funnel  c clear  Esc cancel
+v …  waiting for next key
 ```
 
-Menu depth is at most two keys after `a` or `y`. There is no timer. `Esc`
-cancels. The prefix key repeated at a nested level has no magical meaning unless
-registered. Unknown keys keep the menu open and show a short non-modal
-notification; they never invoke a neighboring item.
+Menu depth is at most two keys after `a` or `y`. There is no timer. While a
+two-key sequence is pending, `Esc Back` clears that prefix and restores the full
+grid; `Esc Close` closes the unprefixed menu. The prefix key repeated at a nested
+level has no magical meaning unless registered. Unknown keys keep the menu open
+and show a short non-modal notification; they never invoke a neighboring item.
 
 ### Key sequences
 
@@ -315,10 +331,12 @@ letter at runtime. The registry must reject:
 - a visible action with no sequence;
 - a sequence pointing to a different action ID.
 
-Disabled actions are visible when space permits and in help, with a reason. A
-disabled leaf key shows the reason and stays in the transient. Hidden actions
-are reserved for operations that do not apply to the context at all, not for
-missing permissions or source availability.
+Disabled actions are always present in their applicable group as dimmed,
+crossed-out entries. Their potentially long capability reason is not rendered
+inline; pressing or clicking a disabled leaf shows the reason in the stable
+status row and keeps the transient open. Hidden actions are reserved for
+operations that do not apply to the context at all, not for missing permissions
+or source availability.
 
 The action registry remains the source for action ID, label, description,
 context, capability, risk, key sequence, and availability. Footer, transient,
@@ -468,7 +486,8 @@ When mouse support is enabled:
 
 - clicking a footer hint invokes the same action as its key;
 - clicking a completion selects/inserts it but does not bypass validation;
-- clicking a transient leaf invokes it; a prefix opens its group;
+- clicking an action-grid leaf invokes it directly; typed prefixes emphasize
+  their matching entries without replacing the grid;
 - clicking outside a command/filter/transient/help surface does not silently
   commit; it cancels only when equivalent to `Esc` for that mode;
 - history remains available through footer/help targets, with no assumption of
@@ -533,7 +552,7 @@ Prove:
 2. all registry sequences are collision-free per context;
 3. disabled actions remain discoverable and cannot execute;
 4. action/copy keys invoke the exact registered ID without list navigation;
-5. transient prefix depth, breadcrumb, unknown-key, escape, and no-timeout rules;
+5. transient prefix depth, in-place emphasis, unknown-key, escape, and no-timeout rules;
 6. command grammar, aliases, saved views, invalid target, invalid trailing
    filter, empty submit, and equivalent no-op;
 7. Unicode editing and horizontal cursor visibility;

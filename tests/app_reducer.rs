@@ -469,6 +469,49 @@ fn transient_leaf_dispatches_without_list_navigation() {
 }
 
 #[test]
+fn transient_prefix_keeps_catalog_and_disabled_leaf_reports_in_place() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Overview);
+        press(&mut app, KeyCode::Char('a'));
+        let action_count = match &app.interaction {
+            InteractionMode::Transient(state) => state.actions.len(),
+            _ => 0,
+        };
+        press(&mut app, KeyCode::Char('v'));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::Transient(state)
+                if state.prefix == Some('v') && state.actions.len() == action_count
+        ));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::Transient(state)
+                if state.prefix.is_none() && state.actions.len() == action_count
+        ));
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('z'));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::Transient(state)
+                if state.prefix.is_none()
+                    && state.message.as_deref() == Some("unknown key: vz")
+        ));
+
+        press(&mut app, KeyCode::Char('h'));
+        press(&mut app, KeyCode::Char('o'));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::Transient(state)
+                if state.message.is_some() && state.prefix == Some('h')
+        ));
+    }
+}
+
+#[test]
 fn view_history_is_non_empty_and_bounded_to_one_hundred() {
     let mut history = ViewHistory::new(Route::Overview);
     for index in 0..250 {
