@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use tale::app::{App, Overlay, Route, ShutdownState, SourceMode};
+use tale::app::{App, InteractionMode, Route, ShutdownState, SourceMode, ViewFrame, ViewHistory};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{SortDirection, SortField, SortSpec};
@@ -60,6 +60,13 @@ fn load_app(app: &mut App) {
         observed_at: MOCK_NOW,
     }));
     assert!(update.is_empty());
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        code,
+        KeyModifiers::NONE,
+    ))));
 }
 
 #[test]
@@ -135,36 +142,27 @@ fn selection_is_by_device_id_across_sort_and_filter() {
 }
 
 #[test]
-fn overlay_stack_restores_action_picker_after_help() {
+fn shell_modes_are_mutually_exclusive() {
     let app = mock_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
         load_app(&mut app);
-        app.route_stack = vec![Route::Devices];
+        app.set_route(Route::Devices);
         let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
             KeyCode::Char('a'),
             KeyModifiers::NONE,
         ))));
-        assert!(matches!(
-            app.overlays.last(),
-            Some(Overlay::ActionPicker(_))
-        ));
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
         let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
             KeyCode::Char('?'),
             KeyModifiers::NONE,
         ))));
-        assert!(matches!(
-            app.overlays.as_slice(),
-            [Overlay::ActionPicker(_), Overlay::Help(_)]
-        ));
+        assert!(matches!(app.interaction, InteractionMode::HelpSheet(_)));
         let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
             KeyCode::Esc,
             KeyModifiers::NONE,
         ))));
-        assert!(matches!(
-            app.overlays.as_slice(),
-            [Overlay::ActionPicker(_)]
-        ));
+        assert!(matches!(app.interaction, InteractionMode::Normal));
     }
 }
 
@@ -176,18 +174,15 @@ fn pasted_text_is_editor_only_and_never_dispatches_global_keys() {
         let _ = app.update(Event::Input(InputEvent::Paste("q:devices".to_owned())));
         assert!(app.overlays.is_empty());
         assert!(matches!(app.shutdown_state, ShutdownState::Running));
-        app.route_stack = vec![Route::Devices];
+        app.set_route(Route::Devices);
         let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
             KeyCode::Char('/'),
             KeyModifiers::NONE,
         ))));
         let _ = app.update(Event::Input(InputEvent::Paste("online:true q".to_owned())));
-        assert!(matches!(
-            app.overlays.last(),
-            Some(Overlay::FilterEditor(_))
-        ));
-        if let Some(Overlay::FilterEditor(state)) = app.overlays.last() {
-            assert_eq!(state.input, "online:true q");
+        assert!(matches!(app.interaction, InteractionMode::FilterLine(_)));
+        if let InteractionMode::FilterLine(state) = &app.interaction {
+            assert_eq!(state.editor.input, "online:true q");
         }
         assert!(matches!(app.shutdown_state, ShutdownState::Running));
     }
@@ -225,6 +220,153 @@ fn quit_and_ctrl_c_follow_task_rules() {
             );
             assert!(matches!(app.shutdown_state, ShutdownState::Running));
         }
+    }
+}
+
+#[test]
+fn command_filter_and_browser_history_restore_and_branch() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste(
+            "devices owner:alice online:true".to_owned(),
+        )));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.current_route(), Route::Devices);
+        assert_eq!(app.views.devices.filter_draft, "owner:alice online:true");
+
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(app.current_route(), Route::Overview);
+        press(&mut app, KeyCode::Char(']'));
+        assert_eq!(app.current_route(), Route::Devices);
+        assert_eq!(app.views.devices.filter_draft, "owner:alice online:true");
+
+        press(&mut app, KeyCode::Char('['));
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("services".to_owned())));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.current_route(), Route::Services);
+        let length = app.view_history.frames.len();
+        press(&mut app, KeyCode::Char(']'));
+        assert_eq!(app.current_route(), Route::Services);
+        assert_eq!(app.view_history.frames.len(), length);
+    }
+}
+
+#[test]
+fn filter_invalid_last_good_and_escape_restore_the_full_point() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Devices);
+        let original = app.views.devices.selected_id.clone();
+        press(&mut app, KeyCode::Char('/'));
+        let _ = app.update(Event::Input(InputEvent::Paste("online:true".to_owned())));
+        assert_eq!(app.views.devices.filter_draft, "online:true");
+        let _ = app.update(Event::Input(InputEvent::Paste(" owner:\"".to_owned())));
+        assert!(matches!(
+            app.interaction,
+            InteractionMode::FilterLine(ref state) if state.error.is_some()
+        ));
+        assert_eq!(app.views.devices.filter_draft, "online:true");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.interaction, InteractionMode::Normal));
+        assert!(app.views.devices.filter_draft.is_empty());
+        assert_eq!(app.views.devices.selected_id, original);
+    }
+}
+
+#[test]
+fn transient_leaf_dispatches_without_list_navigation() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Devices);
+        press(&mut app, KeyCode::Char('a'));
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+        press(&mut app, KeyCode::Char('s'));
+        assert!(matches!(app.interaction, InteractionMode::Normal));
+        assert_eq!(app.tasks.all().len(), 1);
+    }
+}
+
+#[test]
+fn view_history_is_non_empty_and_bounded_to_one_hundred() {
+    let mut history = ViewHistory::new(Route::Overview);
+    for index in 0..250 {
+        let route = if index % 2 == 0 {
+            Route::Devices
+        } else {
+            Route::Users
+        };
+        let _ = history.append(ViewFrame::new(route));
+        assert!(!history.frames.is_empty());
+        assert!(history.cursor < history.frames.len());
+        assert!(history.frames.len() <= 100);
+    }
+    assert_eq!(history.frames.len(), 100);
+    let before = history.current().cloned();
+    let _ = history.backward();
+    let _ = history.forward();
+    assert_eq!(history.current(), before.as_ref());
+}
+
+#[test]
+fn missing_history_identity_restores_deterministically_with_notice() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Devices);
+        let selected = app
+            .devices_resource
+            .snapshot
+            .first()
+            .map(|device| device.id.clone());
+        assert!(selected.is_some());
+        app.views.devices.selected_id = selected.clone();
+
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("services".to_owned())));
+        press(&mut app, KeyCode::Enter);
+        let mut replacement = mock::devices();
+        replacement.retain(|device| Some(&device.id) != selected.as_ref());
+        let _ = app.update(Event::Source(SourceEvent::LoadSucceeded {
+            generation: 2,
+            devices: replacement,
+            observed_at: MOCK_NOW.saturating_add(1),
+        }));
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(app.current_route(), Route::Devices);
+        assert!(app.views.devices.selected_id.is_some());
+        assert_eq!(
+            app.runtime_error.as_deref(),
+            Some("previous selection no longer exists")
+        );
+    }
+}
+
+#[test]
+fn q_with_active_tasks_uses_confirmation_boundary() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        let task_id = app.tasks.create(
+            tale::action::ActionId::MockNonCancellable,
+            "active simulation",
+            MOCK_NOW,
+            false,
+        );
+        let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.overlay_title(), Some("quit"));
+        assert!(matches!(app.shutdown_state, ShutdownState::Running));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.shutdown_state, ShutdownState::Requested(_)));
     }
 }
 
@@ -450,7 +592,7 @@ fn stale_service_refresh_cannot_replace_newer_data_and_read_only_blocks_dispatch
         assert_eq!(app.services_snapshot.funnel.value, before);
 
         app.resolved_config.read_only = true;
-        app.route_stack = vec![Route::Services];
+        app.set_route(Route::Services);
         let _ = app.dispatch_action(tale::action::ActionId::ServicesFunnelReset);
         assert!(app.runtime_error.is_some());
         assert!(app.tasks.all().is_empty());

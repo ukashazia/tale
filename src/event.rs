@@ -206,6 +206,10 @@ pub enum CredentialEvent {
         result_id: u64,
         result: Result<(), String>,
     },
+    ClipboardTextCopied {
+        label: String,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

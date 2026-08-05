@@ -147,11 +147,11 @@ impl Route {
             "local" | "self" => Some(Self::Local),
             "devices" | "device" | "dev" | "nodes" => Some(Self::Devices),
             "users" | "user" => Some(Self::Users),
-            "routes" | "route" => Some(Self::Routes),
+            "routes" | "route" | "rt" => Some(Self::Routes),
             "dns" => Some(Self::Dns),
-            "access" | "policy" => Some(Self::Access),
-            "credentials" | "credential" | "keys" => Some(Self::Credentials),
-            "activity" | "tasks" => Some(Self::Activity),
+            "access" | "policy" | "acl" | "grants" => Some(Self::Access),
+            "credentials" | "credential" | "keys" | "auth" => Some(Self::Credentials),
+            "activity" | "tasks" | "logs" | "events" => Some(Self::Activity),
             "settings" | "config" => Some(Self::Settings),
             "services" | "service" | "serve" | "funnel" => Some(Self::Services),
             _ => None,
@@ -166,35 +166,88 @@ pub enum Focus {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct CommandPaletteState {
+pub struct LineEditorState {
     pub input: String,
-    pub candidates: Vec<Route>,
-    pub saved_views: Vec<String>,
+    pub cursor: usize,
+    pub scroll: usize,
+}
+
+impl LineEditorState {
+    pub fn new(input: String) -> Self {
+        let cursor = input.len();
+        Self {
+            input,
+            cursor,
+            scroll: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CompletionCandidate {
+    pub id: String,
+    pub insertion: String,
+    pub label: String,
+    pub description: String,
+    pub alias: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CommandLineState {
+    pub editor: LineEditorState,
+    pub candidates: Vec<CompletionCandidate>,
+    pub selected_completion: Option<usize>,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct FilterEditorState {
+pub struct FilterRestoration {
     pub input: String,
-    pub error: Option<String>,
+    pub expression: FilterExpression,
+    pub selection: Option<DeviceId>,
+    pub scroll: usize,
+    pub task_filter: String,
+    pub task_selection: Option<TaskId>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct HelpState {
-    pub searchable: bool,
+pub struct FilterLineState {
+    pub editor: LineEditorState,
+    pub candidates: Vec<CompletionCandidate>,
+    pub selected_completion: Option<usize>,
+    pub error: Option<String>,
+    pub restoration: FilterRestoration,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct HelpSheetState {
     pub query: String,
+    pub filtering: bool,
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ActionPickerState {
+pub enum TransientKind {
+    Action,
+    Copy,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TransientMenuState {
+    pub kind: TransientKind,
     pub actions: Vec<ActionId>,
-    pub selected: usize,
+    pub fields: Vec<CopyField>,
+    pub prefix: Option<char>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct CopyPickerState {
-    pub fields: Vec<CopyField>,
-    pub selected: usize,
+pub enum InteractionMode {
+    Normal,
+    CommandLine(CommandLineState),
+    FilterLine(FilterLineState),
+    Transient(TransientMenuState),
+    HelpSheet(HelpSheetState),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -454,11 +507,6 @@ impl CopyField {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Overlay {
-    CommandPalette(CommandPaletteState),
-    FilterEditor(FilterEditorState),
-    Help(HelpState),
-    ActionPicker(ActionPickerState),
-    CopyPicker(CopyPickerState),
     QuitConfirmation,
     TaskInspector(TaskId),
     SortPicker { selected: usize },
@@ -472,6 +520,99 @@ pub enum Overlay {
     PolicyEditor,
     SecretResult,
     AuditInvestigation,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ResourceIdentity {
+    Device(DeviceId),
+    Opaque(String),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ViewFrame {
+    pub route: Route,
+    pub focus: Focus,
+    pub selection: Option<ResourceIdentity>,
+    pub scroll_anchor: Option<ResourceIdentity>,
+    pub filter_text: String,
+    pub filter: FilterExpression,
+    pub task_filter: String,
+    pub sort: SortSpec,
+    pub section: Option<ServiceSection>,
+    pub saved_view: Option<String>,
+}
+
+impl ViewFrame {
+    pub fn new(route: Route) -> Self {
+        Self {
+            route,
+            focus: Focus::Collection,
+            selection: None,
+            scroll_anchor: None,
+            filter_text: String::new(),
+            filter: FilterExpression::empty(),
+            task_filter: String::new(),
+            sort: SortSpec::default(),
+            section: None,
+            saved_view: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ViewHistory {
+    pub frames: Vec<ViewFrame>,
+    pub cursor: usize,
+    pub capacity: usize,
+}
+
+impl ViewHistory {
+    pub fn new(route: Route) -> Self {
+        Self {
+            frames: vec![ViewFrame::new(route)],
+            cursor: 0,
+            capacity: 100,
+        }
+    }
+
+    pub fn current(&self) -> Option<&ViewFrame> {
+        self.frames.get(self.cursor)
+    }
+
+    fn replace_current(&mut self, frame: ViewFrame) {
+        if let Some(current) = self.frames.get_mut(self.cursor) {
+            *current = frame;
+        }
+    }
+
+    pub fn append(&mut self, frame: ViewFrame) -> bool {
+        if self.current() == Some(&frame) {
+            return false;
+        }
+        self.frames.truncate(self.cursor.saturating_add(1));
+        self.frames.push(frame);
+        if self.frames.len() > self.capacity {
+            self.frames.remove(0);
+        }
+        self.cursor = self.frames.len().saturating_sub(1);
+        true
+    }
+
+    pub fn backward(&mut self) -> Option<ViewFrame> {
+        if self.cursor == 0 {
+            return None;
+        }
+        self.cursor = self.cursor.saturating_sub(1);
+        self.frames.get(self.cursor).cloned()
+    }
+
+    pub fn forward(&mut self) -> Option<ViewFrame> {
+        if self.cursor.saturating_add(1) >= self.frames.len() {
+            return None;
+        }
+        self.cursor = self.cursor.saturating_add(1);
+        self.frames.get(self.cursor).cloned()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -575,7 +716,10 @@ pub enum ShutdownState {
 
 #[derive(Debug)]
 pub struct App {
-    pub route_stack: Vec<Route>,
+    pub view_history: ViewHistory,
+    pub interaction: InteractionMode,
+    pub command_history: Vec<String>,
+    command_history_cursor: Option<usize>,
     pub focus: Focus,
     pub overlays: Vec<Overlay>,
     pub views: Views,
@@ -720,7 +864,10 @@ impl App {
             Err(error) => (None, Some(format!("saved-view state is invalid: {error}"))),
         };
         Self {
-            route_stack: vec![Route::Overview],
+            view_history: ViewHistory::new(Route::Overview),
+            interaction: InteractionMode::Normal,
+            command_history: Vec::new(),
+            command_history_cursor: None,
             focus: Focus::Collection,
             overlays: Vec::new(),
             views: Views {
@@ -1316,6 +1463,10 @@ impl App {
                     Err(detail) => self.runtime_error = Some(detail),
                 }
             }
+            CredentialEvent::ClipboardTextCopied { label, result } => match result {
+                Ok(()) => self.copied_value = Some(label),
+                Err(detail) => self.runtime_error = Some(detail),
+            },
         }
         Vec::new()
     }
@@ -1364,6 +1515,34 @@ impl App {
         if !self.resolved_config.ui.mouse {
             return Vec::new();
         }
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            let layout = crate::ui::layout::compute(
+                ratatui::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: self.terminal_width,
+                    height: self.terminal_height,
+                },
+                self,
+            );
+            if !matches!(self.interaction, InteractionMode::Normal) {
+                return self.handle_interaction_mouse(mouse, layout.footer);
+            }
+            if self.resolved_config.ui.show_footer
+                && contains_point(layout.footer, mouse.column, mouse.row)
+            {
+                let context = self.action_context();
+                let mut x = layout.footer.x;
+                for (action_id, hint) in action::footer_actions(context, layout.footer.width) {
+                    let end = x.saturating_add(u16::try_from(hint.len()).map_or(u16::MAX, |v| v));
+                    if mouse.column >= x && mouse.column < end {
+                        return action_id.map_or_else(Vec::new, |id| self.dispatch_action(id));
+                    }
+                    x = end.saturating_add(2);
+                }
+                return Vec::new();
+            }
+        }
         let action = match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if self.focus == Focus::Collection
@@ -1388,6 +1567,70 @@ impl App {
                 Vec::new()
             }
         })
+    }
+
+    fn handle_interaction_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        area: ratatui::layout::Rect,
+    ) -> Vec<Effect> {
+        if !contains_point(area, mouse.column, mouse.row) {
+            return self.handle_interaction_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        let candidate_index = usize::from(mouse.row.saturating_sub(area.y));
+        match &mut self.interaction {
+            InteractionMode::CommandLine(state)
+                if candidate_index < state.candidates.len().min(6) =>
+            {
+                if let Some(candidate) = state.candidates.get(candidate_index) {
+                    apply_completion(&mut state.editor, candidate);
+                    state.selected_completion = Some(candidate_index);
+                }
+            }
+            InteractionMode::FilterLine(state)
+                if candidate_index < state.candidates.len().min(6) =>
+            {
+                if let Some(candidate) = state.candidates.get(candidate_index) {
+                    apply_completion(&mut state.editor, candidate);
+                    state.selected_completion = Some(candidate_index);
+                }
+                return self.update_live_filter();
+            }
+            InteractionMode::Transient(state) => {
+                let keys = transient_click_keys(state);
+                let mut x = area.x;
+                for (key, label) in keys {
+                    let end = x.saturating_add(u16::try_from(label.len()).map_or(u16::MAX, |v| v));
+                    if mouse.column >= x && mouse.column < end {
+                        return self.handle_transient_key(KeyEvent::new(
+                            KeyCode::Char(key),
+                            KeyModifiers::NONE,
+                        ));
+                    }
+                    x = end.saturating_add(2);
+                }
+            }
+            InteractionMode::Normal
+            | InteractionMode::HelpSheet(_)
+            | InteractionMode::CommandLine(_)
+            | InteractionMode::FilterLine(_) => {}
+        }
+        Vec::new()
+    }
+
+    fn action_context(&self) -> ActionContext {
+        match self.current_route() {
+            Route::Activity => ActionContext::Activity,
+            Route::Devices | Route::Services if self.focus == Focus::Inspector => {
+                ActionContext::Detail
+            }
+            Route::Devices
+            | Route::Users
+            | Route::Routes
+            | Route::Credentials
+            | Route::Services => ActionContext::Collection,
+            _ => ActionContext::Root,
+        }
     }
 
     fn focus_mouse_region(&mut self, column: u16, row: u16) {
@@ -1610,24 +1853,27 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) -> Vec<Effect> {
-        let saved_view_names = self
-            .saved_views
-            .as_ref()
-            .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names);
+        match &mut self.interaction {
+            InteractionMode::CommandLine(state) => {
+                insert_text(&mut state.editor, text);
+                state.error = None;
+                self.refresh_command_completions();
+                return Vec::new();
+            }
+            InteractionMode::FilterLine(state) => {
+                insert_text(&mut state.editor, text);
+                return self.update_live_filter();
+            }
+            InteractionMode::HelpSheet(state) if state.filtering => {
+                state.query.push_str(text);
+                return Vec::new();
+            }
+            _ => {}
+        }
         let Some(overlay) = self.overlays.last_mut() else {
             return Vec::new();
         };
         match overlay {
-            Overlay::CommandPalette(state) => {
-                state.input.push_str(text);
-                state.candidates = route_candidates(&state.input);
-                state.saved_views = filter_saved_view_candidates(&saved_view_names, &state.input);
-            }
-            Overlay::FilterEditor(state) => {
-                state.input.push_str(text);
-                state.error = None;
-            }
-            Overlay::Help(state) if state.searchable => state.query.push_str(text),
             Overlay::DiagnosticInput(state) => state.input.push_str(text),
             Overlay::OperatorForm(state) => {
                 if state.secret_editing {
@@ -1660,22 +1906,34 @@ impl App {
         if let Some(effect) = self.handle_text_key(key) {
             return effect;
         }
-        if key.code == KeyCode::Esc {
-            return self.pop_overlay_or_back();
-        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if !self.overlays.is_empty() {
+                return self.pop_overlay();
+            }
+            if !matches!(self.interaction, InteractionMode::Normal) {
+                return self
+                    .handle_interaction_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            }
             let effects = self.cancel_focused_task();
             if !effects.is_empty() {
                 return effects;
             }
             return self.request_shutdown(ShutdownReason::UserQuit);
         }
+        if !self.overlays.is_empty() {
+            if key.code == KeyCode::Esc {
+                return self.pop_overlay();
+            }
+            return self.handle_overlay_key(key);
+        }
+        if !matches!(self.interaction, InteractionMode::Normal) {
+            return self.handle_interaction_key(key);
+        }
         if key.code == KeyCode::Char('q') && key.modifiers.is_empty() {
             return self.handle_quit_key();
         }
-
-        if !self.overlays.is_empty() {
-            return self.handle_overlay_key(key);
+        if key.code == KeyCode::Esc {
+            return Vec::new();
         }
 
         let context = match self.current_route() {
@@ -1693,35 +1951,400 @@ impl App {
         self.dispatch_action(action_id)
     }
 
+    fn handle_interaction_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        match &self.interaction {
+            InteractionMode::CommandLine(_) => self.handle_command_line_key(key),
+            InteractionMode::FilterLine(_) => self.handle_filter_line_key(key),
+            InteractionMode::Transient(_) => self.handle_transient_key(key),
+            InteractionMode::HelpSheet(_) => self.handle_help_sheet_key(key),
+            InteractionMode::Normal => Vec::new(),
+        }
+    }
+
+    fn handle_command_line_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if key.code == KeyCode::Esc {
+            self.interaction = InteractionMode::Normal;
+            self.command_history_cursor = None;
+            return Vec::new();
+        }
+        if key.code == KeyCode::Enter {
+            let input = match &self.interaction {
+                InteractionMode::CommandLine(state) => state.editor.input.clone(),
+                _ => String::new(),
+            };
+            return self.accept_command(&input);
+        }
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.complete_command(key.code == KeyCode::BackTab);
+            return Vec::new();
+        }
+        if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            self.recall_command(key.code == KeyCode::Up);
+            return Vec::new();
+        }
+        let edited = if let InteractionMode::CommandLine(state) = &mut self.interaction {
+            edit_line(&mut state.editor, key)
+        } else {
+            false
+        };
+        if edited {
+            if let InteractionMode::CommandLine(state) = &mut self.interaction {
+                state.error = None;
+                state.selected_completion = None;
+            }
+            self.command_history_cursor = None;
+            self.refresh_command_completions();
+        }
+        Vec::new()
+    }
+
+    fn handle_filter_line_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if key.code == KeyCode::Esc {
+            let restoration = match &self.interaction {
+                InteractionMode::FilterLine(state) => Some(state.restoration.clone()),
+                _ => None,
+            };
+            if let Some(restoration) = restoration {
+                if self.current_route() == Route::Activity {
+                    self.task_filter = restoration.task_filter;
+                    self.tasks.selected = restoration.task_selection;
+                } else {
+                    self.views.devices.filter_draft = restoration.input;
+                    self.views.devices.applied_filter = restoration.expression;
+                    self.views.devices.selected_id = restoration.selection;
+                    self.views.devices.scroll = restoration.scroll;
+                    self.reconcile_selection(None);
+                }
+            }
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
+        if key.code == KeyCode::Enter {
+            let (input, valid) = match &self.interaction {
+                InteractionMode::FilterLine(state) => {
+                    (state.editor.input.clone(), state.error.is_none())
+                }
+                _ => (String::new(), false),
+            };
+            if valid {
+                return self.accept_filter(&input);
+            }
+            return Vec::new();
+        }
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.complete_filter(key.code == KeyCode::BackTab);
+            return self.update_live_filter();
+        }
+        let edited = if let InteractionMode::FilterLine(state) = &mut self.interaction {
+            edit_line(&mut state.editor, key)
+        } else {
+            false
+        };
+        if edited {
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.selected_completion = None;
+            }
+            return self.update_live_filter();
+        }
+        Vec::new()
+    }
+
+    fn handle_transient_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if key.code == KeyCode::Esc {
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
+        if key.code == KeyCode::Char('?') && key.modifiers.is_empty() {
+            self.interaction = InteractionMode::HelpSheet(HelpSheetState {
+                query: String::new(),
+                filtering: false,
+                scroll: 0,
+            });
+            return Vec::new();
+        }
+        let KeyCode::Char(character) = key.code else {
+            return Vec::new();
+        };
+        if !key.modifiers.is_empty() {
+            return Vec::new();
+        }
+        let (kind, actions, fields, prefix) = match &self.interaction {
+            InteractionMode::Transient(state) => (
+                state.kind.clone(),
+                state.actions.clone(),
+                state.fields.clone(),
+                state.prefix,
+            ),
+            _ => return Vec::new(),
+        };
+        let mut sequence = String::new();
+        if let Some(prefix) = prefix {
+            sequence.push(prefix);
+        }
+        sequence.push(character);
+        match kind {
+            TransientKind::Action => {
+                if let Some(action_id) = actions.iter().copied().find(|id| {
+                    action::transient_sequence(*id).is_some_and(|value| value == sequence)
+                }) {
+                    if let Some(reason) = self.action_unavailable_reason(action_id) {
+                        if let InteractionMode::Transient(state) = &mut self.interaction {
+                            state.message = Some(reason);
+                        }
+                        return Vec::new();
+                    }
+                    self.interaction = InteractionMode::Normal;
+                    return self.dispatch_action(action_id);
+                }
+                if prefix.is_none()
+                    && actions.iter().any(|id| {
+                        action::transient_sequence(*id)
+                            .is_some_and(|value| value.len() == 2 && value.starts_with(character))
+                    })
+                {
+                    if let InteractionMode::Transient(state) = &mut self.interaction {
+                        state.prefix = Some(character);
+                        state.message = None;
+                    }
+                    return Vec::new();
+                }
+            }
+            TransientKind::Copy => {
+                if let Some(field) = fields
+                    .iter()
+                    .copied()
+                    .find(|field| copy_field_key(*field) == character)
+                {
+                    let effects = self.copy_field(field);
+                    self.interaction = InteractionMode::Normal;
+                    return effects;
+                }
+            }
+        }
+        if let InteractionMode::Transient(state) = &mut self.interaction {
+            state.message = Some(format!("unknown key: {sequence}"));
+        }
+        Vec::new()
+    }
+
+    fn handle_help_sheet_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
+        let InteractionMode::HelpSheet(state) = &mut self.interaction else {
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Char('/') if !state.filtering => state.filtering = true,
+            KeyCode::Char(character) if state.filtering && key.modifiers.is_empty() => {
+                state.query.push(character);
+            }
+            KeyCode::Backspace if state.filtering => {
+                let _ = state.query.pop();
+            }
+            KeyCode::Char('j') | KeyCode::Down => state.scroll = state.scroll.saturating_add(1),
+            KeyCode::Char('k') | KeyCode::Up => state.scroll = state.scroll.saturating_sub(1),
+            KeyCode::PageDown => state.scroll = state.scroll.saturating_add(8),
+            KeyCode::PageUp => state.scroll = state.scroll.saturating_sub(8),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn update_live_filter(&mut self) -> Vec<Effect> {
+        let input = match &self.interaction {
+            InteractionMode::FilterLine(state) => state.editor.input.clone(),
+            _ => return Vec::new(),
+        };
+        if self.current_route() == Route::Activity {
+            self.task_filter = input;
+            self.tasks.select_filtered_first(&self.task_filter);
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.error = None;
+                state.candidates.clear();
+            }
+            return Vec::new();
+        }
+        match filter::parse(&input) {
+            Ok(expression) => {
+                self.views.devices.filter_draft = input.clone();
+                self.views.devices.applied_filter = expression;
+                self.reconcile_selection(None);
+                let candidates = self.filter_candidates(&input);
+                if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                    state.error = None;
+                    state.candidates = candidates;
+                }
+            }
+            Err(error) => {
+                let candidates = self.filter_candidates(&input);
+                if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                    state.error = Some(error.to_string());
+                    state.candidates = candidates;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn command_candidates(&self, input: &str) -> Vec<CompletionCandidate> {
+        if let Some((route, filter)) = input.split_once(' ')
+            && Route::parse(route) == Some(Route::Devices)
+        {
+            return self.filter_candidates(filter);
+        }
+        let fragment = input.split_whitespace().next().map_or("", |value| value);
+        let mut candidates = route_completion_catalog()
+            .into_iter()
+            .filter(|candidate| completion_matches(&candidate.insertion, fragment))
+            .collect::<Vec<_>>();
+        if let Some(name_fragment) = fragment.strip_prefix("view:") {
+            candidates = self
+                .saved_views
+                .as_ref()
+                .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names)
+                .into_iter()
+                .filter(|name| completion_matches(name, name_fragment))
+                .take(100)
+                .map(|name| CompletionCandidate {
+                    id: format!("saved:{name}"),
+                    insertion: format!("view:{name}"),
+                    label: format!("view:{name}"),
+                    description: "Saved view".to_owned(),
+                    alias: false,
+                })
+                .collect();
+        }
+        sort_completion_candidates(&mut candidates, fragment);
+        candidates.truncate(100);
+        candidates
+    }
+
+    fn filter_candidates(&self, input: &str) -> Vec<CompletionCandidate> {
+        let fragment = input.split_whitespace().last().map_or("", |value| value);
+        let schema = filter::device_schema();
+        let mut values = BTreeSet::new();
+        if let Some((field, value_fragment)) = fragment.split_once(':') {
+            match field.to_ascii_lowercase().as_str() {
+                "online" => values.extend(["true".to_owned(), "false".to_owned()]),
+                "os" => values.extend(
+                    self.devices_resource
+                        .snapshot
+                        .iter()
+                        .map(|device| device.os.label().to_owned()),
+                ),
+                "owner" => values.extend(
+                    self.devices_resource
+                        .snapshot
+                        .iter()
+                        .filter_map(|device| device.owner.clone()),
+                ),
+                "tag" => values.extend(
+                    self.devices_resource
+                        .snapshot
+                        .iter()
+                        .flat_map(|device| device.tags.iter().cloned()),
+                ),
+                _ => {}
+            }
+            return values
+                .into_iter()
+                .filter(|value| completion_matches(value, value_fragment))
+                .take(100)
+                .map(|value| CompletionCandidate {
+                    id: format!("value:{field}:{value}"),
+                    insertion: format!("{field}:{value}"),
+                    label: value,
+                    description: format!("Value for {field}"),
+                    alias: false,
+                })
+                .collect();
+        }
+        let mut candidates = schema
+            .fields
+            .iter()
+            .filter(|spec| {
+                completion_matches(spec.canonical_name, fragment)
+                    || spec
+                        .aliases
+                        .iter()
+                        .any(|alias| completion_matches(alias, fragment))
+            })
+            .map(|spec| CompletionCandidate {
+                id: format!("field:{}", spec.canonical_name),
+                insertion: format!("{}:", spec.canonical_name),
+                label: format!("{}:", spec.canonical_name),
+                description: spec.description.to_owned(),
+                alias: false,
+            })
+            .collect::<Vec<_>>();
+        sort_completion_candidates(&mut candidates, fragment);
+        candidates
+    }
+
+    fn refresh_command_completions(&mut self) {
+        let input = match &self.interaction {
+            InteractionMode::CommandLine(state) => state.editor.input.clone(),
+            _ => return,
+        };
+        let candidates = self.command_candidates(&input);
+        if let InteractionMode::CommandLine(state) = &mut self.interaction {
+            state.candidates = candidates;
+        }
+    }
+
+    fn complete_command(&mut self, reverse: bool) {
+        let InteractionMode::CommandLine(state) = &mut self.interaction else {
+            return;
+        };
+        cycle_completion(
+            &mut state.editor,
+            &state.candidates,
+            &mut state.selected_completion,
+            reverse,
+            true,
+        );
+    }
+
+    fn complete_filter(&mut self, reverse: bool) {
+        let InteractionMode::FilterLine(state) = &mut self.interaction else {
+            return;
+        };
+        cycle_completion(
+            &mut state.editor,
+            &state.candidates,
+            &mut state.selected_completion,
+            reverse,
+            false,
+        );
+    }
+
+    fn recall_command(&mut self, older: bool) {
+        if self.command_history.is_empty() {
+            return;
+        }
+        let last = self.command_history.len().saturating_sub(1);
+        let next = match (self.command_history_cursor, older) {
+            (None, true) => last,
+            (Some(current), true) => current.saturating_sub(1),
+            (Some(current), false) => current.saturating_add(1).min(last),
+            (None, false) => return,
+        };
+        self.command_history_cursor = Some(next);
+        if let Some(input) = self.command_history.get(next).cloned()
+            && let InteractionMode::CommandLine(state) = &mut self.interaction
+        {
+            state.editor = LineEditorState::new(input);
+            state.selected_completion = None;
+            state.error = None;
+        }
+        self.refresh_command_completions();
+    }
+
     fn handle_text_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
-        let saved_view_names = self
-            .saved_views
-            .as_ref()
-            .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names);
         let overlay = self.overlays.last_mut()?;
         match overlay {
-            Overlay::CommandPalette(state) => {
-                match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
-                        state.input.push(character);
-                        state.candidates = route_candidates(&state.input);
-                        state.saved_views =
-                            filter_saved_view_candidates(&saved_view_names, &state.input);
-                    }
-                    KeyCode::Backspace => {
-                        let _ = state.input.pop();
-                        state.candidates = route_candidates(&state.input);
-                        state.saved_views =
-                            filter_saved_view_candidates(&saved_view_names, &state.input);
-                    }
-                    KeyCode::Enter => {
-                        let input = state.input.clone();
-                        return Some(self.accept_command(&input));
-                    }
-                    _ => return None,
-                }
-                Some(Vec::new())
-            }
             Overlay::ServiceForm(state) => {
                 match key.code {
                     KeyCode::Char(character) if key.modifiers.is_empty() => {
@@ -1735,36 +2358,6 @@ impl App {
                     KeyCode::Enter => {
                         let state = state.clone();
                         return Some(self.accept_service_form(state));
-                    }
-                    _ => return None,
-                }
-                Some(Vec::new())
-            }
-            Overlay::FilterEditor(state) => {
-                match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
-                        state.input.push(character);
-                        state.error = None;
-                    }
-                    KeyCode::Backspace => {
-                        let _ = state.input.pop();
-                        state.error = None;
-                    }
-                    KeyCode::Enter => {
-                        let input = state.input.clone();
-                        return Some(self.accept_filter(&input));
-                    }
-                    _ => return None,
-                }
-                Some(Vec::new())
-            }
-            Overlay::Help(state) if state.searchable => {
-                match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
-                        state.query.push(character)
-                    }
-                    KeyCode::Backspace => {
-                        let _ = state.query.pop();
                     }
                     _ => return None,
                 }
@@ -1912,70 +2505,6 @@ impl App {
             return Vec::new();
         };
         match overlay {
-            Overlay::CommandPalette(state) => {
-                self.overlays.push(Overlay::CommandPalette(state));
-                Vec::new()
-            }
-            Overlay::FilterEditor(state) => {
-                self.overlays.push(Overlay::FilterEditor(state));
-                Vec::new()
-            }
-            Overlay::Help(mut state) => {
-                if key.code == KeyCode::Char('?') && key.modifiers.is_empty() {
-                    state.searchable = true;
-                }
-                self.overlays.push(Overlay::Help(state));
-                Vec::new()
-            }
-            Overlay::ActionPicker(mut state) => {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        state.selected =
-                            (state.selected + 1).min(state.actions.len().saturating_sub(1));
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        state.selected = state.selected.saturating_sub(1)
-                    }
-                    KeyCode::Enter => {
-                        let action_id = state.actions.get(state.selected).copied();
-                        if let Some(action_id) = action_id {
-                            return self.dispatch_action(action_id);
-                        }
-                    }
-                    KeyCode::Char('?') => {
-                        self.overlays.push(Overlay::ActionPicker(state.clone()));
-                        self.overlays.push(Overlay::Help(HelpState {
-                            searchable: false,
-                            query: String::new(),
-                        }));
-                        return Vec::new();
-                    }
-                    _ => {}
-                }
-                self.overlays.push(Overlay::ActionPicker(state));
-                Vec::new()
-            }
-            Overlay::CopyPicker(mut state) => {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        state.selected =
-                            (state.selected + 1).min(state.fields.len().saturating_sub(1));
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        state.selected = state.selected.saturating_sub(1)
-                    }
-                    KeyCode::Enter => {
-                        let field = state.fields.get(state.selected).copied();
-                        if let Some(field) = field {
-                            self.copy_field(field);
-                        }
-                        return Vec::new();
-                    }
-                    _ => {}
-                }
-                self.overlays.push(Overlay::CopyPicker(state));
-                Vec::new()
-            }
             Overlay::QuitConfirmation => {
                 if key.code == KeyCode::Enter
                     || (key.code == KeyCode::Char('y') && key.modifiers.is_empty())
@@ -2113,18 +2642,6 @@ impl App {
     }
 
     fn handle_quit_key(&mut self) -> Vec<Effect> {
-        if !self.overlays.is_empty() {
-            return self.pop_overlay_or_back();
-        }
-        if self.focus == Focus::Inspector {
-            self.focus = Focus::Collection;
-            return Vec::new();
-        }
-        if self.route_stack.len() > 1 {
-            self.route_stack.pop();
-            self.focus = Focus::Collection;
-            return Vec::new();
-        }
         if self.tasks.has_active() {
             self.overlays.push(Overlay::QuitConfirmation);
             Vec::new()
@@ -2133,7 +2650,7 @@ impl App {
         }
     }
 
-    fn pop_overlay_or_back(&mut self) -> Vec<Effect> {
+    fn pop_overlay(&mut self) -> Vec<Effect> {
         if let Some(overlay) = self.overlays.pop() {
             if matches!(overlay, Overlay::SecretResult) {
                 return self.close_secret_result();
@@ -2153,16 +2670,15 @@ impl App {
             }
             return Vec::new();
         }
-        if self.focus == Focus::Inspector {
-            self.focus = Focus::Collection;
-        } else if self.route_stack.len() > 1 {
-            self.route_stack.pop();
-        }
         Vec::new()
     }
 
     fn accept_command(&mut self, input: &str) -> Vec<Effect> {
         let trimmed = input.trim();
+        if trimmed.is_empty() {
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
         if let Some(name) = trimmed.strip_prefix("view:") {
             let name = name.trim();
             let known = self
@@ -2170,12 +2686,13 @@ impl App {
                 .as_ref()
                 .is_some_and(|saved_views| saved_views.store.apply(name).is_ok());
             if !known {
-                if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
+                if let InteractionMode::CommandLine(state) = &mut self.interaction {
                     state.error = Some(format!("unknown saved view: {name}"));
                 }
                 return Vec::new();
             }
-            self.overlays.pop();
+            self.interaction = InteractionMode::Normal;
+            self.remember_command(trimmed);
             return self.apply_saved_view_operation(SavedViewMutation::Apply {
                 name: name.to_owned(),
             });
@@ -2183,45 +2700,70 @@ impl App {
         let (route_text, filter_text) =
             trimmed.split_once(' ').map_or((trimmed, ""), |parts| parts);
         let Some(route) = Route::parse(route_text) else {
-            if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
+            if let InteractionMode::CommandLine(state) = &mut self.interaction {
                 state.error = Some("unknown route".to_owned());
             }
             return Vec::new();
         };
-        if !filter_text.trim().is_empty() && route == Route::Activity {
-            self.task_filter = filter_text.trim().to_owned();
-            self.tasks.select_filtered_first(&self.task_filter);
-        } else if !filter_text.trim().is_empty() && route != Route::Devices {
-            if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
+        if !filter_text.trim().is_empty() && route != Route::Devices && route != Route::Activity {
+            if let InteractionMode::CommandLine(state) = &mut self.interaction {
                 state.error = Some("filters are available for devices only".to_owned());
             }
             return Vec::new();
         }
-        if !filter_text.trim().is_empty() {
+        let parsed_filter = if !filter_text.trim().is_empty() && route == Route::Devices {
             match filter::parse(filter_text) {
-                Ok(expression) => {
-                    self.views.devices.filter_draft = filter_text.to_owned();
-                    self.views.devices.applied_filter = expression;
-                    self.reconcile_selection(None);
-                }
+                Ok(expression) => Some(expression),
                 Err(error) => {
-                    if let Some(Overlay::CommandPalette(state)) = self.overlays.last_mut() {
+                    if let InteractionMode::CommandLine(state) = &mut self.interaction {
                         state.error = Some(error.to_string());
                     }
                     return Vec::new();
                 }
             }
+        } else {
+            None
+        };
+        self.interaction = InteractionMode::Normal;
+        self.remember_command(trimmed);
+        let same_route = self.current_route() == route;
+        if same_route {
+            self.capture_current_frame();
         }
-        self.overlays.pop();
         self.navigate(route);
+        if route == Route::Activity {
+            self.task_filter = filter_text.trim().to_owned();
+            self.tasks.select_filtered_first(&self.task_filter);
+        }
+        if let Some(expression) = parsed_filter {
+            self.views.devices.filter_draft = filter_text.to_owned();
+            self.views.devices.applied_filter = expression;
+            self.reconcile_selection(None);
+        }
+        let frame = self.current_view_frame();
+        if same_route {
+            let _ = self.view_history.append(frame);
+        } else {
+            self.view_history.replace_current(frame);
+        }
         Vec::new()
+    }
+
+    fn remember_command(&mut self, command: &str) {
+        if self.command_history.last().map(String::as_str) != Some(command) {
+            self.command_history.push(command.to_owned());
+            if self.command_history.len() > 100 {
+                self.command_history.remove(0);
+            }
+        }
+        self.command_history_cursor = None;
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
         if self.current_route() == Route::Activity {
             self.task_filter = input.trim().to_owned();
             self.tasks.select_filtered_first(&self.task_filter);
-            self.overlays.pop();
+            self.interaction = InteractionMode::Normal;
             return Vec::new();
         }
         match filter::parse(input) {
@@ -2229,10 +2771,10 @@ impl App {
                 self.views.devices.filter_draft = input.to_owned();
                 self.views.devices.applied_filter = expression;
                 self.reconcile_selection(None);
-                self.overlays.pop();
+                self.interaction = InteractionMode::Normal;
             }
             Err(error) => {
-                if let Some(Overlay::FilterEditor(state)) = self.overlays.last_mut() {
+                if let InteractionMode::FilterLine(state) = &mut self.interaction {
                     state.error = Some(error.to_string());
                 }
             }
@@ -2241,10 +2783,107 @@ impl App {
     }
 
     fn navigate(&mut self, route: Route) {
-        if self.current_route() != route {
-            self.route_stack.push(route);
+        if self.current_route() == route {
+            return;
         }
+        self.capture_current_frame();
+        let frame = ViewFrame::new(route);
+        let _ = self.view_history.append(frame.clone());
+        self.restore_view_frame(&frame);
         self.focus = Focus::Collection;
+    }
+
+    pub fn set_route(&mut self, route: Route) {
+        self.view_history = ViewHistory::new(route);
+        self.restore_view_frame(&ViewFrame::new(route));
+    }
+
+    fn capture_current_frame(&mut self) {
+        let frame = self.current_view_frame();
+        self.view_history.replace_current(frame);
+    }
+
+    fn current_view_frame(&self) -> ViewFrame {
+        let route = self.current_route();
+        let selection = if route == Route::Devices {
+            self.views
+                .devices
+                .selected_id
+                .clone()
+                .map(ResourceIdentity::Device)
+        } else {
+            None
+        };
+        let section = (route == Route::Services).then_some(self.views.services.section);
+        ViewFrame {
+            route,
+            focus: self.focus,
+            selection: selection.clone(),
+            scroll_anchor: selection,
+            filter_text: if route == Route::Devices {
+                self.views.devices.filter_draft.clone()
+            } else {
+                String::new()
+            },
+            filter: if route == Route::Devices {
+                self.views.devices.applied_filter.clone()
+            } else {
+                FilterExpression::empty()
+            },
+            task_filter: if route == Route::Activity {
+                self.task_filter.clone()
+            } else {
+                String::new()
+            },
+            sort: self.views.devices.sort,
+            section,
+            saved_view: None,
+        }
+    }
+
+    fn restore_view_frame(&mut self, frame: &ViewFrame) {
+        self.focus = frame.focus;
+        if frame.route == Route::Devices {
+            self.views.devices.filter_draft = frame.filter_text.clone();
+            self.views.devices.applied_filter = frame.filter.clone();
+            self.views.devices.sort = frame.sort;
+            self.views.devices.selected_id = match &frame.selection {
+                Some(ResourceIdentity::Device(id)) => Some(id.clone()),
+                _ => None,
+            };
+            let requested = self.views.devices.selected_id.clone();
+            self.reconcile_selection(None);
+            if requested.is_some() && self.views.devices.selected_id != requested {
+                self.runtime_error = Some("previous selection no longer exists".to_owned());
+            }
+        }
+        if frame.route == Route::Services {
+            self.views.services.section = frame.section.unwrap_or(ServiceSection::Serve);
+            self.views.services.selected = 0;
+            self.views.services.scroll = 0;
+        }
+        if frame.route == Route::Activity {
+            self.task_filter = frame.task_filter.clone();
+            self.tasks.select_filtered_first(&self.task_filter);
+        }
+    }
+
+    fn move_history(&mut self, forward: bool) {
+        self.capture_current_frame();
+        let frame = if forward {
+            self.view_history.forward()
+        } else {
+            self.view_history.backward()
+        };
+        if let Some(frame) = frame {
+            self.restore_view_frame(&frame);
+        } else {
+            self.runtime_error = Some(if forward {
+                "already at newest view".to_owned()
+            } else {
+                "already at oldest view".to_owned()
+            });
+        }
     }
 
     pub fn dispatch_action(&mut self, action_id: ActionId) -> Vec<Effect> {
@@ -2280,42 +2919,62 @@ impl App {
         }
         match action_id {
             ActionId::AppQuit => self.handle_quit_key(),
-            ActionId::ViewCommandPalette => {
-                self.overlays
-                    .push(Overlay::CommandPalette(CommandPaletteState {
-                        input: String::new(),
-                        candidates: route_candidates(""),
-                        saved_views: self
-                            .saved_views
-                            .as_ref()
-                            .map_or_else(Vec::new, crate::saved_views::SavedViewsState::names),
-                        error: None,
-                    }));
+            ActionId::ViewCommandLine => {
+                self.interaction = InteractionMode::CommandLine(CommandLineState {
+                    editor: LineEditorState::new(String::new()),
+                    candidates: self.command_candidates(""),
+                    selected_completion: None,
+                    error: None,
+                });
                 Vec::new()
             }
             ActionId::ViewFilter => {
+                if !matches!(self.current_route(), Route::Devices | Route::Activity) {
+                    self.runtime_error = Some("this view has no filter schema".to_owned());
+                    return Vec::new();
+                }
                 let input = if self.current_route() == Route::Activity {
                     self.task_filter.clone()
                 } else {
                     self.views.devices.filter_draft.clone()
                 };
-                self.overlays.push(Overlay::FilterEditor(FilterEditorState {
-                    input,
+                let restoration = FilterRestoration {
+                    input: input.clone(),
+                    expression: self.views.devices.applied_filter.clone(),
+                    selection: self.views.devices.selected_id.clone(),
+                    scroll: self.views.devices.scroll,
+                    task_filter: self.task_filter.clone(),
+                    task_selection: self.tasks.selected,
+                };
+                self.interaction = InteractionMode::FilterLine(FilterLineState {
+                    editor: LineEditorState::new(input),
+                    candidates: self.filter_candidates(""),
+                    selected_completion: None,
                     error: None,
-                }));
+                    restoration,
+                });
                 Vec::new()
             }
             ActionId::ViewRefresh => self.start_refresh(false),
             ActionId::ViewRefreshAll => self.start_refresh(true),
             ActionId::ViewHelp => {
-                self.overlays.push(Overlay::Help(HelpState {
-                    searchable: false,
+                self.interaction = InteractionMode::HelpSheet(HelpSheetState {
                     query: String::new(),
-                }));
+                    filtering: false,
+                    scroll: 0,
+                });
                 Vec::new()
             }
             ActionId::ViewTasks => {
                 self.navigate(Route::Activity);
+                Vec::new()
+            }
+            ActionId::ViewHistoryBack => {
+                self.move_history(false);
+                Vec::new()
+            }
+            ActionId::ViewHistoryForward => {
+                self.move_history(true);
                 Vec::new()
             }
             ActionId::ViewServices => {
@@ -2568,98 +3227,29 @@ impl App {
                 Vec::new()
             }
             ActionId::ResourceActions => {
-                let mut actions = if self.current_route() == Route::Services {
-                    self.service_actions_for_section()
-                } else if self.admin.profile.is_some() && self.current_route() == Route::Devices {
-                    vec![
-                        ActionId::AdminDeviceRename,
-                        ActionId::AdminDeviceTagsReplace,
-                        ActionId::AdminDeviceApprove,
-                        ActionId::AdminDeviceRevokeApproval,
-                        ActionId::AdminDeviceKeyExpiryConfigure,
-                        ActionId::AdminDeviceKeyExpireNow,
-                        ActionId::AdminDeviceDelete,
-                    ]
-                } else if self.admin.profile.is_some() && self.current_route() == Route::Users {
-                    vec![
-                        ActionId::AdminUserApprove,
-                        ActionId::AdminUserRoleChange,
-                        ActionId::AdminUserSuspend,
-                        ActionId::AdminUserRestore,
-                        ActionId::AdminUserDelete,
-                    ]
-                } else if self.admin.profile.is_some() && self.current_route() == Route::Routes {
-                    vec![ActionId::AdminRoutesReplaceApprovals]
-                } else if self.admin.profile.is_some() && self.current_route() == Route::Dns {
-                    vec![
-                        ActionId::AdminDnsPreferencesEdit,
-                        ActionId::AdminDnsNameserversReplace,
-                        ActionId::AdminDnsSearchPathsReplace,
-                        ActionId::AdminDnsSplitCreate,
-                        ActionId::AdminDnsSplitEdit,
-                        ActionId::AdminDnsSplitRemove,
-                    ]
-                } else if self.source_mode == SourceMode::Mock {
-                    vec![
-                        ActionId::MockSuccess,
-                        ActionId::MockFailure,
-                        ActionId::MockCancellable,
-                        ActionId::MockNonCancellable,
-                    ]
-                } else if self.source_mode == SourceMode::Local {
-                    vec![
-                        ActionId::LocalConnect,
-                        ActionId::LocalDisconnect,
-                        ActionId::LocalPreferencesEdit,
-                        ActionId::LocalExitNodeSelect,
-                        ActionId::LocalRoutesEditAdvertisements,
-                        ActionId::LocalAccountSwitch,
-                        ActionId::LocalAccountLogin,
-                        ActionId::LocalAccountLogout,
-                        ActionId::LocalAccountRemove,
-                        ActionId::LocalSyspolicyReload,
-                        ActionId::LocalProbeConnection,
-                        ActionId::LocalWhois,
-                        ActionId::LocalSshOpen,
-                        ActionId::LocalNcOpen,
-                        ActionId::DiagnosticCopy,
-                    ]
-                } else {
-                    Vec::new()
-                };
-                actions.extend(self.phase_eight_resource_actions());
-                self.overlays.push(Overlay::ActionPicker(ActionPickerState {
+                let actions = self.contextual_actions();
+                if let Err(error) = action::validate_transient_sequences(&actions) {
+                    self.runtime_error = Some(error);
+                    return Vec::new();
+                }
+                self.interaction = InteractionMode::Transient(TransientMenuState {
+                    kind: TransientKind::Action,
                     actions,
-                    selected: 0,
-                }));
+                    fields: Vec::new(),
+                    prefix: None,
+                    message: None,
+                });
                 Vec::new()
             }
             ActionId::ResourceCopy => {
-                if self.current_route() == Route::Services
-                    && self.views.services.section == ServiceSection::Metrics
-                {
-                    self.overlays.push(Overlay::CopyPicker(CopyPickerState {
-                        fields: vec![CopyField::Metrics],
-                        selected: 0,
-                    }));
-                    return Vec::new();
-                }
-                let mut fields = vec![
-                    CopyField::DeviceId,
-                    CopyField::DisplayName,
-                    CopyField::Hostname,
-                    CopyField::Owner,
-                    CopyField::Addresses,
-                    CopyField::Tags,
-                ];
-                if self.source_mode == SourceMode::Local {
-                    fields.push(CopyField::PublicKey);
-                    fields.push(CopyField::Endpoint);
-                }
-                self.overlays.push(Overlay::CopyPicker(CopyPickerState {
+                let fields = self.contextual_copy_fields();
+                self.interaction = InteractionMode::Transient(TransientMenuState {
+                    kind: TransientKind::Copy,
+                    actions: Vec::new(),
                     fields,
-                    selected: 0,
-                }));
+                    prefix: None,
+                    message: None,
+                });
                 Vec::new()
             }
             ActionId::TaskCancel => self.cancel_focused_task(),
@@ -2704,8 +3294,8 @@ impl App {
             }
             ActionId::LocalWhois => self.open_whois_input(),
             ActionId::DiagnosticCopy => {
-                self.copy_diagnostic_summary();
-                Vec::new()
+                let value = self.diagnostic_summary();
+                self.copy_text("diagnostic summary", value)
             }
             ActionId::LocalConnect => self.open_mutation_confirmation(LocalMutation::Connect),
             ActionId::LocalDisconnect => {
@@ -2876,6 +3466,9 @@ impl App {
     }
 
     fn action_available(&self, action_id: ActionId, capability: Capability) -> bool {
+        if action_id == ActionId::ResourceCopy {
+            return !self.contextual_copy_fields().is_empty();
+        }
         match capability {
             Capability::Available if is_admin_action(action_id) => {
                 self.admin_action_available(action_id)
@@ -6840,6 +7433,22 @@ impl App {
         let route = Route::parse(&view.route)
             .filter(|route| route.label() == view.route)
             .ok_or_else(|| format!("saved view route is not canonical: {}", view.route))?;
+        if route != Route::Devices
+            && (view.wide_columns
+                || !view.columns.is_empty()
+                || !view.filters.is_empty()
+                || !view.sort.is_empty())
+        {
+            return Err(format!(
+                "saved view route {} has no active structured-view adapter",
+                view.route
+            ));
+        }
+        let same_route = self.current_route() == route;
+        if same_route {
+            self.capture_current_frame();
+        }
+        self.navigate(route);
         if route == Route::Devices {
             let terms = view
                 .filters
@@ -6876,17 +7485,14 @@ impl App {
                 view.wide_columns || view.columns.iter().any(|column| column == "version");
             self.views.devices.columns = view.columns.clone();
             self.reconcile_selection(None);
-        } else if view.wide_columns
-            || !view.columns.is_empty()
-            || !view.filters.is_empty()
-            || !view.sort.is_empty()
-        {
-            return Err(format!(
-                "saved view route {} has no active structured-view adapter",
-                view.route
-            ));
         }
-        self.navigate(route);
+        let mut frame = self.current_view_frame();
+        frame.saved_view = Some(view.name.clone());
+        if same_route {
+            let _ = self.view_history.append(frame);
+        } else {
+            self.view_history.replace_current(frame);
+        }
         Ok(())
     }
 
@@ -9045,6 +9651,94 @@ impl App {
         line_count.saturating_sub(viewport)
     }
 
+    pub fn contextual_actions(&self) -> Vec<ActionId> {
+        let mut actions = if self.current_route() == Route::Services {
+            self.service_actions_for_section()
+        } else if self.admin.profile.is_some() && self.current_route() == Route::Devices {
+            vec![
+                ActionId::AdminDeviceRename,
+                ActionId::AdminDeviceTagsReplace,
+                ActionId::AdminDeviceApprove,
+                ActionId::AdminDeviceRevokeApproval,
+                ActionId::AdminDeviceKeyExpiryConfigure,
+                ActionId::AdminDeviceKeyExpireNow,
+                ActionId::AdminDeviceDelete,
+            ]
+        } else if self.admin.profile.is_some() && self.current_route() == Route::Users {
+            vec![
+                ActionId::AdminUserApprove,
+                ActionId::AdminUserRoleChange,
+                ActionId::AdminUserSuspend,
+                ActionId::AdminUserRestore,
+                ActionId::AdminUserDelete,
+            ]
+        } else if self.admin.profile.is_some() && self.current_route() == Route::Routes {
+            vec![ActionId::AdminRoutesReplaceApprovals]
+        } else if self.admin.profile.is_some() && self.current_route() == Route::Dns {
+            vec![
+                ActionId::AdminDnsPreferencesEdit,
+                ActionId::AdminDnsNameserversReplace,
+                ActionId::AdminDnsSearchPathsReplace,
+                ActionId::AdminDnsSplitCreate,
+                ActionId::AdminDnsSplitEdit,
+                ActionId::AdminDnsSplitRemove,
+            ]
+        } else if self.source_mode == SourceMode::Mock {
+            vec![
+                ActionId::MockSuccess,
+                ActionId::MockFailure,
+                ActionId::MockCancellable,
+                ActionId::MockNonCancellable,
+            ]
+        } else if self.source_mode == SourceMode::Local {
+            vec![
+                ActionId::LocalConnect,
+                ActionId::LocalDisconnect,
+                ActionId::LocalPreferencesEdit,
+                ActionId::LocalExitNodeSelect,
+                ActionId::LocalRoutesEditAdvertisements,
+                ActionId::LocalAccountSwitch,
+                ActionId::LocalAccountLogin,
+                ActionId::LocalAccountLogout,
+                ActionId::LocalAccountRemove,
+                ActionId::LocalSyspolicyReload,
+                ActionId::LocalProbeConnection,
+                ActionId::LocalWhois,
+                ActionId::LocalSshOpen,
+                ActionId::LocalNcOpen,
+                ActionId::DiagnosticCopy,
+            ]
+        } else {
+            Vec::new()
+        };
+        actions.extend(self.phase_eight_resource_actions());
+        actions
+    }
+
+    pub fn contextual_copy_fields(&self) -> Vec<CopyField> {
+        if self.current_route() == Route::Services
+            && self.views.services.section == ServiceSection::Metrics
+        {
+            return vec![CopyField::Metrics];
+        }
+        if self.current_route() != Route::Devices {
+            return Vec::new();
+        }
+        let mut fields = vec![
+            CopyField::DeviceId,
+            CopyField::DisplayName,
+            CopyField::Hostname,
+            CopyField::Owner,
+            CopyField::Addresses,
+            CopyField::Tags,
+        ];
+        if self.source_mode == SourceMode::Local {
+            fields.push(CopyField::PublicKey);
+            fields.push(CopyField::Endpoint);
+        }
+        fields
+    }
+
     fn service_actions_for_section(&self) -> Vec<ActionId> {
         match self.views.services.section {
             ServiceSection::Serve => vec![
@@ -9961,10 +10655,17 @@ impl App {
             ActionId::LocalWhois,
             ActionId::DiagnosticCopy,
         ];
-        self.overlays.push(Overlay::ActionPicker(ActionPickerState {
+        if let Err(error) = action::validate_transient_sequences(&actions) {
+            self.runtime_error = Some(error);
+            return Vec::new();
+        }
+        self.interaction = InteractionMode::Transient(TransientMenuState {
+            kind: TransientKind::Action,
             actions,
-            selected: 0,
-        }));
+            fields: Vec::new(),
+            prefix: None,
+            message: None,
+        });
         Vec::new()
     }
 
@@ -10119,7 +10820,7 @@ impl App {
         Vec::new()
     }
 
-    fn copy_diagnostic_summary(&mut self) {
+    fn diagnostic_summary(&self) -> String {
         let snapshot = self.local_resource.snapshot.as_ref();
         let selected = self.selected_local_device();
         let diagnostic = self.local_diagnostics.values().last();
@@ -10167,7 +10868,7 @@ impl App {
             paths,
             public_endpoints,
         };
-        self.copied_value = Some(redact_diagnostic_report(&input).text);
+        redact_diagnostic_report(&input).text
     }
 
     fn cancel_focused_task(&mut self) -> Vec<Effect> {
@@ -11645,20 +12346,19 @@ impl App {
         self.reconcile_selection(None);
     }
 
-    fn copy_field(&mut self, field: CopyField) {
+    fn copy_field(&mut self, field: CopyField) -> Vec<Effect> {
         if field == CopyField::DiagnosticSummary {
-            self.copy_diagnostic_summary();
-            return;
+            let value = self.diagnostic_summary();
+            return self.copy_text(field.label(), value);
         }
         if field == CopyField::Metrics {
-            self.copied_value = Some(
-                self.services_snapshot
-                    .metrics
-                    .value
-                    .as_ref()
-                    .map_or_else(String::new, |metrics| metrics.text.clone()),
-            );
-            return;
+            let value = self
+                .services_snapshot
+                .metrics
+                .value
+                .as_ref()
+                .map_or_else(String::new, |metrics| metrics.text.clone());
+            return self.copy_text(field.label(), value);
         }
         if matches!(field, CopyField::PublicKey | CopyField::Endpoint) {
             let value = self.selected_local_device().and_then(|device| match field {
@@ -11666,14 +12366,14 @@ impl App {
                 CopyField::Endpoint => device.current_endpoint.clone(),
                 _ => None,
             });
-            self.copied_value = Some(match value {
+            let value = match value {
                 Some(value) => value,
                 None => "not returned".to_owned(),
-            });
-            return;
+            };
+            return self.copy_text(field.label(), value);
         }
         let Some(device) = self.selected_device() else {
-            return;
+            return Vec::new();
         };
         let value = match field {
             CopyField::DeviceId => device.id.to_string(),
@@ -11688,7 +12388,19 @@ impl App {
             CopyField::PublicKey | CopyField::Endpoint => "not returned".to_owned(),
             CopyField::DiagnosticSummary | CopyField::Metrics => "not returned".to_owned(),
         };
-        self.copied_value = Some(value);
+        self.copy_text(field.label(), value)
+    }
+
+    fn copy_text(&mut self, label: &str, text: String) -> Vec<Effect> {
+        if self.source_mode == SourceMode::Mock {
+            self.copied_value = Some(label.to_owned());
+            Vec::new()
+        } else {
+            vec![Effect::CopyText {
+                label: label.to_owned(),
+                text,
+            }]
+        }
     }
 
     pub fn selected_device(&self) -> Option<&Device> {
@@ -11709,19 +12421,13 @@ impl App {
     }
 
     pub fn current_route(&self) -> Route {
-        self.route_stack
-            .last()
-            .copied()
-            .map_or(Route::Overview, |route| route)
+        self.view_history
+            .current()
+            .map_or(Route::Overview, |frame| frame.route)
     }
 
     pub fn overlay_title(&self) -> Option<&'static str> {
         self.overlays.last().map(|overlay| match overlay {
-            Overlay::CommandPalette(_) => "command palette",
-            Overlay::FilterEditor(_) => "filter",
-            Overlay::Help(_) => "help",
-            Overlay::ActionPicker(_) => "actions",
-            Overlay::CopyPicker(_) => "copy field",
             Overlay::QuitConfirmation => "quit",
             Overlay::TaskInspector(_) => "task",
             Overlay::SortPicker { .. } => "sort",
@@ -12615,9 +13321,9 @@ fn policy_disallows_exit_override(policy: &[SystemPolicyEntry]) -> bool {
     })
 }
 
-fn route_candidates(input: &str) -> Vec<Route> {
-    let value = input.to_ascii_lowercase();
-    [
+fn route_completion_catalog() -> Vec<CompletionCandidate> {
+    let mut candidates = Vec::new();
+    for route in [
         Route::Overview,
         Route::Local,
         Route::Devices,
@@ -12629,28 +13335,265 @@ fn route_candidates(input: &str) -> Vec<Route> {
         Route::Activity,
         Route::Settings,
         Route::Services,
-    ]
-    .into_iter()
-    .filter(|route| {
-        route.label().starts_with(&value)
-            || route_aliases(*route)
-                .iter()
-                .any(|alias| alias.starts_with(&value))
-    })
-    .collect()
+    ] {
+        candidates.push(CompletionCandidate {
+            id: format!("route:{}", route.label()),
+            insertion: route.label().to_owned(),
+            label: route.label().to_owned(),
+            description: format!("{} view", route.label()),
+            alias: false,
+        });
+        for alias in route_aliases(route) {
+            candidates.push(CompletionCandidate {
+                id: format!("alias:{}:{alias}", route.label()),
+                insertion: (*alias).to_owned(),
+                label: (*alias).to_owned(),
+                description: format!("Alias for {}", route.label()),
+                alias: true,
+            });
+        }
+    }
+    candidates
 }
 
-fn filter_saved_view_candidates(names: &[String], input: &str) -> Vec<String> {
-    let query = input.to_ascii_lowercase();
-    names
-        .iter()
-        .filter(|name| {
-            format!("view:{name}")
-                .to_ascii_lowercase()
-                .starts_with(&query)
-        })
-        .cloned()
-        .collect()
+fn completion_matches(value: &str, fragment: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    let fragment = fragment.to_ascii_lowercase();
+    value.starts_with(&fragment) || value.contains(&fragment)
+}
+
+fn sort_completion_candidates(candidates: &mut [CompletionCandidate], fragment: &str) {
+    let fragment = fragment.to_ascii_lowercase();
+    candidates.sort_by(|left, right| {
+        let left_prefix = left.insertion.to_ascii_lowercase().starts_with(&fragment);
+        let right_prefix = right.insertion.to_ascii_lowercase().starts_with(&fragment);
+        right_prefix
+            .cmp(&left_prefix)
+            .then_with(|| left.alias.cmp(&right.alias))
+            .then_with(|| left.label.cmp(&right.label))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+fn edit_line(editor: &mut LineEditorState, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char(character), modifiers)
+            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            let mut encoded = [0_u8; 4];
+            insert_text(editor, character.encode_utf8(&mut encoded));
+            true
+        }
+        (KeyCode::Left, _) => {
+            editor.cursor = previous_scalar_boundary(&editor.input, editor.cursor);
+            true
+        }
+        (KeyCode::Right, _) => {
+            editor.cursor = next_scalar_boundary(&editor.input, editor.cursor);
+            true
+        }
+        (KeyCode::Home, _) => {
+            editor.cursor = 0;
+            true
+        }
+        (KeyCode::End, _) => {
+            editor.cursor = editor.input.len();
+            true
+        }
+        (KeyCode::Backspace, _) => {
+            let previous = previous_scalar_boundary(&editor.input, editor.cursor);
+            if previous != editor.cursor {
+                editor.input.replace_range(previous..editor.cursor, "");
+                editor.cursor = previous;
+            }
+            true
+        }
+        (KeyCode::Delete, _) => {
+            let next = next_scalar_boundary(&editor.input, editor.cursor);
+            if next != editor.cursor {
+                editor.input.replace_range(editor.cursor..next, "");
+            }
+            true
+        }
+        (KeyCode::Char('w'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            let before = &editor.input[..editor.cursor];
+            let trimmed = before.trim_end_matches(char::is_whitespace);
+            let start = trimmed
+                .char_indices()
+                .rev()
+                .find(|(_, character)| character.is_whitespace())
+                .map_or(0, |(index, character)| index + character.len_utf8());
+            editor.input.replace_range(start..editor.cursor, "");
+            editor.cursor = start;
+            true
+        }
+        (KeyCode::Char('u'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            editor.input.replace_range(..editor.cursor, "");
+            editor.cursor = 0;
+            true
+        }
+        (KeyCode::Char('k'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            editor.input.truncate(editor.cursor);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn insert_text(editor: &mut LineEditorState, text: &str) {
+    editor.input.insert_str(editor.cursor, text);
+    editor.cursor = editor.cursor.saturating_add(text.len());
+}
+
+fn previous_scalar_boundary(value: &str, cursor: usize) -> usize {
+    value[..cursor]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(index, _)| index)
+}
+
+fn next_scalar_boundary(value: &str, cursor: usize) -> usize {
+    value[cursor..]
+        .char_indices()
+        .nth(1)
+        .map_or(value.len(), |(index, _)| cursor.saturating_add(index))
+}
+
+fn cycle_completion(
+    editor: &mut LineEditorState,
+    candidates: &[CompletionCandidate],
+    selected: &mut Option<usize>,
+    reverse: bool,
+    add_route_delimiter: bool,
+) {
+    if candidates.is_empty() {
+        return;
+    }
+    let start = editor.input[..editor.cursor]
+        .rfind(char::is_whitespace)
+        .map_or(0, |position| position.saturating_add(1));
+    let fragment = &editor.input[start..editor.cursor];
+    if selected.is_none() && !reverse {
+        let prefix_candidates = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .insertion
+                    .to_ascii_lowercase()
+                    .starts_with(&fragment.to_ascii_lowercase())
+            })
+            .map(|candidate| candidate.insertion.as_str())
+            .collect::<Vec<_>>();
+        if let Some(common) = longest_common_prefix(&prefix_candidates)
+            && common.len() > fragment.len()
+        {
+            editor.input.replace_range(start..editor.cursor, &common);
+            editor.cursor = start.saturating_add(common.len());
+            if add_route_delimiter
+                && prefix_candidates.len() == 1
+                && start == 0
+                && !common.starts_with("view:")
+            {
+                insert_text(editor, " ");
+            }
+            return;
+        }
+    }
+    let index = match (*selected, reverse) {
+        (None, false) => 0,
+        (None, true) => candidates.len().saturating_sub(1),
+        (Some(current), false) => current.saturating_add(1) % candidates.len(),
+        (Some(0), true) => candidates.len().saturating_sub(1),
+        (Some(current), true) => current.saturating_sub(1),
+    };
+    if let Some(candidate) = candidates.get(index) {
+        editor
+            .input
+            .replace_range(start..editor.cursor, &candidate.insertion);
+        editor.cursor = start.saturating_add(candidate.insertion.len());
+        *selected = Some(index);
+    }
+}
+
+fn apply_completion(editor: &mut LineEditorState, candidate: &CompletionCandidate) {
+    let start = editor.input[..editor.cursor]
+        .rfind(char::is_whitespace)
+        .map_or(0, |position| position.saturating_add(1));
+    editor
+        .input
+        .replace_range(start..editor.cursor, &candidate.insertion);
+    editor.cursor = start.saturating_add(candidate.insertion.len());
+}
+
+fn transient_click_keys(state: &TransientMenuState) -> Vec<(char, String)> {
+    match state.kind {
+        TransientKind::Action => {
+            let mut entries = vec![(char::MAX, "Actions".to_owned())];
+            for id in &state.actions {
+                let Some(sequence) = action::transient_sequence(*id) else {
+                    continue;
+                };
+                if let Some(prefix) = state.prefix {
+                    if !sequence.starts_with(prefix) || sequence.len() != 2 {
+                        continue;
+                    }
+                } else if sequence.len() == 2 {
+                    let key = sequence.chars().next().map_or(' ', |value| value);
+                    if entries.iter().any(|(existing, _)| *existing == key) {
+                        continue;
+                    }
+                    entries.push((key, format!("{key} …")));
+                    continue;
+                }
+                let key = sequence.chars().last().map_or(' ', |value| value);
+                let label = action::find_action(*id).map_or(id.as_str(), |spec| spec.label);
+                entries.push((key, format!("{key} {label}")));
+            }
+            entries
+        }
+        TransientKind::Copy => state
+            .fields
+            .iter()
+            .map(|field| {
+                let key = copy_field_key(*field);
+                (key, format!("{key} {}", field.label()))
+            })
+            .collect(),
+    }
+}
+
+fn longest_common_prefix(values: &[&str]) -> Option<String> {
+    let first = values.first()?;
+    let mut end = first.len();
+    for value in values.iter().skip(1) {
+        end = first
+            .char_indices()
+            .take_while(|(index, character)| {
+                value
+                    .get(*index..)
+                    .is_some_and(|tail| tail.starts_with(*character))
+            })
+            .map(|(index, character)| index.saturating_add(character.len_utf8()))
+            .last()
+            .map_or(0, |value| value)
+            .min(end);
+    }
+    first.get(..end).map(str::to_owned)
+}
+
+const fn copy_field_key(field: CopyField) -> char {
+    match field {
+        CopyField::DeviceId => 'i',
+        CopyField::DisplayName => 'n',
+        CopyField::Hostname => 'h',
+        CopyField::Owner => 'o',
+        CopyField::Addresses => 'a',
+        CopyField::Tags => 't',
+        CopyField::PublicKey => 'p',
+        CopyField::Endpoint => 'e',
+        CopyField::DiagnosticSummary => 'd',
+        CopyField::Metrics => 'm',
+    }
 }
 
 fn parse_service_fields(input: &str) -> Result<BTreeMap<String, String>, String> {
@@ -13888,11 +14831,11 @@ fn route_aliases(route: Route) -> &'static [&'static str] {
         Route::Local => &["self"],
         Route::Devices => &["device", "dev", "nodes"],
         Route::Users => &["user"],
-        Route::Routes => &["route"],
+        Route::Routes => &["route", "rt"],
         Route::Dns => &[],
-        Route::Access => &["policy"],
-        Route::Credentials => &["credential", "keys"],
-        Route::Activity => &["tasks"],
+        Route::Access => &["policy", "acl", "grants"],
+        Route::Credentials => &["credential", "keys", "auth"],
+        Route::Activity => &["tasks", "logs", "events"],
         Route::Settings => &["config"],
         Route::Services => &["service", "serve", "funnel"],
     }

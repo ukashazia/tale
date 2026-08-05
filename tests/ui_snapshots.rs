@@ -5,7 +5,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use tale::action::ActionId;
 
-use tale::app::{App, Focus, Overlay, Route};
+use tale::app::{App, Focus, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, ColorMode, EnvironmentValues, SymbolsMode};
 use tale::event::{Event, InputEvent, SourceEvent};
@@ -51,7 +51,7 @@ fn mock_app() -> Option<App> {
 
 fn populated_app() -> Option<App> {
     let mut app = mock_app()?;
-    app.route_stack = vec![Route::Devices];
+    app.set_route(Route::Devices);
     let _ = app.update(Event::Source(SourceEvent::LoadSucceeded {
         generation: 1,
         devices: mock::devices(),
@@ -92,6 +92,85 @@ fn assert_frame_shape(lines: &[String], width: u16, height: u16) {
             .iter()
             .all(|line| line.chars().count() >= usize::from(width.saturating_sub(1)))
     );
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        code,
+        KeyModifiers::NONE,
+    ))));
+}
+
+#[test]
+fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
+    for (width, height) in [(160, 45), (110, 30), (80, 24), (60, 18)] {
+        let app = populated_app();
+        assert!(app.is_some());
+        if let Some(mut app) = app {
+            press(&mut app, KeyCode::Char(':'));
+            let _ = app.update(Event::Input(InputEvent::Paste("dev".to_owned())));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(lines.last().is_some_and(|line| line.contains(": dev")));
+                assert!(lines.last().is_some_and(|line| line.contains('█')));
+            }
+
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Char('/'));
+            let _ = app.update(Event::Input(InputEvent::Paste("owner:\"".to_owned())));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(lines.last().is_some_and(|line| line.contains("/ owner")));
+                assert!(lines.last().is_some_and(|line| line.contains("column")));
+            }
+
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Char('a'));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(lines.last().is_some_and(|line| line.contains("Actions")));
+                assert!(
+                    !lines.iter().take(usize::from(height / 2)).any(|line| {
+                        line.contains("Actions ›") || line.contains("Esc cancel")
+                    })
+                );
+            }
+
+            press(&mut app, KeyCode::Char('v'));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(
+                    lines
+                        .last()
+                        .is_some_and(|line| line.contains("Actions › v"))
+                );
+            }
+
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Char('y'));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(lines.last().is_some_and(|line| line.contains("Copy")));
+            }
+
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Char('?'));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                let help_row = lines.iter().position(|line| line.contains("help ·"));
+                assert!(help_row.is_some());
+                if let Some(help_row) = help_row {
+                    assert!(help_row >= usize::from(height.saturating_mul(2) / 5));
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -168,7 +247,7 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
     let error = mock_app();
     assert!(error.is_some());
     if let Some(mut error) = error {
-        error.route_stack = vec![Route::Devices];
+        error.set_route(Route::Devices);
         let _ = error.update(Event::Source(SourceEvent::LoadFailed {
             generation: 1,
             detail: "fictional source failure".to_owned(),
@@ -192,12 +271,12 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
             KeyCode::Char('?'),
             KeyModifiers::NONE,
         ))));
-        assert!(matches!(overlay.overlays.last(), Some(Overlay::Help(_))));
+        assert!(matches!(overlay.interaction, InteractionMode::HelpSheet(_)));
         let lines = lines_at(&overlay, 80, 24);
         assert!(lines.is_some());
         if let Some(lines) = lines {
             assert!(lines.iter().any(|line| line.contains("help")));
-            assert!(lines.iter().any(|line| line.contains("collection")));
+            assert!(lines.iter().any(|line| line.contains("Navigation")));
         }
     }
 
@@ -279,7 +358,7 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
         None => return,
     };
     activity.resolved_config.ui.mouse = true;
-    activity.route_stack = vec![Route::Activity];
+    activity.set_route(Route::Activity);
     let first = activity
         .tasks
         .create(ActionId::MockSuccess, "first task", 1, false);
@@ -294,6 +373,49 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
         modifiers: KeyModifiers::NONE,
     })));
     assert_eq!(activity.tasks.selected, Some(second));
+}
+
+#[test]
+fn mouse_footer_completion_transient_and_outside_cancel_match_keys() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.resolved_config.ui.mouse = true;
+        app.terminal_width = 80;
+        app.terminal_height = 24;
+
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("dev".to_owned())));
+        let layout = tale::ui::layout::compute(ratatui::layout::Rect::new(0, 0, 80, 24), &app);
+        let _ = app.update(Event::Input(InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: layout.footer.y,
+            modifiers: KeyModifiers::NONE,
+        })));
+        assert!(matches!(
+            app.interaction,
+            InteractionMode::CommandLine(ref state) if !state.editor.input.is_empty()
+        ));
+
+        let _ = app.update(Event::Input(InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })));
+        assert!(matches!(app.interaction, InteractionMode::Normal));
+
+        press(&mut app, KeyCode::Char('a'));
+        let _ = app.update(Event::Input(InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 23,
+            modifiers: KeyModifiers::NONE,
+        })));
+        assert_eq!(app.tasks.all().len(), 1);
+        assert!(matches!(app.interaction, InteractionMode::Normal));
+    }
 }
 
 #[test]

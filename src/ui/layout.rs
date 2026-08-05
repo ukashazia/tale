@@ -1,6 +1,6 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, InteractionMode};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum LayoutMode {
@@ -43,6 +43,19 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
     } else {
         LayoutMode::Compact
     };
+    let interaction_height = match &app.interaction {
+        InteractionMode::Normal => 1,
+        InteractionMode::CommandLine(state) => {
+            u16::try_from(state.candidates.len().min(6).saturating_add(1)).map_or(7, |value| value)
+        }
+        InteractionMode::FilterLine(state) => {
+            u16::try_from(state.candidates.len().min(6).saturating_add(1)).map_or(7, |value| value)
+        }
+        InteractionMode::Transient(_) => 1,
+        InteractionMode::HelpSheet(_) => area.height.saturating_mul(3) / 5,
+    }
+    .max(1)
+    .min(area.height.saturating_sub(4));
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -50,7 +63,7 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(interaction_height),
         ])
         .split(area);
     let content = vertical[2];

@@ -55,6 +55,16 @@ new terminal session if necessary. Tale restores terminal state on handled
 errors, cancellation, and fatal render paths; the terminal matrix is still
 evidence-gated and unsupported terminals are not claimed.
 
+## Interaction and navigation recovery
+
+`Esc` cancels an active `:`, `/`, `a`, `y`, or help interaction; it does not
+navigate in normal mode. Use `[` and `]` for view back/forward. A boundary notice
+means there is no older/newer frame. Navigating after going back intentionally
+discards the forward branch. If a restored resource no longer exists, Tale
+selects the first deterministic visible resource and reports that the previous
+selection disappeared. Resize does not discard active editor text; below 60x18
+the prompt and `Esc cancel` remain visible with the minimum-size message.
+
 ## Doctor support bundle
 
 Run `tale doctor` for a bounded report. To save one, choose an explicit new

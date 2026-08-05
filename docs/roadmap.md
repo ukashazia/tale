@@ -177,9 +177,10 @@ cancel background tasks. No Tailscale installation or network is used.
 
 - Render header, view title, collection, inspector, notification line, and
   contextual footer.
-- Implement route stack, pane focus, overlay stack, and back behavior.
+- Implement pane focus and the initial navigation model; Specification 12
+  replaces it with bounded browser-style view history.
 - Add `:`, `/`, `?`, `Tab`, `Esc`, `r`, `R`, `@`, `q`, and collection movement.
-- Add command-palette completion for routes and aliases.
+- Add route and alias completion; Specification 12 moves it to the inline `:` prompt.
 - Add responsive layouts for 60x18, 80x24, 110x30, and 160x45.
 
 Only Overview, Devices, Activity, and Settings routes exist in this phase. Other
@@ -190,7 +191,8 @@ routes enter the registry when their first real slice ships.
 - Define stable action IDs, labels, contexts, bindings, capability reason, and
   risk metadata.
 - Generate footer hints and searchable full help from the registry.
-- Add the contextual action and copy-field pickers.
+- Add contextual actions and copy fields; Specification 12 replaces list pickers
+  with direct `a` and `y` transient key menus.
 - Prove that an unavailable action cannot be dispatched by a hidden binding.
 
 #### 1.5 Task engine and mock source
@@ -773,7 +775,7 @@ access questions.
 
 - Persist route, structured filter, stable sort, and selected column set under a
   user-chosen name.
-- Add a saved-view picker to command mode.
+- Add saved-view completion after `view:` in inline command mode.
 - Do not persist selected resource IDs, source data, or credential information.
 - Reject saved views referencing removed fields after a breaking config change;
   do not migrate or silently reinterpret them.

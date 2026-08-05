@@ -133,11 +133,11 @@ Priority meanings:
 | Feature | Priority | Contract |
 | --- | --- | --- |
 | Combined health overview | Foundation | local state, peer counts, admin freshness, approvals, expiring keys, route warnings, failed tasks |
-| Command palette | Foundation | route by resource name or alias; autocomplete; never execute arbitrary shell text |
+| Inline command line | Foundation | bottom `:` prompt; route by resource name, alias, or saved view; schema completion; never execute arbitrary shell text |
 | Contextual filter and sort | Foundation | immediate local filtering; AND across filter terms, OR within multi-values |
 | Saved views | Power | named resource, filter, sort, and column selection; no credential data |
 | Cross-resource jump | Core | follow owner, tag, route advertiser, audit target, or policy selector |
-| Task and command history | Foundation | bounded, redacted, current-session history with optional non-secret persistence |
+| View and command history | Foundation | 100-frame back/forward navigation plus 100 successful commands; process-local, bounded, and non-secret |
 
 ### Local client
 

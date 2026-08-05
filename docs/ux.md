@@ -2,7 +2,7 @@
 
 ## Information architecture
 
-Tale is resource-oriented. A command palette provides direct navigation; the UI
+Tale is resource-oriented. A bottom `:` command line provides direct navigation; the UI
 does not spend permanent width on a large sidebar.
 
 Canonical routes and aliases:
@@ -38,7 +38,7 @@ Wide terminals use a collection-and-inspector layout:
 │ …                                   │ Tags, routes, key, posture  │
 │                                     │ Sources: local 1s/admin 12s │
 ├─────────────────────────────────────┴─────────────────────────────┤
-│ a actions  / filter  : views  r refresh  @ tasks  ? more          │
+│ a actions  y copy  / filter  : go  r refresh  [ back  ] forward ? │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,7 +48,8 @@ Wide terminals use a collection-and-inspector layout:
 - Below 80 columns, optional columns disappear in a documented priority order;
   every field remains available in details.
 - Below 60x18, Tale shows a minimum-size explanation instead of a corrupted UI.
-- Overlays never exceed the viewport and always have a keyboard escape path.
+- Command, filter, transient, completion, and help surfaces grow upward from
+  the final terminal row. Only alerts and confirmations are centered modals.
 
 The terminal's existing background is the default surface. Borders communicate
 focus, not decoration. Color is semantic and never the only state signal.
@@ -59,15 +60,16 @@ focus, not decoration. Color is semantic and never the only state signal.
 
 | Key | Action |
 | --- | --- |
-| `:` | open route command palette |
-| `/` | edit the active view's filter |
-| `?` | expand contextual help; press again for searchable full help |
-| `Tab` / `Shift+Tab` | move focus between visible panes |
-| `Esc` | cancel input, close overlay, or move one route back |
+| `:` | open the inline route command line |
+| `/` | edit the active view's filter inline with live valid results |
+| `?` | open contextual bottom help; `/` filters help labels and keys |
+| `Tab` / `Shift+Tab` | complete or cycle in command/filter editors |
+| `Esc` | cancel only the active interaction; no-op in normal mode |
+| `[` / `]` | restore the previous or next view-history frame |
 | `r` | refresh the active resource |
 | `R` | refresh every source used by the active route |
 | `@` | open task and command history |
-| `q` | move back; from the root, open quit confirmation if tasks are active, otherwise quit |
+| `q` | quit when safe; active tasks retain their confirmation boundary |
 | `Ctrl+c` | first press cancels the focused task/input; second press while idle quits |
 
 ### Collection bindings
@@ -82,18 +84,31 @@ focus, not decoration. Color is semantic and never the only state signal.
 | `Space` | toggle multi-selection when the current action supports a batch |
 | `s` | choose sort field and direction |
 | `w` | toggle standard and wide columns |
-| `a` | open the contextual action picker |
-| `y` | open the copy-field picker |
+| `a` | open a direct contextual key menu; the next registered key invokes an action |
+| `y` | open a direct copy-key menu; acknowledgement names only the field |
+| `H` / `L` | previous/next sibling section in Services |
 
-Direct destructive bindings are forbidden. Destructive operations live in the
-action picker and still require confirmation.
+Direct destructive bindings are forbidden. Destructive operations live behind
+the `a` prefix and still require their typed confirmation.
 
 ### Contextual help
 
-The footer is generated from the action registry and shows only currently valid
-bindings. When space is insufficient it ends with `? more`; it never truncates a
-key while leaving a misleading label. Disabled actions are visible in full help
-with their capability reason.
+The footer, transient menus, and bottom help sheet are generated from the action
+registry. When space is insufficient the footer ends with `? more`; it never
+truncates a key while leaving a misleading label. Disabled actions remain
+visible with their capability reason. Transients do not use row selection,
+arrows, or a timeout; `Esc` cancels and an unknown key leaves the menu open.
+
+The `:` editor supports Unicode-safe cursor movement, Home/End, adjacent scalar
+deletion, `Ctrl+w/u/k`, bounded successful-command history, and schema-aware
+Tab/Shift+Tab completion. The `/` editor applies every valid parse live, keeps
+the last valid rows during an invalid edit, and restores filter, stable
+selection, and scroll on `Esc`.
+
+View history is browser-style and bounded to 100 frames. New navigation after
+moving backward discards the forward branch. Frames restore stable identities,
+filters, sorts, focus, and Services sections against current data; they never
+restore forms, tasks, adapters, or closed one-time secrets.
 
 ## Filtering and sorting
 
@@ -123,7 +138,7 @@ There is no generic expression engine.
 All actions use the same sequence:
 
 1. Select one or more resources.
-2. Open `a actions`; unavailable actions include a reason.
+2. Press `a`, then the registered mnemonic; unavailable actions include a reason.
 3. Enter parameters in a typed form.
 4. Review a preview containing target, source, requested change, and impact.
 5. Confirm according to risk.

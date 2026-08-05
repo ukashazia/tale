@@ -181,6 +181,12 @@ Persisted task metadata contains timestamp, action ID, redacted target label,
 duration, and result class. It excludes stdout, stderr, HTTP bodies, policy
 documents, tokens, key material, and webhook secrets.
 
+View history and `:` command history are always process-local in this release.
+Both are independently bounded to 100 entries and have no configuration key.
+Filters persist only when the user explicitly saves a view. Key sequences are
+fixed registry data; there is no remapping, macro, plugin, or shell-command
+configuration.
+
 ### Profile fields
 
 | Field | Type | Default | Rules |

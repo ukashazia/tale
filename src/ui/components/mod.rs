@@ -1,14 +1,10 @@
-pub mod action_picker;
 pub mod batch_result;
-pub mod command_palette;
 pub mod confirm;
-pub mod copy_picker;
-pub mod filter;
 pub mod footer;
 pub mod form;
 pub mod header;
-pub mod help;
 pub mod inspector;
+pub mod interaction_shell;
 pub mod notification;
 pub mod overlay;
 pub mod panel;

@@ -30,7 +30,7 @@ fn local_devices_render_wide_fields_and_support_phase_two_filters() {
             })));
         }
         assert_eq!(app.source_mode, SourceMode::Local);
-        app.route_stack = vec![Route::Devices];
+        app.set_route(Route::Devices);
         app.views.devices.wide_columns = true;
         let lines = render_lines(&app, 280, 35);
         assert!(lines.is_some());

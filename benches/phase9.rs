@@ -112,7 +112,7 @@ fn mock_app() -> Option<App> {
     };
     let config = config::resolve(&cli, &environment, &paths).ok()?;
     let mut app = App::new(config);
-    app.route_stack = vec![Route::Devices];
+    app.set_route(Route::Devices);
     app.devices_resource.snapshot = devices(5_000);
     app.devices_resource.generation = 1;
     app.devices_resource.observed_at = Some(NOW);

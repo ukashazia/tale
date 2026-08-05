@@ -3,12 +3,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum ActionId {
     AppQuit,
-    ViewCommandPalette,
+    ViewCommandLine,
     ViewFilter,
     ViewRefresh,
     ViewRefreshAll,
     ViewHelp,
     ViewTasks,
+    ViewHistoryBack,
+    ViewHistoryForward,
     CollectionMoveUp,
     CollectionMoveDown,
     CollectionFirst,
@@ -151,12 +153,14 @@ impl ActionId {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AppQuit => "app.quit",
-            Self::ViewCommandPalette => "view.command_palette",
+            Self::ViewCommandLine => "view.command_line",
             Self::ViewFilter => "view.filter",
             Self::ViewRefresh => "view.refresh",
             Self::ViewRefreshAll => "view.refresh_all",
             Self::ViewHelp => "view.help",
             Self::ViewTasks => "view.tasks",
+            Self::ViewHistoryBack => "view.history.back",
+            Self::ViewHistoryForward => "view.history.forward",
             Self::CollectionMoveUp => "collection.move_up",
             Self::CollectionMoveDown => "collection.move_down",
             Self::CollectionFirst => "collection.first",
@@ -299,12 +303,14 @@ impl ActionId {
     pub const fn all() -> &'static [Self] {
         &[
             Self::AppQuit,
-            Self::ViewCommandPalette,
+            Self::ViewCommandLine,
             Self::ViewFilter,
             Self::ViewRefresh,
             Self::ViewRefreshAll,
             Self::ViewHelp,
             Self::ViewTasks,
+            Self::ViewHistoryBack,
+            Self::ViewHistoryForward,
             Self::CollectionMoveUp,
             Self::CollectionMoveDown,
             Self::CollectionFirst,
@@ -512,9 +518,11 @@ impl Binding {
             Self::Char('/') => "/",
             Self::Char('?') => "?",
             Self::Char('@') => "@",
-            Self::Char('R') => "R",
             Self::Char('[') => "[",
             Self::Char(']') => "]",
+            Self::Char('H') => "H",
+            Self::Char('L') => "L",
+            Self::Char('R') => "R",
             Self::Char(value) => match value {
                 'j' => "j",
                 'k' => "k",
@@ -588,6 +596,8 @@ const BIND_R: &[Binding] = &[Binding::Char('r')];
 const BIND_BIG_R: &[Binding] = &[Binding::Char('R')];
 const BIND_HELP: &[Binding] = &[Binding::Char('?')];
 const BIND_TASKS: &[Binding] = &[Binding::Char('@')];
+const BIND_HISTORY_BACK: &[Binding] = &[Binding::Char('[')];
+const BIND_HISTORY_FORWARD: &[Binding] = &[Binding::Char(']')];
 const BIND_UP: &[Binding] = &[Binding::Char('k')];
 const BIND_DOWN: &[Binding] = &[Binding::Char('j')];
 const BIND_FIRST: &[Binding] = &[Binding::Char('g')];
@@ -616,9 +626,9 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             risk: Risk::Observe,
         },
         ActionSpec {
-            id: ActionId::ViewCommandPalette,
-            label: "Command palette",
-            description: "Open route command palette",
+            id: ActionId::ViewCommandLine,
+            label: "Go to view",
+            description: "Open the inline route command line",
             contexts: GLOBAL,
             selection_rule: SelectionRule::None,
             default_bindings: BIND_COLON,
@@ -672,6 +682,26 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             contexts: GLOBAL,
             selection_rule: SelectionRule::None,
             default_bindings: BIND_TASKS,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::ViewHistoryBack,
+            label: "Back",
+            description: "Restore the previous view frame",
+            contexts: GLOBAL,
+            selection_rule: SelectionRule::None,
+            default_bindings: BIND_HISTORY_BACK,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::ViewHistoryForward,
+            label: "Forward",
+            description: "Restore the next view frame",
+            contexts: GLOBAL,
+            selection_rule: SelectionRule::None,
+            default_bindings: BIND_HISTORY_FORWARD,
             capability: Capability::Available,
             risk: Risk::Observe,
         },
@@ -861,7 +891,130 @@ pub fn action_for_key(key: KeyEvent, context: ActionContext) -> Option<ActionId>
     })
 }
 
+/// Stable keys used after the `a` prefix. They are deliberately explicit: the
+/// UI never invents a mnemonic from a label or from the order of a list.
+pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
+    match id {
+        ActionId::MockSuccess => Some("s"),
+        ActionId::MockFailure => Some("f"),
+        ActionId::MockCancellable => Some("c"),
+        ActionId::MockNonCancellable => Some("n"),
+        ActionId::LocalConnect => Some("c"),
+        ActionId::LocalDisconnect => Some("d"),
+        ActionId::LocalPreferencesEdit => Some("p"),
+        ActionId::LocalExitNodeSelect => Some("e"),
+        ActionId::LocalRoutesEditAdvertisements => Some("r"),
+        ActionId::LocalAccountSwitch => Some("as"),
+        ActionId::LocalAccountLogin => Some("al"),
+        ActionId::LocalAccountLogout => Some("ao"),
+        ActionId::LocalAccountRemove => Some("ar"),
+        ActionId::LocalSyspolicyReload => Some("y"),
+        ActionId::LocalProbeConnection => Some("g"),
+        ActionId::LocalWhois => Some("w"),
+        ActionId::LocalSshOpen => Some("hs"),
+        ActionId::LocalNcOpen => Some("hn"),
+        ActionId::DiagnosticCopy => Some("ic"),
+        ActionId::LocalNetcheck => Some("dn"),
+        ActionId::LocalNetcheckLive => Some("dl"),
+        ActionId::LocalDnsStatus => Some("ds"),
+        ActionId::LocalDnsQuery => Some("dq"),
+        ActionId::ServicesServeRefresh | ActionId::ServicesFunnelRefresh => Some("r"),
+        ActionId::ServicesServeCreate | ActionId::ServicesFunnelCreate => Some("c"),
+        ActionId::ServicesServeEdit | ActionId::ServicesFunnelEdit => Some("e"),
+        ActionId::ServicesServeReset | ActionId::ServicesFunnelReset => Some("x"),
+        ActionId::ServicesTaildropSend => Some("s"),
+        ActionId::ServicesTaildropReceive => Some("r"),
+        ActionId::ServicesDriveRefresh => Some("r"),
+        ActionId::ServicesDriveShare => Some("s"),
+        ActionId::ServicesDriveRename => Some("n"),
+        ActionId::ServicesDriveUnshare => Some("u"),
+        ActionId::ServicesDriveEnableAlpha => Some("e"),
+        ActionId::ServicesCertificateObtain => Some("o"),
+        ActionId::ServicesMetricsRefresh => Some("r"),
+        ActionId::ServicesBugReportCreate => Some("c"),
+        ActionId::AdminDeviceRename => Some("r"),
+        ActionId::AdminDeviceTagsReplace => Some("t"),
+        ActionId::AdminDeviceApprove => Some("a"),
+        ActionId::AdminDeviceRevokeApproval => Some("v"),
+        ActionId::AdminDeviceKeyExpiryConfigure => Some("k"),
+        ActionId::AdminDeviceKeyExpireNow => Some("x"),
+        ActionId::AdminDeviceDelete => Some("d"),
+        ActionId::AdminUserApprove => Some("a"),
+        ActionId::AdminUserRoleChange => Some("r"),
+        ActionId::AdminUserSuspend => Some("s"),
+        ActionId::AdminUserRestore => Some("u"),
+        ActionId::AdminUserDelete => Some("d"),
+        ActionId::AdminRoutesReplaceApprovals => Some("r"),
+        ActionId::AdminDnsPreferencesEdit => Some("p"),
+        ActionId::AdminDnsNameserversReplace => Some("n"),
+        ActionId::AdminDnsSearchPathsReplace => Some("h"),
+        ActionId::AdminDnsSplitCreate => Some("sc"),
+        ActionId::AdminDnsSplitEdit => Some("se"),
+        ActionId::AdminDnsSplitRemove => Some("sd"),
+        ActionId::SavedViewCreate => Some("vc"),
+        ActionId::SavedViewReplace => Some("vr"),
+        ActionId::SavedViewRename => Some("vn"),
+        ActionId::SavedViewDelete => Some("vd"),
+        ActionId::SavedViewApply => Some("va"),
+        ActionId::CollectionExport => Some("zx"),
+        ActionId::OverviewHealthOpenResource => Some("ho"),
+        ActionId::OverviewHealthRunSuggestedAction => Some("hr"),
+        ActionId::AccessExplorerAsk => Some("ea"),
+        ActionId::AccessExplorerOpenRule => Some("eo"),
+        ActionId::ActivityFlowsSelectWindow => Some("fw"),
+        ActionId::ActivityFlowsAggregate => Some("fa"),
+        ActionId::ActivityFlowsOpenDevice => Some("fd"),
+        ActionId::AdminWebhookCreate => Some("wc"),
+        ActionId::AdminWebhookEdit => Some("we"),
+        ActionId::AdminWebhookTest => Some("wt"),
+        ActionId::AdminWebhookRotateSecret => Some("wr"),
+        ActionId::AdminWebhookDelete => Some("wd"),
+        ActionId::AdminLogStreamReplace => Some("lr"),
+        ActionId::AdminLogStreamDelete => Some("ld"),
+        ActionId::AdminNetworkLogsSettings => Some("ln"),
+        _ => None,
+    }
+}
+
+pub fn validate_transient_sequences(actions: &[ActionId]) -> Result<(), String> {
+    let mut sequences = std::collections::BTreeMap::new();
+    for id in actions {
+        let sequence = transient_sequence(*id)
+            .ok_or_else(|| format!("visible action has no transient sequence: {}", id.as_str()))?;
+        if sequence.is_empty() || sequence.chars().count() > 2 {
+            return Err(format!("invalid transient depth for {}", id.as_str()));
+        }
+        if matches!(sequence, "[" | "]" | "q" | ":" | "/" | "?") {
+            return Err(format!("reserved transient sequence: {sequence}"));
+        }
+        if let Some(other) = sequences.insert(sequence, *id) {
+            return Err(format!(
+                "duplicate transient sequence {sequence}: {} and {}",
+                other.as_str(),
+                id.as_str()
+            ));
+        }
+    }
+    for sequence in sequences.keys() {
+        if sequence.chars().count() == 1
+            && sequences
+                .keys()
+                .any(|candidate| candidate.len() == 2 && candidate.starts_with(*sequence))
+        {
+            return Err(format!("transient leaf is also a prefix: {sequence}"));
+        }
+    }
+    Ok(())
+}
+
 pub fn footer_hints(context: ActionContext, width: u16) -> Vec<String> {
+    footer_actions(context, width)
+        .into_iter()
+        .map(|(_, hint)| hint)
+        .collect()
+}
+
+pub fn footer_actions(context: ActionContext, width: u16) -> Vec<(Option<ActionId>, String)> {
     let mut used = 0usize;
     let mut hints = Vec::new();
     for spec in all_actions() {
@@ -872,11 +1025,11 @@ pub fn footer_hints(context: ActionContext, width: u16) -> Vec<String> {
         let hint = format!("{} {}", binding, spec.label);
         let separator = if hints.is_empty() { 0 } else { 2 };
         if used + separator + hint.len() + 8 > usize::from(width) {
-            hints.push("? more".to_owned());
+            hints.push((Some(ActionId::ViewHelp), "? more".to_owned()));
             break;
         }
         used += separator + hint.len();
-        hints.push(hint);
+        hints.push((Some(spec.id), hint));
     }
     hints
 }
@@ -1170,7 +1323,7 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
             description: "Select the next local services subsection",
             contexts: SERVICES_NAVIGATION,
             selection_rule: SelectionRule::None,
-            default_bindings: &[Binding::Char(']')],
+            default_bindings: &[Binding::Char('L')],
             capability: Capability::Available,
             risk: Risk::Observe,
         },
@@ -1180,7 +1333,7 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
             description: "Select the previous local services subsection",
             contexts: SERVICES_NAVIGATION,
             selection_rule: SelectionRule::None,
-            default_bindings: &[Binding::Char('[')],
+            default_bindings: &[Binding::Char('H')],
             capability: Capability::Available,
             risk: Risk::Observe,
         },

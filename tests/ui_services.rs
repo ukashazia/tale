@@ -78,7 +78,7 @@ fn services_render_loading_partial_stale_failed_unsupported_read_only_and_runnin
     let app = local_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
-        app.route_stack = vec![Route::Services];
+        app.set_route(Route::Services);
         app.views.services.section = ServiceSection::Serve;
         let loading = render_lines(&app, 80, 24);
         assert!(loading.is_some());
@@ -254,7 +254,7 @@ fn populated_app() -> Option<App> {
             observed_at: OBSERVED_AT,
         },
     );
-    app.route_stack = vec![Route::Services];
+    app.set_route(Route::Services);
     Some(app)
 }
 

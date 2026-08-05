@@ -117,3 +117,21 @@ fn five_thousand_fictional_devices_filter_without_identity_loss() {
         assert_eq!(ids.len(), 358);
     }
 }
+
+#[test]
+fn route_filter_schemas_expose_only_valid_fields() {
+    let devices = tale::domain::filter::device_schema();
+    assert!(
+        devices
+            .fields
+            .iter()
+            .any(|field| field.canonical_name == "owner")
+    );
+    assert!(
+        devices
+            .fields
+            .iter()
+            .any(|field| field.canonical_name == "online")
+    );
+    assert!(tale::domain::filter::activity_schema().fields.is_empty());
+}

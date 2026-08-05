@@ -182,6 +182,10 @@ pub enum Effect {
         result_id: u64,
         secret: Arc<SecretBuffer>,
     },
+    CopyText {
+        label: String,
+        text: String,
+    },
     CancelAdminRefresh,
     DropAdminToken {
         profile: String,

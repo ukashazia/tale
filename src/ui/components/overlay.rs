@@ -3,21 +3,14 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
-use crate::ui::components::{
-    action_picker, batch_result, command_palette, confirm, copy_picker, filter, form, help,
-};
+use crate::ui::components::{batch_result, confirm, form};
 use crate::ui::theme;
 use crate::ui::views::{audit, policy_editor, secret_result};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
-    let area = centered(frame.area(), overlay);
+    let area = overlay_area(frame.area(), overlay);
     frame.render_widget(Clear, area);
     match overlay {
-        Overlay::CommandPalette(_) => command_palette::render(frame, app, area, overlay),
-        Overlay::FilterEditor(_) => filter::render(frame, app, area, overlay),
-        Overlay::Help(_) => help::render(frame, app, area, overlay),
-        Overlay::ActionPicker(_) => action_picker::render(frame, app, area, overlay),
-        Overlay::CopyPicker(state) => copy_picker::render(frame, app, area, state),
         Overlay::QuitConfirmation => frame.render_widget(
             Paragraph::new(
                 "Active tasks are still running.\nEnter/y: quit and cancel tasks   n/Esc: continue",
@@ -139,34 +132,36 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
     }
 }
 
-fn centered(area: Rect, overlay: &Overlay) -> Rect {
-    let width = match overlay {
-        Overlay::Help(_) => area.width.saturating_mul(3) / 4,
-        Overlay::CommandPalette(_)
-        | Overlay::FilterEditor(_)
+fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
+    match overlay {
+        Overlay::QuitConfirmation | Overlay::Confirmation(_) => {
+            let width = area.width.saturating_mul(2) / 3;
+            let height = area.height.saturating_mul(2) / 3;
+            Rect {
+                x: area.x + area.width.saturating_sub(width) / 2,
+                y: area.y + area.height.saturating_sub(height) / 2,
+                width,
+                height,
+            }
+        }
+        Overlay::TaskInspector(_)
+        | Overlay::PolicyEditor
+        | Overlay::SecretResult
+        | Overlay::AuditInvestigation => area,
+        Overlay::SortPicker { .. }
         | Overlay::DiagnosticInput(_)
         | Overlay::OperatorForm(_)
         | Overlay::ServiceForm(_)
         | Overlay::ServiceSectionPicker(_)
-        | Overlay::HandoffInput(_)
-        | Overlay::Confirmation(_)
-        | Overlay::PolicyEditor
-        | Overlay::SecretResult
-        | Overlay::AuditInvestigation => area.width.saturating_mul(2) / 3,
-        _ => area.width.saturating_mul(3) / 5,
-    }
-    .max(20)
-    .min(area.width);
-    let height = match overlay {
-        Overlay::Help(_) => area.height.saturating_mul(3) / 4,
-        _ => area.height.saturating_mul(2) / 3,
-    }
-    .max(5)
-    .min(area.height);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
+        | Overlay::AccountPicker(_)
+        | Overlay::HandoffInput(_) => {
+            let height = area.height.saturating_mul(2) / 5;
+            Rect {
+                x: area.x,
+                y: area.y.saturating_add(area.height.saturating_sub(height)),
+                width: area.width,
+                height,
+            }
+        }
     }
 }

@@ -107,7 +107,7 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
             Route::Activity,
             Route::Settings,
         ] {
-            app.route_stack = vec![route];
+            app.set_route(route);
             for (width, height) in [(60, 18), (80, 24), (110, 30), (160, 45)] {
                 let lines = render_lines(&app, width, height);
                 assert!(lines.is_some());
@@ -236,7 +236,7 @@ fn phase_eight_sections_render_derived_and_authoritative_states() {
         (Route::Activity, "Webhooks"),
         (Route::Access, "Access Explorer"),
     ] {
-        app.route_stack = vec![route];
+        app.set_route(route);
         let lines = render_lines(&app, 160, 45);
         assert!(lines.is_some());
         if let Some(lines) = lines {

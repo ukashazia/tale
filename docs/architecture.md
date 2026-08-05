@@ -102,9 +102,8 @@ src/
     components/
       table.rs
       inspector.rs
-      filter.rs
+      interaction_shell.rs
       form.rs
-      help.rs
       task_view.rs
       confirm.rs
     views/
@@ -128,8 +127,8 @@ boundary, not permission to generate empty modules.
 
 `App` owns:
 
-- the active route and back stack;
-- pane focus and overlay stack;
+- a bounded 100-frame browser-style `ViewHistory` with a cursor;
+- one explicit bottom-shell `InteractionMode`, pane focus, and modal/dedicated-view state;
 - per-view selection, filter, sort, scroll, and form state;
 - current `LocalSnapshot` and per-profile `AdminSnapshot` values;
 - freshness and error metadata for each resource collection;
@@ -141,6 +140,12 @@ Snapshots are replaced atomically after successful decoding. A failed refresh
 updates resource metadata but preserves the last successful snapshot. Selection
 is tracked by opaque domain ID, never row index, so sorting and refreshes do not
 silently select another resource.
+
+Each history frame stores only presentation intent: route, focus, stable resource
+identity, scroll anchor, filter, sort, Services section, and saved-view identity.
+It never stores snapshots, credentials, forms, tasks, adapter handles, or secret
+results. Back and forward restoration re-evaluate the frame against the current
+snapshot and select deterministically when a stored identity disappeared.
 
 View state is ephemeral unless a specific setting is documented as persistent.
 The initial release persists the last route and profile only; filters become
@@ -257,7 +262,10 @@ The action registry is the single source for:
 - preview builder;
 - effect constructor.
 
-The footer, help, action picker, and key dispatch all read this registry. This
+The footer, bottom help sheet, direct `a`/`y` transient menus, mouse hit regions,
+and key dispatch all read this registry. Stable transient sequences are
+validated for duplicate leaves, leaf/prefix conflicts, depth, and reserved
+global keys. This
 prevents help from drifting from executable behavior. Custom keybindings and
 plugins are not part of the first release; stable action IDs make later
 remapping possible without redesigning execution.
@@ -370,7 +378,9 @@ a locked dependency list. Each is selected in the phase that first needs it.
 - deterministic snapshots at 60x18, 80x24, 110x30, and 160x45;
 - ASCII/no-color and Unicode/256/TrueColor modes;
 - keyboard-only completion of every core flow;
-- overlays and help within each viewport;
+- rendered-cell assertions that command, filter, transient, completion, and
+  help surfaces are bottom anchored within each viewport;
+- centered modal assertions limited to alerts and confirmations;
 - selection stability during refresh and sorting.
 
 ### Integration tests

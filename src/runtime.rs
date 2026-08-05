@@ -1012,6 +1012,22 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     .await;
             });
         }
+        Effect::CopyText { label, text } => {
+            let queue = queue.clone();
+            tasks.spawn(async move {
+                let result = crate::clipboard::SystemClipboard::new().and_then(|mut clipboard| {
+                    crate::clipboard::ClipboardSink::set_text(&mut clipboard, &text)
+                });
+                queue
+                    .send(Event::Credential(Box::new(
+                        CredentialEvent::ClipboardTextCopied {
+                            label,
+                            result: result.map_err(|error| error.to_string()),
+                        },
+                    )))
+                    .await;
+            });
+        }
         Effect::DropAdminToken { profile } => {
             admin_token_managers.remove(&profile);
         }

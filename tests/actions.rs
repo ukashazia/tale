@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use tale::action::{self, ActionContext, ActionId, Binding};
-use tale::app::{App, Route};
+use tale::app::{App, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::event::{Event, InputEvent, SourceEvent};
@@ -52,12 +52,14 @@ fn every_required_action_is_registered() {
         .collect();
     for id in [
         ActionId::AppQuit,
-        ActionId::ViewCommandPalette,
+        ActionId::ViewCommandLine,
         ActionId::ViewFilter,
         ActionId::ViewRefresh,
         ActionId::ViewRefreshAll,
         ActionId::ViewHelp,
         ActionId::ViewTasks,
+        ActionId::ViewHistoryBack,
+        ActionId::ViewHistoryForward,
         ActionId::CollectionMoveUp,
         ActionId::CollectionMoveDown,
         ActionId::CollectionFirst,
@@ -176,7 +178,7 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
             KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
             ActionContext::Root
         ),
-        Some(ActionId::ViewCommandPalette)
+        Some(ActionId::ViewCommandLine)
     );
     let footer = action::footer_hints(ActionContext::Collection, 20);
     assert!(footer.last().is_some_and(|hint| hint == "? more"));
@@ -184,7 +186,7 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
     let app = mock_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
-        app.route_stack = vec![Route::Devices];
+        app.set_route(Route::Devices);
         let _ = app.dispatch_action(ActionId::ResourceActions);
         assert!(app.tasks.all().is_empty());
         assert!(app.runtime_error.is_some());
@@ -194,10 +196,7 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
             observed_at: mock::MOCK_NOW,
         }));
         let _ = app.dispatch_action(ActionId::ResourceActions);
-        assert!(matches!(
-            app.overlays.last(),
-            Some(tale::app::Overlay::ActionPicker(_))
-        ));
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
         let _ = app.dispatch_action(ActionId::MockSuccess);
         assert_eq!(app.tasks.all().len(), 1);
         let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
@@ -212,4 +211,39 @@ fn binding_type_labels_are_stable() {
     assert_eq!(Binding::Char(':').label(), ":");
     assert_eq!(Binding::Ctrl('d').label(), "Ctrl+d");
     assert_eq!(Binding::Enter.label(), "Enter");
+}
+
+#[test]
+fn transient_sequences_and_reserved_history_bindings_are_stable() {
+    let actions = [
+        ActionId::LocalConnect,
+        ActionId::LocalDisconnect,
+        ActionId::LocalAccountSwitch,
+        ActionId::DiagnosticCopy,
+        ActionId::SavedViewCreate,
+        ActionId::CollectionExport,
+    ];
+    assert!(action::validate_transient_sequences(&actions).is_ok());
+    assert!(
+        action::validate_transient_sequences(&[ActionId::LocalConnect, ActionId::MockCancellable])
+            .is_err()
+    );
+    assert_eq!(
+        action::transient_sequence(ActionId::LocalAccountSwitch),
+        Some("as")
+    );
+    assert_eq!(
+        action::action_for_key(
+            KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+            ActionContext::Collection,
+        ),
+        Some(ActionId::ViewHistoryBack)
+    );
+    assert_eq!(
+        action::action_for_key(
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+            ActionContext::Collection,
+        ),
+        Some(ActionId::ViewHistoryForward)
+    );
 }

@@ -20,6 +20,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             components::panel::paragraph(message, "minimum size", theme::title()),
             area,
         );
+        components::interaction_shell::render_minimum(frame, app, area);
         return;
     }
 
@@ -39,7 +40,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Route::Services => views::services::render(frame, app, layout.content, layout.inspector),
     }
     components::notification::render(frame, app, layout.notification);
-    components::footer::render(frame, app, layout.footer);
+    components::interaction_shell::render(frame, app, layout.footer);
     if let Some(overlay) = app.overlays.last() {
         components::overlay::render(frame, app, overlay);
     }

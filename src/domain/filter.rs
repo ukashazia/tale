@@ -3,6 +3,133 @@ use std::time::Duration;
 use super::Timestamp;
 use super::device::{AdminDevice, Device, Liveness};
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FilterOperator {
+    Match,
+    LessThan,
+    LessOrEqual,
+    GreaterThan,
+    GreaterOrEqual,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FilterValueKind {
+    Text,
+    Boolean,
+    Duration,
+    Enumeration(&'static [&'static str]),
+    SnapshotValue,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct FilterFieldSpec {
+    pub canonical_name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub operators: &'static [FilterOperator],
+    pub value_kind: FilterValueKind,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct FilterSchema {
+    pub fields: &'static [FilterFieldSpec],
+}
+
+const MATCH: &[FilterOperator] = &[FilterOperator::Match];
+const AGE_OPERATORS: &[FilterOperator] = &[
+    FilterOperator::Match,
+    FilterOperator::LessThan,
+    FilterOperator::LessOrEqual,
+    FilterOperator::GreaterThan,
+    FilterOperator::GreaterOrEqual,
+];
+const DEVICE_FILTER_FIELDS: &[FilterFieldSpec] = &[
+    field("id", &[], MATCH, FilterValueKind::Text, "Device identity"),
+    field("name", &[], MATCH, FilterValueKind::Text, "Display name"),
+    field(
+        "online",
+        &[],
+        MATCH,
+        FilterValueKind::Boolean,
+        "Online state",
+    ),
+    field(
+        "owner",
+        &[],
+        MATCH,
+        FilterValueKind::SnapshotValue,
+        "Owner name or ID",
+    ),
+    field(
+        "os",
+        &[],
+        MATCH,
+        FilterValueKind::SnapshotValue,
+        "Operating system",
+    ),
+    field(
+        "path",
+        &[],
+        MATCH,
+        FilterValueKind::SnapshotValue,
+        "Connection path",
+    ),
+    field(
+        "tag",
+        &[],
+        MATCH,
+        FilterValueKind::SnapshotValue,
+        "Device tag",
+    ),
+    field(
+        "lastSeen",
+        &["last_seen"],
+        AGE_OPERATORS,
+        FilterValueKind::Duration,
+        "Last-seen age",
+    ),
+    field(
+        "approval",
+        &[],
+        MATCH,
+        FilterValueKind::Enumeration(&["approved", "pending", "revoked"]),
+        "Approval state",
+    ),
+    field(
+        "version",
+        &["clientVersion"],
+        MATCH,
+        FilterValueKind::Text,
+        "Client version",
+    ),
+];
+
+const fn field(
+    canonical_name: &'static str,
+    aliases: &'static [&'static str],
+    operators: &'static [FilterOperator],
+    value_kind: FilterValueKind,
+    description: &'static str,
+) -> FilterFieldSpec {
+    FilterFieldSpec {
+        canonical_name,
+        aliases,
+        operators,
+        value_kind,
+        description,
+    }
+}
+
+pub const fn device_schema() -> FilterSchema {
+    FilterSchema {
+        fields: DEVICE_FILTER_FIELDS,
+    }
+}
+
+pub const fn activity_schema() -> FilterSchema {
+    FilterSchema { fields: &[] }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FilterExpression {
     pub terms: Vec<FilterTerm>,

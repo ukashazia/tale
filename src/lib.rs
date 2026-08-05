@@ -401,7 +401,7 @@ fn launch_tui(config: ResolvedConfig, view: Option<&str>) -> Result<(), TaleErro
     let mouse = config.ui.mouse;
     let mut app = app::App::new(config);
     if let Some(view) = view.and_then(app::Route::parse) {
-        app.route_stack = vec![view];
+        app.set_route(view);
     }
     let mut terminal = terminal::RealTerminal::enter_with_mouse(mouse)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()

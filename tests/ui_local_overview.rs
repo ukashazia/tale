@@ -33,7 +33,7 @@ fn local_overview_and_local_view_show_snapshot_without_blocking_navigation() {
             })));
         }
         assert_eq!(app.source_mode, SourceMode::Local);
-        app.route_stack = vec![Route::Overview];
+        app.set_route(Route::Overview);
         let overview = render_lines(&app, 120, 30);
         assert!(overview.is_some());
         if let Some(overview) = overview {
@@ -42,7 +42,7 @@ fn local_overview_and_local_view_show_snapshot_without_blocking_navigation() {
             assert!(overview.iter().any(|line| line.contains("direct")));
             assert!(overview.iter().any(|line| line.contains("health")));
         }
-        app.route_stack = vec![Route::Local];
+        app.set_route(Route::Local);
         let local = render_lines(&app, 100, 30);
         assert!(local.is_some());
         if let Some(local) = local {
@@ -55,7 +55,7 @@ fn local_overview_and_local_view_show_snapshot_without_blocking_navigation() {
             );
         }
         app.local_resource.mark_stale();
-        app.route_stack = vec![Route::Overview];
+        app.set_route(Route::Overview);
         let stale = render_lines(&app, 120, 30);
         assert!(stale.is_some());
         if let Some(stale) = stale {
