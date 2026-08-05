@@ -183,11 +183,35 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             let lines = lines_at(&app, width, height);
             assert!(lines.is_some());
             if let Some(lines) = lines {
-                let help_row = lines.iter().position(|line| line.contains("help ·"));
+                let help_row = lines
+                    .iter()
+                    .position(|line| line.contains("Help") && line.contains("Esc Close"));
                 assert!(help_row.is_some());
                 if let Some(help_row) = help_row {
-                    assert!(help_row >= usize::from(height.saturating_mul(2) / 5));
+                    assert!(help_row >= 2);
                 }
+                assert!(lines.iter().any(|line| line.contains("Navigation")));
+                assert!(lines.iter().any(|line| line.contains("Current view")));
+                assert!(!lines.iter().any(|line| line.contains("[disabled:")));
+                assert!(!lines.iter().any(|line| line.contains("Simulation")));
+                assert!(!lines.iter().any(|line| line.contains("service section")));
+            }
+
+            press(&mut app, KeyCode::Char('a'));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(lines.iter().any(|line| line.contains("Actions")));
+                assert!(lines.iter().any(|line| line.contains("Esc Close")));
+            }
+
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Char('?'));
+            press(&mut app, KeyCode::Char('/'));
+            let lines = lines_at(&app, width, height);
+            assert!(lines.is_some());
+            if let Some(lines) = lines {
+                assert!(lines.last().is_some_and(|line| line.contains("/ ")));
             }
         }
     }
@@ -307,7 +331,7 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
             KeyCode::Char('?'),
             KeyModifiers::NONE,
         ))));
-        assert!(matches!(overlay.interaction, InteractionMode::HelpSheet(_)));
+        assert!(matches!(overlay.interaction, InteractionMode::HelpSheet));
         let lines = lines_at(&overlay, 80, 24);
         assert!(lines.is_some());
         if let Some(lines) = lines {

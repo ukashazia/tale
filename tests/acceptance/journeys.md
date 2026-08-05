@@ -26,7 +26,7 @@ blocked where the evidence is unavailable on the release host.
 | 17 | Apply a live filter, retain last-valid rows, cancel, then commit | `filter_invalid_last_good_and_escape_restore_the_full_point`; filter parser tests | Not required: process-local mock interaction |
 | 18 | Invoke direct, disabled, nested, and confirmed `a` actions | transient registry/reducer tests and existing confirmation suites | Blocked: no real mutation target; mock dispatch is isolated |
 | 19 | Copy a field with `y` and acknowledge only its label | typed clipboard effect, mock isolation, security scan | Blocked: no named real clipboard evidence |
-| 20 | Open, filter, resize, scroll, and close contextual help | rendered-buffer tests at four viewports and shell reducer tests | Not required: process-local mock interaction |
+| 20 | Open contextual help, execute listed keys, resize, and close | rendered-buffer tests at four viewports and shell reducer tests | Not required: process-local mock interaction |
 | 21 | Restore history after selected resource removal | stable-ID reconciliation and missing-selection notice tests | Not required: deterministic snapshot replacement |
 | 22 | Navigate after back and prove the forward branch is discarded | `fuzzy_navigation_filter_and_browser_history_restore_and_branch` | Not required: process-local mock interaction |
 | 23 | Quit immediately when safe and confirm with active tasks | `quit_and_ctrl_c_follow_task_rules` and terminal restoration tests | Blocked: no additional named real terminal evidence |
@@ -50,7 +50,7 @@ assertions. They do not claim real platform support.
 | B — restart during interaction | `reconnect_keeps_read_generations_monotonic`, `stale_watcher_generation_cannot_replace_current_connection_state`, and `refresh_removal_repairs_selection_without_discarding_active_input` | PASS |
 | C — verified local mutation | exact socket argv tests plus `repeated_confirmation_dispatches_only_one_mutation`, verification-mismatch reducer assertions, and no optimistic state tests | PASS |
 | D — command, completion, and history branch | `command_filter_and_browser_history_restore_and_branch`, completion-generation/resize test, and rendered bottom-prompt assertions | PASS |
-| E — transient/help/capability change | registry/transient reducer tests, dynamic availability checks at dispatch, clipboard-label redaction, help filtering, and four-viewport buffers | PASS |
+| E — transient/help/capability change | registry/transient reducer tests, dynamic availability checks at dispatch, clipboard-label redaction, executable help bindings, and four-viewport buffers | PASS |
 | F — semantic theme matrix | exhaustive theme roles, 48 theme/capability buffers, Settings preview cancel/apply isolation, and Reset-only no-color assertions | PASS |
 | G — concurrent source isolation | admin resource last-good tests, local last-good tests, exact-ID composition, and combined source/failure buffer assertions | PASS |
 | H — exit and terminal safety | runtime render/input failure cleanup, PTY restoration, handoff restoration, process reaping, bounded queue, and cancellation tests | PASS |

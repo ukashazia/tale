@@ -106,6 +106,13 @@ reason only when invoked. Transients do not use row selection, arrows, or a
 timeout. `Esc` first clears a pending two-key prefix, then closes the menu; an
 unknown key leaves the menu open.
 
+The `?` sheet is a tall, responsive grid of immediately usable keys, ordered as
+Navigation, Current view, Search & commands, Data, and Global. It does not
+duplicate the action or copy catalogs: `a` and `y` lead to those dedicated
+menus. Keys use the key-hint role, headings use the section role, and labels use
+muted text. Every listed key closes help and immediately performs its normal
+action; `Esc` and `?` close without acting.
+
 The `:` palette supports Unicode-safe editing and true fuzzy matching. It has no
 selection cursor; `Enter` opens the highest-scoring result. The `/` editor applies every valid
 parse live, keeps the last valid rows during an invalid edit, and restores filter,

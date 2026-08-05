@@ -328,12 +328,17 @@ fn shell_modes_are_mutually_exclusive() {
             KeyCode::Char('?'),
             KeyModifiers::NONE,
         ))));
-        assert!(matches!(app.interaction, InteractionMode::HelpSheet(_)));
-        let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-        ))));
-        assert!(matches!(app.interaction, InteractionMode::Normal));
+        assert!(matches!(app.interaction, InteractionMode::HelpSheet));
+        press(&mut app, KeyCode::Char(':'));
+        assert!(matches!(app.interaction, InteractionMode::CommandLine(_)));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Char('/'));
+        assert!(matches!(app.interaction, InteractionMode::FilterLine(_)));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Char('a'));
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
     }
 }
 

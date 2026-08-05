@@ -63,7 +63,7 @@ enum InteractionMode {
     CommandLine(CommandLineState),
     FilterLine(FilterLineState),
     Transient(TransientMenuState),
-    HelpSheet(HelpSheetState),
+    HelpSheet,
     Form(FormState),
     Confirmation(ConfirmationState),
     Alert(AlertState),
@@ -357,34 +357,34 @@ redaction/secret contract. Copy invocation:
 ## 12.6 Contextual help sheet
 
 `?` opens a bottom-docked which-key-style help sheet for the current route,
-focus, selection, capabilities, and interaction mode. It is a reference surface,
-not an action picker.
+focus, selection, capabilities, and interaction mode. It is an executable key
+map: a listed key closes help and immediately performs its normal action.
 
-The sheet groups entries in this order:
+The sheet groups immediately usable bindings in this order:
 
 1. Navigation;
-2. View;
-3. Actions;
-4. Copy;
-5. Tasks and refresh;
-6. Global and exit.
+2. Current view;
+3. Search and commands;
+4. Data;
+5. Global.
 
-Each entry shows key sequence, label, and—when disabled—its concise reason.
-Groups use columns when width permits and flow vertically otherwise. The sheet:
+Each entry shows one canonical key sequence and a concise lower-case label.
+Unavailable and route-irrelevant bindings are omitted. The sheet does not
+duplicate entries from the action and copy catalogs; their `a` and `y` gateway
+bindings are the discoverable entries here. Groups use aligned, responsive
+columns and blank rows between vertical bands. Key hints, section headings, and
+descriptions use distinct semantic color roles. The sheet:
 
 - grows upward from the footer;
-- uses at most 60% of terminal height;
-- scrolls only when content exceeds that bound;
-- does not select rows or execute actions;
-- closes with `?` or `Esc`;
-- supports `/` to filter help labels and keys only while the sheet is open;
+- grows to fit its grouped grid, bounded by the available frame;
+- executes every displayed binding without requiring help to be closed first;
+- closes without acting only for `?` or `Esc`;
+- gives `/`, `j`, `k`, and paging keys to their displayed application actions
+  rather than stealing them for private help filtering or scrolling;
 - restores the prior route focus unchanged;
-- includes a legend for disabled, destructive, and prefix entries without
-  relying on color alone.
+- keeps its title and status rows stable.
 
-Arrow/PageUp/PageDown and `j`/`k` may scroll overflowing help content; this is
-document navigation, not option selection. At minimum size, show the most
-important global escape and navigation keys plus an overflow count.
+At minimum size, the regular minimum-size terminal contract replaces the sheet.
 
 Help is generated from the same registry and route metadata as normal input.
 Static duplicate binding tables may remain in user documentation but may not
@@ -586,7 +586,7 @@ At 160x45, 110x30, 80x24, and 60x18, assert rendered cells for:
 - filter prompt with a positioned error;
 - action and nested action transients;
 - copy transient;
-- normal and filtered help sheet;
+- executable help sheet;
 - backward/forward availability;
 - alert and every risk-tier confirmation;
 - short and long typed forms;
@@ -606,7 +606,7 @@ Script deterministic mock-mode journeys for:
 3. `a` direct action, disabled action reason, nested service action, and
    confirmation;
 4. `y` direct copy with redacted acknowledgement;
-5. `?` contextual help, help filter, resize, and close;
+5. `?` contextual help, execute listed keys, resize, and close;
 6. history selection restoration after resource removal;
 7. new navigation after backward proving the forward branch was discarded;
 8. `q` with no tasks and with active tasks;

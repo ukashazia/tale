@@ -55,7 +55,9 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
             }
             TransientKind::Copy => 1,
         },
-        InteractionMode::HelpSheet(_) => area.height.saturating_mul(3) / 5,
+        InteractionMode::HelpSheet => {
+            crate::ui::components::interaction_shell::help_menu_height(app, area.width)
+        }
     }
     .max(1)
     .min(area.height.saturating_sub(4));
@@ -112,5 +114,15 @@ pub const fn action_menu_columns(width: u16) -> usize {
         4
     } else {
         3
+    }
+}
+
+pub const fn help_menu_columns(width: u16) -> usize {
+    if width >= 120 {
+        4
+    } else if width >= 80 {
+        3
+    } else {
+        2
     }
 }

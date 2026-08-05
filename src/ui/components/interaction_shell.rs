@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::action::{self, ActionContext};
+use crate::action::{self, ActionContext, ActionId};
 use crate::app::{
     App, CopyField, Focus, InteractionMode, Route, TransientKind, TransientMenuState,
 };
@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             lines
         }
         InteractionMode::Transient(state) => transient_lines(app, state, area),
-        InteractionMode::HelpSheet(state) => help_lines(app, &state.query, state.scroll, area),
+        InteractionMode::HelpSheet => help_lines(app, area),
     };
     frame.render_widget(
         Paragraph::new(lines).style(app.theme.style(theme::StyleRole::SurfaceRaised)),
@@ -57,7 +57,7 @@ pub fn render_minimum(frame: &mut Frame<'_>, app: &App, area: Rect) {
             state.error.as_deref(),
             area.width,
         )),
-        InteractionMode::Transient(_) | InteractionMode::HelpSheet(_) => {
+        InteractionMode::Transient(_) | InteractionMode::HelpSheet => {
             Some(Line::from("Esc cancel"))
         }
         InteractionMode::Normal => None,
@@ -731,77 +731,228 @@ fn copy_menu_lines(state: &TransientMenuState, width: u16) -> Vec<Line<'static>>
     vec![Line::from(visible.join("  "))]
 }
 
-fn help_lines(app: &App, query: &str, scroll: usize, area: Rect) -> Vec<Line<'static>> {
-    let query = query.to_ascii_lowercase();
-    let context = context(app);
-    let mut lines = vec![
-        Line::from("help · / filter · ? or Esc close"),
-        Line::from("Navigation · collection"),
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum HelpGroup {
+    Navigation,
+    CurrentView,
+    SearchAndCommands,
+    Data,
+    Global,
+}
+
+impl HelpGroup {
+    const ORDER: [Self; 5] = [
+        Self::Navigation,
+        Self::CurrentView,
+        Self::SearchAndCommands,
+        Self::Data,
+        Self::Global,
     ];
-    for spec in action::all_actions() {
-        if !spec.contexts.contains(&context) || spec.default_bindings.is_empty() {
-            continue;
-        }
-        if !query.is_empty()
-            && !spec.label.to_ascii_lowercase().contains(&query)
-            && !spec.default_bindings[0]
-                .label()
-                .to_ascii_lowercase()
-                .contains(&query)
-        {
-            continue;
-        }
-        let disabled = app
-            .action_unavailable_reason(spec.id)
-            .map_or_else(String::new, |reason| format!(" [disabled: {reason}]"));
-        lines.push(Line::from(format!(
-            "{:>8}  {}{}",
-            spec.default_bindings[0].label(),
-            spec.label,
-            disabled
-        )));
-    }
-    lines.push(Line::from("Actions"));
-    for id in app.contextual_actions() {
-        let Some(sequence) = action::transient_sequence(id) else {
-            continue;
-        };
-        let Some(spec) = action::find_action(id) else {
-            continue;
-        };
-        if !query.is_empty()
-            && !spec.label.to_ascii_lowercase().contains(&query)
-            && !sequence.contains(&query)
-        {
-            continue;
-        }
-        let disabled = app
-            .action_unavailable_reason(id)
-            .map_or_else(String::new, |reason| format!(" [disabled: {reason}]"));
-        lines.push(Line::from(format!(
-            "a {sequence:>2}  {}{disabled}",
-            spec.label
-        )));
-    }
-    lines.push(Line::from("Copy"));
-    for field in app.contextual_copy_fields() {
-        let key = copy_key(field);
-        if query.is_empty()
-            || field.label().to_ascii_lowercase().contains(&query)
-            || key.to_string().contains(&query)
-        {
-            lines.push(Line::from(format!("y {key:>2}  {}", field.label())));
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Navigation => "Navigation",
+            Self::CurrentView => "Current view",
+            Self::SearchAndCommands => "Search & commands",
+            Self::Data => "Data",
+            Self::Global => "Global",
         }
     }
-    lines.push(Line::from("Tasks and refresh"));
-    lines.push(Line::from("r refresh   R refresh all   @ tasks"));
-    lines.push(Line::from("Global and exit"));
-    lines.push(Line::from("[ back   ] forward   q quit   Esc cancel"));
-    lines.push(Line::from(
-        "Legend: ! destructive   … prefix   [disabled: reason]",
-    ));
-    let height = usize::from(area.height);
-    lines.into_iter().skip(scroll).take(height).collect()
+}
+
+struct HelpItem {
+    key: &'static str,
+    label: &'static str,
+}
+
+struct HelpSection {
+    group: HelpGroup,
+    items: Vec<HelpItem>,
+}
+
+fn help_group(id: ActionId) -> Option<HelpGroup> {
+    match id {
+        ActionId::CollectionMoveUp
+        | ActionId::CollectionMoveDown
+        | ActionId::CollectionFirst
+        | ActionId::CollectionLast
+        | ActionId::CollectionPageUp
+        | ActionId::CollectionPageDown
+        | ActionId::CollectionOpen
+        | ActionId::ServicesSectionNext
+        | ActionId::ServicesSectionPrevious => Some(HelpGroup::Navigation),
+        ActionId::CollectionSort | ActionId::CollectionWideColumns | ActionId::TaskCancel => {
+            Some(HelpGroup::CurrentView)
+        }
+        ActionId::ViewCommandLine
+        | ActionId::ViewFilter
+        | ActionId::ResourceActions
+        | ActionId::ResourceCopy => Some(HelpGroup::SearchAndCommands),
+        ActionId::ViewRefresh
+        | ActionId::ViewRefreshAll
+        | ActionId::ViewTasks
+        | ActionId::ViewHistoryBack
+        | ActionId::ViewHistoryForward => Some(HelpGroup::Data),
+        ActionId::ViewHelp | ActionId::AppQuit => Some(HelpGroup::Global),
+        _ => None,
+    }
+}
+
+fn help_sections(app: &App) -> Vec<HelpSection> {
+    let context = context(app);
+    let actions = action::all_actions();
+    HelpGroup::ORDER
+        .into_iter()
+        .filter_map(|group| {
+            let items = actions
+                .iter()
+                .filter(|spec| {
+                    help_group(spec.id) == Some(group)
+                        && (spec.id == ActionId::AppQuit || spec.contexts.contains(&context))
+                        && help_action_is_relevant(app, spec.id)
+                        && !spec.default_bindings.is_empty()
+                        && app.action_unavailable_reason(spec.id).is_none()
+                })
+                .filter_map(|spec| {
+                    let binding = spec.default_bindings.first()?;
+                    Some(HelpItem {
+                        key: binding.label(),
+                        label: spec.label,
+                    })
+                })
+                .collect::<Vec<_>>();
+            (!items.is_empty()).then_some(HelpSection { group, items })
+        })
+        .collect()
+}
+
+fn help_action_is_relevant(app: &App, id: ActionId) -> bool {
+    !matches!(
+        id,
+        ActionId::ServicesSectionNext | ActionId::ServicesSectionPrevious
+    ) || app.current_route() == Route::Services
+}
+
+pub fn help_menu_height(app: &App, width: u16) -> u16 {
+    let sections = help_sections(app);
+    let columns = layout::help_menu_columns(width).min(sections.len().max(1));
+    let bands = sections.len().div_ceil(columns);
+    let content_height = sections
+        .chunks(columns)
+        .map(|band| {
+            band.iter()
+                .map(|section| section.items.len().saturating_add(1))
+                .max()
+                .map_or(0, |height| height)
+        })
+        .sum::<usize>()
+        .saturating_add(bands.saturating_sub(1));
+    u16::try_from(content_height.saturating_add(4))
+        .map_or(u16::MAX, |height| height)
+        .max(14)
+}
+
+fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
+    let sections = help_sections(app);
+    let columns = layout::help_menu_columns(area.width).min(sections.len().max(1));
+    let separator_width = columns.saturating_sub(1).saturating_mul(3);
+    let available_width = usize::from(area.width).saturating_sub(separator_width);
+    let cell_width = available_width / columns;
+    let mut content = Vec::new();
+    for (band_index, band) in sections.chunks(columns).enumerate() {
+        if band_index > 0 {
+            content.push(Line::default());
+        }
+        let height = band
+            .iter()
+            .map(|section| section.items.len().saturating_add(1))
+            .max()
+            .map_or(0, |height| height);
+        for row in 0..height {
+            let mut spans = Vec::new();
+            for column in 0..columns {
+                if column > 0 {
+                    spans.push(Span::raw("   "));
+                }
+                if let Some(section) = band.get(column) {
+                    spans.extend(help_section_line(app, section, row, cell_width));
+                } else {
+                    spans.push(Span::raw(" ".repeat(cell_width)));
+                }
+            }
+            content.push(Line::from(spans));
+        }
+    }
+
+    let content_budget = usize::from(area.height.saturating_sub(4));
+    let mut lines = vec![help_header(app), Line::default()];
+    lines.extend(content.into_iter().take(content_budget));
+    while lines.len().saturating_sub(2) < content_budget {
+        lines.push(Line::default());
+    }
+    lines.push(Line::default());
+    lines.push(help_status(app));
+    lines
+}
+
+fn help_header(app: &App) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("Help", app.theme.style(theme::StyleRole::Focus)),
+        Span::raw("   "),
+        Span::styled("Esc", app.theme.style(theme::StyleRole::KeyHint)),
+        Span::styled(" Close", app.theme.style(theme::StyleRole::TextMuted)),
+    ])
+}
+
+fn help_section_line(
+    app: &App,
+    section: &HelpSection,
+    row: usize,
+    width: usize,
+) -> Vec<Span<'static>> {
+    if row == 0 {
+        let heading = format!(" {} ", section.group.label());
+        let heading_width = heading.chars().count();
+        return vec![
+            Span::styled(heading, app.theme.style(theme::StyleRole::SectionHeading)),
+            Span::styled(
+                " ".repeat(width.saturating_sub(heading_width)),
+                app.theme.style(theme::StyleRole::SurfaceRaised),
+            ),
+        ];
+    }
+    section.items.get(row.saturating_sub(1)).map_or_else(
+        || vec![Span::raw(" ".repeat(width))],
+        |item| help_item_line(app, item, width),
+    )
+}
+
+fn help_item_line(app: &App, item: &HelpItem, width: usize) -> Vec<Span<'static>> {
+    let key_width = item.key.chars().count();
+    let label_budget = width.saturating_sub(key_width.saturating_add(1));
+    let label = text::ellipsize(&item.label.to_ascii_lowercase(), label_budget);
+    let used = key_width
+        .saturating_add(1)
+        .saturating_add(label.chars().count());
+    vec![
+        Span::styled(item.key, app.theme.style(theme::StyleRole::KeyHint)),
+        Span::styled(" ", app.theme.style(theme::StyleRole::SurfaceRaised)),
+        Span::styled(label, app.theme.style(theme::StyleRole::TextMuted)),
+        Span::styled(
+            " ".repeat(width.saturating_sub(used)),
+            app.theme.style(theme::StyleRole::SurfaceRaised),
+        ),
+    ]
+}
+
+fn help_status(app: &App) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("Keys", app.theme.style(theme::StyleRole::KeyHint)),
+        Span::styled(
+            " activate immediately",
+            app.theme.style(theme::StyleRole::TextMuted),
+        ),
+    ])
 }
 
 fn context(app: &App) -> ActionContext {

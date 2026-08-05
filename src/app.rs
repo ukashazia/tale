@@ -242,13 +242,6 @@ pub struct FilterLineState {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct HelpSheetState {
-    pub query: String,
-    pub filtering: bool,
-    pub scroll: usize,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TransientKind {
     Action,
     Copy,
@@ -269,7 +262,7 @@ pub enum InteractionMode {
     CommandLine(CommandLineState),
     FilterLine(FilterLineState),
     Transient(TransientMenuState),
-    HelpSheet(HelpSheetState),
+    HelpSheet,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1673,7 +1666,7 @@ impl App {
                 None
             }
             InteractionMode::Normal
-            | InteractionMode::HelpSheet(_)
+            | InteractionMode::HelpSheet
             | InteractionMode::FilterLine(_) => None,
         };
         if let Some(route) = clicked_route {
@@ -1928,10 +1921,6 @@ impl App {
                 insert_text(&mut state.editor, text);
                 return self.update_live_filter();
             }
-            InteractionMode::HelpSheet(state) if state.filtering => {
-                state.query.push_str(text);
-                return Vec::new();
-            }
             _ => {}
         }
         let Some(overlay) = self.overlays.last_mut() else {
@@ -2021,7 +2010,7 @@ impl App {
             InteractionMode::CommandLine(_) => self.handle_command_line_key(key),
             InteractionMode::FilterLine(_) => self.handle_filter_line_key(key),
             InteractionMode::Transient(_) => self.handle_transient_key(key),
-            InteractionMode::HelpSheet(_) => self.handle_help_sheet_key(key),
+            InteractionMode::HelpSheet => self.handle_help_sheet_key(key),
             InteractionMode::Normal => Vec::new(),
         }
     }
@@ -2113,11 +2102,7 @@ impl App {
             return Vec::new();
         }
         if key.code == KeyCode::Char('?') && key.modifiers.is_empty() {
-            self.interaction = InteractionMode::HelpSheet(HelpSheetState {
-                query: String::new(),
-                filtering: false,
-                scroll: 0,
-            });
+            self.interaction = InteractionMode::HelpSheet;
             return Vec::new();
         }
         let KeyCode::Char(character) = key.code else {
@@ -2193,24 +2178,8 @@ impl App {
             self.interaction = InteractionMode::Normal;
             return Vec::new();
         }
-        let InteractionMode::HelpSheet(state) = &mut self.interaction else {
-            return Vec::new();
-        };
-        match key.code {
-            KeyCode::Char('/') if !state.filtering => state.filtering = true,
-            KeyCode::Char(character) if state.filtering && key.modifiers.is_empty() => {
-                state.query.push(character);
-            }
-            KeyCode::Backspace if state.filtering => {
-                let _ = state.query.pop();
-            }
-            KeyCode::Char('j') | KeyCode::Down => state.scroll = state.scroll.saturating_add(1),
-            KeyCode::Char('k') | KeyCode::Up => state.scroll = state.scroll.saturating_sub(1),
-            KeyCode::PageDown => state.scroll = state.scroll.saturating_add(8),
-            KeyCode::PageUp => state.scroll = state.scroll.saturating_sub(8),
-            _ => {}
-        }
-        Vec::new()
+        self.interaction = InteractionMode::Normal;
+        self.handle_key(key)
     }
 
     fn update_live_filter(&mut self) -> Vec<Effect> {
@@ -2944,11 +2913,7 @@ impl App {
             ActionId::ViewRefresh => self.start_refresh(false),
             ActionId::ViewRefreshAll => self.start_refresh(true),
             ActionId::ViewHelp => {
-                self.interaction = InteractionMode::HelpSheet(HelpSheetState {
-                    query: String::new(),
-                    filtering: false,
-                    scroll: 0,
-                });
+                self.interaction = InteractionMode::HelpSheet;
                 Vec::new()
             }
             ActionId::ViewTasks => {
