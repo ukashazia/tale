@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem};
 
 use crate::app::App;
@@ -170,14 +171,50 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             }
         }
     }
-    let items = values.into_iter().map(|setting| {
+    // The palette lives on the page rather than behind a modal: picking a theme
+    // applies at once, so this row is the preview. It goes first because the
+    // settings list below it is long.
+    let mut items = vec![
+        ListItem::new(Line::from(vec![Span::styled(
+            format!("{:<25} {}", "PALETTE", "a appearance changes the theme"),
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )])),
+        ListItem::new(Line::from(vec![
+            Span::raw(" ".repeat(26)),
+            Span::styled("✓ healthy", app.theme.style(theme::StyleRole::StateHealthy)),
+            Span::raw("  "),
+            Span::styled("! warning", app.theme.style(theme::StyleRole::StateWarning)),
+            Span::raw("  "),
+            Span::styled(
+                "X danger/public",
+                app.theme.style(theme::StyleRole::StatePublic),
+            ),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::raw(" ".repeat(26)),
+            Span::styled("local", app.theme.style(theme::StyleRole::SourceLocal)),
+            Span::raw("  "),
+            Span::styled("admin", app.theme.style(theme::StyleRole::SourceAdmin)),
+            Span::raw("  "),
+            Span::styled(
+                "local+admin",
+                app.theme.style(theme::StyleRole::SourceCombined),
+            ),
+        ])),
+        ListItem::new(Line::default()),
+        ListItem::new(Line::from(vec![Span::styled(
+            format!("{:<25} {:<32} [{}]", "SETTING", "VALUE", "SOURCE"),
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )])),
+    ];
+    items.extend(values.into_iter().map(|setting| {
         ListItem::new(format!(
             "{:<25} {:<32} [{}]",
             setting.name,
             setting.value,
             setting.source.label()
         ))
-    });
+    }));
     frame.render_widget(
         List::new(items)
             .style(app.theme.style(theme::StyleRole::Surface))

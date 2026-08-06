@@ -192,7 +192,6 @@ TextCode
 KeyHint
 KeyHintDisabled
 Prompt
-PromptCursor
 CompletionMatch
 CompletionSelected
 Selection

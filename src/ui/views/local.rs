@@ -8,6 +8,10 @@ use crate::ui::theme;
 use crate::ui::views::routes;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.local_resource.snapshot.is_none() {
+        render_without_snapshot(frame, app, area);
+        return;
+    }
     let executable = app.local_executable.as_ref();
     let snapshot = app.local_resource.snapshot.as_ref();
     let self_node = snapshot.map(|snapshot| &snapshot.self_node);
@@ -179,4 +183,46 @@ fn preference_line<T: std::fmt::Display>(
         "  {label}: {value} · {}",
         preference.editability.label()
     ))
+}
+
+/// With no snapshot at all, every field would read "not returned", which claims
+/// the daemon answered and omitted them. Say what is actually missing instead.
+fn render_without_snapshot(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    use crate::domain::source::LocalDaemonState;
+    let mut lines = vec![Line::from("No local node details to show"), Line::default()];
+    match &app.local_daemon_state {
+        LocalDaemonState::Mock => {
+            lines.push(Line::from(
+                "Simulated data has no local machine. Restart without --mock to read this one.",
+            ));
+        }
+        LocalDaemonState::Disabled => {
+            lines.push(Line::from(
+                "Local access is off for this run. Restart without --no-local.",
+            ));
+        }
+        LocalDaemonState::Connecting | LocalDaemonState::Reconnecting => {
+            lines.push(Line::from("Connecting to the local Tailscale daemon…"));
+        }
+        LocalDaemonState::Live => {
+            lines.push(Line::from(
+                "The daemon is connected but has not answered yet.",
+            ));
+            lines.push(Line::default());
+            lines.push(Line::from("  retry   r"));
+        }
+        LocalDaemonState::PermissionDenied { detail }
+        | LocalDaemonState::Unsupported { detail }
+        | LocalDaemonState::Unavailable { detail } => {
+            lines.push(Line::from(detail.clone()));
+            lines.push(Line::default());
+            lines.push(Line::from("  retry   r"));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(Block::default().borders(Borders::ALL).title("local")),
+        area,
+    );
 }

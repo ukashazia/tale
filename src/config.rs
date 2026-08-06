@@ -135,6 +135,14 @@ impl SymbolsMode {
             Self::Unicode => "unicode",
         }
     }
+
+    /// Whether to draw the Unicode glyph. `Auto` says yes: the frame already
+    /// uses box-drawing borders, `·` separators, and `…` ellipses, so a
+    /// terminal that cannot render those is already broken, and ASCII markers
+    /// beside Unicode borders only look inconsistent. `ascii` is the opt-out.
+    pub const fn unicode(self) -> bool {
+        matches!(self, Self::Auto | Self::Unicode)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

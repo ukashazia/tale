@@ -9,7 +9,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use thiserror::Error;
 
 use crate::error::TaleError;
@@ -225,6 +225,8 @@ impl<C: TerminalControl> TerminalSession<C> {
             self.control.enable_mouse()?;
             self.acquired.mouse = true;
         }
+        // The cursor shape and blink are never changed, so editors show whatever
+        // insertion point the terminal is configured to draw.
         self.control.hide_cursor()?;
         self.acquired.cursor_hidden = true;
         Ok(())
@@ -379,9 +381,121 @@ impl TerminalControl for CrosstermControl {
     }
 }
 
+/// Keeps the terminal's own cursor steady across repaints.
+///
+/// Ratatui queues a frame's cell writes but then shows and moves the cursor with
+/// immediately flushed commands. That leaves the cursor visible for one flush
+/// wherever the last cell landed before it jumps to the prompt, and it restarts
+/// the terminal's blink timer on every repaint, however little changed. This
+/// backend hides the cursor while cells are written, moves before it shows, and
+/// stays silent when a frame leaves the cursor exactly where it already was.
+pub struct SteadyCursor<B> {
+    inner: B,
+    /// `None` once cell writes have left the cursor somewhere unknown.
+    position: Option<ratatui::layout::Position>,
+    shown: bool,
+    wanted: bool,
+}
+
+impl<B> SteadyCursor<B> {
+    pub const fn new(inner: B) -> Self {
+        Self {
+            inner,
+            position: None,
+            shown: false,
+            wanted: false,
+        }
+    }
+}
+
+impl<B: Backend> Backend for SteadyCursor<B> {
+    type Error = B::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        let mut content = content.peekable();
+        if content.peek().is_none() {
+            // An empty diff changes nothing, including where the cursor sits.
+            return Ok(());
+        }
+        // Cell writes are queued, not flushed, so they reach the terminal
+        // together with the move that follows. Hiding the cursor here would only
+        // add a visible off/on cycle to every repaint.
+        self.inner.draw(content)?;
+        self.position = None;
+        Ok(())
+    }
+
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.wanted = false;
+        if self.shown {
+            self.inner.hide_cursor()?;
+            self.shown = false;
+        }
+        Ok(())
+    }
+
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        // Deferred until the position is known, so it never appears mid-frame.
+        self.wanted = true;
+        Ok(())
+    }
+
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        let position = self.inner.get_cursor_position()?;
+        self.position = Some(position);
+        Ok(position)
+    }
+
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        position: P,
+    ) -> Result<(), Self::Error> {
+        let position = position.into();
+        if self.position != Some(position) {
+            self.inner.set_cursor_position(position)?;
+            self.position = Some(position);
+        }
+        if self.wanted && !self.shown {
+            self.inner.show_cursor()?;
+            self.shown = true;
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.position = None;
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        self.position = None;
+        self.inner.clear_region(clear_type)
+    }
+
+    fn append_lines(&mut self, lines: u16) -> Result<(), Self::Error> {
+        self.position = None;
+        self.inner.append_lines(lines)
+    }
+
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.inner.flush()
+    }
+}
+
 pub struct RealTerminal {
     pub session: TerminalSession<CrosstermControl>,
-    pub terminal: Terminal<CrosstermBackend<Stdout>>,
+    pub terminal: Terminal<SteadyCursor<CrosstermBackend<Stdout>>>,
 }
 
 impl RealTerminal {
@@ -392,7 +506,7 @@ impl RealTerminal {
     pub fn enter_with_mouse(mouse: bool) -> Result<Self, TaleError> {
         let session = TerminalSession::new_with_mouse(CrosstermControl::new(), mouse)
             .map_err(|error| TaleError::Terminal(error.to_string()))?;
-        let backend = CrosstermBackend::new(io::stdout());
+        let backend = SteadyCursor::new(CrosstermBackend::new(io::stdout()));
         let terminal = match Terminal::new(backend) {
             Ok(terminal) => terminal,
             Err(error) => {

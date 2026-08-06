@@ -176,7 +176,7 @@ fn services_render_loading_partial_stale_failed_unsupported_read_only_and_runnin
         let running = render_lines(&app, 80, 24);
         assert!(running.is_some());
         if let Some(running) = running {
-            assert!(running.iter().any(|line| line.contains("tasks: 1")));
+            assert!(running.iter().any(|line| line.contains("1 task running")));
         }
     }
 }

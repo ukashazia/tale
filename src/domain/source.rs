@@ -158,10 +158,20 @@ pub enum LocalCliState {
     Mock,
     Discovering,
     Available,
-    Missing,
-    PermissionDenied,
-    Unsupported { detail: String },
-    Unavailable { detail: String },
+    /// Carries the same explanation the other failure states do: what was
+    /// looked for, where, and what to do about it.
+    Missing {
+        detail: String,
+    },
+    PermissionDenied {
+        detail: String,
+    },
+    Unsupported {
+        detail: String,
+    },
+    Unavailable {
+        detail: String,
+    },
 }
 
 impl LocalCliState {
@@ -171,8 +181,8 @@ impl LocalCliState {
             Self::Mock => "mock",
             Self::Discovering => "discovering",
             Self::Available => "available",
-            Self::Missing => "missing",
-            Self::PermissionDenied => "permission denied",
+            Self::Missing { .. } => "missing",
+            Self::PermissionDenied { .. } => "permission denied",
             Self::Unsupported { .. } => "unsupported",
             Self::Unavailable { .. } => "unavailable",
         }

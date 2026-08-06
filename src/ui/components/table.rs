@@ -4,7 +4,6 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 
 use crate::app::App;
-use crate::config::SymbolsMode;
 use crate::domain::device::{Device, Liveness};
 use crate::ui::{text, theme};
 
@@ -170,11 +169,7 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(app.theme.style(theme::StyleRole::BorderNormal))
-                    .title(if app.admin.profile.is_some() {
-                        "devices · local + admin"
-                    } else {
-                        "devices"
-                    }),
+                    .title(devices_title(app)),
             ),
         area,
     );
@@ -229,7 +224,7 @@ fn render_registered_columns(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn registered_device_row(app: &App, device: &Device, selected: bool, width: u16) -> Row<'static> {
-    let marker = if app.resolved_config.ui.symbols == SymbolsMode::Unicode {
+    let marker = if app.resolved_config.ui.symbols.unicode() {
         match device.liveness {
             Liveness::Online => "●",
             Liveness::Offline => "○",
@@ -327,7 +322,7 @@ fn device_row(
     let seen = device
         .age_at(app.now)
         .map_or_else(|| "-".to_owned(), format_age);
-    let marker = if app.resolved_config.ui.symbols == SymbolsMode::Unicode {
+    let marker = if app.resolved_config.ui.symbols.unicode() {
         match device.liveness {
             Liveness::Online => "●",
             Liveness::Offline => "○",
@@ -486,4 +481,33 @@ fn format_age(seconds: u64) -> String {
 
 fn format_optional_bytes(value: Option<u64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| value.to_string())
+}
+
+/// Route context now lives in the border: what this is, how much of it is
+/// showing, and the terms that narrowed it.
+fn devices_title(app: &App) -> String {
+    let mut detail = Vec::new();
+    if !app.views.devices.filter_draft.is_empty() {
+        detail.push(format!(
+            "/{}",
+            text::ellipsize(&app.views.devices.filter_draft, 32)
+        ));
+    }
+    detail.push(format!(
+        "{} {}",
+        app.views.devices.sort.field.display_label(),
+        match app.views.devices.sort.direction {
+            crate::domain::device::SortDirection::Ascending => "↑",
+            crate::domain::device::SortDirection::Descending => "↓",
+        }
+    ));
+    if app.admin.profile.is_some() {
+        detail.push("local + admin".to_owned());
+    }
+    text::view_title(
+        "devices",
+        app.visible_indices().len(),
+        app.devices_resource.snapshot.len(),
+        &detail,
+    )
 }

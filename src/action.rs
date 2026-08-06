@@ -18,6 +18,7 @@ pub enum ActionId {
     CollectionPageUp,
     CollectionPageDown,
     CollectionOpen,
+    CollectionBack,
     CollectionSort,
     CollectionWideColumns,
     ResourceActions,
@@ -169,6 +170,7 @@ impl ActionId {
             Self::CollectionPageUp => "collection.page_up",
             Self::CollectionPageDown => "collection.page_down",
             Self::CollectionOpen => "collection.open",
+            Self::CollectionBack => "collection.back",
             Self::CollectionSort => "collection.sort",
             Self::CollectionWideColumns => "collection.wide_columns",
             Self::ResourceActions => "resource.actions",
@@ -320,6 +322,7 @@ impl ActionId {
             Self::CollectionPageUp,
             Self::CollectionPageDown,
             Self::CollectionOpen,
+            Self::CollectionBack,
             Self::CollectionSort,
             Self::CollectionWideColumns,
             Self::ResourceActions,
@@ -560,8 +563,11 @@ impl Binding {
 
     pub fn matches(self, key: KeyEvent) -> bool {
         match self {
+            // Shift is inherent to an uppercase character, not an extra
+            // modifier, so `G` must match a key event that reports SHIFT.
             Self::Char(character) => {
-                key.code == KeyCode::Char(character) && key.modifiers.is_empty()
+                key.code == KeyCode::Char(character)
+                    && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
             }
             Self::Ctrl(character) => {
                 key.code == KeyCode::Char(character)
@@ -617,6 +623,7 @@ const BIND_LAST: &[Binding] = &[Binding::Char('G')];
 const BIND_PAGE_UP: &[Binding] = &[Binding::Ctrl('u')];
 const BIND_PAGE_DOWN: &[Binding] = &[Binding::Ctrl('d')];
 const BIND_OPEN: &[Binding] = &[Binding::Enter, Binding::Char('l')];
+const BIND_BACK: &[Binding] = &[Binding::Char('h')];
 const BIND_SORT: &[Binding] = &[Binding::Char('s')];
 const BIND_WIDE: &[Binding] = &[Binding::Char('w')];
 const BIND_ACTIONS: &[Binding] = &[Binding::Char('a')];
@@ -774,6 +781,16 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             contexts: NAVIGATION,
             selection_rule: SelectionRule::None,
             default_bindings: BIND_PAGE_DOWN,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::CollectionBack,
+            label: "Back",
+            description: "Leave the detail pane and return to the list",
+            contexts: &[ActionContext::Detail],
+            selection_rule: SelectionRule::None,
+            default_bindings: BIND_BACK,
             capability: Capability::Available,
             risk: Risk::Observe,
         },
@@ -969,6 +986,7 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::SavedViewDelete => Some("vd"),
         ActionId::SavedViewApply => Some("va"),
         ActionId::CollectionExport => Some("zx"),
+        ActionId::SettingsAppearance => Some("za"),
         ActionId::OverviewHealthOpenResource => Some("ho"),
         ActionId::OverviewHealthRunSuggestedAction => Some("hr"),
         ActionId::AccessExplorerAsk => Some("ea"),
@@ -1079,6 +1097,7 @@ pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
         | ActionId::LocalDnsStatus
         | ActionId::LocalDnsQuery => Some(TransientGroup::Diagnostics),
         ActionId::LocalSshOpen | ActionId::LocalNcOpen => Some(TransientGroup::Handoff),
+        ActionId::SettingsAppearance => Some(TransientGroup::Views),
         ActionId::ServicesServeRefresh
         | ActionId::ServicesServeCreate
         | ActionId::ServicesServeEdit
@@ -1250,6 +1269,7 @@ const fn footer_priority(id: ActionId) -> u8 {
         ActionId::CollectionMoveUp => 0,
         ActionId::CollectionMoveDown => 1,
         ActionId::CollectionOpen => 2,
+        ActionId::CollectionBack => 3,
         ActionId::TaskCancel => 3,
         ActionId::ViewFilter => 4,
         ActionId::CollectionSort => 5,
@@ -1289,6 +1309,7 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
         ActionId::CollectionPageUp => Some("page-up"),
         ActionId::CollectionPageDown => Some("page-down"),
         ActionId::CollectionOpen => Some("open"),
+        ActionId::CollectionBack => Some("back"),
         ActionId::CollectionSort => Some("sort"),
         ActionId::CollectionWideColumns => Some("columns"),
         ActionId::ResourceActions => Some("actions"),

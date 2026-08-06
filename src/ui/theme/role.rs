@@ -23,9 +23,11 @@ pub enum StyleRole {
     KeyHint,
     KeyHintDisabled,
     Prompt,
-    PromptCursor,
     CompletionMatch,
     CompletionSelected,
+    SyntaxField,
+    SyntaxOperator,
+    SyntaxValue,
     Selection,
     SelectionInactive,
     Focus,
@@ -61,7 +63,7 @@ pub enum StyleRole {
 }
 
 impl StyleRole {
-    pub const ALL: [Self; 55] = [
+    pub const ALL: [Self; 57] = [
         Self::Canvas,
         Self::Surface,
         Self::SurfaceRaised,
@@ -82,9 +84,11 @@ impl StyleRole {
         Self::KeyHint,
         Self::KeyHintDisabled,
         Self::Prompt,
-        Self::PromptCursor,
         Self::CompletionMatch,
         Self::CompletionSelected,
+        Self::SyntaxField,
+        Self::SyntaxOperator,
+        Self::SyntaxValue,
         Self::Selection,
         Self::SelectionInactive,
         Self::Focus,
@@ -160,12 +164,12 @@ impl StyleRole {
             Self::Canvas | Self::Surface | Self::TextPrimary | Self::BorderNormal => {
                 Modifier::empty()
             }
-            Self::SurfaceRaised
-            | Self::BorderFocused
-            | Self::Focus
-            | Self::Prompt
-            | Self::PromptCursor => Modifier::BOLD,
-            Self::SurfaceInset | Self::TextCode => Modifier::ITALIC,
+            Self::SurfaceRaised | Self::BorderFocused | Self::Focus | Self::Prompt => {
+                Modifier::BOLD
+            }
+            Self::SurfaceInset | Self::TextCode | Self::SyntaxValue => Modifier::ITALIC,
+            Self::SyntaxField => Modifier::BOLD.union(Modifier::UNDERLINED),
+            Self::SyntaxOperator => Modifier::DIM.union(Modifier::ITALIC),
             Self::Backdrop | Self::TextDisabled | Self::StateDisabled => {
                 Modifier::DIM.union(Modifier::CROSSED_OUT)
             }

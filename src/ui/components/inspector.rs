@@ -52,37 +52,33 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ),
             app.theme.style(theme::StyleRole::TextPrimary),
         )),
-        Line::from(format!("id       {}", device.id)),
-        Line::from(format!("hostname {}", device.hostname)),
-        Line::from(format!("owner    {owner}")),
-        Line::from(format!("os       {} {}", device.os.label(), device.version)),
+        Line::from(format!("id           {}", device.id)),
+        Line::from(format!("hostname     {}", device.hostname)),
+        Line::from(format!("owner        {owner}")),
         Line::from(format!(
-            "state    {} / {}",
+            "os           {} {}",
+            device.os.label(),
+            device.version
+        )),
+        Line::from(format!(
+            "state        {} / {}",
             device.liveness.label(),
             device.path.label()
         )),
-        Line::from(format!("address  {addresses}")),
-        Line::from(format!("tags     {tags}")),
+        Line::from(format!("address      {addresses}")),
+        Line::from(format!("tags         {tags}")),
         Line::from(format!(
-            "features exit={} option={} router={} ssh={} funnel={} shared={}",
-            device.capabilities.exit_node,
-            device.capabilities.exit_node_option,
-            device.capabilities.subnet_router,
-            device.capabilities.ssh,
-            device.capabilities.funnel,
-            device.capabilities.shared
+            "capabilities {}",
+            capability_summary(&device.capabilities)
         )),
+        Line::from(format!("key          {}", key_state(&device.capabilities))),
         Line::from(format!(
-            "key      expired={} approved={}",
-            device.capabilities.expired, device.capabilities.approved
-        )),
-        Line::from(format!(
-            "seen     {}",
+            "seen         {}",
             device
                 .last_seen
-                .map_or_else(|| "not returned".to_owned(), |value| value.to_string())
+                .map_or_else(|| "not reported".to_owned(), |value| value.to_string())
         )),
-        Line::from("source   mock · deterministic fictional data"),
+        Line::from("source       mock · deterministic fictional data"),
     ];
     let style = if app.focus == crate::app::Focus::Inspector {
         app.theme.style(theme::StyleRole::BorderFocused)
@@ -272,17 +268,18 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::from(format!("routes      {routes}")),
         Line::from(format!(
-            "roles       exit={} option={} ssh={} shared={}",
-            device.exit_node, device.exit_node_option, device.ssh_host_keys_present, device.shared
+            "capabilities {}",
+            text::capability_list(&[
+                ("Exit node", device.exit_node),
+                ("Exit node option", device.exit_node_option),
+                ("SSH", device.ssh_host_keys_present),
+                ("Shared", device.shared),
+            ])
         )),
         Line::from(format!(
-            "traffic     rx={} tx={}",
-            device
-                .rx_bytes
-                .map_or_else(|| "not returned".to_owned(), |value| value.to_string()),
-            device
-                .tx_bytes
-                .map_or_else(|| "not returned".to_owned(), |value| value.to_string())
+            "traffic     rx {} · tx {}",
+            text::format_bytes(device.rx_bytes),
+            text::format_bytes(device.tx_bytes)
         )),
         Line::from(format!(
             "seen        {} / handshake {}",
@@ -314,4 +311,26 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ),
         area,
     );
+}
+
+/// Names only the capabilities a device has. `false` is not information a
+/// reader needs six times in a row.
+fn capability_summary(capabilities: &crate::domain::device::DeviceCapabilities) -> String {
+    text::capability_list(&[
+        ("Exit node", capabilities.exit_node),
+        ("Exit node option", capabilities.exit_node_option),
+        ("Subnet router", capabilities.subnet_router),
+        ("SSH", capabilities.ssh),
+        ("Funnel", capabilities.funnel),
+        ("Shared", capabilities.shared),
+    ])
+}
+
+fn key_state(capabilities: &crate::domain::device::DeviceCapabilities) -> &'static str {
+    match (capabilities.expired, capabilities.approved) {
+        (true, true) => "expired",
+        (true, false) => "expired · awaiting approval",
+        (false, true) => "valid",
+        (false, false) => "awaiting approval",
+    }
 }

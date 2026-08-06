@@ -25,6 +25,27 @@ the operating system’s normal administrator-approved procedure, then refresh
 Tale. Do not grant broad permissions or run Tale as root merely to hide the
 error. Tale does not probe alternate endpoints or fall back to CLI status.
 
+## Tale cannot find the tailscale command
+
+The failure names the command, every location that was checked, and what to do:
+
+```text
+the tailscale command was not found. Looked in /usr/bin/tailscale,
+/opt/homebrew/bin/tailscale and 3 more. Install Tailscale or pass --tailscale-path.
+```
+
+A command that exists but cannot be run reports that separately, with the path it
+found, so a permissions problem is never mistaken for a missing install. Tale
+searches an explicit `--tailscale-path` first, then `TAILSCALE_PATH`, then the
+configured path, then every entry of `PATH`.
+
+The daemon and the CLI are discovered separately, and each carries its own
+generation, so a daemon status update can never discard a CLI discovery result.
+The top line can read `connected locally` while CLI-backed actions are still
+unavailable, but `CLI discovering` is transient: it resolves to `available` or to
+a named failure within a command timeout. A `local` view that stays on
+`CLI discovering` with `executable  not returned` is a defect, not a slow probe.
+
 ## Authentication, scopes, and plan restrictions
 
 For local mode, distinguish logged-out state from a daemon failure. For admin
@@ -75,6 +96,29 @@ discards the forward branch. If a restored resource no longer exists, Tale
 selects the first deterministic visible resource and reports that the previous
 selection disappeared. Resize does not discard active editor text; below 60x18
 the prompt and `Esc cancel` remain visible with the minimum-size message.
+
+## The cursor blinks unevenly while a prompt is open
+
+Tale never sets the cursor shape or blink, so the rhythm is the terminal's own.
+Terminals restart that rhythm whenever the cursor moves, and every repaint has to
+move the cursor back to the prompt after writing cells. A prompt over a view that
+keeps receiving data will therefore blink to the beat of those updates.
+
+To see what is repainting, run with `TALE_RENDER_TRACE` set to a file path. Each
+repaint appends a line naming the event that caused it:
+
+```text
+TALE_RENDER_TRACE=/tmp/tale-render.log tale
+```
+
+```text
+    6.850s repaint after input
+    9.204s repaint after local
+   11.560s repaint after local
+```
+
+Only `input` lines are your keystrokes. Regular non-`input` lines while you are
+not typing are the source of an uneven blink.
 
 ## Doctor support bundle
 

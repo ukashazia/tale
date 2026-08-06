@@ -21,8 +21,8 @@ and mutation verification contracts remain in force.
 ### User-visible result
 
 - `:` opens the canonical route grid and fuzzy navigation prompt.
-- `/` opens a one-line filter prompt in the footer.
-- `Tab` cycles navigation results or completes route-valid filter terms.
+- `/` opens the route's filter catalogue and prompt in the footer.
+- `Tab` cycles navigation results or takes the best route-valid filter completion.
 - `a` shows contextual action keys at the bottom; the next key invokes one.
 - `y` shows contextual copy keys at the bottom; the next key copies one field.
 - `?` opens contextual which-key help anchored to the bottom.
@@ -113,27 +113,41 @@ normal:
 │ a actions  y copy  / filter  : go  r refresh  ? help            │
 
 navigation palette:
-│ Views   Esc Close                                                 │
+│ Views   Esc close                                                 │
 │                                                                │
 │ Fleet                  Local                 Network             │
-│ devices  Machines...   local     This...     routes  Network...  │
-│ users    Members       services  Serve...    dns     Name...     │
-│ overview Fleet summary                       access  Policies    │
+│ devices  machines...   local     this...     routes  network...  │
+│ users    members       services  serve...    dns     name...     │
+│ overview fleet summary                       access  policies    │
 │                                                                │
 │ Operations                                                     │
-│ credentials Keys & tokens                                      │
-│ activity    Tasks & audit                                      │
-│ settings    Configuration                                      │
+│ credentials keys & tokens                                      │
+│ activity    tasks & audit                                      │
+│ settings    configuration                                      │
 │                                                                │
-│ : dvcs▏                                                         │
+│ : dvcs█                                                         │
 │ Enter Open best match                                           │
 
+filter:
+│ Filter   matches name, host, owner, tags, and addresses   Esc cancel │
+│                                                                │
+│ Machine              Connection             Administration     │
+│ id:    device id     online:    control link approval:   approval │
+│ name:  host name     path:      data path    key-expiry: key expiry │
+│ owner: owning user   last-seen: seen age     version:    client build │
+│ tag:   acl tag       property:  capability   sharing:    membership │
+│ os:    platform                              posture:    posture data │
+│                                              route-role: route role │
+│                                                                │
+│ / owner:alice█                                                  │
+│ Enter apply   Tab complete   S-Tab back                         │
+
 filter with error:
-│ owner:        Owner name or ID                                   │
-│ / owner:"alice online:true        unclosed quote at column 7     │
+│ / owner:"alice online:true█                                      │
+│ unclosed quote at column 7   expected close the value with a matching "   showing last valid result │
 
 transient:
-│ Actions   ? Help   Esc Close                                    │
+│ Actions   ? help   Esc close                                    │
 │                                                                │
 │ Machine             Account              Diagnostics           │
 │ c connect           a s switch           g ping                │
@@ -151,13 +165,30 @@ Rules:
 
 - normal mode uses one footer row;
 - navigation mode reserves a stable-height adaptive grid with its prompt and hints;
-- filter mode replaces the normal row with its prompt and completion tray;
+- filter mode reserves a grouped grid of the route's field catalogue above
+  its prompt and hints;
 - action-transient mode reserves a tall adaptive grouped grid; copy remains a
   compact one-row key menu;
 - navigation uses three group columns at 120 columns and two at supported widths
   below that;
 - the navigation grid reserves two group bands, so filtering never moves the prompt;
-- filter completion trays show at most six candidates, plus an overflow count;
+- the filter grid folds into narrower columns before it hides fields, and
+  reports whatever it still could not show;
+- key hints read as `<key> <lower-case label>` on every surface;
+- the insertion point is the terminal's own cursor. Its shape and blink are
+  never set, so it matches the terminal's configuration and needs no restoring.
+  Editors place it on the prompt; every other mode leaves it unset so the
+  terminal hides it. No cell is spent drawing a caret;
+- cursor traffic is ordered and deduplicated by the backend, because terminals
+  restart the blink phase on every cursor command. It is moved before it is
+  shown, so it never appears at the cell a repaint happened to end on; it is
+  shown and hidden once per editor, never per keystroke; and a frame that writes
+  no cells and leaves the caret where it already was emits nothing at all.
+  Repaints must not toggle cursor visibility: cell writes are queued and reach
+  the terminal with the move that follows them, so there is nothing to hide
+  from, and an off/on cycle per frame is itself a visible flicker. A repaint
+  still has to move the cursor back, so cursor steadiness is bounded by how
+  quiet the app is; `TALE_RENDER_TRACE` records what repaints and when;
 - bottom content never covers an alert or confirmation;
 - at 60x18, the complete two-column grouped catalog and prompt remain functional;
 - no bottom interaction surface is rendered through `Clear` over a centered
@@ -263,35 +294,78 @@ another history frame, or an unrelated saved view.
 
 ### Filter completion
 
-Completion is supplied by the active route's explicit filter schema:
+Completion and parsing are both supplied by the active route's filter schema,
+which is the single declaration of that route's vocabulary:
 
 ```rust
 struct FilterSchema {
-    fields: Vec<FilterFieldSpec>,
+    free_text: &'static str,
+    groups: &'static [FilterFieldGroup],
+}
+
+struct FilterFieldGroup {
+    label: &'static str,
+    fields: &'static [FilterFieldSpec],
 }
 
 struct FilterFieldSpec {
-    canonical_name: &'static str,
-    aliases: &'static [&'static str],
+    name: &'static str,
+    field: FilterField,
     operators: &'static [FilterOperator],
     value_kind: FilterValueKind,
+    description: &'static str,
 }
 ```
 
-The concrete types may avoid allocation, but every route must declare its
-schema rather than using a global list that suggests invalid fields.
+Every route declares its own schema rather than using a global list that
+suggests invalid fields; a field absent from the active schema neither completes
+nor parses there. Each field has exactly one spelling. There are no aliases and
+no hidden alternates, so what the tray offers is what the parser accepts.
 
-Complete:
+Opening the prompt shows the whole catalogue at once, grouped as declared, each
+field beside a concise description. Typing replaces the grouped view with a
+single ranked `Matches` section.
 
-- field names before the separator;
-- supported comparison/operator syntax after a field;
-- `true`/`false`, documented enums, resource tags, operating systems, owners,
-  and other values already present in the current snapshot when bounded;
-- closing quotes only when doing so produces valid syntax.
+Matching is token-aware. Only the whitespace-separated token under the cursor is
+completed, and its stage decides what is offered:
 
-Dynamic candidates are deduplicated, redacted, capped at 100, and ordered
+- before the separator, field names, fuzzy-matched over the name and its
+  description;
+- after the separator, the field's values: declared enumerations, duration
+  comparisons, or values already present in the current snapshot;
+- after the values, the field's remaining match-mode operators.
+
+`Tab` accepts the highest-ranked offer and then walks forward through the tray;
+`Shift+Tab` walks backward. The offered set stays anchored while walking so rows
+do not move under the cursor, and a sole offer is accepted outright so the tray
+advances to the next stage. Editing releases the anchor and re-ranks.
+
+Field names, operators, and values each render in their own semantic role, in
+the tray and in the prompt. An unrecognised field name is marked in the prompt
+before it is committed.
+
+Snapshot candidates are deduplicated, redacted, capped at 100, and ordered
 deterministically. Do not index or suggest secret, policy-source, clipboard, or
 one-time-result content.
+
+How a term matches follows from how much the user said. A named free-text field
+matches on substring, so a term the tray offered always selects rows while a
+short value cannot drift into an unrelated one. Fields with a fixed vocabulary
+stay exact, the parser having already pinned them to a declared value. A bare
+word names no field, so it matches by the same subsequence rule the tray ranks
+with, tested against each identity field separately so it never spans two
+unrelated values. `starts_with=` narrows a substring to a prefix; there is no
+`contains=`, because a bare term already means that. Matching never reorders
+rows; the active sort still owns row order.
+
+Parse failures report the offending column, a message, and the syntax that was
+expected. The tray, the prompt, and the last valid result set all stay on
+screen; a failing edit never clears the rows behind it.
+
+The tray reserves the height its catalogue needs so the prompt never moves while
+suggestions narrow. Where that height would starve the collection, the grid
+folds into more, narrower columns before it hides fields, and reports any
+remainder it still could not show.
 
 ## 12.5 Transient action menus
 
@@ -312,8 +386,8 @@ v …  waiting for next key
 ```
 
 Menu depth is at most two keys after `a` or `y`. There is no timer. While a
-two-key sequence is pending, `Esc Back` clears that prefix and restores the full
-grid; `Esc Close` closes the unprefixed menu. The prefix key repeated at a nested
+two-key sequence is pending, `Esc back` clears that prefix and restores the full
+grid; `Esc close` closes the unprefixed menu. The prefix key repeated at a nested
 level has no magical meaning unless registered. Unknown keys keep the menu open
 and show a short non-modal notification; they never invoke a neighboring item.
 

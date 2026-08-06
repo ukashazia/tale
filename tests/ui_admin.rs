@@ -113,7 +113,14 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
                 assert!(lines.is_some());
                 if let Some(lines) = lines {
                     assert!(lines.iter().all(|line| !line.contains('\n')));
-                    assert!(lines.iter().any(|line| line.contains("Tale")));
+                    // The header always states the connection, tall or compact.
+                    assert!(
+                        lines.iter().take(6).any(|line| line.contains("connection")
+                            || line.contains("Connected")
+                            || line.contains("Simulated")
+                            || line.contains("Local")),
+                        "no connection state at {width}x{height} on {route:?}"
+                    );
                 }
             }
         }

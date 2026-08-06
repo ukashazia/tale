@@ -41,19 +41,19 @@ fn local_devices_render_wide_fields_and_support_phase_two_filters() {
             assert!(lines.iter().all(|line| !line.contains('\n')));
         }
 
-        let dns_filter = filter::parse("tail.example.ts.net");
+        let dns_filter = filter::parse("tail.example.ts.net", &filter::device_schema());
         assert!(dns_filter.is_ok());
         if let Ok(dns_filter) = dns_filter {
             app.views.devices.applied_filter = dns_filter;
             assert_eq!(app.visible_indices().len(), 2);
         }
-        let property_filter = filter::parse("property:exit-node");
+        let property_filter = filter::parse("property:exit-node", &filter::device_schema());
         assert!(property_filter.is_ok());
         if let Ok(property_filter) = property_filter {
             app.views.devices.applied_filter = property_filter;
             assert_eq!(app.visible_indices().len(), 1);
         }
-        let property_filter = filter::parse("property:exit-node-option");
+        let property_filter = filter::parse("property:exit-node-option", &filter::device_schema());
         assert!(property_filter.is_ok());
         if let Ok(property_filter) = property_filter {
             app.views.devices.applied_filter = property_filter;

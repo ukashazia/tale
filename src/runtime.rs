@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -271,11 +272,14 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             dispatch_effect(effect, &mut dispatch_context);
         }
 
+        let trace = RenderTrace::from_environment();
+        let mut cause = "startup";
         loop {
             if app.render_invalidated()
                 && !shutdown_requested
                 && !*dispatch_context.terminal_suspended
             {
+                trace.record(cause);
                 let render_result = dispatch_context.terminal.draw(app);
                 if let Err(error) = render_result {
                     final_error = Some(error);
@@ -297,6 +301,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             }
 
             let event = queue.recv().await;
+            cause = event_cause(&event);
             let effects = app.update(event);
             for effect in effects {
                 if matches!(effect, Effect::RequestShutdown) {
@@ -1070,19 +1075,30 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                         }
                     }
                     Err(error) => {
+                        let searched = error.searched();
                         let failure = match error {
-                            client::ExecutableError::NotFound => LocalFailure::new(
+                            client::ExecutableError::NotFound { .. } => LocalFailure::new(
                                 LocalFailureKind::ExecutableMissing,
                                 "executable discovery",
-                                "tailscale executable missing",
-                                "tailscale was not found on the configured path",
+                                "the tailscale command was not found",
+                                if searched.is_empty() {
+                                    "PATH is empty so there was nowhere to look. Install Tailscale or pass --tailscale-path.".to_owned()
+                                } else {
+                                    format!(
+                                        "Looked in {}. Install Tailscale or pass --tailscale-path.",
+                                        summarize_paths(&searched)
+                                    )
+                                },
                                 false,
                             ),
-                            client::ExecutableError::PermissionDenied => LocalFailure::new(
+                            client::ExecutableError::PermissionDenied { .. } => LocalFailure::new(
                                 LocalFailureKind::ExecutableDenied,
                                 "executable discovery",
-                                "tailscale executable permission denied",
-                                "check the executable permissions outside Tale",
+                                "the tailscale command cannot be run",
+                                format!(
+                                    "Found {} but it is not executable. Grant it execute permission or pass --tailscale-path.",
+                                    summarize_paths(&searched)
+                                ),
                                 false,
                             ),
                             client::ExecutableError::InvalidPath => LocalFailure::new(
@@ -7191,6 +7207,75 @@ fn spawn_input_source(
             }
         }
     });
+}
+
+/// Names the first few places that were checked and counts the rest, so the
+/// remedy still fits on the notification row.
+fn summarize_paths(searched: &[String]) -> String {
+    const SHOWN: usize = 2;
+    let listed = searched
+        .iter()
+        .take(SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = searched.len().saturating_sub(SHOWN);
+    if remaining == 0 {
+        listed
+    } else {
+        format!("{listed} and {remaining} more")
+    }
+}
+
+/// Opt-in diagnostic: appends one line per repaint to the file named by
+/// `TALE_RENDER_TRACE`. A steady cursor blink depends on the app staying quiet,
+/// so this is how to find what is repainting during a session.
+struct RenderTrace {
+    path: Option<PathBuf>,
+    started: Instant,
+}
+
+impl RenderTrace {
+    fn from_environment() -> Self {
+        Self {
+            path: std::env::var_os("TALE_RENDER_TRACE").map(PathBuf::from),
+            started: Instant::now(),
+        }
+    }
+
+    fn record(&self, cause: &str) {
+        let Some(path) = self.path.as_deref() else {
+            return;
+        };
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        else {
+            return;
+        };
+        let elapsed = self.started.elapsed();
+        let _ = writeln!(
+            file,
+            "{:>9.3}s repaint after {cause}",
+            elapsed.as_secs_f64()
+        );
+    }
+}
+
+const fn event_cause(event: &Event) -> &'static str {
+    match event {
+        Event::Input(_) => "input",
+        Event::Tick(_) => "tick",
+        Event::Task(_) => "task",
+        Event::Source(_) => "source",
+        Event::Local(_) => "local",
+        Event::Services(_) => "services",
+        Event::Admin(_) => "admin",
+        Event::Policy(_) => "policy",
+        Event::Credential(_) => "credential",
+        Event::ShutdownRequested(_) => "shutdown",
+    }
 }
 
 fn spawn_tick_source(tasks: &mut JoinSet<()>, queue: EventQueue, stop: StopFlag) {

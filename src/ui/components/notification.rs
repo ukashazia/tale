@@ -1,12 +1,29 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::App;
 use crate::ui::theme;
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let text = app.runtime_error.as_ref().map_or_else(
+/// A remedy that gets cut off is not a remedy, so a long message is given a
+/// second row rather than truncated.
+pub const MAXIMUM_ROWS: u16 = 2;
+
+pub fn rows(app: &App, width: u16) -> u16 {
+    let text = message(app);
+    if text.is_empty() || width == 0 {
+        return 1;
+    }
+    let needed = text
+        .chars()
+        .count()
+        .div_ceil(usize::from(width).max(1))
+        .max(1);
+    u16::try_from(needed).map_or(MAXIMUM_ROWS, |rows| rows.min(MAXIMUM_ROWS))
+}
+
+fn message(app: &App) -> String {
+    app.runtime_error.as_ref().map_or_else(
         || {
             app.notifications.last().map_or_else(
                 || {
@@ -19,7 +36,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )
         },
         Clone::clone,
-    );
+    )
+}
+
+pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let text = message(app);
     if text.is_empty() {
         return;
     }
@@ -28,7 +49,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         app.theme.style(theme::StyleRole::StateWarning)
     };
-    frame.render_widget(Paragraph::new(text).style(style), area);
+    frame.render_widget(
+        Paragraph::new(text).style(style).wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn option_string_or_empty(value: Option<String>) -> String {

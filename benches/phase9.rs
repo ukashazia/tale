@@ -124,8 +124,8 @@ fn mock_app() -> Option<App> {
 
 fn bench_filter(c: &mut Criterion) {
     let data = devices(5_000);
-    let expression =
-        filter::parse("online:true os:linux").unwrap_or_else(|_| filter::FilterExpression::empty());
+    let expression = filter::parse("online:true os:linux", &filter::device_schema())
+        .unwrap_or_else(|_| filter::FilterExpression::empty());
     c.bench_function("filter_5000_devices", |bench| {
         bench.iter(|| {
             let count = data

@@ -4,10 +4,13 @@ use tale::domain::device::{DeviceId, SortDirection, SortField, SortSpec, compare
 use tale::domain::filter::{self, Comparison, FilterField, FilterTerm};
 use tale::mock;
 
+fn parse(input: &str) -> Result<filter::FilterExpression, filter::FilterError> {
+    filter::parse(input, &filter::device_schema())
+}
+
 #[test]
 fn parser_covers_quoted_values_negation_or_and_comparisons_and_whitespace() {
-    let parsed =
-        filter::parse("owner:\"alice example\" !tag:guest online:true,unknown lastSeen:<7d");
+    let parsed = parse("owner:\"alice example\" !tag:guest online:true,unknown last-seen:<7d");
     assert!(parsed.is_ok());
     if let Ok(expression) = parsed {
         assert_eq!(expression.terms.len(), 4);
@@ -38,21 +41,76 @@ fn parser_covers_quoted_values_negation_or_and_comparisons_and_whitespace() {
 fn invalid_structured_terms_remain_errors() {
     for input in [
         "unknown:value",
-        "lastSeen:<7x",
+        "last-seen:<7x",
+        "last-seen:7d",
         "owner:",
         "tag:a,",
         "owner:\"unfinished",
         "!free-text",
+        "online:yes",
+        "approval:true",
+        "online:contains=tru",
+        "name:contains=build",
     ] {
-        let parsed = filter::parse(input);
+        let parsed = parse(input);
         assert!(parsed.is_err(), "input should be invalid: {input}");
     }
 }
 
 #[test]
+fn errors_name_the_expected_syntax_for_the_offending_term() {
+    let unknown = parse("ownr:alice");
+    assert!(unknown.is_err());
+    if let Err(error) = unknown {
+        assert!(error.message.contains("unknown field ownr"));
+        assert!(error.expected.contains("owner"));
+        assert!(error.expected.contains("last-seen"));
+    }
+
+    let bad_value = parse("online:yes");
+    assert!(bad_value.is_err());
+    if let Err(error) = bad_value {
+        assert_eq!(error.expected, "online:true|false|unknown");
+        assert!(error.to_string().contains("column"));
+    }
+
+    let missing_comparison = parse("last-seen:7d");
+    assert!(missing_comparison.is_err());
+    if let Err(error) = missing_comparison {
+        assert_eq!(error.expected, "last-seen:<7d");
+    }
+
+    let unclosed = parse("owner:\"alice");
+    assert!(unclosed.is_err());
+    if let Err(error) = unclosed {
+        assert!(error.expected.contains('"'));
+    }
+}
+
+#[test]
+fn only_canonical_field_spellings_parse() {
+    for alias in [
+        "lastSeen:<7d",
+        "last_seen:<7d",
+        "state:true",
+        "authorized:approved",
+        "keyExpiry:soon",
+        "clientVersion:1.0",
+        "role:exit-node",
+        "shared:external",
+    ] {
+        assert!(parse(alias).is_err(), "alias should not parse: {alias}");
+    }
+    assert!(parse("last-seen:<7d").is_ok());
+    assert!(parse("key-expiry:soon").is_ok());
+    assert!(parse("route-role:exit-node").is_ok());
+    assert!(parse("version:1.0").is_ok());
+}
+
+#[test]
 fn and_or_matching_uses_only_the_current_snapshot() {
     let devices = mock::devices();
-    let parsed = filter::parse("online:true os:linux,android");
+    let parsed = parse("online:true os:linux,android");
     assert!(parsed.is_ok());
     if let Ok(expression) = parsed {
         let matched: Vec<_> = devices
@@ -104,7 +162,7 @@ fn five_thousand_fictional_devices_filter_without_identity_loss() {
         device.display_name = format!("fictional-{index:04}");
         devices.push(device);
     }
-    let parsed = filter::parse("tag:server online:true");
+    let parsed = parse("tag:server online:true");
     assert!(parsed.is_ok());
     if let Ok(expression) = parsed {
         let ids: Vec<_> = devices
@@ -119,19 +177,127 @@ fn five_thousand_fictional_devices_filter_without_identity_loss() {
 }
 
 #[test]
-fn route_filter_schemas_expose_only_valid_fields() {
-    let devices = tale::domain::filter::device_schema();
+fn route_schemas_declare_every_parseable_field_with_guidance() {
+    let devices = filter::device_schema();
+    let names = devices.fields().map(|spec| spec.name).collect::<Vec<_>>();
+    for expected in [
+        "id",
+        "name",
+        "owner",
+        "tag",
+        "os",
+        "online",
+        "path",
+        "last-seen",
+        "property",
+        "approval",
+        "key-expiry",
+        "version",
+        "sharing",
+        "posture",
+        "route-role",
+    ] {
+        assert!(names.contains(&expected), "schema is missing {expected}");
+    }
+    // Every offered field explains itself and accepts at least one operator.
+    for spec in devices.fields() {
+        assert!(!spec.description.is_empty());
+        assert!(!spec.operators.is_empty());
+        assert!(!spec.expected_syntax().is_empty());
+    }
+
+    // Suggestions are route-scoped: Activity has no device vocabulary at all.
+    let activity = filter::activity_schema();
+    assert!(activity.is_empty());
+    assert!(activity.field("owner").is_none());
+    assert!(!activity.free_text.is_empty());
     assert!(
-        devices
-            .fields
-            .iter()
-            .any(|field| field.canonical_name == "owner")
+        filter::parse("owner:alice", &activity).is_err(),
+        "device fields must not parse on activity"
     );
-    assert!(
-        devices
-            .fields
-            .iter()
-            .any(|field| field.canonical_name == "online")
+}
+
+#[test]
+fn token_spans_track_quoted_sections() {
+    assert_eq!(filter::token_spans(""), Vec::new());
+    assert_eq!(filter::token_spans("os:linux"), vec![(0, 8)]);
+    assert_eq!(filter::token_spans("os:linux tag:a"), vec![(0, 8), (9, 14)]);
+    assert_eq!(
+        filter::token_spans("owner:\"alice example\" tag:a"),
+        vec![(0, 21), (22, 27)]
     );
-    assert!(tale::domain::filter::activity_schema().fields.is_empty());
+}
+
+#[test]
+fn a_named_field_takes_a_substring_and_a_bare_word_takes_a_fuzzy_match() {
+    let devices = mock::devices();
+    let matched = |query: &str| {
+        parse(query).map_or_else(
+            |_| Vec::new(),
+            |expression| {
+                devices
+                    .iter()
+                    .filter(|device| expression.matches(device, mock::MOCK_NOW))
+                    .map(|device| device.display_name.clone())
+                    .collect::<Vec<_>>()
+            },
+        )
+    };
+
+    // A named field no longer needs the value spelled out in full.
+    assert_eq!(matched("name:build"), vec!["build-01".to_owned()]);
+    assert_eq!(matched("id:a01"), vec!["build-01".to_owned()]);
+    assert_eq!(matched("tag:serv"), vec!["build-01".to_owned()]);
+    assert!(matched("owner:alice").contains(&"build-01".to_owned()));
+    assert!(matched("os:lin").contains(&"build-01".to_owned()));
+
+    // It does need the value as written, so a named term cannot drift.
+    assert!(matched("name:bld").is_empty());
+    assert_eq!(matched("os:ios").len(), 2);
+    assert!(!matched("os:ios").contains(&"win-lab".to_owned()));
+
+    // A bare word has no field to aim at, so it matches fuzzily instead.
+    assert_eq!(matched("bld"), vec!["build-01".to_owned()]);
+    assert_eq!(matched("uild"), vec!["build-01".to_owned()]);
+}
+
+#[test]
+fn a_loose_match_never_spans_two_unrelated_fields() {
+    let devices = mock::devices();
+    let spanning = parse("serverprod");
+    assert!(spanning.is_ok());
+    if let Ok(expression) = spanning {
+        // `server` and `prod` are two separate tags; joining the fields into one
+        // blob would match this, searching them separately must not.
+        assert!(
+            !devices
+                .iter()
+                .any(|device| expression.matches(device, mock::MOCK_NOW))
+        );
+    }
+}
+
+#[test]
+fn closed_vocabularies_stay_exact_and_starts_with_narrows_a_substring() {
+    let devices = mock::devices();
+    let count = |query: &str| {
+        parse(query).map_or(usize::MAX, |expression| {
+            devices
+                .iter()
+                .filter(|device| expression.matches(device, mock::MOCK_NOW))
+                .count()
+        })
+    };
+
+    // Enumerated fields are pinned by the parser, so they never widen.
+    assert!(parse("online:tru").is_err());
+    assert!(parse("path:dir").is_err());
+    assert!(count("path:direct") > 0);
+
+    // `starts_with=` narrows a substring to a prefix; `contains=` is gone
+    // because a bare term already means exactly that.
+    assert_eq!(count("name:uild"), 1);
+    assert_eq!(count("name:starts_with=bui"), 1);
+    assert_eq!(count("name:starts_with=uild"), 0);
+    assert!(parse("name:contains=uild").is_err());
 }

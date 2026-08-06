@@ -87,7 +87,12 @@ fn lines_at(app: &App, width: u16, height: u16) -> Option<Vec<String>> {
 fn assert_frame_shape(lines: &[String], width: u16, height: u16) {
     assert_eq!(lines.len(), usize::from(height));
     assert!(lines.iter().all(|line| !line.contains('\n')));
-    assert!(lines.iter().any(|line| line.contains("Tale")));
+    // The wordmark is drawn as art, so look for the status block instead.
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Status:") || line.contains("Simulated data"))
+    );
     assert!(
         lines
             .iter()
@@ -114,7 +119,8 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             assert!(lines.is_some());
             if let Some(lines) = lines {
                 assert!(lines.iter().any(|line| line.contains(": dev")));
-                assert!(lines.iter().any(|line| line.contains('▏')));
+                // No cell is spent on a drawn caret.
+                assert!(!lines.iter().any(|line| line.contains('▏')));
             }
 
             press(&mut app, KeyCode::Esc);
@@ -123,8 +129,25 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             let lines = lines_at(&app, width, height);
             assert!(lines.is_some());
             if let Some(lines) = lines {
-                assert!(lines.last().is_some_and(|line| line.contains("/ owner")));
+                let prompt = lines.len().saturating_sub(2);
+                assert!(
+                    lines
+                        .get(prompt)
+                        .is_some_and(|line| line.contains("/ owner"))
+                );
+                // The error explains the syntax on its own row, under the prompt.
                 assert!(lines.last().is_some_and(|line| line.contains("column")));
+                if width >= 80 {
+                    assert!(lines.last().is_some_and(|line| line.contains("expected")));
+                }
+                if width >= 110 {
+                    assert!(
+                        lines
+                            .last()
+                            .is_some_and(|line| line.contains("showing last valid result"))
+                    );
+                }
+                assert!(lines.iter().any(|line| line.contains("Filter")));
             }
 
             press(&mut app, KeyCode::Esc);
@@ -154,7 +177,7 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
                 );
                 assert!(lines.iter().any(|line| line.contains("Simulation")));
                 assert!(lines.iter().any(|line| line.contains("Views")));
-                assert!(lines.iter().any(|line| line.contains("Esc Back")));
+                assert!(lines.iter().any(|line| line.contains("Esc back")));
             }
 
             press(&mut app, KeyCode::Esc);
@@ -162,7 +185,7 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             assert!(lines.is_some());
             if let Some(lines) = lines {
                 assert!(lines.iter().any(|line| line.contains("Actions")));
-                assert!(lines.iter().any(|line| line.contains("Esc Close")));
+                assert!(lines.iter().any(|line| line.contains("Esc close")));
                 assert!(
                     !lines
                         .iter()
@@ -175,7 +198,15 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             let lines = lines_at(&app, width, height);
             assert!(lines.is_some());
             if let Some(lines) = lines {
-                assert!(lines.last().is_some_and(|line| line.contains("Copy")));
+                // The yank menu is a grouped grid like the action and help menus.
+                assert!(lines.iter().any(|line| line.contains("Copy")));
+                assert!(lines.iter().any(|line| line.contains("Esc close")));
+                assert!(lines.iter().any(|line| line.contains("Identity")));
+                assert!(
+                    lines
+                        .last()
+                        .is_some_and(|line| line.contains("copy immediately"))
+                );
             }
 
             press(&mut app, KeyCode::Esc);
@@ -185,7 +216,7 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             if let Some(lines) = lines {
                 let help_row = lines
                     .iter()
-                    .position(|line| line.contains("Help") && line.contains("Esc Close"));
+                    .position(|line| line.contains("Help") && line.contains("Esc close"));
                 assert!(help_row.is_some());
                 if let Some(help_row) = help_row {
                     assert!(help_row >= 2);
@@ -205,7 +236,7 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             assert!(lines.is_some());
             if let Some(lines) = lines {
                 assert!(lines.iter().any(|line| line.contains("Actions")));
-                assert!(lines.iter().any(|line| line.contains("Esc Close")));
+                assert!(lines.iter().any(|line| line.contains("Esc close")));
             }
 
             press(&mut app, KeyCode::Esc);
@@ -214,7 +245,13 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             let lines = lines_at(&app, width, height);
             assert!(lines.is_some());
             if let Some(lines) = lines {
-                assert!(lines.last().is_some_and(|line| line.contains("/ ")));
+                let prompt = lines.len().saturating_sub(2);
+                assert!(lines.get(prompt).is_some_and(|line| line.contains("/ ")));
+                assert!(
+                    lines
+                        .last()
+                        .is_some_and(|line| line.contains("Enter apply"))
+                );
             }
         }
     }
@@ -318,7 +355,8 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
         let lines = lines_at(&stale, 80, 24);
         assert!(lines.is_some());
         if let Some(lines) = lines {
-            assert!(lines.iter().any(|line| line.contains("stale")));
+            // Freshness is stated once, in the header, and only when it slips.
+            assert!(lines.iter().any(|line| line.contains("data stale")));
         }
     }
 
@@ -333,7 +371,11 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
         let lines = lines_at(&error, 80, 24);
         assert!(lines.is_some());
         if let Some(lines) = lines {
-            assert!(lines.iter().any(|line| line.contains("error")));
+            // The route line describes the snapshot, not the fleet, and offers
+            // the key that fixes it.
+            assert!(lines.iter().any(|line| line.contains("data unavailable")));
+            assert!(lines.iter().any(|line| line.contains("r to retry")));
+            assert!(!lines.iter().any(|line| line.contains("source:")));
             assert!(
                 lines
                     .iter()
@@ -399,7 +441,7 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
 }
 
 #[test]
-fn command_caret_keeps_the_prompt_surface_background() {
+fn the_prompt_caret_is_the_real_terminal_cursor() {
     let app = populated_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
@@ -416,12 +458,19 @@ fn command_caret_keeps_the_prompt_surface_background() {
                 .footer
                 .y
                 .saturating_add(layout.footer.height.saturating_sub(2));
+            // The insertion point is the terminal's own cursor, so it blinks and
+            // costs no cell. It sits just past the typed text.
+            assert_eq!(
+                terminal.get_cursor_position().ok(),
+                Some((3, prompt_y).into())
+            );
             let input_cell = terminal.backend().buffer().cell((2, prompt_y));
             let caret_cell = terminal.backend().buffer().cell((3, prompt_y));
             assert!(input_cell.is_some());
             assert!(caret_cell.is_some());
             if let (Some(input_cell), Some(caret_cell)) = (input_cell, caret_cell) {
-                assert_eq!(caret_cell.symbol(), "▏");
+                assert_eq!(input_cell.symbol(), "e");
+                assert_eq!(caret_cell.symbol(), " ");
                 assert_eq!(caret_cell.bg, input_cell.bg);
                 assert_eq!(
                     Some(caret_cell.bg),
@@ -494,10 +543,11 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
         .tasks
         .create(ActionId::MockFailure, "second task", 1, false);
     activity.tasks.selected = Some(first);
+    // One header row at 80x24, then the border, then the rows.
     let _ = activity.update(Event::Input(InputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 2,
-        row: 4,
+        row: 3,
         modifiers: KeyModifiers::NONE,
     })));
     assert_eq!(activity.tasks.selected, Some(second));
@@ -624,12 +674,14 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
                     };
                     assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
                     let buffer = terminal.backend().buffer();
-                    let mut has_tale = false;
+                    // The wordmark is art now, so check the header drew
+                    // something rather than looking for a letter.
+                    let mut has_header = false;
                     let mut has_non_reset = false;
                     for y in 0..height {
                         for x in 0..width {
                             if let Some(cell) = buffer.cell((x, y)) {
-                                has_tale |= cell.symbol() == "T";
+                                has_header |= y < 6 && cell.symbol().trim() != "";
                                 has_non_reset |= cell.fg != ratatui::style::Color::Reset
                                     || cell.bg != ratatui::style::Color::Reset;
                                 if capability == ColorCapability::None {
@@ -639,7 +691,7 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
                             }
                         }
                     }
-                    assert!(has_tale);
+                    assert!(has_header);
                     if capability != ColorCapability::None
                         && !(theme_id == ThemeId::Terminal && (width < 60 || height < 18))
                     {
@@ -652,22 +704,136 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
 }
 
 #[test]
-fn settings_appearance_preview_renders_state_source_and_risk_labels() {
+fn settings_shows_the_live_palette_and_appearance_is_a_choice_menu() {
     let app = populated_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
         app.set_route(Route::Settings);
-        let effects = app.dispatch_action(ActionId::SettingsAppearance);
-        assert!(effects.is_empty());
-        let lines = lines_at(&app, 80, 24);
+        // The palette lives on the page, not behind a modal.
+        let lines = lines_at(&app, 100, 32);
         assert!(lines.is_some());
         if let Some(lines) = lines {
             let rendered = lines.join("\n");
+            assert!(rendered.contains("SETTING"));
             assert!(rendered.contains("tailscale-dark"));
             assert!(rendered.contains("healthy"));
             assert!(rendered.contains("danger/public"));
             assert!(rendered.contains("local+admin"));
             assert!(rendered.contains("ui.theme"));
+        }
+        // Appearance is a bottom choice menu, not a centered overlay.
+        let effects = app.dispatch_action(ActionId::SettingsAppearance);
+        assert!(effects.is_empty());
+        assert!(app.overlays.is_empty());
+        let lines = lines_at(&app, 100, 32);
+        assert!(lines.is_some());
+        if let Some(lines) = lines {
+            assert!(lines.iter().any(|line| line.contains("Appearance")));
+            assert!(lines.iter().any(|line| line.contains("Esc close")));
+            assert!(lines.iter().any(|line| line.contains("terminal")));
+        }
+    }
+}
+
+#[test]
+fn a_long_remedy_wraps_instead_of_being_cut_off() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        app.runtime_error = Some(
+            "the tailscale command was not found. Looked in /usr/bin/tailscale, \
+             /nonexistent/tailscale and 1 more. Install Tailscale or pass --tailscale-path."
+                .to_owned(),
+        );
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let layout = tale::ui::layout::compute(area, &app);
+        assert_eq!(
+            layout.notification.height, 2,
+            "a long message needs two rows"
+        );
+
+        let lines = lines_at(&app, area.width, area.height);
+        assert!(lines.is_some());
+        if let Some(lines) = lines {
+            let notification = lines
+                .iter()
+                .skip(usize::from(layout.notification.y))
+                .take(2)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            // The whole remedy survives, including the flag that fixes it.
+            assert!(notification.contains("was not found"));
+            assert!(notification.contains("/usr/bin/tailscale"));
+            assert!(notification.contains("--tailscale-path"));
+        }
+
+        // A short message still costs a single row.
+        app.runtime_error = Some("no device selected".to_owned());
+        let layout = tale::ui::layout::compute(area, &app);
+        assert_eq!(layout.notification.height, 1);
+    }
+}
+
+#[test]
+fn the_header_is_a_spaced_block_that_hides_what_does_not_matter() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 32);
+        let layout = tale::ui::layout::compute(area, &app);
+        assert_eq!(
+            layout.header.height, 6,
+            "a tall terminal gets the big header"
+        );
+
+        let backend = TestBackend::new(area.width, area.height);
+        let terminal = Terminal::new(backend).ok();
+        assert!(terminal.is_some());
+        if let Some(mut terminal) = terminal {
+            assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+            let buffer = terminal.backend().buffer();
+            let mut rendered = Vec::new();
+            for y in 0..area.height {
+                let mut line = String::new();
+                for x in 0..area.width {
+                    if let Some(cell) = buffer.cell((x, y)) {
+                        line.push_str(cell.symbol());
+                    }
+                }
+                rendered.push(line);
+            }
+            let text = rendered.join("\n");
+            // The status chip is a reversed run, not plain text.
+            let chip = rendered
+                .iter()
+                .position(|line| line.contains("Status:"))
+                .and_then(|y| {
+                    let column = rendered.get(y)?.find("Status:")? + 9;
+                    buffer.cell((u16::try_from(column).ok()?, u16::try_from(y).ok()?))
+                });
+            assert!(
+                chip.is_some_and(|cell| cell.modifier.contains(ratatui::style::Modifier::REVERSED))
+            );
+
+            // Nothing repeats the route name or the freshness any more.
+            assert!(!text.contains("refreshed"));
+            assert!(!text.contains("updated"));
+            assert!(text.contains("devices · 14"));
+            assert_eq!(text.matches("devices").count(), 1);
+        }
+
+        // A short terminal collapses the header instead of eating the content.
+        let short = ratatui::layout::Rect::new(0, 0, 120, 24);
+        assert_eq!(tale::ui::layout::compute(short, &app).header.height, 1);
+
+        // Task state stays hidden until a task needs attention.
+        let _ = app.update(Event::Source(SourceEvent::LoadFailed {
+            generation: 2,
+            detail: "fictional".to_owned(),
+        }));
+        if let Some(lines) = lines_at(&app, 120, 32) {
+            assert!(lines.iter().any(|line| line.contains("data unavailable")));
         }
     }
 }

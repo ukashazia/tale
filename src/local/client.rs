@@ -185,12 +185,28 @@ pub struct ResolvedExecutable {
 
 #[derive(Error, Debug, Clone, Eq, PartialEq)]
 pub enum ExecutableError {
+    /// Carries every location that was checked, so the failure can say where
+    /// Tale looked instead of only that it looked.
     #[error("tailscale executable was not found")]
-    NotFound,
+    NotFound { searched: Vec<PathBuf> },
     #[error("tailscale executable is not executable")]
-    PermissionDenied,
+    PermissionDenied { path: PathBuf },
     #[error("tailscale executable path is invalid")]
     InvalidPath,
+}
+
+impl ExecutableError {
+    /// Where Tale looked, in the order it looked.
+    pub fn searched(&self) -> Vec<String> {
+        match self {
+            Self::NotFound { searched } => searched
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            Self::PermissionDenied { path } => vec![path.display().to_string()],
+            Self::InvalidPath => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -740,9 +756,12 @@ fn resolve_explicit(
     if path.as_os_str().is_empty() {
         return Err(ExecutableError::InvalidPath);
     }
-    let candidate = executable_candidate(path, platform).ok_or(ExecutableError::NotFound)?;
+    let candidate =
+        executable_candidate(path, platform).ok_or_else(|| ExecutableError::NotFound {
+            searched: vec![path.to_path_buf()],
+        })?;
     if !is_executable(&candidate, platform) {
-        return Err(ExecutableError::PermissionDenied);
+        return Err(ExecutableError::PermissionDenied { path: candidate });
     }
     Ok(ResolvedExecutable {
         path: candidate,
@@ -757,11 +776,16 @@ fn search_path(
     platform: HostPlatform,
 ) -> Result<ResolvedExecutable, ExecutableError> {
     let Some(path_value) = path_value else {
-        return Err(ExecutableError::NotFound);
+        return Err(ExecutableError::NotFound {
+            searched: Vec::new(),
+        });
     };
-    let mut denied = false;
+    let mut denied = None;
+    let mut searched = Vec::new();
     for directory in std::env::split_paths(path_value) {
-        let Some(candidate) = executable_candidate(&directory.join(name), platform) else {
+        let target = directory.join(name);
+        searched.push(target.clone());
+        let Some(candidate) = executable_candidate(&target, platform) else {
             continue;
         };
         if is_executable(&candidate, platform) {
@@ -771,13 +795,11 @@ fn search_path(
                 source: ExecutableSource::Path,
             });
         }
-        denied = true;
+        denied = Some(candidate);
     }
-    if denied {
-        Err(ExecutableError::PermissionDenied)
-    } else {
-        Err(ExecutableError::NotFound)
-    }
+    denied.map_or(Err(ExecutableError::NotFound { searched }), |path| {
+        Err(ExecutableError::PermissionDenied { path })
+    })
 }
 
 fn executable_candidate(path: &Path, platform: HostPlatform) -> Option<PathBuf> {

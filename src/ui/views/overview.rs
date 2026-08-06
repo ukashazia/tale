@@ -28,31 +28,27 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .filter(|device| device.liveness == crate::domain::device::Liveness::Offline)
         .count();
-    let mut lines = vec![
-        Line::from("Overview"),
-        Line::from(format!("source       {}", app.source_mode.label())),
-        Line::from(format!(
-            "devices      {} total · {} online · {} offline",
-            app.devices_resource.snapshot.len(),
-            online,
-            offline
-        )),
-        Line::from(format!(
-            "source state  {}",
-            app.devices_resource.health.label()
-        )),
-        Line::from(format!(
-            "tasks        {} active · {} total",
-            app.tasks.active().count(),
-            app.tasks.all().len()
-        )),
-        Line::from(if app.source_mode == crate::app::SourceMode::Mock {
-            "mock data is deterministic and offline"
+    let unknown = app
+        .devices_resource
+        .snapshot
+        .len()
+        .saturating_sub(online)
+        .saturating_sub(offline);
+    // Connection state, not source plumbing: the header already says where the
+    // data came from and how current it is.
+    let mut lines = vec![Line::from(format!(
+        "devices      {} total · {online} online · {offline} offline{}",
+        app.devices_resource.snapshot.len(),
+        if unknown > 0 {
+            format!(" · {unknown} unknown")
         } else {
-            "local integration is unavailable in this build"
-        }),
-        Line::from("Use : to navigate, / to filter Devices, ? for help."),
-    ];
+            String::new()
+        }
+    ))];
+    let running = app.tasks.active().count();
+    if running > 0 {
+        lines.push(Line::from(format!("tasks        {running} running")));
+    }
     append_health(&mut lines, app);
     frame.render_widget(
         Paragraph::new(lines)

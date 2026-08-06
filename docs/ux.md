@@ -9,7 +9,7 @@ Canonical routes:
 
 | Route | Default content |
 | --- | --- |
-| `overview` | health and actionable queues |
+| `overview` | health and actionable queues (not yet the default landing route) |
 | `local` | local node and preferences |
 | `devices` | device inventory |
 | `users` | member inventory |
@@ -32,8 +32,8 @@ is a separate `/` interaction.
 Wide terminals use a collection-and-inspector layout:
 
 ```text
-┌ Tale · ops · example.com ─ local: running ─ admin: 12s ─ RO: off ┐
-│ Devices  24/31       / owner:alice online:true      sort:lastSeen │
+┌ Tale   example.com   connected locally   updated 8s ago          ┐
+│ devices  24/31   Data: up to date · refreshed 8s ago              │
 ├─────────────────────────────────────┬─────────────────────────────┤
 │ STATE NAME       OWNER   OS  SEEN   │ build-01                    │
 │ ● dir build-01   alice   lin now    │ 100.64.1.8 · linux 1.98.9 │
@@ -51,6 +51,8 @@ Wide terminals use a collection-and-inspector layout:
 - Below 80 columns, optional columns disappear in a documented priority order;
   every field remains available in details.
 - Below 60x18, Tale shows a minimum-size explanation instead of a corrupted UI.
+- Settings shows the semantic palette on the page, so a theme change is visible
+  where it is chosen rather than inside a preview modal.
 - Command, filter, transient, completion, and help surfaces grow upward from
   the terminal edge. Only alerts and confirmations are centered modals.
 
@@ -68,7 +70,7 @@ focus, not decoration. Color is semantic and never the only state signal.
 | `/` | edit the active view's filter inline with live valid results |
 | `?` | open contextual bottom help; `/` filters help labels and keys |
 | `Tab` / `Shift+Tab` | select navigation results or complete filter fields |
-| `Esc` | cancel only the active interaction; no-op in normal mode |
+| `Esc` | cancel the active interaction, or leave an open detail pane |
 | `[` / `]` | restore the previous or next view-history frame |
 | `r` | refresh the active resource |
 | `R` | refresh every source used by the active route |
@@ -84,7 +86,7 @@ focus, not decoration. Color is semantic and never the only state signal.
 | `g` / `G` | first or last row |
 | `Ctrl+d` / `Ctrl+u` | half-page down or up |
 | `Enter` / `l` | open selected resource details |
-| `h` | return from details or focus the collection |
+| `h` / `Esc` | leave details and return to the list |
 | `Space` | toggle multi-selection when the current action supports a batch |
 | `s` | choose sort field and direction |
 | `w` | toggle standard and wide columns |
@@ -92,8 +94,41 @@ focus, not decoration. Color is semantic and never the only state signal.
 | `y` | open a direct copy-key menu; acknowledgement names only the field |
 | `H` / `L` | previous/next sibling section in Services |
 
+An uppercase binding matches whether or not the terminal reports Shift, since
+Shift is inherent to the character rather than an extra modifier. `G`, `R`, `H`,
+and `L` therefore behave like any other key.
+
+Opening a detail is always reversible: `h` and `Esc` both return to the list, and
+`h back` appears in the footer for exactly as long as it applies.
+
 Direct destructive bindings are forbidden. Destructive operations live behind
 the `a` prefix and still require their typed confirmation.
+
+Every menu that asks the user to pick one value — sort, service section,
+appearance, account — uses the action menu's grammar: bottom-anchored, grouped,
+direct keys, no row cursor, and no centered rectangle. A menu with one question is a single
+level. A menu with two drills down: the top level lists the subjects, and the
+first key replaces the menu with that subject's variants rather than filtering a
+flat list. Sort lists the columns, `n` swaps the menu for `Sort · name` offering
+`a ascending` and `d descending`, and `Esc` returns to the columns before it
+closes the menu. `·` marks the value already in force, at both levels. None of
+these are overlays.
+
+`y` copies one value. It uses the same grouped grid as the `a` and `?` menus,
+grouped as Identity, Network, and Diagnostics; a field holding several values
+says how many and opens a second level listing each one plus an entry for all of
+them, so copying an address never means copying a joined list. The three menus
+share one grid implementation so they cannot drift apart.
+
+A view with nothing in it never shows an empty box. It names the resource, the
+reason it is empty, and the next step — an admin-backed route with no profile
+says so and gives the command that adds one, rather than reporting an internal
+`idle` state. Route lines for those views read `Needs an admin profile` instead
+of claiming to be loading forever.
+
+Status glyphs follow `ui.symbols`. `auto` draws Unicode, because the frame
+already uses box-drawing borders and `·` separators; `ascii` is the explicit
+opt-out.
 
 ### Contextual help
 
@@ -116,9 +151,25 @@ same compact lower-case vocabulary (`: command`, `C-d page-down`) and color
 keys separately from their muted one-word descriptions.
 
 The `:` palette supports Unicode-safe editing and true fuzzy matching. It has no
-selection cursor; `Enter` opens the highest-scoring result. The `/` editor applies every valid
-parse live, keeps the last valid rows during an invalid edit, and restores filter,
-stable selection, and scroll on `Esc`.
+selection cursor; `Enter` opens the highest-scoring result.
+
+Both prompts mark the insertion point with the real terminal cursor rather than
+a drawn caret, so it sits on the character it is about to overwrite and costs no
+column. Its shape and blink are never changed, so it looks like the cursor every
+other program on that terminal draws. It appears only while an editor is open.
+
+The `/` filter uses the same grouped grid as the help and action menus. Opening
+it shows the whole field catalogue for the current route at once, each field
+beside a concise description, so nothing has to be known in advance. Typing narrows the grid to one ranked list of matches. Matching is
+token-aware and fuzzy: the token under the cursor completes field names before
+the separator and that field's values after it. `Tab` takes the best completion
+and then walks forward, `Shift+Tab` walks backward, and `Enter` applies the
+query. Field names, operators, and values each have their own color, in the grid
+and in the prompt, and an unknown field name is marked as you type it. The rows
+match by the same rule the grid ranks with, so a term that the tray offered
+always selects rows. Every valid parse applies live; an invalid one explains the
+expected syntax on its own row while the last valid rows stay on screen. `Esc`
+restores the filter, stable selection, and scroll.
 
 View history is browser-style and bounded to 100 frames. New navigation after
 moving backward discards the forward branch. Frames restore stable identities,
@@ -127,26 +178,40 @@ restore forms, tasks, adapters, or closed one-time secrets.
 
 ## Filtering and sorting
 
-Free text matches the primary visible identity fields. Structured filters use
-`field:value`, comparisons, and comma-separated OR values:
+Free text matches the primary visible identity fields, one field at a time.
+Structured filters use `field:value`, comparisons, and comma-separated OR
+values:
 
 ```text
-owner:alice@example.com,tag:server online:true lastSeen:<7d os:linux
+owner:alice@example.com tag:server online:true last-seen:<7d os:linux
 ```
 
 - Separate terms are ANDed.
 - Comma-separated values within one field are ORed.
 - Quoted values permit spaces.
 - `!field:value` negates a term.
-- Invalid terms remain editable and show an inline error; they never silently
-  become free text.
+- A named free-text field matches on substring, so `name:build` finds
+  `build-01` without the full value, and `os:ios` cannot reach `windows`. Fields
+  with a fixed vocabulary, such as `online` and `path`, stay exact because the
+  parser already pins them to a declared value.
+- A bare word has no field to aim at, so it matches fuzzily instead: `bld` finds
+  `build-01`. It searches each identity field on its own, so a fuzzy match never
+  spans two unrelated values.
+- `field:starts_with=text` narrows a substring to a prefix. There is no
+  `contains=`; a bare term already means exactly that.
+- Every field has exactly one spelling. There are no aliases and no hidden
+  alternates, so what `/` offers is what the parser accepts.
+- Each route declares its own fields. A field that route does not declare
+  neither completes nor parses there.
+- Invalid terms remain editable and show the expected syntax; they never
+  silently become free text, and they never discard the last valid result.
 - The view header always shows the visible and total row counts.
 - Filtering is local over the current snapshot unless the UI labels a query as
   server-side.
 - Sort is stable, with the resource's opaque ID as the final tie-breaker.
 
-The initial filter language is implemented only for fields used by core views.
-There is no generic expression engine.
+The filter language covers exactly the fields each view declares. There is no
+generic expression engine.
 
 ## Action flow and safety
 
@@ -189,15 +254,27 @@ Every resource detail has a Sources section. A value may show:
 - `not returned` — source succeeded but omitted the optional field;
 - `unavailable · scope devices:routes:read` — known capability gap.
 
-The overview header reports source health separately. There is no single green
-“connected” indicator that conflates daemon and API connectivity.
+The top line names the tailnet, then how Tale is connected, then how current the
+data is. A segment with no answer is omitted rather than filled with a
+placeholder, and task state appears only while something is running or has
+failed. There is no single green "connected" indicator that conflates daemon and
+API connectivity.
+
+Route lines describe the snapshot, never the fleet: `Data: up to date · refreshed
+8s ago`, `Data: stale · last updated 17m ago`, or `Data unavailable · r to
+retry`. "Healthy" is not used for data freshness, because a fresh snapshot says
+nothing about whether the devices in it are well.
+
+Device detail names the capabilities a device has — `capabilities  Exit node ·
+Subnet router · SSH`, or `None` when it has none. Fields are never rendered as a
+row of booleans.
 
 ## Core user flows
 
 ### First run: local client available
 
 1. Tale connects to the configured LocalAPI endpoint and bootstraps status and preferences.
-2. It opens Overview in local mode without asking for credentials.
+2. It opens Devices in local mode without asking for credentials.
 3. If available, Tale separately discovers `tailscale` for CLI-backed actions.
 4. The header says `admin: not configured` and offers `:settings` or the
    action `Add admin profile`; it does not block the peer list.

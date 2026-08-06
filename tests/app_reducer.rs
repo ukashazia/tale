@@ -3,7 +3,10 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use tale::app::{App, InteractionMode, Route, ShutdownState, SourceMode, ViewFrame, ViewHistory};
+use tale::action::{self, ActionContext, Binding};
+use tale::app::{
+    App, Focus, InteractionMode, Route, ShutdownState, SourceMode, ViewFrame, ViewHistory,
+};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{SortDirection, SortField, SortSpec};
@@ -299,7 +302,8 @@ fn selection_is_by_device_id_across_sort_and_filter() {
         let _ = app.update(Event::Tick(Instant::now()));
         assert_eq!(app.views.devices.selected_id, Some(selected.clone()));
 
-        let parsed_filter = tale::domain::filter::parse("os:android");
+        let parsed_filter =
+            tale::domain::filter::parse("os:android", &tale::domain::filter::device_schema());
         assert!(parsed_filter.is_ok());
         if let Ok(parsed_filter) = parsed_filter {
             app.views.devices.applied_filter = parsed_filter;
@@ -405,6 +409,11 @@ fn fuzzy_navigation_filter_and_browser_history_restore_and_branch() {
     assert!(app.is_some());
     if let Some(mut app) = app {
         load_app(&mut app);
+        // Tale opens on Devices, so history needs a different frame first.
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("overview".to_owned())));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.current_route(), Route::Overview);
         press(&mut app, KeyCode::Char(':'));
         let _ = app.update(Event::Input(InputEvent::Paste("dvcs".to_owned())));
         press(&mut app, KeyCode::Enter);
@@ -822,7 +831,7 @@ fn stale_service_refresh_cannot_replace_newer_data_and_read_only_blocks_dispatch
 }
 
 #[test]
-fn appearance_preview_cancel_and_session_apply_are_state_isolated() {
+fn appearance_is_a_direct_key_choice_and_cancelling_changes_nothing() {
     let app = mock_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
@@ -832,22 +841,164 @@ fn appearance_preview_cancel_and_session_apply_are_state_isolated() {
         let history_len = app.view_history.frames.len();
         let source_mode = app.source_mode;
 
+        // Leaving the menu alone leaves the theme alone.
         let effects = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
         assert!(effects.is_empty());
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.theme.id(), ThemeId::TailscaleLight);
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.theme, original);
+        assert!(matches!(app.interaction, InteractionMode::Normal));
 
+        // One key applies and closes, like every other transient menu.
         let effects = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
         assert!(effects.is_empty());
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.theme.id(), ThemeId::TailscaleLight);
+        assert!(matches!(app.interaction, InteractionMode::Normal));
         assert!(app.overlays.is_empty());
+
+        // And it is reversible by picking the other one.
+        let _ = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.theme.id(), ThemeId::TailscaleDark);
         assert_eq!(app.current_route(), route);
         assert_eq!(app.view_history.frames.len(), history_len);
         assert_eq!(app.source_mode, source_mode);
         assert!(app.tasks.all().is_empty());
+    }
+}
+
+#[test]
+fn sort_is_a_two_key_mnemonic_naming_the_column_then_the_order() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Devices);
+
+        // The first key names the column and waits, like an action prefix.
+        press(&mut app, KeyCode::Char('s'));
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+        press(&mut app, KeyCode::Char('n'));
+        if let InteractionMode::Transient(state) = &app.interaction {
+            assert_eq!(state.prefix, Some('n'));
+        } else {
+            panic!("the menu should stay open while a prefix is pending");
+        }
+
+        // The second key names the order, applies, and closes.
+        press(&mut app, KeyCode::Char('d'));
+        assert!(matches!(app.interaction, InteractionMode::Normal));
+        assert_eq!(
+            app.views.devices.sort,
+            SortSpec {
+                field: SortField::Name,
+                direction: SortDirection::Descending,
+            }
+        );
+
+        // A different column keeps its own order key.
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(
+            app.views.devices.sort,
+            SortSpec {
+                field: SortField::LastSeen,
+                direction: SortDirection::Ascending,
+            }
+        );
+
+        // Esc backs out of a pending prefix before it closes the menu.
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('w'));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.interaction, InteractionMode::Normal));
+        assert_eq!(
+            app.views.devices.sort,
+            SortSpec {
+                field: SortField::LastSeen,
+                direction: SortDirection::Ascending,
+            }
+        );
+    }
+}
+
+#[test]
+fn opening_a_detail_can_always_be_left_again() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Devices);
+
+        // `h` returns, as the documented binding says it does.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Inspector);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.focus, Focus::Collection);
+
+        // So does Esc, because the detail pane is a state the user opened.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Inspector);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, Focus::Collection);
+
+        // And the way back is advertised while it applies.
+        press(&mut app, KeyCode::Enter);
+        let detail = action::footer_hints(ActionContext::Detail, 200);
+        assert!(detail.iter().any(|hint| hint == "h back"));
+        let collection = action::footer_hints(ActionContext::Collection, 200);
+        assert!(!collection.iter().any(|hint| hint == "h back"));
+    }
+}
+
+#[test]
+fn shifted_bindings_reach_their_actions() {
+    // Uppercase keys arrive with SHIFT set; a binding for `G` must still match.
+    for character in ['G', 'R', 'H', 'L'] {
+        assert!(
+            Binding::Char(character)
+                .matches(KeyEvent::new(KeyCode::Char(character), KeyModifiers::SHIFT)),
+            "{character} should match when the terminal reports shift"
+        );
+        assert!(
+            Binding::Char(character)
+                .matches(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            "{character} should match when the terminal reports no modifier"
+        );
+    }
+    // A real modifier still has to be respected.
+    assert!(!Binding::Char('G').matches(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::CONTROL)));
+}
+
+#[test]
+fn shift_g_jumps_to_the_last_row() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        load_app(&mut app);
+        app.set_route(Route::Devices);
+        let last = app
+            .visible_indices()
+            .last()
+            .and_then(|index| app.devices_resource.snapshot.get(*index))
+            .map(|device| device.id.clone());
+        assert!(last.is_some());
+
+        let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+            KeyCode::Char('G'),
+            KeyModifiers::SHIFT,
+        ))));
+        assert_eq!(app.views.devices.selected_id, last);
+
+        let first = app
+            .visible_indices()
+            .first()
+            .and_then(|index| app.devices_resource.snapshot.get(*index))
+            .map(|device| device.id.clone());
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.views.devices.selected_id, first);
     }
 }

@@ -36,7 +36,8 @@ use crate::domain::device::{
 };
 use crate::domain::diagnostic::{DiagnosticResult, DiagnosticState};
 use crate::domain::filter::{
-    self, Comparison, FieldMatchMode, FilterExpression, FilterField, FilterTerm,
+    self, Comparison, FieldMatchMode, FilterExpression, FilterField, FilterFieldSpec, FilterSchema,
+    FilterTerm, FilterValueKind,
 };
 use crate::domain::flow::{
     AggregateDimension, FlowError, FlowFilter, FlowGeneration, FlowSnapshot, FlowWindow,
@@ -194,13 +195,28 @@ impl LineEditorState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FilterSuggestionKind {
+    Field,
+    Operator,
+    Value,
+}
+
+/// One offer in the filter tray. `insertion` replaces the token under the cursor.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct CompletionCandidate {
-    pub id: String,
+pub struct FilterSuggestion {
+    pub kind: FilterSuggestionKind,
+    pub text: String,
     pub insertion: String,
+    pub note: String,
+    pub matches: Vec<u32>,
+    score: u32,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FilterSuggestionSection {
     pub label: String,
-    pub description: String,
-    pub alias: bool,
+    pub suggestions: Vec<FilterSuggestion>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -232,26 +248,88 @@ pub struct FilterRestoration {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FilterErrorReport {
+    pub message: String,
+    pub expected: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FilterLineState {
     pub editor: LineEditorState,
     pub generation: u64,
-    pub candidates: Vec<CompletionCandidate>,
+    pub sections: Vec<FilterSuggestionSection>,
     pub selected_completion: Option<usize>,
-    pub error: Option<String>,
+    pub error: Option<FilterErrorReport>,
     pub restoration: FilterRestoration,
+}
+
+impl FilterLineState {
+    /// Tray order, which is also the order `Tab` walks.
+    pub fn suggestions(&self) -> impl Iterator<Item = &FilterSuggestion> {
+        self.sections
+            .iter()
+            .flat_map(|section| section.suggestions.iter())
+    }
+
+    pub fn suggestion_count(&self) -> usize {
+        self.sections
+            .iter()
+            .map(|section| section.suggestions.len())
+            .sum()
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TransientKind {
     Action,
     Copy,
+    /// Any menu that asks the user to pick one value. Same grammar as `a`:
+    /// bottom-anchored, grouped, direct keys, no row cursor.
+    Choice,
 }
+
+/// What picking a choice does. One menu type serves every picker.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ChoiceOutcome {
+    Sort(SortSpec),
+    ServiceSection(ServiceSection),
+    Theme(ThemeId),
+    Account {
+        action_id: ActionId,
+        account_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct MenuChoice {
+    /// One or two keys, exactly like an action mnemonic. A two-key sequence
+    /// drills down: the first key replaces the menu with the variants of one
+    /// subject, and the second picks among them.
+    pub sequence: String,
+    /// Heading for this choice at the top level.
+    pub group: String,
+    /// The thing being chosen, shown as the top-level label and as the heading
+    /// once drilled in. Empty when the menu is a single flat level.
+    pub subject: String,
+    pub label: String,
+    /// True for the value already in force, so the menu shows where you are.
+    pub active: bool,
+    pub outcome: ChoiceOutcome,
+}
+
+/// The copy key that opens the per-address level, and the key that takes all
+/// of them once inside it.
+pub const ADDRESS_PREFIX: char = 'a';
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TransientMenuState {
     pub kind: TransientKind,
+    pub title: &'static str,
     pub actions: Vec<ActionId>,
+    pub choices: Vec<MenuChoice>,
     pub fields: Vec<CopyField>,
+    /// Individual addresses, so copying one does not mean copying all of them.
+    pub addresses: Vec<String>,
     pub prefix: Option<char>,
     pub message: Option<String>,
 }
@@ -530,14 +608,10 @@ impl CopyField {
 pub enum Overlay {
     QuitConfirmation,
     TaskInspector(TaskId),
-    SortPicker { selected: usize },
     DiagnosticInput(DiagnosticInputState),
     Confirmation(Box<ConfirmationState>),
     OperatorForm(OperatorFormState),
     ServiceForm(ServiceFormState),
-    ServiceSectionPicker(ServiceSectionPickerState),
-    Appearance(AppearanceState),
-    AccountPicker(AccountPickerState),
     HandoffInput(HandoffInputState),
     PolicyEditor,
     SecretResult,
@@ -819,6 +893,10 @@ pub struct App {
     render_invalidated: bool,
     local_discovery_in_flight: bool,
     local_observer_generation: u64,
+    /// CLI discovery runs subprocesses and finishes long after the daemon
+    /// watcher has moved on. It gets its own counter so a newer status snapshot
+    /// never discards a discovery result.
+    local_discovery_generation: u64,
     local_watcher_connected: bool,
     local_services_refresh_in_flight: bool,
     admin_refresh_in_flight: bool,
@@ -889,7 +967,7 @@ impl App {
             Err(error) => (None, Some(format!("saved-view state is invalid: {error}"))),
         };
         Self {
-            view_history: ViewHistory::new(Route::Overview),
+            view_history: ViewHistory::new(Route::Devices),
             interaction: InteractionMode::Normal,
             next_completion_generation: 0,
             focus: Focus::Collection,
@@ -976,6 +1054,7 @@ impl App {
             render_invalidated: true,
             local_discovery_in_flight: false,
             local_observer_generation: 0,
+            local_discovery_generation: 0,
             local_watcher_connected: false,
             local_services_refresh_in_flight: false,
             admin_refresh_in_flight: false,
@@ -1011,6 +1090,7 @@ impl App {
         self.local_resource.begin(1, self.now);
         self.local_preferences_resource.begin(1, self.now);
         self.local_discovery_in_flight = true;
+        self.local_discovery_generation = self.local_discovery_generation.saturating_add(1);
         self.local_observer_generation = self.local_observer_generation.saturating_add(1);
         effects.push(Effect::StartLocalObservation {
             generation: self.local_observer_generation,
@@ -1021,7 +1101,7 @@ impl App {
             reconcile_interval: self.resolved_config.local.reconcile_interval,
         });
         effects.push(Effect::StartLocalDiscovery {
-            generation: 1,
+            generation: self.local_discovery_generation,
             resolution: local_resolution(&self.resolved_config),
             timeout: self.resolved_config.local.command_timeout,
         });
@@ -1613,6 +1693,7 @@ impl App {
             && state.kind == TransientKind::Action
         {
             let action_id = crate::ui::components::interaction_shell::action_menu_action_at(
+                self,
                 state,
                 area,
                 mouse.column,
@@ -1630,7 +1711,30 @@ impl App {
             self.interaction = InteractionMode::Normal;
             return self.dispatch_action(action_id);
         }
-        let candidate_index = usize::from(mouse.row.saturating_sub(area.y));
+        if let InteractionMode::FilterLine(state) = &self.interaction {
+            let insertion = crate::ui::components::interaction_shell::filter_suggestion_at(
+                self,
+                state,
+                area,
+                mouse.column,
+                mouse.row,
+            )
+            .and_then(|index| {
+                state
+                    .suggestions()
+                    .nth(index)
+                    .map(|suggestion| suggestion.insertion.clone())
+            });
+            if let (Some(insertion), InteractionMode::FilterLine(state)) =
+                (insertion, &mut self.interaction)
+            {
+                let (start, end) = active_token(&state.editor.input, state.editor.cursor);
+                state.editor.input.replace_range(start..end, &insertion);
+                state.editor.cursor = start.saturating_add(insertion.len());
+                state.selected_completion = None;
+            }
+            return self.update_live_filter();
+        }
         let clicked_route = match &mut self.interaction {
             InteractionMode::CommandLine(state) => {
                 crate::ui::components::interaction_shell::navigation_route_at(
@@ -1640,30 +1744,30 @@ impl App {
                     mouse.row,
                 )
             }
-            InteractionMode::FilterLine(state)
-                if candidate_index < state.candidates.len().min(6) =>
-            {
-                if let Some(candidate) = state.candidates.get(candidate_index) {
-                    apply_completion(&mut state.editor, candidate);
-                    state.selected_completion = Some(candidate_index);
-                }
-                return self.update_live_filter();
-            }
             InteractionMode::Transient(state) => {
-                if state.kind != TransientKind::Copy {
+                if !matches!(state.kind, TransientKind::Copy | TransientKind::Choice) {
                     return Vec::new();
                 }
-                let keys = copy_click_keys(&state.fields);
-                let mut x = area.x;
-                for (key, label) in keys {
-                    let end = x.saturating_add(u16::try_from(label.len()).map_or(u16::MAX, |v| v));
-                    if mouse.column >= x && mouse.column < end {
-                        return self.handle_transient_key(KeyEvent::new(
-                            KeyCode::Char(key),
-                            KeyModifiers::NONE,
-                        ));
-                    }
-                    x = end.saturating_add(2);
+                let key = if state.kind == TransientKind::Choice {
+                    crate::ui::components::interaction_shell::choice_menu_key_at(
+                        state,
+                        area,
+                        mouse.column,
+                        mouse.row,
+                    )
+                } else {
+                    crate::ui::components::interaction_shell::copy_menu_field_at(
+                        state,
+                        area,
+                        mouse.column,
+                        mouse.row,
+                    )
+                };
+                if let Some(key) = key {
+                    return self.handle_transient_key(KeyEvent::new(
+                        KeyCode::Char(key),
+                        KeyModifiers::NONE,
+                    ));
                 }
                 None
             }
@@ -1952,7 +2056,6 @@ impl App {
                 state.input.push_str(text);
                 state.error = None;
             }
-            Overlay::Appearance(_) => {}
             _ => {}
         }
         Vec::new()
@@ -1989,6 +2092,10 @@ impl App {
             return self.handle_quit_key();
         }
         if key.code == KeyCode::Esc {
+            // The detail pane is a state the user opened, so Esc leaves it.
+            if self.focus == Focus::Inspector {
+                self.focus = Focus::Collection;
+            }
             return Vec::new();
         }
 
@@ -2093,7 +2200,6 @@ impl App {
     fn handle_transient_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.code == KeyCode::Esc {
             if let InteractionMode::Transient(state) = &mut self.interaction
-                && state.kind == TransientKind::Action
                 && state.prefix.is_some()
             {
                 state.prefix = None;
@@ -2113,11 +2219,13 @@ impl App {
         if !key.modifiers.is_empty() {
             return Vec::new();
         }
-        let (kind, actions, fields, prefix) = match &self.interaction {
+        let (kind, actions, fields, addresses, choices, prefix) = match &self.interaction {
             InteractionMode::Transient(state) => (
                 state.kind.clone(),
                 state.actions.clone(),
                 state.fields.clone(),
+                state.addresses.clone(),
+                state.choices.clone(),
                 state.prefix,
             ),
             _ => return Vec::new(),
@@ -2154,15 +2262,65 @@ impl App {
                     return Vec::new();
                 }
             }
-            TransientKind::Copy => {
-                if let Some(field) = fields
+            TransientKind::Choice => {
+                if let Some(choice) = choices
                     .iter()
-                    .copied()
-                    .find(|field| copy_field_key(*field) == character)
+                    .find(|choice| choice.sequence == sequence)
+                    .cloned()
                 {
-                    let effects = self.copy_field(field);
                     self.interaction = InteractionMode::Normal;
-                    return effects;
+                    return self.apply_choice(choice.outcome);
+                }
+                if prefix.is_none()
+                    && choices.iter().any(|choice| {
+                        choice.sequence.chars().count() == 2
+                            && choice.sequence.starts_with(character)
+                    })
+                {
+                    if let InteractionMode::Transient(state) = &mut self.interaction {
+                        state.prefix = Some(character);
+                        state.message = None;
+                    }
+                    return Vec::new();
+                }
+            }
+            TransientKind::Copy => {
+                // Inside the address level a digit picks one address.
+                if prefix == Some(ADDRESS_PREFIX) {
+                    if character == ADDRESS_PREFIX {
+                        let effects = self.copy_text("All addresses", addresses.join("\n"));
+                        self.interaction = InteractionMode::Normal;
+                        return effects;
+                    }
+                    if let Some(index) = character
+                        .to_digit(10)
+                        .and_then(|digit| usize::try_from(digit).ok())
+                        .and_then(|digit| digit.checked_sub(1))
+                        && let Some(address) = addresses.get(index)
+                    {
+                        let address = address.clone();
+                        let effects = self.copy_text("Address", address);
+                        self.interaction = InteractionMode::Normal;
+                        return effects;
+                    }
+                } else {
+                    if character == copy_field_key(CopyField::Addresses) && addresses.len() > 1 {
+                        // More than one address is a choice, not a single value.
+                        if let InteractionMode::Transient(state) = &mut self.interaction {
+                            state.prefix = Some(ADDRESS_PREFIX);
+                            state.message = None;
+                        }
+                        return Vec::new();
+                    }
+                    if let Some(field) = fields
+                        .iter()
+                        .copied()
+                        .find(|field| copy_field_key(*field) == character)
+                    {
+                        let effects = self.copy_field(field);
+                        self.interaction = InteractionMode::Normal;
+                        return effects;
+                    }
                 }
             }
         }
@@ -2185,40 +2343,56 @@ impl App {
     }
 
     fn update_live_filter(&mut self) -> Vec<Effect> {
-        let input = match &self.interaction {
-            InteractionMode::FilterLine(state) => state.editor.input.clone(),
+        let (input, cursor, anchored) = match &self.interaction {
+            InteractionMode::FilterLine(state) => (
+                state.editor.input.clone(),
+                state.editor.cursor,
+                state.selected_completion.is_some(),
+            ),
             _ => return Vec::new(),
         };
+        let generation = self.advance_completion_generation();
+        // While `Tab` walks the tray the offered set stays anchored, so the row the
+        // user is cycling through does not move underneath them.
+        let sections = (!anchored).then(|| self.filter_suggestions(&input, cursor));
         if self.current_route() == Route::Activity {
-            let generation = self.advance_completion_generation();
             self.task_filter = input;
             self.tasks.select_filtered_first(&self.task_filter);
             if let InteractionMode::FilterLine(state) = &mut self.interaction {
                 state.error = None;
-                state.candidates.clear();
                 state.generation = generation;
+                if let Some(sections) = sections {
+                    state.sections = sections;
+                }
             }
             return Vec::new();
         }
-        let generation = self.advance_completion_generation();
-        match filter::parse(&input) {
+        let parsed = filter::parse(&input, &self.filter_schema());
+        match parsed {
             Ok(expression) => {
-                self.views.devices.filter_draft = input.clone();
+                self.views.devices.filter_draft = input;
                 self.views.devices.applied_filter = expression;
                 self.reconcile_selection(None);
-                let candidates = self.filter_candidates(&input);
                 if let InteractionMode::FilterLine(state) = &mut self.interaction {
                     state.error = None;
-                    state.candidates = candidates;
                     state.generation = generation;
+                    if let Some(sections) = sections {
+                        state.sections = sections;
+                    }
                 }
             }
             Err(error) => {
-                let candidates = self.filter_candidates(&input);
+                // The last valid expression stays applied, so the rows behind the
+                // prompt keep showing a real result while the term is repaired.
                 if let InteractionMode::FilterLine(state) = &mut self.interaction {
-                    state.error = Some(error.to_string());
-                    state.candidates = candidates;
+                    state.error = Some(FilterErrorReport {
+                        message: error.to_string(),
+                        expected: error.expected,
+                    });
                     state.generation = generation;
+                    if let Some(sections) = sections {
+                        state.sections = sections;
+                    }
                 }
             }
         }
@@ -2229,66 +2403,124 @@ impl App {
         navigation_candidates(input.trim())
     }
 
-    fn filter_candidates(&self, input: &str) -> Vec<CompletionCandidate> {
-        let fragment = input.split_whitespace().last().map_or("", |value| value);
-        let schema = filter::device_schema();
-        let mut values = BTreeSet::new();
-        if let Some((field, value_fragment)) = fragment.split_once(':') {
-            match field.to_ascii_lowercase().as_str() {
-                "online" => values.extend(["true".to_owned(), "false".to_owned()]),
-                "os" => values.extend(
-                    self.devices_resource
-                        .snapshot
-                        .iter()
-                        .map(|device| device.os.label().to_owned()),
-                ),
-                "owner" => values.extend(
-                    self.devices_resource
-                        .snapshot
-                        .iter()
-                        .filter_map(|device| device.owner.clone()),
-                ),
-                "tag" => values.extend(
-                    self.devices_resource
-                        .snapshot
-                        .iter()
-                        .flat_map(|device| device.tags.iter().cloned()),
-                ),
-                _ => {}
-            }
-            return values
-                .into_iter()
-                .filter(|value| completion_matches(value, value_fragment))
-                .take(100)
-                .map(|value| CompletionCandidate {
-                    id: format!("value:{field}:{value}"),
-                    insertion: format!("{field}:{value}"),
-                    label: value,
-                    description: format!("Value for {field}"),
-                    alias: false,
-                })
-                .collect();
+    /// The filter vocabulary of the route the shell is currently showing.
+    pub fn filter_schema(&self) -> FilterSchema {
+        match self.current_route() {
+            Route::Activity => filter::activity_schema(),
+            _ => filter::device_schema(),
         }
-        let mut candidates = schema
-            .fields
+    }
+
+    fn filter_suggestions(&self, input: &str, cursor: usize) -> Vec<FilterSuggestionSection> {
+        let schema = self.filter_schema();
+        let (start, end) = active_token(input, cursor);
+        let token = input.get(start..end).map_or("", |value| value);
+        match filter_stage(token, &schema) {
+            FilterStage::Field { prefix, fragment } => field_sections(&schema, prefix, fragment),
+            FilterStage::Value {
+                spec,
+                prefix,
+                fragment,
+            } => self.value_sections(spec, &prefix, fragment),
+        }
+    }
+
+    fn value_sections(
+        &self,
+        spec: &'static FilterFieldSpec,
+        prefix: &str,
+        fragment: &str,
+    ) -> Vec<FilterSuggestionSection> {
+        let values = match spec.value_kind {
+            FilterValueKind::Enumeration(values) => {
+                values.iter().map(|value| (*value).to_owned()).collect()
+            }
+            FilterValueKind::Duration => DURATION_SUGGESTIONS
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            FilterValueKind::Snapshot => self.snapshot_values(spec.field),
+        };
+        let mut suggestions = rank(
+            values.into_iter().map(|value| {
+                let text = quote_value(&value);
+                FilterSuggestion {
+                    kind: FilterSuggestionKind::Value,
+                    insertion: format!("{prefix}{text}"),
+                    note: String::new(),
+                    matches: Vec::new(),
+                    score: 0,
+                    text,
+                }
+            }),
+            fragment,
+        );
+        suggestions.truncate(SNAPSHOT_VALUE_LIMIT);
+        // Values lead: `Tab` should land on one, not on a match-mode refinement.
+        let mut sections = Vec::new();
+        if !suggestions.is_empty() {
+            sections.push(FilterSuggestionSection {
+                label: format!("{} values", spec.name),
+                suggestions,
+            });
+        }
+        let operators = spec
+            .operators
             .iter()
-            .filter(|spec| {
-                completion_matches(spec.canonical_name, fragment)
-                    || spec
-                        .aliases
-                        .iter()
-                        .any(|alias| completion_matches(alias, fragment))
-            })
-            .map(|spec| CompletionCandidate {
-                id: format!("field:{}", spec.canonical_name),
-                insertion: format!("{}:", spec.canonical_name),
-                label: format!("{}:", spec.canonical_name),
-                description: spec.description.to_owned(),
-                alias: false,
+            .copied()
+            // Comparisons are offered as whole operands beside the values, so
+            // only the match-mode refinements belong in their own section.
+            .filter(|operator| *operator == filter::FilterOperator::StartsWith)
+            .map(|operator| FilterSuggestion {
+                kind: FilterSuggestionKind::Operator,
+                text: operator.syntax().to_owned(),
+                insertion: format!("{prefix}{}", operator.syntax()),
+                note: operator.description().to_owned(),
+                matches: Vec::new(),
+                score: 0,
             })
             .collect::<Vec<_>>();
-        sort_completion_candidates(&mut candidates, fragment);
-        candidates
+        if fragment.is_empty() && !operators.is_empty() {
+            sections.push(FilterSuggestionSection {
+                label: format!("{} operators", spec.name),
+                suggestions: operators,
+            });
+        }
+        sections
+    }
+
+    /// Deduplicated, deterministically ordered values already present in the snapshot.
+    fn snapshot_values(&self, field: FilterField) -> Vec<String> {
+        let mut values = BTreeSet::new();
+        for device in &self.devices_resource.snapshot {
+            match field {
+                FilterField::Id => {
+                    let _ = values.insert(device.id.0.clone());
+                }
+                FilterField::Name => {
+                    let _ = values.insert(device.display_name.clone());
+                    let _ = values.insert(device.hostname.clone());
+                }
+                FilterField::Owner => {
+                    if let Some(owner) = device.owner.clone() {
+                        let _ = values.insert(owner);
+                    }
+                }
+                FilterField::Os => {
+                    let _ = values.insert(device.os.label().to_owned());
+                }
+                FilterField::Tag => values.extend(device.tags.iter().cloned()),
+                FilterField::ClientVersion => {
+                    let _ = values.insert(device.version.clone());
+                }
+                _ => {}
+            }
+        }
+        values
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .take(SNAPSHOT_VALUE_LIMIT)
+            .collect()
     }
 
     fn refresh_command_completions(&mut self) {
@@ -2313,17 +2545,34 @@ impl App {
         self.next_completion_generation
     }
 
+    /// `Tab` takes the best offer, then walks forward; `Shift+Tab` walks backward.
+    /// A lone offer is accepted outright so the tray can move on to the next stage.
     fn complete_filter(&mut self, reverse: bool) {
         let InteractionMode::FilterLine(state) = &mut self.interaction else {
             return;
         };
-        cycle_completion(
-            &mut state.editor,
-            &state.candidates,
-            &mut state.selected_completion,
-            reverse,
-            false,
-        );
+        let count = state.suggestion_count();
+        if count == 0 {
+            return;
+        }
+        let index = match (state.selected_completion, reverse) {
+            (None, false) => 0,
+            (None, true) => count.saturating_sub(1),
+            (Some(current), false) => current.saturating_add(1) % count,
+            (Some(0), true) => count.saturating_sub(1),
+            (Some(current), true) => current.saturating_sub(1),
+        };
+        let Some(insertion) = state
+            .suggestions()
+            .nth(index)
+            .map(|suggestion| suggestion.insertion.clone())
+        else {
+            return;
+        };
+        let (start, end) = active_token(&state.editor.input, state.editor.cursor);
+        state.editor.input.replace_range(start..end, &insertion);
+        state.editor.cursor = start.saturating_add(insertion.len());
+        state.selected_completion = (count > 1).then_some(index);
     }
 
     fn handle_text_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
@@ -2505,20 +2754,6 @@ impl App {
                 self.overlays.push(Overlay::TaskInspector(task_id));
                 Vec::new()
             }
-            Overlay::SortPicker { mut selected } => {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => selected = (selected + 1).min(19),
-                    KeyCode::Char('k') | KeyCode::Up => selected = selected.saturating_sub(1),
-                    KeyCode::Enter => {
-                        let value = selected;
-                        self.apply_sort_choice(value);
-                        return Vec::new();
-                    }
-                    _ => {}
-                }
-                self.overlays.push(Overlay::SortPicker { selected });
-                Vec::new()
-            }
             Overlay::DiagnosticInput(state) => {
                 self.overlays.push(Overlay::DiagnosticInput(state));
                 Vec::new()
@@ -2529,49 +2764,6 @@ impl App {
             }
             Overlay::ServiceForm(state) => {
                 self.overlays.push(Overlay::ServiceForm(state));
-                Vec::new()
-            }
-            Overlay::ServiceSectionPicker(mut state) => {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        state.selected =
-                            (state.selected + 1).min(ServiceSection::ALL.len().saturating_sub(1));
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        state.selected = state.selected.saturating_sub(1);
-                    }
-                    KeyCode::Enter => {
-                        self.views.services.section = ServiceSection::from_index(state.selected);
-                        self.views.services.selected = 0;
-                        return Vec::new();
-                    }
-                    _ => {}
-                }
-                self.overlays.push(Overlay::ServiceSectionPicker(state));
-                Vec::new()
-            }
-            Overlay::Appearance(mut state) => {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        let current = ThemeId::ALL
-                            .iter()
-                            .position(|id| *id == state.selected)
-                            .map_or(0, |index| index);
-                        state.selected =
-                            ThemeId::ALL[(current + 1).min(ThemeId::ALL.len().saturating_sub(1))];
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        let current = ThemeId::ALL
-                            .iter()
-                            .position(|id| *id == state.selected)
-                            .map_or(0, |index| index);
-                        state.selected = ThemeId::ALL[current.saturating_sub(1)];
-                    }
-                    KeyCode::Enter => return Vec::new(),
-                    _ => {}
-                }
-                self.theme = Theme::new(state.selected, self.theme.capability());
-                self.overlays.push(Overlay::Appearance(state));
                 Vec::new()
             }
             Overlay::HandoffInput(state) => {
@@ -2592,21 +2784,6 @@ impl App {
                     }
                 }
                 self.overlays.push(Overlay::Confirmation(state));
-                Vec::new()
-            }
-            Overlay::AccountPicker(mut state) => {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        state.selected =
-                            (state.selected + 1).min(state.accounts.len().saturating_sub(1));
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        state.selected = state.selected.saturating_sub(1);
-                    }
-                    KeyCode::Enter => return self.accept_account_picker(state),
-                    _ => {}
-                }
-                self.overlays.push(Overlay::AccountPicker(state));
                 Vec::new()
             }
             Overlay::PolicyEditor => {
@@ -2660,10 +2837,6 @@ impl App {
 
     fn pop_overlay(&mut self) -> Vec<Effect> {
         if let Some(overlay) = self.overlays.pop() {
-            if let Overlay::Appearance(state) = overlay {
-                self.theme = state.original;
-                return Vec::new();
-            }
             if matches!(overlay, Overlay::SecretResult) {
                 return self.close_secret_result();
             }
@@ -2718,7 +2891,7 @@ impl App {
             self.interaction = InteractionMode::Normal;
             return Vec::new();
         }
-        match filter::parse(input) {
+        match filter::parse(input, &self.filter_schema()) {
             Ok(expression) => {
                 self.views.devices.filter_draft = input.to_owned();
                 self.views.devices.applied_filter = expression;
@@ -2727,7 +2900,10 @@ impl App {
             }
             Err(error) => {
                 if let InteractionMode::FilterLine(state) = &mut self.interaction {
-                    state.error = Some(error.to_string());
+                    state.error = Some(FilterErrorReport {
+                        message: error.to_string(),
+                        expected: error.expected,
+                    });
                 }
             }
         }
@@ -2900,12 +3076,13 @@ impl App {
                     task_filter: self.task_filter.clone(),
                     task_selection: self.tasks.selected,
                 };
-                let candidates = self.filter_candidates("");
+                let cursor = input.len();
+                let sections = self.filter_suggestions(&input, cursor);
                 let generation = self.advance_completion_generation();
                 self.interaction = InteractionMode::FilterLine(FilterLineState {
                     editor: LineEditorState::new(input),
                     generation,
-                    candidates,
+                    sections,
                     selected_completion: None,
                     error: None,
                     restoration,
@@ -3027,10 +3204,16 @@ impl App {
                 Vec::new()
             }
             ActionId::SettingsAppearance => {
-                self.overlays.push(Overlay::Appearance(AppearanceState {
-                    original: self.theme,
-                    selected: self.theme.id(),
-                }));
+                self.interaction = InteractionMode::Transient(TransientMenuState {
+                    kind: TransientKind::Choice,
+                    title: "Appearance",
+                    actions: Vec::new(),
+                    choices: self.theme_choices(),
+                    fields: Vec::new(),
+                    addresses: Vec::new(),
+                    prefix: None,
+                    message: None,
+                });
                 Vec::new()
             }
             ActionId::CollectionMoveUp => {
@@ -3155,16 +3338,27 @@ impl App {
                 }
                 Vec::new()
             }
+            ActionId::CollectionBack => {
+                self.focus = Focus::Collection;
+                Vec::new()
+            }
             ActionId::CollectionOpen => {
                 if self.current_route() == Route::Activity {
                     if let Some(task_id) = self.tasks.selected {
                         self.overlays.push(Overlay::TaskInspector(task_id));
                     }
                 } else if self.current_route() == Route::Services && self.terminal_width < 80 {
-                    self.overlays
-                        .push(Overlay::ServiceSectionPicker(ServiceSectionPickerState {
-                            selected: self.views.services.section.index(),
-                        }));
+                    self.interaction = InteractionMode::Transient(TransientMenuState {
+                        kind: TransientKind::Choice,
+                        title: "Section",
+                        actions: Vec::new(),
+                        choices: self.section_choices(),
+                        fields: Vec::new(),
+                        addresses: Vec::new(),
+                        prefix: None,
+                        message: None,
+                    });
+                    return Vec::new();
                 } else if self.current_route() == Route::Services
                     || self.selected_device().is_some()
                 {
@@ -3177,7 +3371,16 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionSort => {
-                self.overlays.push(Overlay::SortPicker { selected: 0 });
+                self.interaction = InteractionMode::Transient(TransientMenuState {
+                    kind: TransientKind::Choice,
+                    title: "Sort",
+                    actions: Vec::new(),
+                    choices: self.sort_choices(),
+                    fields: Vec::new(),
+                    addresses: Vec::new(),
+                    prefix: None,
+                    message: None,
+                });
                 Vec::new()
             }
             ActionId::CollectionWideColumns => {
@@ -3194,8 +3397,11 @@ impl App {
                 }
                 self.interaction = InteractionMode::Transient(TransientMenuState {
                     kind: TransientKind::Action,
+                    title: "Actions",
                     actions,
+                    choices: Vec::new(),
                     fields: Vec::new(),
+                    addresses: Vec::new(),
                     prefix: None,
                     message: None,
                 });
@@ -3203,10 +3409,17 @@ impl App {
             }
             ActionId::ResourceCopy => {
                 let fields = self.contextual_copy_fields();
+                let addresses = self
+                    .selected_device()
+                    .map(|device| device.addresses.clone())
+                    .unwrap_or_default();
                 self.interaction = InteractionMode::Transient(TransientMenuState {
                     kind: TransientKind::Copy,
+                    title: "Copy",
                     actions: Vec::new(),
+                    choices: Vec::new(),
                     fields,
+                    addresses,
                     prefix: None,
                     message: None,
                 });
@@ -3769,7 +3982,7 @@ impl App {
             return Some("Taildrive is alpha and disabled until enabled for this run".to_owned());
         }
         if is_phase_four_action(action_id) && self.local_executable.is_none() {
-            return Some("tailscale executable has not been discovered".to_owned());
+            return Some(self.missing_executable_reason());
         }
         if self.local_executable.is_none()
             && matches!(
@@ -3795,7 +4008,7 @@ impl App {
                     | ActionId::LocalSyspolicyReload
             )
         {
-            return Some("tailscale executable has not been discovered".to_owned());
+            return Some(self.missing_executable_reason());
         }
         if matches!(
             action_id,
@@ -4463,16 +4676,16 @@ impl App {
             self.runtime_error = Some("no local account profiles were returned".to_owned());
             return Vec::new();
         }
-        self.overlays
-            .push(Overlay::AccountPicker(AccountPickerState {
-                action_id,
-                accounts: self.local_accounts.clone(),
-                selected: self
-                    .local_accounts
-                    .iter()
-                    .position(|account| account.active)
-                    .map_or(0, |value| value),
-            }));
+        self.interaction = InteractionMode::Transient(TransientMenuState {
+            kind: TransientKind::Choice,
+            title: "Account",
+            actions: Vec::new(),
+            choices: self.account_choices(action_id, &self.local_accounts),
+            fields: Vec::new(),
+            addresses: Vec::new(),
+            prefix: None,
+            message: None,
+        });
         Vec::new()
     }
 
@@ -5394,7 +5607,7 @@ impl App {
 
     fn open_login_confirmation(&mut self) -> Vec<Effect> {
         let Some(executable) = self.local_executable.as_ref() else {
-            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            self.runtime_error = Some(self.missing_executable_reason());
             return Vec::new();
         };
         self.overlays
@@ -5423,7 +5636,7 @@ impl App {
 
     fn open_logout_confirmation(&mut self) -> Vec<Effect> {
         let Some(executable) = self.local_executable.as_ref() else {
-            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            self.runtime_error = Some(self.missing_executable_reason());
             return Vec::new();
         };
         self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
@@ -6530,30 +6743,9 @@ impl App {
         })
     }
 
-    fn accept_account_picker(&mut self, state: AccountPickerState) -> Vec<Effect> {
-        let Some(account) = state.accounts.get(state.selected) else {
-            self.runtime_error = Some("no account is selected".to_owned());
-            return Vec::new();
-        };
-        self.overlays.pop();
-        match state.action_id {
-            ActionId::LocalAccountSwitch => {
-                self.open_mutation_confirmation(LocalMutation::AccountSwitch {
-                    account_id: account.id.clone(),
-                })
-            }
-            ActionId::LocalAccountRemove => {
-                self.open_mutation_confirmation(LocalMutation::AccountRemove {
-                    account_id: account.id.clone(),
-                })
-            }
-            _ => Vec::new(),
-        }
-    }
-
     fn accept_handoff_input(&mut self, state: HandoffInputState) -> Vec<Effect> {
         let Some(executable) = self.local_executable.as_ref() else {
-            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            self.runtime_error = Some(self.missing_executable_reason());
             return Vec::new();
         };
         let command = match state.kind {
@@ -7198,7 +7390,7 @@ impl App {
             }
             let Some(executable) = self.local_executable.clone() else {
                 self.mutation_lock.release(mutation_id);
-                self.runtime_error = Some("local executable has not been discovered".to_owned());
+                self.runtime_error = Some(self.missing_executable_reason());
                 return Vec::new();
             };
             let task_id = self.tasks.create(
@@ -7854,8 +8046,10 @@ impl App {
                 self.local_preferences_resource.begin(generation, self.now);
                 if self.local_executable.is_none() {
                     self.local_discovery_in_flight = true;
+                    self.local_discovery_generation =
+                        self.local_discovery_generation.saturating_add(1);
                     effects.push(Effect::StartLocalDiscovery {
-                        generation,
+                        generation: self.local_discovery_generation,
                         resolution: local_resolution(&self.resolved_config),
                         timeout: self.resolved_config.local.command_timeout,
                     });
@@ -10623,8 +10817,11 @@ impl App {
         }
         self.interaction = InteractionMode::Transient(TransientMenuState {
             kind: TransientKind::Action,
+            title: "Actions",
             actions,
+            choices: Vec::new(),
             fields: Vec::new(),
+            addresses: Vec::new(),
             prefix: None,
             message: None,
         });
@@ -10645,7 +10842,7 @@ impl App {
 
     fn start_local_diagnostic(&mut self, request: DiagnosticRequest) -> Vec<Effect> {
         let Some(executable) = self.local_executable.clone() else {
-            self.runtime_error = Some("local executable has not been discovered".to_owned());
+            self.runtime_error = Some(self.missing_executable_reason());
             return Vec::new();
         };
         if !self.request_capability_available(&request) {
@@ -11020,16 +11217,16 @@ impl App {
     fn update_local(&mut self, event: LocalEvent) -> Vec<Effect> {
         match event {
             LocalEvent::DiscoveryStarted { generation } => {
-                if generation >= self.local_resource.generation {
+                if generation >= self.local_discovery_generation {
+                    self.local_discovery_generation = generation;
                     self.local_discovery_in_flight = true;
-                    self.local_resource.begin(generation, self.now);
                 }
             }
             LocalEvent::DiscoverySucceeded {
                 generation,
                 executable,
             } => {
-                if generation < self.local_resource.generation {
+                if generation < self.local_discovery_generation {
                     return Vec::new();
                 }
                 self.local_discovery_in_flight = false;
@@ -11056,14 +11253,18 @@ impl App {
                 generation,
                 failure,
             } => {
-                if generation < self.local_resource.generation {
+                if generation < self.local_discovery_generation {
                     return Vec::new();
                 }
                 self.local_discovery_in_flight = false;
                 self.local_cli_state = match failure.kind {
-                    LocalFailureKind::ExecutableMissing => LocalCliState::Missing,
+                    LocalFailureKind::ExecutableMissing => LocalCliState::Missing {
+                        detail: format!("{}. {}", failure.summary, failure.detail),
+                    },
                     LocalFailureKind::ExecutableDenied | LocalFailureKind::PermissionDenied => {
-                        LocalCliState::PermissionDenied
+                        LocalCliState::PermissionDenied {
+                            detail: format!("{}. {}", failure.summary, failure.detail),
+                        }
                     }
                     LocalFailureKind::UnsupportedClient => LocalCliState::Unsupported {
                         detail: failure.detail,
@@ -11774,11 +11975,10 @@ impl App {
         if self.local_executable.is_none() {
             return Vec::new();
         }
-        let generation = self.local_resource.generation.saturating_add(1);
-        self.local_resource.generation = generation;
+        self.local_discovery_generation = self.local_discovery_generation.saturating_add(1);
         self.local_discovery_in_flight = true;
         vec![Effect::StartLocalDiscovery {
-            generation,
+            generation: self.local_discovery_generation,
             resolution: local_resolution(&self.resolved_config),
             timeout: self.resolved_config.local.command_timeout,
         }]
@@ -12294,30 +12494,133 @@ impl App {
             .collect()
     }
 
-    fn apply_sort_choice(&mut self, choice: usize) {
-        let fields = [
-            SortField::Name,
-            SortField::Liveness,
-            SortField::Owner,
-            SortField::Os,
-            SortField::Path,
-            SortField::LastSeen,
-            SortField::Rx,
-            SortField::Tx,
-            SortField::DeviceId,
-            SortField::Version,
+    /// Sort as two independent one-key decisions rather than a list of every
+    /// field-and-direction pair.
+    /// Field and direction in one mnemonic: the field key names the column, the
+    /// second key names the order.
+    fn sort_choices(&self) -> Vec<MenuChoice> {
+        const FIELDS: [(char, SortField, &str, &str); 10] = [
+            ('n', SortField::Name, "Identity", "name"),
+            ('i', SortField::DeviceId, "Identity", "id"),
+            ('w', SortField::Owner, "Identity", "owner"),
+            ('s', SortField::Liveness, "Connection", "state"),
+            ('p', SortField::Path, "Connection", "path"),
+            ('t', SortField::LastSeen, "Connection", "last seen"),
+            ('o', SortField::Os, "Platform", "os"),
+            ('v', SortField::Version, "Platform", "version"),
+            ('c', SortField::Rx, "Traffic", "received"),
+            ('m', SortField::Tx, "Traffic", "transmitted"),
         ];
-        let field = fields
-            .get(choice / 2)
-            .copied()
-            .map_or(SortField::LastSeen, |value| value);
-        let direction = if choice.is_multiple_of(2) {
-            SortDirection::Ascending
-        } else {
-            SortDirection::Descending
-        };
-        self.views.devices.sort = SortSpec { field, direction };
-        self.views.devices.sort_terms = vec![self.views.devices.sort];
+        let current = self.views.devices.sort;
+        FIELDS
+            .into_iter()
+            .flat_map(|(key, field, group, subject)| {
+                [
+                    (SortDirection::Ascending, 'a', "ascending"),
+                    (SortDirection::Descending, 'd', "descending"),
+                ]
+                .into_iter()
+                .map(move |(direction, order, label)| MenuChoice {
+                    sequence: format!("{key}{order}"),
+                    group: group.to_owned(),
+                    subject: subject.to_owned(),
+                    label: label.to_owned(),
+                    active: current.field == field && current.direction == direction,
+                    outcome: ChoiceOutcome::Sort(SortSpec { field, direction }),
+                })
+            })
+            .collect()
+    }
+
+    fn section_choices(&self) -> Vec<MenuChoice> {
+        const KEYS: [char; 7] = ['s', 'f', 'd', 'v', 'c', 'm', 'b'];
+        ServiceSection::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(index, section)| MenuChoice {
+                sequence: KEYS.get(index).copied().map_or('?', |key| key).to_string(),
+                group: "Section".to_owned(),
+                subject: String::new(),
+                label: section.label().to_ascii_lowercase(),
+                active: self.views.services.section == section,
+                outcome: ChoiceOutcome::ServiceSection(section),
+            })
+            .collect()
+    }
+
+    fn theme_choices(&self) -> Vec<MenuChoice> {
+        const KEYS: [char; 3] = ['d', 'l', 't'];
+        ThemeId::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| MenuChoice {
+                sequence: KEYS.get(index).copied().map_or('?', |key| key).to_string(),
+                group: "Theme".to_owned(),
+                subject: String::new(),
+                label: id.as_str().to_owned(),
+                active: self.theme.id() == id,
+                outcome: ChoiceOutcome::Theme(id),
+            })
+            .collect()
+    }
+
+    fn account_choices(&self, action_id: ActionId, accounts: &[LocalAccount]) -> Vec<MenuChoice> {
+        accounts
+            .iter()
+            .enumerate()
+            .take(9)
+            .map(|(index, account)| MenuChoice {
+                sequence: char::from_digit(
+                    u32::try_from(index.saturating_add(1)).map_or(1, |value| value),
+                    10,
+                )
+                .map_or('1', |key| key)
+                .to_string(),
+                group: "Account".to_owned(),
+                subject: String::new(),
+                label: account.display_label().to_owned(),
+                active: account.active,
+                outcome: ChoiceOutcome::Account {
+                    action_id,
+                    account_id: account.id.clone(),
+                },
+            })
+            .collect()
+    }
+
+    fn apply_choice(&mut self, outcome: ChoiceOutcome) -> Vec<Effect> {
+        match outcome {
+            ChoiceOutcome::Sort(sort) => {
+                self.set_sort(sort);
+                Vec::new()
+            }
+            ChoiceOutcome::ServiceSection(section) => {
+                self.views.services.section = section;
+                self.views.services.selected = 0;
+                Vec::new()
+            }
+            ChoiceOutcome::Theme(id) => {
+                self.theme = Theme::new(id, self.theme.capability());
+                Vec::new()
+            }
+            ChoiceOutcome::Account {
+                action_id,
+                account_id,
+            } => match action_id {
+                ActionId::LocalAccountSwitch => {
+                    self.open_mutation_confirmation(LocalMutation::AccountSwitch { account_id })
+                }
+                ActionId::LocalAccountRemove => {
+                    self.open_mutation_confirmation(LocalMutation::AccountRemove { account_id })
+                }
+                _ => Vec::new(),
+            },
+        }
+    }
+
+    fn set_sort(&mut self, sort: SortSpec) {
+        self.views.devices.sort = sort;
+        self.views.devices.sort_terms = vec![sort];
         self.reconcile_selection(None);
     }
 
@@ -12366,6 +12669,26 @@ impl App {
         self.copy_text(field.label(), value)
     }
 
+    /// Says which command is missing, where Tale looked, and what to do. The
+    /// discovery failure already knows all three; only the wording is new here.
+    fn missing_executable_reason(&self) -> String {
+        use crate::domain::source::LocalCliState;
+        match &self.local_cli_state {
+            LocalCliState::Discovering => "still looking for the tailscale command".to_owned(),
+            LocalCliState::Disabled => {
+                "local access is off for this run; restart without --no-local".to_owned()
+            }
+            LocalCliState::Mock => "simulated data has no local command".to_owned(),
+            LocalCliState::Available => {
+                "the tailscale command is available but this action could not use it".to_owned()
+            }
+            LocalCliState::Unsupported { detail }
+            | LocalCliState::Unavailable { detail }
+            | LocalCliState::Missing { detail }
+            | LocalCliState::PermissionDenied { detail } => detail.clone(),
+        }
+    }
+
     fn copy_text(&mut self, label: &str, text: String) -> Vec<Effect> {
         if self.source_mode == SourceMode::Mock {
             self.copied_value = Some(label.to_owned());
@@ -12405,14 +12728,10 @@ impl App {
         self.overlays.last().map(|overlay| match overlay {
             Overlay::QuitConfirmation => "quit",
             Overlay::TaskInspector(_) => "task",
-            Overlay::SortPicker { .. } => "sort",
             Overlay::DiagnosticInput(_) => "diagnostic input",
             Overlay::Confirmation(_) => "confirm local action",
             Overlay::OperatorForm(_) => "local operator form",
             Overlay::ServiceForm(_) => "local service form",
-            Overlay::ServiceSectionPicker(_) => "service section",
-            Overlay::Appearance(_) => "appearance",
-            Overlay::AccountPicker(_) => "local accounts",
             Overlay::HandoffInput(_) => "terminal handoff",
             Overlay::PolicyEditor => "policy workflow",
             Overlay::SecretResult => "secret result",
@@ -13005,7 +13324,8 @@ fn saved_filter_to_cli(filter: &FilterClause) -> Result<String, String> {
     match operator {
         "equals" => Ok(format!("{field}:{value}")),
         "not_equals" => Ok(format!("!{field}:{value}")),
-        "contains" => Ok(format!("{field}:contains={value}")),
+        // A bare term is already a substring match in the filter grammar.
+        "contains" => Ok(format!("{field}:{value}")),
         "starts_with" => Ok(format!("{field}:starts_with={value}")),
         "greater_than" | "less_than" => Err(format!(
             "saved operator {operator} cannot be translated to the device filter grammar"
@@ -13089,7 +13409,6 @@ fn canonical_filter_term(term: &FilterTerm) -> String {
                     Comparison::LessOrEqual(value) => ("less_or_equal", value),
                     Comparison::Greater(value) => ("greater", value),
                     Comparison::GreaterOrEqual(value) => ("greater_or_equal", value),
-                    Comparison::Equal(value) => ("equal", value),
                 };
                 format!("{operator}:{}s", duration.as_secs())
             } else {
@@ -13361,17 +13680,17 @@ fn navigation_candidates(query: &str) -> Vec<NavigationCandidate> {
 
 fn navigation_catalog() -> [(Route, &'static str, &'static str); 11] {
     [
-        (Route::Devices, "devices", "Machines & status"),
-        (Route::Local, "local", "This machine"),
-        (Route::Services, "services", "Serve & Funnel"),
-        (Route::Users, "users", "Members"),
-        (Route::Routes, "routes", "Network routes"),
-        (Route::Dns, "dns", "Name resolution"),
-        (Route::Access, "access", "Policies"),
-        (Route::Credentials, "credentials", "Keys & tokens"),
-        (Route::Activity, "activity", "Tasks & audit"),
-        (Route::Overview, "overview", "Fleet summary"),
-        (Route::Settings, "settings", "Configuration"),
+        (Route::Devices, "devices", "machines & status"),
+        (Route::Local, "local", "this machine"),
+        (Route::Services, "services", "serve & funnel"),
+        (Route::Users, "users", "members"),
+        (Route::Routes, "routes", "network routes"),
+        (Route::Dns, "dns", "name resolution"),
+        (Route::Access, "access", "policies"),
+        (Route::Credentials, "credentials", "keys & tokens"),
+        (Route::Activity, "activity", "tasks & audit"),
+        (Route::Overview, "overview", "fleet summary"),
+        (Route::Settings, "settings", "configuration"),
     ]
 }
 
@@ -13382,23 +13701,158 @@ fn navigation_rank(route: Route) -> usize {
         .map_or(usize::MAX, |index| index)
 }
 
-fn completion_matches(value: &str, fragment: &str) -> bool {
-    let value = value.to_ascii_lowercase();
-    let fragment = fragment.to_ascii_lowercase();
-    value.starts_with(&fragment) || value.contains(&fragment)
+const SNAPSHOT_VALUE_LIMIT: usize = 100;
+const DURATION_SUGGESTIONS: &[&str] = &["<1h", "<24h", "<7d", ">7d", ">30d"];
+
+/// What the token under the cursor is asking for.
+enum FilterStage<'a> {
+    Field {
+        prefix: &'a str,
+        fragment: &'a str,
+    },
+    Value {
+        spec: &'static FilterFieldSpec,
+        prefix: String,
+        fragment: &'a str,
+    },
 }
 
-fn sort_completion_candidates(candidates: &mut [CompletionCandidate], fragment: &str) {
-    let fragment = fragment.to_ascii_lowercase();
-    candidates.sort_by(|left, right| {
-        let left_prefix = left.insertion.to_ascii_lowercase().starts_with(&fragment);
-        let right_prefix = right.insertion.to_ascii_lowercase().starts_with(&fragment);
-        right_prefix
-            .cmp(&left_prefix)
-            .then_with(|| left.alias.cmp(&right.alias))
-            .then_with(|| left.label.cmp(&right.label))
-            .then_with(|| left.id.cmp(&right.id))
+/// Byte span of the whitespace-separated token the cursor sits in.
+fn active_token(input: &str, cursor: usize) -> (usize, usize) {
+    filter::token_spans(input)
+        .into_iter()
+        .find(|(start, end)| cursor >= *start && cursor <= *end)
+        .map_or((cursor, cursor), |span| span)
+}
+
+fn filter_stage<'a>(token: &'a str, schema: &FilterSchema) -> FilterStage<'a> {
+    let (prefix, body) = token
+        .strip_prefix('!')
+        .map_or(("", token), |body| ("!", body));
+    let Some(colon) = body.find(':') else {
+        return FilterStage::Field {
+            prefix,
+            fragment: body,
+        };
+    };
+    let name = body.get(..colon).map_or("", |value| value);
+    let Some(spec) = schema.field(name) else {
+        // An unrecognised head is still a field being typed, not a value.
+        return FilterStage::Field {
+            prefix,
+            fragment: name,
+        };
+    };
+    let rest = body
+        .get(colon.saturating_add(1)..)
+        .map_or("", |value| value);
+    // Only the segment after the last unquoted comma is being completed.
+    let split = rest
+        .rfind(',')
+        .map_or(0, |position| position.saturating_add(1));
+    let fragment = rest.get(split..).map_or("", |value| value);
+    // A half-typed quote is punctuation, not part of the value being matched;
+    // the completion re-quotes whatever it inserts.
+    let fragment = fragment
+        .strip_prefix('"')
+        .map_or(fragment, |value| value.strip_suffix('"').unwrap_or(value));
+    let committed = rest.get(..split).map_or("", |value| value);
+    FilterStage::Value {
+        spec,
+        prefix: format!("{prefix}{}:{committed}", spec.name),
+        fragment,
+    }
+}
+
+fn field_sections(
+    schema: &FilterSchema,
+    prefix: &str,
+    fragment: &str,
+) -> Vec<FilterSuggestionSection> {
+    let suggestion = |spec: &'static FilterFieldSpec| FilterSuggestion {
+        kind: FilterSuggestionKind::Field,
+        text: format!("{}:", spec.name),
+        insertion: format!("{prefix}{}:", spec.name),
+        note: spec.description.to_owned(),
+        matches: Vec::new(),
+        score: 0,
+    };
+    if fragment.is_empty() {
+        // Opening the prompt shows the whole vocabulary, grouped as declared.
+        return schema
+            .groups
+            .iter()
+            .map(|group| FilterSuggestionSection {
+                label: group.label.to_owned(),
+                suggestions: group.fields.iter().map(suggestion).collect(),
+            })
+            .filter(|section| !section.suggestions.is_empty())
+            .collect();
+    }
+    let suggestions = rank(schema.fields().map(suggestion), fragment);
+    if suggestions.is_empty() {
+        return Vec::new();
+    }
+    vec![FilterSuggestionSection {
+        label: "Matches".to_owned(),
+        suggestions,
+    }]
+}
+
+/// Fuzzy-rank suggestions against `fragment`, recording the matched offsets so the
+/// tray can highlight exactly the characters that earned the match.
+fn rank(
+    suggestions: impl Iterator<Item = FilterSuggestion>,
+    fragment: &str,
+) -> Vec<FilterSuggestion> {
+    if fragment.is_empty() {
+        return suggestions.collect();
+    }
+    let pattern = Pattern::new(
+        fragment,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+    );
+    let mut matcher = Matcher::new(MatcherConfig::DEFAULT);
+    let mut ranked = suggestions
+        .enumerate()
+        .filter_map(|(order, mut suggestion)| {
+            let haystack = format!("{} {}", suggestion.text, suggestion.note);
+            let mut characters = Vec::new();
+            let haystack = Utf32Str::new(&haystack, &mut characters);
+            let mut indices = Vec::new();
+            let score = pattern.indices(haystack, &mut matcher, &mut indices)?;
+            indices.sort_unstable();
+            indices.dedup();
+            let length = u32::try_from(suggestion.text.chars().count()).map_or(u32::MAX, |v| v);
+            suggestion.matches = indices
+                .into_iter()
+                .filter(|index| *index < length)
+                .collect();
+            suggestion.score = score;
+            Some((order, suggestion))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_order, left), (right_order, right)| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left_order.cmp(right_order))
     });
+    ranked
+        .into_iter()
+        .map(|(_, suggestion)| suggestion)
+        .collect()
+}
+
+/// Values with whitespace only parse back when quoted.
+fn quote_value(value: &str) -> String {
+    if value.contains(char::is_whitespace) {
+        format!("\"{value}\"")
+    } else {
+        value.to_owned()
+    }
 }
 
 fn edit_line(editor: &mut LineEditorState, key: KeyEvent) -> bool {
@@ -13483,101 +13937,6 @@ fn next_scalar_boundary(value: &str, cursor: usize) -> usize {
         .char_indices()
         .nth(1)
         .map_or(value.len(), |(index, _)| cursor.saturating_add(index))
-}
-
-fn cycle_completion(
-    editor: &mut LineEditorState,
-    candidates: &[CompletionCandidate],
-    selected: &mut Option<usize>,
-    reverse: bool,
-    add_route_delimiter: bool,
-) {
-    if candidates.is_empty() {
-        return;
-    }
-    let start = editor.input[..editor.cursor]
-        .rfind(char::is_whitespace)
-        .map_or(0, |position| position.saturating_add(1));
-    let fragment = &editor.input[start..editor.cursor];
-    if selected.is_none() && !reverse {
-        let prefix_candidates = candidates
-            .iter()
-            .filter(|candidate| {
-                candidate
-                    .insertion
-                    .to_ascii_lowercase()
-                    .starts_with(&fragment.to_ascii_lowercase())
-            })
-            .map(|candidate| candidate.insertion.as_str())
-            .collect::<Vec<_>>();
-        if let Some(common) = longest_common_prefix(&prefix_candidates)
-            && common.len() > fragment.len()
-        {
-            editor.input.replace_range(start..editor.cursor, &common);
-            editor.cursor = start.saturating_add(common.len());
-            if add_route_delimiter
-                && prefix_candidates.len() == 1
-                && start == 0
-                && !common.starts_with("view:")
-            {
-                insert_text(editor, " ");
-            }
-            return;
-        }
-    }
-    let index = match (*selected, reverse) {
-        (None, false) => 0,
-        (None, true) => candidates.len().saturating_sub(1),
-        (Some(current), false) => current.saturating_add(1) % candidates.len(),
-        (Some(0), true) => candidates.len().saturating_sub(1),
-        (Some(current), true) => current.saturating_sub(1),
-    };
-    if let Some(candidate) = candidates.get(index) {
-        editor
-            .input
-            .replace_range(start..editor.cursor, &candidate.insertion);
-        editor.cursor = start.saturating_add(candidate.insertion.len());
-        *selected = Some(index);
-    }
-}
-
-fn apply_completion(editor: &mut LineEditorState, candidate: &CompletionCandidate) {
-    let start = editor.input[..editor.cursor]
-        .rfind(char::is_whitespace)
-        .map_or(0, |position| position.saturating_add(1));
-    editor
-        .input
-        .replace_range(start..editor.cursor, &candidate.insertion);
-    editor.cursor = start.saturating_add(candidate.insertion.len());
-}
-
-fn copy_click_keys(fields: &[CopyField]) -> Vec<(char, String)> {
-    fields
-        .iter()
-        .map(|field| {
-            let key = copy_field_key(*field);
-            (key, format!("{key} {}", field.label()))
-        })
-        .collect()
-}
-
-fn longest_common_prefix(values: &[&str]) -> Option<String> {
-    let first = values.first()?;
-    let mut end = first.len();
-    for value in values.iter().skip(1) {
-        end = first
-            .char_indices()
-            .take_while(|(index, character)| {
-                value
-                    .get(*index..)
-                    .is_some_and(|tail| tail.starts_with(*character))
-            })
-            .map(|(index, character)| index.saturating_add(character.len_utf8()))
-            .last()
-            .map_or(0, |value| value)
-            .min(end);
-    }
-    first.get(..end).map(str::to_owned)
 }
 
 const fn copy_field_key(field: CopyField) -> char {

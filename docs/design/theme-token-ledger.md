@@ -61,7 +61,6 @@ no-color column is the guaranteed modifier/symbol or label, never color alone.
 | KeyHint | available key | 153 or 61 | cyan/blue + bold | underline + key text |
 | KeyHintDisabled | unavailable key | 242 or 145 | gray + dim/crossed | crossed-out + reason |
 | Prompt | active editor text | primary on raised surface | neutral + bold | bold prefix |
-| PromptCursor | insertion point | focus-strong on raised surface | bold | accent caret `▏` |
 | CompletionMatch | matched candidate | focus | cyan/blue + underline | underline |
 | CompletionSelected | candidate selection | primary/focus fill | cyan/blue + bold | reverse + `>` |
 | Selection | current resource | primary/focus-strong fill | blue + bold | reverse + row marker |

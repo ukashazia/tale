@@ -6,114 +6,272 @@ use super::device::{AdminDevice, Device, Liveness};
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FilterOperator {
     Match,
+    StartsWith,
     LessThan,
     LessOrEqual,
     GreaterThan,
     GreaterOrEqual,
 }
 
+impl FilterOperator {
+    /// Text typed after the field separator to select this operator.
+    pub const fn syntax(self) -> &'static str {
+        match self {
+            Self::Match => "",
+            Self::StartsWith => "starts_with=",
+            Self::LessThan => "<",
+            Self::LessOrEqual => "<=",
+            Self::GreaterThan => ">",
+            Self::GreaterOrEqual => ">=",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Match => "substring",
+            Self::StartsWith => "prefix",
+            Self::LessThan => "newer than",
+            Self::LessOrEqual => "newer or equal",
+            Self::GreaterThan => "older than",
+            Self::GreaterOrEqual => "older or equal",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FilterValueKind {
-    Text,
-    Boolean,
-    Duration,
+    /// Values are fixed and every one of them is offered.
     Enumeration(&'static [&'static str]),
-    SnapshotValue,
+    /// Values come from the rows currently held in the snapshot.
+    Snapshot,
+    /// Values are durations such as `30m` or `7d`.
+    Duration,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct FilterFieldSpec {
-    pub canonical_name: &'static str,
-    pub aliases: &'static [&'static str],
+    pub name: &'static str,
+    pub field: FilterField,
     pub operators: &'static [FilterOperator],
     pub value_kind: FilterValueKind,
     pub description: &'static str,
 }
 
+impl FilterFieldSpec {
+    pub const fn enumeration(&self) -> &'static [&'static str] {
+        match self.value_kind {
+            FilterValueKind::Enumeration(values) => values,
+            FilterValueKind::Snapshot | FilterValueKind::Duration => &[],
+        }
+    }
+
+    /// The syntax an operand must follow, used by error reporting.
+    pub fn expected_syntax(&self) -> String {
+        match self.value_kind {
+            FilterValueKind::Enumeration(values) => format!("{}:{}", self.name, values.join("|")),
+            FilterValueKind::Snapshot => format!("{}:<text>", self.name),
+            FilterValueKind::Duration => format!("{}:<7d", self.name),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct FilterSchema {
+pub struct FilterFieldGroup {
+    pub label: &'static str,
     pub fields: &'static [FilterFieldSpec],
 }
 
-const MATCH: &[FilterOperator] = &[FilterOperator::Match];
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct FilterSchema {
+    /// What a bare word without a field matches on this route.
+    pub free_text: &'static str,
+    pub groups: &'static [FilterFieldGroup],
+}
+
+impl FilterSchema {
+    pub fn fields(&self) -> impl Iterator<Item = &'static FilterFieldSpec> {
+        self.groups.iter().flat_map(|group| group.fields.iter())
+    }
+
+    pub fn field(&self, name: &str) -> Option<&'static FilterFieldSpec> {
+        self.fields()
+            .find(|spec| spec.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fields().next().is_none()
+    }
+}
+
+const TEXT_OPERATORS: &[FilterOperator] = &[FilterOperator::Match, FilterOperator::StartsWith];
+const ENUM_OPERATORS: &[FilterOperator] = &[FilterOperator::Match];
 const AGE_OPERATORS: &[FilterOperator] = &[
-    FilterOperator::Match,
     FilterOperator::LessThan,
     FilterOperator::LessOrEqual,
     FilterOperator::GreaterThan,
     FilterOperator::GreaterOrEqual,
 ];
-const DEVICE_FILTER_FIELDS: &[FilterFieldSpec] = &[
-    field("id", &[], MATCH, FilterValueKind::Text, "Device identity"),
-    field("name", &[], MATCH, FilterValueKind::Text, "Display name"),
-    field(
-        "online",
-        &[],
-        MATCH,
-        FilterValueKind::Boolean,
-        "Online state",
+
+const ONLINE_VALUES: &[&str] = &["true", "false", "unknown"];
+const PATH_VALUES: &[&str] = &["direct", "derp", "peer-relay", "idle", "no-path", "unknown"];
+const PROPERTY_VALUES: &[&str] = &[
+    "exit-node",
+    "exit-node-option",
+    "subnet-router",
+    "ssh",
+    "shared",
+];
+const APPROVAL_VALUES: &[&str] = &["approved", "pending", "unknown"];
+const KEY_EXPIRY_VALUES: &[&str] = &["expired", "soon", "disabled", "unknown"];
+const SHARING_VALUES: &[&str] = &["external", "internal", "unknown"];
+const POSTURE_VALUES: &[&str] = &["present", "empty", "unknown"];
+const ROUTE_ROLE_VALUES: &[&str] = &[
+    "subnet-router",
+    "exit-node",
+    "exit-node-option",
+    "none",
+    "unknown",
+];
+
+const DEVICE_MACHINE_FIELDS: &[FilterFieldSpec] = &[
+    spec(
+        "id",
+        FilterField::Id,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "device id",
     ),
-    field(
+    spec(
+        "name",
+        FilterField::Name,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "host name",
+    ),
+    spec(
         "owner",
-        &[],
-        MATCH,
-        FilterValueKind::SnapshotValue,
-        "Owner name or ID",
+        FilterField::Owner,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "owning user",
     ),
-    field(
-        "os",
-        &[],
-        MATCH,
-        FilterValueKind::SnapshotValue,
-        "Operating system",
-    ),
-    field(
-        "path",
-        &[],
-        MATCH,
-        FilterValueKind::SnapshotValue,
-        "Connection path",
-    ),
-    field(
+    spec(
         "tag",
-        &[],
-        MATCH,
-        FilterValueKind::SnapshotValue,
-        "Device tag",
+        FilterField::Tag,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "acl tag",
     ),
-    field(
-        "lastSeen",
-        &["last_seen"],
-        AGE_OPERATORS,
-        FilterValueKind::Duration,
-        "Last-seen age",
-    ),
-    field(
-        "approval",
-        &[],
-        MATCH,
-        FilterValueKind::Enumeration(&["approved", "pending", "revoked"]),
-        "Approval state",
-    ),
-    field(
-        "version",
-        &["clientVersion"],
-        MATCH,
-        FilterValueKind::Text,
-        "Client version",
+    spec(
+        "os",
+        FilterField::Os,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "platform",
     ),
 ];
 
-const fn field(
-    canonical_name: &'static str,
-    aliases: &'static [&'static str],
+const DEVICE_CONNECTION_FIELDS: &[FilterFieldSpec] = &[
+    spec(
+        "online",
+        FilterField::Online,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(ONLINE_VALUES),
+        "control link",
+    ),
+    spec(
+        "path",
+        FilterField::Path,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(PATH_VALUES),
+        "data path",
+    ),
+    spec(
+        "last-seen",
+        FilterField::LastSeen,
+        AGE_OPERATORS,
+        FilterValueKind::Duration,
+        "seen age",
+    ),
+    spec(
+        "property",
+        FilterField::Property,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(PROPERTY_VALUES),
+        "capability",
+    ),
+];
+
+const DEVICE_ADMIN_FIELDS: &[FilterFieldSpec] = &[
+    spec(
+        "approval",
+        FilterField::Approval,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(APPROVAL_VALUES),
+        "approval",
+    ),
+    spec(
+        "key-expiry",
+        FilterField::KeyExpiry,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(KEY_EXPIRY_VALUES),
+        "key expiry",
+    ),
+    spec(
+        "version",
+        FilterField::ClientVersion,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "client build",
+    ),
+    spec(
+        "sharing",
+        FilterField::Sharing,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(SHARING_VALUES),
+        "membership",
+    ),
+    spec(
+        "posture",
+        FilterField::Posture,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(POSTURE_VALUES),
+        "posture data",
+    ),
+    spec(
+        "route-role",
+        FilterField::RouteRole,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(ROUTE_ROLE_VALUES),
+        "route role",
+    ),
+];
+
+const DEVICE_FILTER_GROUPS: &[FilterFieldGroup] = &[
+    FilterFieldGroup {
+        label: "Machine",
+        fields: DEVICE_MACHINE_FIELDS,
+    },
+    FilterFieldGroup {
+        label: "Connection",
+        fields: DEVICE_CONNECTION_FIELDS,
+    },
+    FilterFieldGroup {
+        label: "Administration",
+        fields: DEVICE_ADMIN_FIELDS,
+    },
+];
+
+const fn spec(
+    name: &'static str,
+    field: FilterField,
     operators: &'static [FilterOperator],
     value_kind: FilterValueKind,
     description: &'static str,
 ) -> FilterFieldSpec {
     FilterFieldSpec {
-        canonical_name,
-        aliases,
+        name,
+        field,
         operators,
         value_kind,
         description,
@@ -122,12 +280,16 @@ const fn field(
 
 pub const fn device_schema() -> FilterSchema {
     FilterSchema {
-        fields: DEVICE_FILTER_FIELDS,
+        free_text: "matches name, host, owner, tags, and addresses",
+        groups: DEVICE_FILTER_GROUPS,
     }
 }
 
 pub const fn activity_schema() -> FilterSchema {
-    FilterSchema { fields: &[] }
+    FilterSchema {
+        free_text: "matches action, target, state, and summary",
+        groups: &[],
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -239,13 +401,14 @@ pub enum Comparison {
     LessOrEqual(Duration),
     Greater(Duration),
     GreaterOrEqual(Duration),
-    Equal(Duration),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FilterError {
     pub position: usize,
     pub message: String,
+    /// The syntax the term should have followed.
+    pub expected: String,
 }
 
 impl std::fmt::Display for FilterError {
@@ -254,20 +417,56 @@ impl std::fmt::Display for FilterError {
             formatter,
             "{} at column {}",
             self.message,
-            self.position + 1
+            self.position.saturating_add(1)
         )
     }
 }
 
 impl std::error::Error for FilterError {}
 
-pub fn parse(input: &str) -> Result<FilterExpression, FilterError> {
+pub fn parse(input: &str, schema: &FilterSchema) -> Result<FilterExpression, FilterError> {
     let tokens = tokenize(input)?;
     let mut terms = Vec::with_capacity(tokens.len());
     for token in tokens {
-        terms.push(parse_term(&token)?);
+        terms.push(parse_term(&token, schema)?);
     }
     Ok(FilterExpression { terms })
+}
+
+/// Byte spans of every whitespace-separated token, honouring quoted sections.
+pub fn token_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (position, character) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quoted {
+            escaped = true;
+            continue;
+        }
+        if character == '"' {
+            quoted = !quoted;
+            if start.is_none() {
+                start = Some(position);
+            }
+            continue;
+        }
+        if character.is_whitespace() && !quoted {
+            if let Some(begin) = start.take() {
+                spans.push((begin, position));
+            }
+        } else if start.is_none() {
+            start = Some(position);
+        }
+    }
+    if let Some(begin) = start {
+        spans.push((begin, input.len()));
+    }
+    spans
 }
 
 fn tokenize(input: &str) -> Result<Vec<(String, usize)>, FilterError> {
@@ -313,7 +512,8 @@ fn tokenize(input: &str) -> Result<Vec<(String, usize)>, FilterError> {
     if escaped || quoted {
         return Err(FilterError {
             position: input.len().saturating_sub(1),
-            message: "incomplete quoted value".to_owned(),
+            message: "unclosed quote".to_owned(),
+            expected: "close the value with a matching \"".to_owned(),
         });
     }
     if !current.is_empty() {
@@ -322,161 +522,145 @@ fn tokenize(input: &str) -> Result<Vec<(String, usize)>, FilterError> {
     Ok(tokens)
 }
 
-fn parse_term((token, position): &(String, usize)) -> Result<FilterTerm, FilterError> {
+fn parse_term(
+    (token, position): &(String, usize),
+    schema: &FilterSchema,
+) -> Result<FilterTerm, FilterError> {
     let (negated, body) = token
         .strip_prefix('!')
         .map_or((false, token.as_str()), |value| (true, value));
     if body.is_empty() {
-        return Err(error(*position, "incomplete filter term"));
+        return Err(error(*position, "empty term", &field_list_hint(schema)));
     }
 
-    let colon = body.find(':');
-    let Some(colon) = colon else {
+    let Some(colon) = body.find(':') else {
         if negated {
-            return Err(error(*position, "negation must apply to a field"));
+            return Err(error(
+                *position,
+                "negation needs a field",
+                "!field:value, for example !tag:server",
+            ));
         }
-        return Ok(FilterTerm::Text(normalize_value(body)?));
+        return Ok(FilterTerm::Text(normalize_value(body, *position)?));
     };
     let field_text = &body[..colon];
-    let value_text = &body[colon + 1..];
-    let field = parse_field(field_text).ok_or(error(*position, "unknown filter field"))?;
+    let value_text = &body[colon.saturating_add(1)..];
+    let value_position = position.saturating_add(colon).saturating_add(1);
+    let Some(spec) = schema.field(field_text) else {
+        return Err(error(
+            *position,
+            &format!("unknown field {field_text}"),
+            &field_list_hint(schema),
+        ));
+    };
     if value_text.is_empty() {
-        return Err(error(*position + colon + 1, "filter value is required"));
+        return Err(error(
+            value_position,
+            &format!("{} needs a value", spec.name),
+            &spec.expected_syntax(),
+        ));
     }
 
-    if field == FilterField::LastSeen && starts_with_comparison(value_text) {
-        let (operator, duration_text) = comparison_parts(value_text)
-            .ok_or(error(*position + colon + 1, "incomplete comparison"))?;
-        let duration = parse_filter_duration(duration_text)
-            .ok_or(error(*position + colon + 1, "invalid duration"))?;
+    if let Some((operator, duration_text)) = comparison_parts(value_text) {
+        if !spec.operators.contains(&operator) {
+            return Err(error(
+                value_position,
+                &format!("{} does not compare", spec.name),
+                &spec.expected_syntax(),
+            ));
+        }
+        let duration = parse_filter_duration(duration_text).ok_or_else(|| {
+            error(
+                value_position,
+                &format!("{duration_text} is not a duration"),
+                "a count and one of s, m, h, d, w, for example 7d",
+            )
+        })?;
         return Ok(FilterTerm::Field {
-            field,
+            field: spec.field,
             negated,
             values: Vec::new(),
             comparison: Some(Comparison::from_operator(operator, duration)),
         });
     }
+    if spec.value_kind == FilterValueKind::Duration {
+        return Err(error(
+            value_position,
+            &format!("{} needs a comparison", spec.name),
+            &spec.expected_syntax(),
+        ));
+    }
 
-    if let Some((mode, structured_value)) = value_text.split_once('=') {
-        let mode = match mode {
-            "contains" => FieldMatchMode::Contains,
-            "starts_with" => FieldMatchMode::StartsWith,
-            _ => {
-                return Err(error(
-                    *position + colon + 1,
-                    "unknown structured filter operator",
-                ));
-            }
-        };
+    if let Some((prefix, structured_value)) = value_text.split_once('=') {
+        // A bare `field:value` already matches on substring, so `starts_with=`
+        // is the only refinement that says something the default does not.
+        if prefix != "starts_with" {
+            return Err(error(
+                value_position,
+                &format!("unknown operator {prefix}="),
+                &format!("{0}:value or {0}:starts_with=value", spec.name),
+            ));
+        }
+        let mode = FieldMatchMode::StartsWith;
+        if !spec.operators.contains(&FilterOperator::StartsWith) {
+            return Err(error(
+                value_position,
+                &format!("{} has fixed values", spec.name),
+                &spec.expected_syntax(),
+            ));
+        }
         if structured_value.is_empty() {
-            return Err(error(*position + colon + 1, "filter value is required"));
+            return Err(error(
+                value_position,
+                &format!("{} needs a value", spec.name),
+                &spec.expected_syntax(),
+            ));
         }
         return Ok(FilterTerm::StructuredField {
-            field,
+            field: spec.field,
             negated,
-            value: normalize_value(structured_value)?,
+            value: normalize_value(structured_value, value_position)?,
             mode,
         });
     }
 
-    let values = split_values(value_text, *position + colon + 1)?;
-    if values.is_empty() {
-        return Err(error(*position + colon + 1, "filter value is required"));
-    }
-    if field == FilterField::Online {
-        for value in &values {
-            if !matches!(
-                value.as_str(),
-                "true" | "false" | "online" | "offline" | "unknown"
-            ) {
-                return Err(error(
-                    *position + colon + 1,
-                    "online expects true, false, or unknown",
-                ));
-            }
-        }
-    }
-    if field == FilterField::Property {
-        for value in &values {
-            if !matches!(
-                value.as_str(),
-                "exit-node" | "exit-node-option" | "subnet-router" | "ssh" | "shared"
-            ) {
-                return Err(error(
-                    *position + colon + 1,
-                    "property expects exit-node, exit-node-option, subnet-router, ssh, or shared",
-                ));
-            }
-        }
-    }
-    if field == FilterField::Approval {
-        for value in &values {
-            if !matches!(
-                value.as_str(),
-                "true" | "false" | "approved" | "pending" | "unknown"
-            ) {
-                return Err(error(
-                    *position + colon + 1,
-                    "approval expects approved, pending, or unknown",
-                ));
-            }
-        }
-    }
-    if field == FilterField::KeyExpiry {
-        for value in &values {
-            if !matches!(value.as_str(), "expired" | "soon" | "disabled" | "unknown") {
-                return Err(error(
-                    *position + colon + 1,
-                    "key-expiry expects expired, soon, disabled, or unknown",
-                ));
-            }
-        }
-    }
-    if field == FilterField::Sharing {
-        for value in &values {
-            if !matches!(
-                value.as_str(),
-                "true" | "false" | "external" | "internal" | "unknown"
-            ) {
-                return Err(error(
-                    *position + colon + 1,
-                    "sharing expects external, internal, or unknown",
-                ));
-            }
-        }
-    }
-    if field == FilterField::Posture {
-        for value in &values {
-            if !matches!(value.as_str(), "present" | "empty" | "unknown") {
-                return Err(error(
-                    *position + colon + 1,
-                    "posture expects present, empty, or unknown",
-                ));
-            }
-        }
-    }
-    if field == FilterField::RouteRole {
-        for value in &values {
-            if !matches!(
-                value.as_str(),
-                "subnet-router" | "exit-node" | "exit-node-option" | "none" | "unknown"
-            ) {
-                return Err(error(
-                    *position + colon + 1,
-                    "route-role expects subnet-router, exit-node, exit-node-option, none, or unknown",
-                ));
-            }
+    let values = split_values(value_text, value_position, spec)?;
+    for value in &values {
+        let allowed = spec.enumeration();
+        if !allowed.is_empty() && !allowed.contains(&value.as_str()) {
+            return Err(error(
+                value_position,
+                &format!("{value} is not a value of {}", spec.name),
+                &spec.expected_syntax(),
+            ));
         }
     }
     Ok(FilterTerm::Field {
-        field,
+        field: spec.field,
         negated,
         values,
         comparison: None,
     })
 }
 
-fn split_values(value: &str, position: usize) -> Result<Vec<String>, FilterError> {
+fn field_list_hint(schema: &FilterSchema) -> String {
+    let names = schema
+        .fields()
+        .map(|spec| spec.name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.is_empty() {
+        "this view filters on free text only".to_owned()
+    } else {
+        format!("one of {names}")
+    }
+}
+
+fn split_values(
+    value: &str,
+    position: usize,
+    spec: &FilterFieldSpec,
+) -> Result<Vec<String>, FilterError> {
     let mut values = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -485,63 +669,60 @@ fn split_values(value: &str, position: usize) -> Result<Vec<String>, FilterError
             '"' => quoted = !quoted,
             ',' if !quoted => {
                 if current.trim().is_empty() {
-                    return Err(error(position, "empty OR value"));
+                    return Err(error(
+                        position,
+                        "empty value between commas",
+                        &spec.expected_syntax(),
+                    ));
                 }
-                values.push(normalize_value(current.trim())?);
+                values.push(normalize_value(current.trim(), position)?);
                 current.clear();
             }
             other => current.push(other),
         }
     }
     if quoted {
-        return Err(error(position, "incomplete quoted value"));
+        return Err(error(
+            position,
+            "unclosed quote",
+            "close the value with a matching \"",
+        ));
     }
     if current.trim().is_empty() {
-        return Err(error(position, "empty OR value"));
+        return Err(error(
+            position,
+            "empty value between commas",
+            &spec.expected_syntax(),
+        ));
     }
-    values.push(normalize_value(current.trim())?);
+    values.push(normalize_value(current.trim(), position)?);
     Ok(values)
 }
 
-fn normalize_value(value: &str) -> Result<String, FilterError> {
+fn normalize_value(value: &str, position: usize) -> Result<String, FilterError> {
     if value.starts_with('"') || value.ends_with('"') {
-        if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
-            return Err(error(0, "incomplete quoted value"));
+        if value.chars().count() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+            return Err(error(
+                position,
+                "unclosed quote",
+                "close the value with a matching \"",
+            ));
         }
-        return Ok(value[1..value.len().saturating_sub(1)].to_lowercase());
+        return Ok(value
+            .get(1..value.len().saturating_sub(1))
+            .map_or_else(String::new, str::to_lowercase));
     }
     Ok(value.to_lowercase())
 }
 
-fn parse_field(value: &str) -> Option<FilterField> {
-    match value.to_ascii_lowercase().as_str() {
-        "id" => Some(FilterField::Id),
-        "name" => Some(FilterField::Name),
-        "online" => Some(FilterField::Online),
-        "state" => Some(FilterField::Online),
-        "owner" => Some(FilterField::Owner),
-        "os" => Some(FilterField::Os),
-        "path" => Some(FilterField::Path),
-        "tag" => Some(FilterField::Tag),
-        "lastseen" => Some(FilterField::LastSeen),
-        "property" => Some(FilterField::Property),
-        "approval" | "authorized" => Some(FilterField::Approval),
-        "keyexpiry" | "key-expiry" => Some(FilterField::KeyExpiry),
-        "version" | "clientversion" | "client-version" => Some(FilterField::ClientVersion),
-        "sharing" | "shared" => Some(FilterField::Sharing),
-        "posture" => Some(FilterField::Posture),
-        "routerole" | "route-role" | "role" => Some(FilterField::RouteRole),
-        _ => None,
-    }
-}
-
-fn starts_with_comparison(value: &str) -> bool {
-    value.starts_with('<') || value.starts_with('>') || value.starts_with('=')
-}
-
-fn comparison_parts(value: &str) -> Option<(&str, &str)> {
-    for operator in ["<=", ">=", "<", ">", "="] {
-        if let Some(duration) = value.strip_prefix(operator) {
+fn comparison_parts(value: &str) -> Option<(FilterOperator, &str)> {
+    for (syntax, operator) in [
+        ("<=", FilterOperator::LessOrEqual),
+        (">=", FilterOperator::GreaterOrEqual),
+        ("<", FilterOperator::LessThan),
+        (">", FilterOperator::GreaterThan),
+    ] {
+        if let Some(duration) = value.strip_prefix(syntax) {
             return Some((operator, duration));
         }
     }
@@ -563,31 +744,28 @@ fn parse_filter_duration(value: &str) -> Option<Duration> {
         "w" => 604_800,
         _ => return None,
     };
-    Duration::from_secs(amount.checked_mul(multiplier)?).checked_add(Duration::from_nanos(0))
+    Some(Duration::from_secs(amount.checked_mul(multiplier)?))
 }
 
 impl Comparison {
-    fn from_operator(operator: &str, duration: Duration) -> Self {
+    const fn from_operator(operator: FilterOperator, duration: Duration) -> Self {
         match operator {
-            "<" => Self::Less(duration),
-            "<=" => Self::LessOrEqual(duration),
-            ">" => Self::Greater(duration),
-            ">=" => Self::GreaterOrEqual(duration),
-            _ => Self::Equal(duration),
+            FilterOperator::LessOrEqual => Self::LessOrEqual(duration),
+            FilterOperator::GreaterThan => Self::Greater(duration),
+            FilterOperator::GreaterOrEqual => Self::GreaterOrEqual(duration),
+            _ => Self::Less(duration),
         }
     }
 
     fn matches(self, age: Option<u64>) -> bool {
-        let Some(age) = age else {
+        let Some(seconds) = age else {
             return false;
         };
-        let seconds = age;
         match self {
             Self::Less(value) => seconds < value.as_secs(),
             Self::LessOrEqual(value) => seconds <= value.as_secs(),
             Self::Greater(value) => seconds > value.as_secs(),
             Self::GreaterOrEqual(value) => seconds >= value.as_secs(),
-            Self::Equal(value) => seconds == value.as_secs(),
         }
     }
 }
@@ -595,10 +773,11 @@ impl Comparison {
 impl FilterTerm {
     fn matches(&self, device: &Device, dns_name: Option<&str>, now: Timestamp) -> bool {
         match self {
-            Self::Text(value) => {
-                device.search_text().contains(value)
-                    || dns_name.is_some_and(|name| name.to_lowercase().contains(value))
-            }
+            Self::Text(value) => device
+                .search_fields()
+                .into_iter()
+                .chain(dns_name)
+                .any(|field| fuzzy_matches(field, value)),
             Self::Field {
                 field,
                 negated,
@@ -612,28 +791,42 @@ impl FilterTerm {
                     comparison.matches(device.age_at(now))
                 } else {
                     values.iter().any(|value| match field {
-                        FilterField::Id => device.id.0.eq_ignore_ascii_case(value),
-                        FilterField::Name => device.display_name.eq_ignore_ascii_case(value),
+                        // Free-text fields take a substring; closed vocabularies
+                        // stay exact, the parser having pinned them to a value.
+                        FilterField::Id => contains_matches(device.id.0.as_str(), value),
+                        FilterField::Name => {
+                            contains_matches(&device.display_name, value)
+                                || contains_matches(&device.hostname, value)
+                        }
                         FilterField::Online => match value.as_str() {
-                            "true" | "online" => device.liveness == Liveness::Online,
-                            "false" | "offline" => device.liveness == Liveness::Offline,
+                            "true" => device.liveness == Liveness::Online,
+                            "false" => device.liveness == Liveness::Offline,
                             "unknown" => device.liveness == Liveness::Unknown,
                             _ => false,
                         },
-                        FilterField::Owner => device.owner_matches(value),
-                        FilterField::Os => device.os.label().eq_ignore_ascii_case(value),
+                        FilterField::Owner => {
+                            device
+                                .owner
+                                .as_deref()
+                                .is_some_and(|owner| contains_matches(owner, value))
+                                || device
+                                    .owner_label
+                                    .as_deref()
+                                    .is_some_and(|owner| contains_matches(owner, value))
+                        }
+                        FilterField::Os => contains_matches(device.os.label(), value),
                         FilterField::Path => device.path.label().eq_ignore_ascii_case(value),
-                        FilterField::Tag => device.tag_matches(value),
+                        FilterField::Tag => {
+                            device.tags.iter().any(|tag| contains_matches(tag, value))
+                        }
                         FilterField::Property => device.property_matches(value),
                         FilterField::Approval
                         | FilterField::KeyExpiry
                         | FilterField::ClientVersion
                         | FilterField::Sharing
                         | FilterField::Posture
-                        | FilterField::RouteRole => true,
-                        FilterField::LastSeen => device
-                            .last_seen
-                            .is_some_and(|last_seen| last_seen.to_string() == *value),
+                        | FilterField::RouteRole
+                        | FilterField::LastSeen => true,
                     })
                 };
                 if *negated { !matched } else { matched }
@@ -665,9 +858,7 @@ impl FilterTerm {
                 }
                 fields.extend(device.tags.iter().map(String::as_str));
                 fields.extend(device.addresses.iter().map(String::as_str));
-                fields
-                    .iter()
-                    .any(|field| field.to_ascii_lowercase().contains(value))
+                fields.iter().any(|field| fuzzy_matches(field, value))
             }
             Self::Field {
                 field,
@@ -711,27 +902,30 @@ fn admin_field_matches(
     now: Timestamp,
 ) -> bool {
     match field {
-        FilterField::Id => device.stable_id.eq_ignore_ascii_case(value),
-        FilterField::Name => device.display_name().eq_ignore_ascii_case(value),
+        FilterField::Id => contains_matches(&device.stable_id, value),
+        FilterField::Name => {
+            contains_matches(device.display_name(), value)
+                || device
+                    .hostname
+                    .as_deref()
+                    .is_some_and(|hostname| contains_matches(hostname, value))
+        }
         FilterField::Online => match value {
-            "true" | "online" => device.connected_to_control == Some(true),
-            "false" | "offline" => device.connected_to_control == Some(false),
+            "true" => device.connected_to_control == Some(true),
+            "false" => device.connected_to_control == Some(false),
             "unknown" => device.connected_to_control.is_none(),
             _ => false,
         },
         FilterField::Owner => device
             .user_id
             .as_deref()
-            .is_some_and(|owner| owner.eq_ignore_ascii_case(value)),
+            .is_some_and(|owner| contains_matches(owner, value)),
         FilterField::Os => device
             .os
             .as_ref()
-            .is_some_and(|os| os.label().eq_ignore_ascii_case(value)),
+            .is_some_and(|os| contains_matches(os.label(), value)),
         FilterField::Path => "admin observation".eq_ignore_ascii_case(value),
-        FilterField::Tag => device
-            .tags
-            .iter()
-            .any(|tag| tag.eq_ignore_ascii_case(value)),
+        FilterField::Tag => device.tags.iter().any(|tag| contains_matches(tag, value)),
         FilterField::LastSeen => device
             .last_seen
             .is_some_and(|last_seen| last_seen.to_string() == value),
@@ -746,8 +940,8 @@ fn admin_field_matches(
             _ => false,
         },
         FilterField::Approval => match value {
-            "true" | "approved" => device.authorized == Some(true),
-            "false" | "pending" => device.authorized == Some(false),
+            "approved" => device.authorized == Some(true),
+            "pending" => device.authorized == Some(false),
             "unknown" => device.authorized.is_none(),
             _ => false,
         },
@@ -765,10 +959,10 @@ fn admin_field_matches(
         FilterField::ClientVersion => device
             .client_version
             .as_deref()
-            .is_some_and(|version| version.eq_ignore_ascii_case(value)),
+            .is_some_and(|version| contains_matches(version, value)),
         FilterField::Sharing => match value {
-            "true" | "external" => device.is_external == Some(true),
-            "false" | "internal" => device.is_external == Some(false),
+            "external" => device.is_external == Some(true),
+            "internal" => device.is_external == Some(false),
             "unknown" => device.is_external.is_none(),
             _ => false,
         },
@@ -875,47 +1069,27 @@ fn structured_admin_field_matches(
             .client_version
             .as_deref()
             .is_some_and(|candidate| text_matches(candidate, value, mode)),
-        FilterField::Property => [
-            "exit-node",
-            "exit-node-option",
-            "subnet-router",
-            "ssh",
-            "shared",
-        ]
-        .iter()
-        .any(|candidate| {
+        FilterField::Property => PROPERTY_VALUES.iter().any(|candidate| {
             admin_field_matches(field, candidate, device, now)
                 && text_matches(candidate, value, mode)
         }),
-        FilterField::Approval => ["approved", "pending", "unknown"].iter().any(|candidate| {
+        FilterField::Approval => APPROVAL_VALUES.iter().any(|candidate| {
             admin_field_matches(field, candidate, device, now)
                 && text_matches(candidate, value, mode)
         }),
-        FilterField::KeyExpiry => {
-            ["expired", "soon", "disabled", "unknown"]
-                .iter()
-                .any(|candidate| {
-                    admin_field_matches(field, candidate, device, now)
-                        && text_matches(candidate, value, mode)
-                })
-        }
-        FilterField::Sharing => ["external", "internal", "unknown"].iter().any(|candidate| {
+        FilterField::KeyExpiry => KEY_EXPIRY_VALUES.iter().any(|candidate| {
             admin_field_matches(field, candidate, device, now)
                 && text_matches(candidate, value, mode)
         }),
-        FilterField::Posture => ["present", "empty", "unknown"].iter().any(|candidate| {
+        FilterField::Sharing => SHARING_VALUES.iter().any(|candidate| {
             admin_field_matches(field, candidate, device, now)
                 && text_matches(candidate, value, mode)
         }),
-        FilterField::RouteRole => [
-            "subnet-router",
-            "exit-node",
-            "exit-node-option",
-            "none",
-            "unknown",
-        ]
-        .iter()
-        .any(|candidate| {
+        FilterField::Posture => POSTURE_VALUES.iter().any(|candidate| {
+            admin_field_matches(field, candidate, device, now)
+                && text_matches(candidate, value, mode)
+        }),
+        FilterField::RouteRole => ROUTE_ROLE_VALUES.iter().any(|candidate| {
             admin_field_matches(field, candidate, device, now)
                 && text_matches(candidate, value, mode)
         }),
@@ -935,13 +1109,52 @@ const fn is_admin_filter_field(field: FilterField) -> bool {
 }
 
 fn text_matches(candidate: &str, value: &str, mode: FieldMatchMode) -> bool {
-    let candidate = candidate.to_ascii_lowercase();
-    let value = value.to_ascii_lowercase();
     match mode {
-        FieldMatchMode::Exact => candidate == value,
-        FieldMatchMode::Contains => candidate.contains(&value),
-        FieldMatchMode::StartsWith => candidate.starts_with(&value),
+        FieldMatchMode::Exact => {
+            candidate.chars().count() == value.chars().count()
+                && starts_with_matches(candidate, value)
+        }
+        FieldMatchMode::Contains => contains_matches(candidate, value),
+        FieldMatchMode::StartsWith => starts_with_matches(candidate, value),
     }
+}
+
+/// Case-insensitive substring test. A named field takes this rule: `name:build`
+/// finds `build-01` without demanding the whole value, but the term still has to
+/// appear as written, so `os:ios` cannot reach `windows`.
+fn contains_matches(candidate: &str, value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    candidate.char_indices().any(|(index, _)| {
+        candidate
+            .get(index..)
+            .is_some_and(|tail| starts_with_matches(tail, value))
+    })
+}
+
+fn starts_with_matches(candidate: &str, value: &str) -> bool {
+    let mut characters = candidate.chars();
+    value.chars().all(|wanted| {
+        characters
+            .next()
+            .is_some_and(|character| characters_match(character, wanted))
+    })
+}
+
+/// Case-insensitive subsequence test, the same rule the completion tray ranks
+/// with. Only a bare word takes this rule, where the user has given no field to
+/// aim at and a forgiving match is the point.
+fn fuzzy_matches(candidate: &str, value: &str) -> bool {
+    let mut characters = candidate.chars();
+    value
+        .chars()
+        .all(|wanted| characters.any(|character| characters_match(character, wanted)))
+}
+
+fn characters_match(character: char, wanted: char) -> bool {
+    character.eq_ignore_ascii_case(&wanted)
+        || (!character.is_ascii() && character.to_lowercase().eq(wanted.to_lowercase()))
 }
 
 fn has_exit_advertisement(device: &AdminDevice) -> bool {
@@ -960,9 +1173,10 @@ fn has_exit_approval(device: &AdminDevice) -> bool {
             .any(|route| route == "0.0.0.0/0" || route == "::/0")
 }
 
-fn error(position: usize, message: &str) -> FilterError {
+fn error(position: usize, message: &str, expected: &str) -> FilterError {
     FilterError {
         position,
         message: message.to_owned(),
+        expected: expected.to_owned(),
     }
 }

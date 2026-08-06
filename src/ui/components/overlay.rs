@@ -4,7 +4,7 @@ use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
 use crate::ui::components::{batch_result, confirm, form};
-use crate::ui::theme::{StyleRole, ThemeId};
+use crate::ui::theme::StyleRole;
 use crate::ui::views::{audit, policy_editor, secret_result};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
@@ -43,48 +43,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 area,
             );
         }
-        Overlay::SortPicker { selected } => {
-            let fields = [
-                "name asc",
-                "name desc",
-                "state asc",
-                "state desc",
-                "owner asc",
-                "owner desc",
-                "os asc",
-                "os desc",
-                "path asc",
-                "path desc",
-                "lastSeen asc",
-                "lastSeen desc",
-                "rx asc",
-                "rx desc",
-                "tx asc",
-                "tx desc",
-                "id asc",
-                "id desc",
-                "version asc",
-                "version desc",
-            ];
-            let lines = fields
-                .iter()
-                .enumerate()
-                .map(|(index, field)| {
-                    format!("{} {field}", if index == *selected { ">" } else { " " })
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .style(app.theme.style(StyleRole::SurfaceRaised))
-                    .block(
-                        ratatui::widgets::Block::default()
-                            .borders(ratatui::widgets::Borders::ALL)
-                            .title("sort"),
-                    ),
-                area,
-            );
-        }
         Overlay::DiagnosticInput(state) => {
             let label = match &state.kind {
                 crate::app::DiagnosticInputKind::DnsQuery => "DNS name and optional type",
@@ -110,96 +68,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
         Overlay::OperatorForm(state) => form::render_operator(frame, app, area, state),
         Overlay::ServiceForm(state) => form::render_service(frame, app, area, state),
-        Overlay::ServiceSectionPicker(state) => {
-            let lines = crate::domain::service::ServiceSection::ALL
-                .iter()
-                .enumerate()
-                .map(|(index, section)| {
-                    format!(
-                        "{} {}",
-                        if index == state.selected { ">" } else { " " },
-                        section.label()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            frame.render_widget(
-                Paragraph::new(format!("{lines}\n\nj/k select   Enter apply   Esc cancels"))
-                    .style(app.theme.style(StyleRole::SurfaceRaised))
-                    .block(
-                        ratatui::widgets::Block::default()
-                            .borders(ratatui::widgets::Borders::ALL)
-                            .title("service section"),
-                    ),
-                area,
-            );
-        }
-        Overlay::Appearance(state) => {
-            let lines = ThemeId::ALL
-                .iter()
-                .map(|id| {
-                    let marker = if *id == state.selected { ">" } else { " " };
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(marker, app.theme.style(StyleRole::Selection)),
-                        ratatui::text::Span::raw(" "),
-                        ratatui::text::Span::styled(
-                            id.as_str(),
-                            app.theme.style(StyleRole::TextPrimary),
-                        ),
-                    ])
-                })
-                .chain([
-                    ratatui::text::Line::from(""),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(
-                            "✓ healthy",
-                            app.theme.style(StyleRole::StateHealthy),
-                        ),
-                        ratatui::text::Span::raw("  "),
-                        ratatui::text::Span::styled(
-                            "! warning",
-                            app.theme.style(StyleRole::StateWarning),
-                        ),
-                        ratatui::text::Span::raw("  "),
-                        ratatui::text::Span::styled(
-                            "X danger/public",
-                            app.theme.style(StyleRole::StatePublic),
-                        ),
-                    ]),
-                    ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(
-                            "local",
-                            app.theme.style(StyleRole::SourceLocal),
-                        ),
-                        ratatui::text::Span::raw("  "),
-                        ratatui::text::Span::styled(
-                            "admin",
-                            app.theme.style(StyleRole::SourceAdmin),
-                        ),
-                        ratatui::text::Span::raw("  "),
-                        ratatui::text::Span::styled(
-                            "local+admin",
-                            app.theme.style(StyleRole::SourceCombined),
-                        ),
-                    ]),
-                    ratatui::text::Line::from(
-                        "Enter apply for session · Esc cancel · persist with ui.theme",
-                    ),
-                ])
-                .collect::<Vec<_>>();
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .style(app.theme.style(StyleRole::SurfaceRaised))
-                    .block(
-                        ratatui::widgets::Block::default()
-                            .borders(ratatui::widgets::Borders::ALL)
-                            .border_style(app.theme.style(StyleRole::BorderFocused))
-                            .title("appearance"),
-                    ),
-                area,
-            );
-        }
-        Overlay::AccountPicker(state) => form::render_accounts(frame, app, area, state),
         Overlay::HandoffInput(state) => form::render_handoff(frame, app, area, state),
         Overlay::PolicyEditor => policy_editor::render(frame, app, area),
         Overlay::SecretResult => secret_result::render(frame, app, area),
@@ -223,13 +91,9 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
         | Overlay::PolicyEditor
         | Overlay::SecretResult
         | Overlay::AuditInvestigation => area,
-        Overlay::SortPicker { .. }
-        | Overlay::DiagnosticInput(_)
+        Overlay::DiagnosticInput(_)
         | Overlay::OperatorForm(_)
         | Overlay::ServiceForm(_)
-        | Overlay::ServiceSectionPicker(_)
-        | Overlay::Appearance(_)
-        | Overlay::AccountPicker(_)
         | Overlay::HandoffInput(_) => {
             let height = area.height.saturating_mul(2) / 5;
             Rect {

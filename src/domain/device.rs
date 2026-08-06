@@ -351,7 +351,9 @@ fn capability_is_true(capabilities: &BTreeMap<String, bool>, name: &str) -> bool
 }
 
 impl Device {
-    pub fn search_text(&self) -> String {
+    /// Identity fields a bare filter word searches, kept separate so a loose
+    /// match cannot span two unrelated values.
+    pub fn search_fields(&self) -> Vec<&str> {
         let mut fields = vec![self.display_name.as_str(), self.hostname.as_str()];
         if let Some(owner) = self.owner.as_deref() {
             fields.push(owner);
@@ -361,22 +363,7 @@ impl Device {
         }
         fields.extend(self.tags.iter().map(String::as_str));
         fields.extend(self.addresses.iter().map(String::as_str));
-        fields.join(" ").to_lowercase()
-    }
-
-    pub fn owner_matches(&self, value: &str) -> bool {
-        let needle = value.to_lowercase();
-        self.owner
-            .as_deref()
-            .is_some_and(|owner| owner.eq_ignore_ascii_case(&needle))
-            || self
-                .owner_label
-                .as_deref()
-                .is_some_and(|owner| owner.eq_ignore_ascii_case(&needle))
-    }
-
-    pub fn tag_matches(&self, value: &str) -> bool {
-        self.tags.iter().any(|tag| tag.eq_ignore_ascii_case(value))
+        fields
     }
 
     pub fn property_matches(&self, value: &str) -> bool {
@@ -423,6 +410,17 @@ impl SortField {
             Self::Tx => "tx",
             Self::DeviceId => "id",
             Self::Version => "version",
+        }
+    }
+
+    /// Wording for the interface. `label` stays the stored spelling used by
+    /// saved views and exports.
+    pub const fn display_label(self) -> &'static str {
+        match self {
+            Self::LastSeen => "last seen",
+            Self::Rx => "received",
+            Self::Tx => "transmitted",
+            other => other.label(),
         }
     }
 }

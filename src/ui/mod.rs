@@ -34,7 +34,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     }
 
     components::header::render(frame, app, layout.header);
-    components::header::render_route_line(frame, app, layout.title);
     match app.current_route() {
         Route::Overview => views::overview::render(frame, app, layout.content),
         Route::Local => views::local::render(frame, app, layout.content),

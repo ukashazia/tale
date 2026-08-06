@@ -43,14 +43,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     }
     if items.is_empty() {
-        items.push(ListItem::new(format!(
-            "{} · {}",
-            resource.state.label(),
-            resource
-                .error
-                .as_deref()
-                .map_or("no users observed", |value| value)
-        )));
+        for line in crate::ui::text::empty_state(
+            "users",
+            "users",
+            app.admin.profile.is_some(),
+            resource.state,
+            resource.error.as_deref(),
+        ) {
+            items.push(ListItem::new(line));
+        }
     }
     frame.render_widget(
         List::new(items)

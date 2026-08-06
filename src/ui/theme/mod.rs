@@ -285,8 +285,11 @@ fn role_spec(role: StyleRole, id: ThemeId) -> RoleSpec {
             RoleSpec::fg(T::Disabled).modified(Modifier::DIM.union(Modifier::CROSSED_OUT))
         }
         R::Prompt => RoleSpec::fg(primary).modified(Modifier::BOLD),
-        R::PromptCursor => RoleSpec::fg(T::FocusStrong).modified(Modifier::BOLD),
         R::CompletionMatch => RoleSpec::fg(T::Focus).modified(Modifier::UNDERLINED),
+        // Three tokens that stay apart in truecolor, 256, and 16-colour terminals.
+        R::SyntaxField => RoleSpec::fg(T::Focus).modified(Modifier::BOLD),
+        R::SyntaxOperator => RoleSpec::fg(T::Muted),
+        R::SyntaxValue => RoleSpec::fg(T::Admin),
         R::CompletionSelected | R::Selection => if id == ThemeId::TailscaleLight {
             RoleSpec::bg(T::Primary, T::Focus)
         } else {

@@ -7,8 +7,8 @@ use tale::domain::device::ConnectionPath;
 use tale::domain::diagnostic::DiagnosticPath;
 use tale::domain::redaction::{DiagnosticReportInput, redact_diagnostic_report};
 use tale::domain::source::{
-    ExecutableSource, LocalCapabilities, LocalExecutable, LocalFailure, LocalFailureKind,
-    LocalResource, LocalResourceStatus, LocalState,
+    ExecutableSource, LocalCapabilities, LocalCliState, LocalExecutable, LocalFailure,
+    LocalFailureKind, LocalResource, LocalResourceStatus, LocalState,
 };
 use tale::effect::Effect;
 use tale::event::{Event, LocalEvent};
@@ -420,7 +420,19 @@ fn executable_resolution_obeys_precedence_and_platform_rules() {
         path: None,
         platform: HostPlatform::Unix,
     });
-    assert_eq!(missing, Err(ExecutableError::NotFound));
+    // The failure names the path it checked so the message can show it.
+    assert_eq!(
+        missing,
+        Err(ExecutableError::NotFound {
+            searched: vec![root.join("missing")],
+        })
+    );
+    if let Err(error) = missing {
+        assert_eq!(
+            error.searched(),
+            vec![root.join("missing").display().to_string()]
+        );
+    }
     let _ = fs::remove_dir_all(root);
 }
 
@@ -626,5 +638,83 @@ fn make_executable(path: &Path) {
             permissions.set_mode(0o755);
             let _ = fs::set_permissions(path, permissions);
         }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_status_snapshot_cannot_discard_cli_discovery() {
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let app = local_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        let _ = app.bootstrap_effects();
+        assert!(app.local_executable.is_none());
+
+        // The daemon watcher reserves a fresh status generation on every read,
+        // and it wins that race because discovery has to run subprocesses.
+        let snapshot = decode_status(STATUS, "1.98.9".to_owned(), None, timestamp());
+        assert!(snapshot.is_ok());
+        if let Ok(snapshot) = snapshot {
+            for generation in 1..=4 {
+                let _ = app.update(Event::Local(Box::new(LocalEvent::StatusStarted {
+                    generation,
+                    attempted_at: timestamp(),
+                })));
+                let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+                    generation,
+                    snapshot: Box::new(snapshot.clone()),
+                })));
+            }
+        }
+        assert!(app.local_resource.generation >= 4);
+
+        // Discovery started before any of that and still counts when it lands.
+        let _ = app.update(Event::Local(Box::new(LocalEvent::DiscoverySucceeded {
+            generation: 1,
+            executable: LocalExecutable {
+                path: PathBuf::from("/usr/local/bin/tailscale"),
+                socket_path: None,
+                source: ExecutableSource::Path,
+                version: "1.102.2".to_owned(),
+                daemon_version: None,
+                build: None,
+                capabilities: LocalCapabilities::all_supported(),
+            },
+        })));
+        assert!(
+            app.local_executable.is_some(),
+            "a later status read must not discard the discovered executable"
+        );
+        assert_eq!(app.local_cli_state, LocalCliState::Available);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_superseded_discovery_result_is_still_ignored() {
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let app = local_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        let _ = app.bootstrap_effects();
+        // A second discovery run supersedes the first, so the stale answer loses.
+        let _ = app.update(Event::Local(Box::new(LocalEvent::DiscoveryStarted {
+            generation: 7,
+        })));
+        let _ = app.update(Event::Local(Box::new(LocalEvent::DiscoveryFailed {
+            generation: 2,
+            failure: LocalFailure::new(
+                LocalFailureKind::ExecutableMissing,
+                "executable discovery",
+                "stale",
+                "stale",
+                false,
+            ),
+        })));
+        assert_ne!(
+            app.local_cli_state,
+            LocalCliState::Missing {
+                detail: "stale. stale".to_owned()
+            }
+        );
     }
 }
