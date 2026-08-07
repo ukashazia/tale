@@ -743,6 +743,9 @@ pub enum CopyField {
     ServiceUrl,
     ServiceListener,
     ServiceBackend,
+    UserId,
+    UserName,
+    UserLogin,
 }
 
 /// The headings the copy menu offers, in the order it shows them.
@@ -784,7 +787,10 @@ impl CopyField {
             | Self::Hostname
             | Self::DnsName
             | Self::Owner
-            | Self::Tags => CopyGroup::Identity,
+            | Self::Tags
+            | Self::UserId
+            | Self::UserName
+            | Self::UserLogin => CopyGroup::Identity,
             Self::Addresses | Self::PublicKey | Self::Endpoint => CopyGroup::Network,
             Self::DiagnosticSummary | Self::Metrics => CopyGroup::Diagnostics,
         }
@@ -806,6 +812,9 @@ impl CopyField {
             Self::ServiceUrl => "url",
             Self::ServiceListener => "listener",
             Self::ServiceBackend => "backend",
+            Self::UserId => "id",
+            Self::UserName => "name",
+            Self::UserLogin => "login",
         }
     }
 }
@@ -998,6 +1007,17 @@ pub struct Views {
     pub devices: DeviceViewState,
     pub services: ServiceViewState,
     pub diagnostics: DiagnosticsViewState,
+    pub users: UserViewState,
+}
+
+/// What `:users` remembers between frames. The selection itself lives in
+/// `admin_user_selected`, beside the other admin cursors.
+#[derive(Debug, Clone, Default)]
+pub struct UserViewState {
+    /// Whether the side inspector shares the pane with the table. Off by
+    /// default, the way the devices pane is: the table is what the route is
+    /// for, and the inspector repeats a row already on screen.
+    pub inspector: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1217,6 +1237,7 @@ impl App {
                 devices: DeviceViewState::default(),
                 services: ServiceViewState::default(),
                 diagnostics: DiagnosticsViewState::default(),
+                users: UserViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
             admin,
@@ -3702,6 +3723,12 @@ impl App {
                     if let Some(task_id) = self.tasks.selected {
                         self.overlays.push(Overlay::TaskInspector(task_id));
                     }
+                } else if self.current_route() == Route::Users {
+                    // Enter replaces the table with the detail view; there is
+                    // nothing to open into when no row is selected.
+                    if self.selected_admin_user().is_some() {
+                        self.focus = Focus::Inspector;
+                    }
                 } else if self.current_route() == Route::Services
                     || self.selected_device().is_some()
                 {
@@ -3733,12 +3760,20 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionInspect => {
-                if self.current_route() == Route::Devices {
-                    self.views.devices.inspector = !self.views.devices.inspector;
-                    // Hiding the pane cannot leave the keys pointed at it.
-                    if !self.views.devices.inspector {
-                        self.focus = Focus::Collection;
+                let shown = match self.current_route() {
+                    Route::Devices => {
+                        self.views.devices.inspector = !self.views.devices.inspector;
+                        self.views.devices.inspector
                     }
+                    Route::Users => {
+                        self.views.users.inspector = !self.views.users.inspector;
+                        self.views.users.inspector
+                    }
+                    _ => return Vec::new(),
+                };
+                // Hiding the pane cannot leave the keys pointed at it.
+                if !shown {
+                    self.focus = Focus::Collection;
                 }
                 Vec::new()
             }
@@ -10220,8 +10255,26 @@ impl App {
                 ActionId::MockCancellable,
                 ActionId::MockNonCancellable,
             ]
-        } else if self.source_mode == SourceMode::Local {
-            vec![
+        } else {
+            Vec::new()
+        };
+        actions.extend(self.local_actions_for_route());
+        actions.extend(self.phase_eight_resource_actions());
+        actions
+    }
+
+    /// The local client's actions, offered where their subject is on screen.
+    /// These used to be one list handed to every route that had no list of its
+    /// own, which is how `:credentials` came to offer `remove local account`
+    /// and how `open tailscale ssh` — which acts on the selected device — was
+    /// missing from `:devices` whenever an admin profile was configured.
+    fn local_actions_for_route(&self) -> Vec<ActionId> {
+        if self.source_mode != SourceMode::Local {
+            return Vec::new();
+        }
+        match self.current_route() {
+            // This machine: connecting it, its preferences, its accounts.
+            Route::Local => vec![
                 ActionId::LocalConnect,
                 ActionId::LocalDisconnect,
                 ActionId::LocalPreferencesEdit,
@@ -10232,26 +10285,21 @@ impl App {
                 ActionId::LocalAccountLogout,
                 ActionId::LocalAccountRemove,
                 ActionId::LocalSyspolicyReload,
+            ],
+            // Every one of these acts on the selected row: it pings it, looks
+            // it up, opens a session to it, or sends it a file.
+            Route::Devices => vec![
                 ActionId::LocalProbeConnection,
                 ActionId::LocalWhois,
                 ActionId::LocalSshOpen,
                 ActionId::LocalNcOpen,
-                ActionId::DiagnosticCopy,
-            ]
-        } else {
-            Vec::new()
-        };
-        // Taildrop acts on the selected device, so it is offered wherever
-        // devices are listed rather than only beside the local machine's
-        // actions.
-        if self.current_route() == Route::Devices && self.source_mode == SourceMode::Local {
-            actions.extend([
                 ActionId::DevicesTaildropSend,
                 ActionId::DevicesTaildropReceive,
-            ]);
+            ],
+            // The summary this route is showing is the thing being copied.
+            Route::Diagnostics => vec![ActionId::DiagnosticCopy],
+            _ => Vec::new(),
         }
-        actions.extend(self.phase_eight_resource_actions());
-        actions
     }
 
     pub fn contextual_copy_fields(&self) -> Vec<CopyField> {
@@ -10270,6 +10318,21 @@ impl App {
             } else {
                 Vec::new()
             };
+        }
+        if self.current_route() == Route::Users {
+            // The row is three facts and two of them are words already on
+            // screen; the ones worth pasting are the identifiers.
+            let Some(user) = self.selected_admin_user() else {
+                return Vec::new();
+            };
+            let mut fields = vec![CopyField::UserId];
+            if user.display_name.is_some() {
+                fields.push(CopyField::UserName);
+            }
+            if user.login_name.is_some() {
+                fields.push(CopyField::UserLogin);
+            }
+            return fields;
         }
         if self.current_route() != Route::Devices {
             return Vec::new();
@@ -12913,7 +12976,7 @@ impl App {
             move_bounded_index(self.admin_credential_selected, length, offset);
     }
 
-    fn selected_admin_user(&self) -> Option<&crate::domain::user::AdminUser> {
+    pub fn selected_admin_user(&self) -> Option<&crate::domain::user::AdminUser> {
         self.admin
             .users
             .snapshot
@@ -13318,6 +13381,25 @@ impl App {
             };
             return self.copy_text(value);
         }
+        if matches!(
+            field,
+            CopyField::UserId | CopyField::UserName | CopyField::UserLogin
+        ) {
+            let Some(user) = self.selected_admin_user() else {
+                return Vec::new();
+            };
+            let value = match field {
+                CopyField::UserName => user.display_name.clone(),
+                CopyField::UserLogin => user.login_name.clone(),
+                _ => Some(user.id.clone()),
+            };
+            // The menu only offers a field the API reported, so a missing one
+            // here means the selection moved: copy nothing rather than a lie.
+            let Some(value) = value else {
+                return Vec::new();
+            };
+            return self.copy_text(value);
+        }
         if field == CopyField::DnsName {
             let Some(value) = self.selected_dns_name() else {
                 return Vec::new();
@@ -13354,9 +13436,12 @@ impl App {
             | CopyField::Endpoint
             | CopyField::DiagnosticSummary
             | CopyField::Metrics => "not returned".to_owned(),
-            CopyField::ServiceUrl | CopyField::ServiceListener | CopyField::ServiceBackend => {
-                "not returned".to_owned()
-            }
+            CopyField::ServiceUrl
+            | CopyField::ServiceListener
+            | CopyField::ServiceBackend
+            | CopyField::UserId
+            | CopyField::UserName
+            | CopyField::UserLogin => "not returned".to_owned(),
         };
         self.copy_text(value)
     }
@@ -13418,10 +13503,15 @@ impl App {
         }
     }
 
-    /// Whether the side inspector shares the content pane. Only the devices
-    /// table can give it up; every other route's inspector is the route.
+    /// Whether the side inspector shares the content pane. The two table
+    /// routes hold it behind `i` — the table is what they are for; everywhere
+    /// else the inspector is the route.
     pub fn inspector_pane_visible(&self) -> bool {
-        self.current_route() != Route::Devices || self.views.devices.inspector
+        match self.current_route() {
+            Route::Devices => self.views.devices.inspector,
+            Route::Users => self.views.users.inspector,
+            _ => true,
+        }
     }
 
     pub fn selected_device(&self) -> Option<&Device> {
@@ -14798,6 +14888,9 @@ pub const fn copy_field_key(field: CopyField) -> char {
         CopyField::ServiceUrl => 'u',
         CopyField::ServiceListener => 'l',
         CopyField::ServiceBackend => 'b',
+        CopyField::UserId => 'i',
+        CopyField::UserName => 'n',
+        CopyField::UserLogin => 'l',
     }
 }
 

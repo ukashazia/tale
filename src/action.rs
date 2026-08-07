@@ -1309,9 +1309,10 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         ActionId::ServicesSectionNext | ActionId::ServicesSectionPrevious => {
             matches!(route, Route::Services)
         }
-        ActionId::CollectionWideColumns | ActionId::CollectionInspect => {
-            matches!(route, Route::Devices)
-        }
+        ActionId::CollectionWideColumns => matches!(route, Route::Devices),
+        // Both routes keep a table with a row worth describing, and both start
+        // with the pane closed.
+        ActionId::CollectionInspect => matches!(route, Route::Devices | Route::Users),
         // Diagnostics is one scrolling body: nothing to open into, no rows to
         // filter, no columns to order by.
         ActionId::CollectionOpen | ActionId::ViewFilter | ActionId::CollectionSort => {

@@ -44,6 +44,149 @@ fn mock_app() -> Option<App> {
         .map(App::new)
 }
 
+/// The same app the screenshots come from: a local client, and an admin
+/// profile alongside it.
+fn local_app(with_admin_profile: bool) -> Option<App> {
+    let root = std::env::temp_dir().join(format!(
+        "tale-actions-{}-{with_admin_profile}",
+        std::process::id()
+    ));
+    if std::fs::create_dir_all(&root).is_err() {
+        return None;
+    }
+    let config_path = root.join("config.toml");
+    if with_admin_profile
+        && std::fs::write(
+            &config_path,
+            "default_profile = \"audit\"\n[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\n",
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let cli = Cli {
+        command: None,
+        profile: None,
+        config: Some(if with_admin_profile {
+            config_path
+        } else {
+            root.join("missing.toml")
+        }),
+        view: None,
+        read_only: false,
+        no_local: false,
+        tailscale_path: Some(std::path::PathBuf::from("tailscale")),
+        tailscale_socket: None,
+        mock: false,
+    };
+    let environment = EnvironmentValues {
+        config_file: None,
+        profile: None,
+        access_token_present: false,
+        tailscale_path: None,
+        tailscale_socket: None,
+        no_color: true,
+    };
+    let path_environment = PathEnvironment {
+        platform: Platform::Unix,
+        current_dir: root.clone(),
+        xdg_config_home: Some(root.join("config")),
+        home: Some(root.join("home")),
+        xdg_state_home: Some(root.join("state")),
+        xdg_cache_home: Some(root.join("cache")),
+        appdata: None,
+        localappdata: None,
+    };
+    config::resolve(&cli, &environment, &path_environment)
+        .ok()
+        .map(App::new)
+}
+
+/// An action is offered where its subject is on screen. The local client's
+/// verbs were one list handed to every route that had none of its own, so
+/// `:credentials` offered `remove local account` — a key acting on something
+/// the route does not show.
+#[test]
+fn local_actions_are_offered_only_where_their_subject_is() {
+    let app = local_app(false);
+    assert!(app.is_some());
+    let Some(mut app) = app else {
+        return;
+    };
+
+    // A route about neither the machine nor a device gets neither set.
+    for route in [Route::Credentials, Route::Access, Route::Settings] {
+        app.set_route(route);
+        let actions = app.contextual_actions();
+        for id in [
+            ActionId::LocalConnect,
+            ActionId::LocalAccountRemove,
+            ActionId::LocalSshOpen,
+            ActionId::LocalProbeConnection,
+            ActionId::DiagnosticCopy,
+        ] {
+            assert!(
+                !actions.contains(&id),
+                "{route:?} still offers {id:?}, which acts on something it does not show"
+            );
+        }
+    }
+
+    // The machine's own route keeps the machine's verbs.
+    app.set_route(Route::Local);
+    let local = app.contextual_actions();
+    for id in [
+        ActionId::LocalConnect,
+        ActionId::LocalDisconnect,
+        ActionId::LocalPreferencesEdit,
+        ActionId::LocalAccountSwitch,
+        ActionId::LocalAccountRemove,
+        ActionId::LocalSyspolicyReload,
+    ] {
+        assert!(local.contains(&id), "the local route lost {id:?}");
+    }
+    assert!(
+        !local.contains(&ActionId::LocalSshOpen),
+        "a session to the selected device is not an action on this machine"
+    );
+
+    // Everything that acts on a selected row lives where the rows are.
+    app.set_route(Route::Devices);
+    let devices = app.contextual_actions();
+    for id in [
+        ActionId::LocalProbeConnection,
+        ActionId::LocalWhois,
+        ActionId::LocalSshOpen,
+        ActionId::LocalNcOpen,
+        ActionId::DevicesTaildropSend,
+        ActionId::DevicesTaildropReceive,
+    ] {
+        assert!(devices.contains(&id), "the devices route lost {id:?}");
+    }
+    assert!(!devices.contains(&ActionId::LocalConnect));
+
+    app.set_route(Route::Diagnostics);
+    assert!(app.contextual_actions().contains(&ActionId::DiagnosticCopy));
+}
+
+/// An admin profile adds the tailnet's verbs to the devices menu; it does not
+/// take away the ones the local client offers on the same row. Both sets share
+/// one menu, so no sequence may shadow another.
+#[test]
+fn the_devices_menu_carries_admin_and_local_actions_together() {
+    let Some(mut app) = local_app(true) else {
+        return;
+    };
+    // Without both halves the test proves nothing.
+    assert!(app.admin.profile.is_some(), "the fixture has no profile");
+    app.set_route(Route::Devices);
+    let actions = app.contextual_actions();
+    assert!(actions.contains(&ActionId::AdminDeviceRename));
+    assert!(actions.contains(&ActionId::LocalSshOpen));
+    assert!(actions.contains(&ActionId::DevicesTaildropSend));
+    assert!(action::validate_transient_sequences(&actions).is_ok());
+}
+
 #[test]
 fn every_required_action_is_registered() {
     let registered: Vec<_> = action::phase_one_actions()

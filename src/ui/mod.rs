@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Route::Overview => views::overview::render(frame, app, layout.content),
         Route::Local => views::local::render(frame, app, layout.content),
         Route::Devices => views::devices::render(frame, app, layout.content, layout.inspector),
-        Route::Users => views::users::render(frame, app, layout.content),
+        Route::Users => views::users::render(frame, app, layout.content, layout.inspector),
         Route::Routes => views::routes::render_admin(frame, app, layout.content),
         Route::Dns => views::dns::render(frame, app, layout.content),
         Route::Access => views::access::render(frame, app, layout.content),

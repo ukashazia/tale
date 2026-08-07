@@ -70,11 +70,12 @@ Benign actions get no warning at all rather than a restatement of themselves.
 - **Never print key hints inside a widget.** The footer and `?` own that. Two
   copies drift, and the in-box copy is the one that ends up lying: the services
   bar said `[/] section` for months while the real keys were `H`/`L`.
-- **A key that shows a pane also hides it.** `i` brings the devices inspector in
-  and takes it away again; it is not `Enter`, which replaces the table with a
-  full-width detail view. Showing and hiding are one key, not two states of a
-  key that only ever opens. The pane starts closed: the table is what the route
-  is for, and the inspector repeats a row already on screen.
+- **A key that shows a pane also hides it.** `i` brings the inspector in and
+  takes it away again on `:devices` and `:users` alike; it is not `Enter`, which
+  replaces the table with a full-width detail view. Showing and hiding are one
+  key, not two states of a key that only ever opens. The pane starts closed: the
+  table is what the route is for, and the inspector repeats a row already on
+  screen.
 - **A key is offered only where it does something.** `applies_to_route` is the
   single filter for both the footer and contextual help. `w columns` must not
   appear on a screen with no columns; the route's own key must not be sorted
@@ -169,6 +170,15 @@ action on `:devices`, where the selected row is already the target.
 
 The same test again: a tab whose rows duplicate another route's collection is
 not a section, it is that collection with one extra verb.
+
+**An action belongs to the route that shows its subject.** The local client's
+verbs were one list handed to every route that had none of its own, so
+`:credentials` offered `remove local account` and `open tailscale ssh` — the
+second of which acts on whichever row `:devices` had selected, out of sight.
+Split by subject instead: the machine's verbs on `:local`, the ones that act on
+the selected row on `:devices`, the summary's on `:diagnostics`. A route with
+nothing of its own then offers nothing of its own, which is the honest answer.
+A menu is not a place to park a verb that fits nowhere else.
 
 ## 7. Public exposure is the one dangerous state
 

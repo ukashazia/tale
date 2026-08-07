@@ -17,6 +17,34 @@ console and not an endorsement by Tailscale Inc.
 
 ## Public provenance
 
+### Brand Toolkit, October 2025 — authoritative for numeric values
+
+`Tailscale_BrandToolkit_10-2025.pdf`, distributed in Tailscale's public media
+kit, publishes the canonical palette: seven grays (`Gray0` `#FAF9F8` through
+`Gray900` `#1F1E1E`) and seven steps each of blue, green, red, orange, and
+purple. Page 6 directs that the 400-range values be used as the primary accent
+colors.
+
+This supersedes the CSS artifact below as the numeric reference. The two
+disagree: the compiled site CSS exposes a finer scale whose values — `#181717`,
+`#232222`, `#ADC7FC`, `#85D996`, `#EFC078`, `#FFB1AB`, `#E3C3FA` — have no
+equivalent in the toolkit. The toolkit is dated, distributable, and defines the
+brand; the CSS is an implementation detail of one property that can drift.
+Tokens now take toolkit values wherever the toolkit publishes a step.
+
+Tale departs from the 400-range instruction for most accent roles, because that
+tier is sized for large display type and fills. No 400 value clears 4.5:1 on
+both canvases as one-cell foreground text, though all of them clear the 3:1
+large-text gate. `Blue400` `#5A82DE` is kept as the selection fill, where it is
+a background carrying `Gray900` ink at 4.50:1. The measured basis for the
+departure is tabulated in the token ledger.
+
+The toolkit's typography (Inter, MD IO), logo geometry, shape language, and
+layout grids do not apply: the typeface is the user's terminal font, and Tale
+ships its own ASCII wordmark rather than any Tailscale mark.
+
+### Site CSS, retrieved 2026-08-05 — retained for semantic rationale
+
 The following official public material was retrieved on 2026-08-05:
 
 - Tailscale, [Heart of dark mode: done, and still in progress](https://tailscale.com/blog/heart-of-dark-mode), published 2024-08-29. It documents the public design-system rationale for semantic text classes, focus outlines, two principal backgrounds, disabled treatment, raised-surface borders, and separate light/dark mappings.
@@ -34,10 +62,17 @@ Directly observed public facts include `gray-1000` `#181717`, `gray-800`
 `green-400` `#09825D`, purple references `#E3C3FA`/`#8052A1`, orange
 references `#EFC078`/`#BB5504`, and dark red `#FFB1AB`.
 
-The Tale role assignments, `#585757` dark normal border, and `#B22D30` light
-danger mapping are Tale-specific choices from the Specification 13 proposal.
-They are not represented as copied Tailscale tokens. The complete distinction
-is recorded in `docs/design/theme-token-ledger.md`.
+These CSS values are no longer the numeric reference; they are retained here as
+the retrieval record and because the blog post remains the public rationale for
+the semantic structure. Where a CSS value and a toolkit value describe the same
+token, the toolkit value is used.
+
+The Tale role assignments remain Tale-specific choices from the Specification 13
+proposal and are not represented as copied Tailscale tokens. Two surface values,
+`#2A2929` and `#353434`, are interpolated: the toolkit publishes no step between
+`Gray900` and `Gray600`, and Tale needs two elevation levels across that gap.
+`selection-ink` is a Tale role name carrying the toolkit's `Gray900`. The
+complete distinction is recorded in `docs/design/theme-token-ledger.md`.
 
 ## Contrast and projection
 

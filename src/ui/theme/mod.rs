@@ -85,7 +85,7 @@ impl Theme {
                 .bg(Color::Reset)
                 .add_modifier(role.no_color_modifier());
         }
-        let spec = role_spec(role, self.id);
+        let spec = role_spec(role);
         let mut style = Style::default().add_modifier(spec.modifier);
         if let Some(fg) = spec.fg {
             style = style.fg(self.project(fg));
@@ -194,6 +194,9 @@ enum TokenKind {
     Disabled,
     BorderSubtle,
     Border,
+    /// Text that sits on the selection fill. Gray900 in both themes, because
+    /// the fill is the same accent in both and only dark ink clears 4.5:1 on it.
+    SelectionInk,
     Focus,
     FocusStrong,
     Healthy,
@@ -223,43 +226,53 @@ impl TokenKind {
     fn value(self, id: ThemeId) -> Token {
         let dark = id != ThemeId::TailscaleLight;
         match (self, dark) {
-            (Self::Canvas, true) => Token::new((24, 23, 23), 234, Color::Black),
-            (Self::Surface, true) => Token::new((35, 34, 34), 235, Color::Black),
-            (Self::Raised, true) => Token::new((46, 45, 45), 236, Color::DarkGray),
-            (Self::Inset | Self::Backdrop, true) => Token::new((24, 23, 23), 234, Color::Black),
-            (Self::Primary, true) => Token::new((249, 247, 246), 255, Color::White),
+            // Gray900. The brand toolkit names this as the dark background.
+            (Self::Canvas | Self::Inset | Self::Backdrop, true) => {
+                Token::new((31, 30, 30), 234, Color::Black)
+            }
+            // The toolkit has no step between Gray900 and Gray600, so the two
+            // elevation surfaces are interpolated across that gap.
+            (Self::Surface, true) => Token::new((42, 41, 41), 235, Color::Black),
+            (Self::Raised | Self::BorderSubtle, true) => {
+                Token::new((53, 52, 52), 236, Color::DarkGray)
+            }
+            (Self::Primary, true) => Token::new((250, 249, 248), 231, Color::White),
             (Self::Muted, true) => Token::new((175, 172, 171), 145, Color::Gray),
             (Self::Disabled, true) => Token::new((112, 110, 109), 242, Color::DarkGray),
-            (Self::BorderSubtle, true) => Token::new((46, 45, 45), 236, Color::DarkGray),
-            (Self::Border, true) => Token::new((88, 87, 87), 240, Color::Gray),
-            (Self::Focus, true) => Token::new((173, 199, 252), 153, Color::Cyan),
-            (Self::FocusStrong, true) => Token::new((133, 170, 245), 111, Color::LightBlue),
-            (Self::Healthy, true) => Token::new((133, 217, 150), 114, Color::Green),
-            (Self::Info, true) => Token::new((173, 199, 252), 153, Color::Cyan),
-            (Self::Admin, true) => Token::new((227, 195, 250), 183, Color::Magenta),
-            (Self::Warning, true) => Token::new((239, 192, 120), 222, Color::Yellow),
-            (Self::Danger, true) => Token::new((255, 177, 171), 217, Color::Red),
-            (Self::Canvas, false) => Token::new((249, 247, 246), 255, Color::White),
+            (Self::Border, true) => Token::new((68, 67, 66), 238, Color::Gray),
+            (Self::SelectionInk, true) => Token::new((31, 30, 30), 234, Color::Black),
+            (Self::Focus | Self::Info, true) => Token::new((133, 170, 245), 111, Color::LightBlue),
+            (Self::FocusStrong, true) => Token::new((90, 130, 222), 68, Color::Blue),
+            (Self::Healthy, true) => Token::new((51, 194, 127), 78, Color::Green),
+            (Self::Admin, true) => Token::new((190, 143, 225), 140, Color::Magenta),
+            (Self::Warning, true) => Token::new((229, 153, 62), 215, Color::Yellow),
+            (Self::Danger, true) => Token::new((246, 143, 135), 210, Color::Red),
+            // 255 rather than the nearer 231, so canvas stays under surface.
+            (Self::Canvas, false) => Token::new((250, 249, 248), 255, Color::White),
             (Self::Surface | Self::Raised, false) => Token::new((255, 255, 255), 231, Color::White),
-            (Self::Inset, false) => Token::new((238, 235, 234), 255, Color::Gray),
-            (Self::Backdrop, false) => Token::new((218, 214, 213), 252, Color::Gray),
-            (Self::Primary, false) => Token::new((24, 23, 23), 234, Color::Black),
+            (Self::Inset | Self::BorderSubtle, false) => {
+                Token::new((238, 235, 234), 255, Color::Gray)
+            }
+            (Self::Backdrop, false) => Token::new((218, 214, 213), 188, Color::Gray),
+            (Self::Border, false) => Token::new((218, 214, 213), 188, Color::DarkGray),
+            (Self::Primary | Self::SelectionInk, false) => {
+                Token::new((31, 30, 30), 234, Color::Black)
+            }
             (Self::Muted, false) => Token::new((112, 110, 109), 242, Color::DarkGray),
             (Self::Disabled, false) => Token::new((175, 172, 171), 145, Color::Gray),
-            (Self::BorderSubtle, false) => Token::new((238, 235, 234), 255, Color::Gray),
-            (Self::Border, false) => Token::new((218, 214, 213), 252, Color::DarkGray),
             (Self::Focus, false) => Token::new((63, 93, 179), 61, Color::Blue),
-            (Self::FocusStrong, false) => Token::new((50, 73, 148), 60, Color::Blue),
+            (Self::FocusStrong, false) => Token::new((90, 130, 222), 68, Color::LightBlue),
             (Self::Healthy, false) => Token::new((9, 130, 93), 29, Color::Green),
+            // 68 rather than the nearer 61, which focus already holds.
             (Self::Info, false) => Token::new((75, 112, 204), 68, Color::Blue),
             (Self::Admin, false) => Token::new((128, 82, 161), 97, Color::Magenta),
             (Self::Warning, false) => Token::new((187, 85, 4), 130, Color::Yellow),
-            (Self::Danger, false) => Token::new((178, 45, 48), 124, Color::Red),
+            (Self::Danger, false) => Token::new((178, 45, 48), 88, Color::Red),
         }
     }
 }
 
-fn role_spec(role: StyleRole, id: ThemeId) -> RoleSpec {
+fn role_spec(role: StyleRole) -> RoleSpec {
     use StyleRole as R;
     use TokenKind as T;
     let primary = T::Primary;
@@ -290,12 +303,12 @@ fn role_spec(role: StyleRole, id: ThemeId) -> RoleSpec {
         R::SyntaxField => RoleSpec::fg(T::Focus).modified(Modifier::BOLD),
         R::SyntaxOperator => RoleSpec::fg(T::Muted),
         R::SyntaxValue => RoleSpec::fg(T::Admin),
-        R::CompletionSelected | R::Selection => if id == ThemeId::TailscaleLight {
-            RoleSpec::bg(T::Primary, T::Focus)
-        } else {
-            RoleSpec::bg(T::Primary, T::FocusStrong)
+        // One rule for both themes: the fill is the brand's core accent tone and
+        // only dark ink clears 4.5:1 on it. The old rule put near-white primary
+        // on a light-blue fill, which measured 2.17:1.
+        R::CompletionSelected | R::Selection => {
+            RoleSpec::bg(T::SelectionInk, T::FocusStrong).modified(Modifier::BOLD)
         }
-        .modified(Modifier::BOLD),
         R::SelectionInactive => RoleSpec::bg(primary, T::Raised).modified(Modifier::UNDERLINED),
         R::StateHealthy | R::TaskSucceeded | R::DiffAdded => {
             RoleSpec::fg(T::Healthy).modified(Modifier::BOLD)
@@ -387,6 +400,19 @@ mod tests {
             ] {
                 assert!(contrast(boundary, TokenKind::Surface, id) >= 3.0);
             }
+        }
+    }
+
+    /// The selection fill is the one surface the surface gates above never
+    /// covered, which is how it shipped at 2.17:1.
+    #[test]
+    fn selection_ink_clears_the_small_text_gate_on_the_selection_fill() {
+        for id in ThemeId::ALL {
+            let measured = contrast(TokenKind::SelectionInk, TokenKind::FocusStrong, id);
+            assert!(
+                measured >= 4.5,
+                "selection ink on fill for {id:?}: {measured}"
+            );
         }
     }
 
