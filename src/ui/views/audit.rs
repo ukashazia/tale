@@ -1,9 +1,8 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
-use crate::ui::theme;
+use crate::ui::components::panel;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let lines = app.admin.activity.snapshot.as_ref().map_or_else(
@@ -64,15 +63,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             lines
         },
     );
-    frame.render_widget(
-        Paragraph::new(lines.join("\n"))
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("audit investigation · redacted"),
-            ),
+    panel::render(
+        frame,
+        app,
         area,
+        "audit investigation · redacted",
+        lines.join("\n"),
     );
 }
 

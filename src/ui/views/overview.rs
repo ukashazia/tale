@@ -1,11 +1,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::domain::device::ConnectionPath;
-use crate::ui::theme;
+use crate::ui::components::panel;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if app.admin.profile.is_some() {
@@ -50,12 +49,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         lines.push(Line::from(format!("tasks        {running} running")));
     }
     append_health(&mut lines, app);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(Block::default().borders(Borders::ALL).title("overview")),
-        area,
-    );
+    panel::render(frame, app, area, "overview", lines);
 }
 
 fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -137,12 +131,7 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
     lines.push(Line::from(
         "Use :devices, :users, :routes, :dns, :access, or :credentials for read-only detail.",
     ));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(Block::default().borders(Borders::ALL).title("overview")),
-        area,
-    );
+    panel::render(frame, app, area, "overview", lines);
 }
 
 fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -243,12 +232,7 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from("Use :local, :devices, :dns, or a → local diagnostics."),
     ];
     append_health(&mut lines, app);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(Block::default().borders(Borders::ALL).title("overview")),
-        area,
-    );
+    panel::render(frame, app, area, "overview", lines);
 }
 
 fn append_health(lines: &mut Vec<Line<'static>>, app: &App) {

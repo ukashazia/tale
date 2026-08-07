@@ -1,11 +1,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::domain::route::{overlapping_routes, parse_route_set};
-use crate::ui::theme;
+use crate::ui::components::panel;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let preferences = &app.local_preferences;
@@ -63,16 +62,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )));
         }
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("advertisements"),
-            ),
-        area,
-    );
+    panel::render(frame, app, area, "advertisements", lines);
 }
 
 pub fn render_admin(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -114,26 +104,15 @@ pub fn render_admin(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     }
     if observations.is_empty() && resource.snapshot.is_none() {
-        lines.push(Line::from(
-            resource
-                .error
-                .as_deref()
-                .map_or("route details have not been loaded", |value| value),
-        ));
+        lines.push(Line::from(resource.error.as_deref().map_or_else(
+            || "route details have not been loaded".to_owned(),
+            str::to_owned,
+        )));
     }
     lines.push(Line::from(
         "Advertised and enabled routes are separate server observations; no local approval is inferred.",
     ));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("routes · admin"),
-            ),
-        area,
-    );
+    panel::render(frame, app, area, "routes · admin", lines);
 }
 
 fn route_role(route: &crate::admin::routes::AdminRouteObservation) -> &'static str {

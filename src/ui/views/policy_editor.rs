@@ -1,9 +1,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::App;
+use crate::ui::components::panel;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -174,14 +175,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         };
         Line::from(Span::styled(line, app.theme.style(role)))
     });
-    frame.render_widget(
-        Paragraph::new(lines.collect::<Vec<_>>())
-            .style(app.theme.style(theme::StyleRole::SurfaceInset))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("policy workflow · server authoritative"),
-            ),
+    panel::render(
+        frame,
+        app,
         area,
+        "policy workflow · server authoritative",
+        lines.collect::<Vec<_>>(),
     );
 }

@@ -64,9 +64,10 @@ use crate::domain::saved_view::{
 };
 use crate::domain::secret_result::{SecretInput, SecretMetadata, SecretResult};
 use crate::domain::service::{
-    Backend, CertificateVerification, Exposure, Listener, LocalServicesSnapshot, PathMount, Port,
-    ProxyProtocol, ServiceActionRequest, ServiceCapabilities, ServiceConflictKey,
-    ServiceFailureKind, ServiceMapping, ServiceResourceStatus, ServiceSection, ServiceTaskData,
+    Backend, CertificateVerification, Exposure, FunnelStatus, Listener, LocalServicesSnapshot,
+    PathMount, Port, ProxyProtocol, ServeStatus, ServiceActionRequest, ServiceCapabilities,
+    ServiceConflictKey, ServiceFailureKind, ServiceMapping, ServiceResourceStatus, ServiceSection,
+    ServiceSortField, ServiceTaskData,
 };
 use crate::domain::source::{
     LocalCapabilities, LocalCliState, LocalDaemonState, LocalExecutable, LocalFailure,
@@ -134,6 +135,7 @@ pub enum Route {
     Activity,
     Settings,
     Services,
+    Diagnostics,
 }
 
 impl Route {
@@ -150,6 +152,7 @@ impl Route {
             Self::Activity => "activity",
             Self::Settings => "settings",
             Self::Services => "services",
+            Self::Diagnostics => "diagnostics",
         }
     }
 
@@ -166,6 +169,7 @@ impl Route {
             "activity" => Some(Self::Activity),
             "settings" => Some(Self::Settings),
             "services" => Some(Self::Services),
+            "diagnostics" => Some(Self::Diagnostics),
             _ => None,
         }
     }
@@ -292,7 +296,7 @@ pub enum TransientKind {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ChoiceOutcome {
     Sort(SortSpec),
-    ServiceSection(ServiceSection),
+    ServiceSort(ServiceSortSpec),
     Theme(ThemeId),
     Account {
         action_id: ActionId,
@@ -534,11 +538,161 @@ impl OperatorFormState {
     }
 }
 
+/// What a form field accepts. The kind decides how it is edited, so the user
+/// never has to know a separator or spell out a value the field already knows.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum FieldKind {
+    /// Free text. `hint` is shown in place of an empty value.
+    Text { hint: &'static str },
+    /// One of a fixed set, cycled with Left and Right.
+    Choice { options: &'static [&'static str] },
+    /// Yes or no, toggled with Space.
+    Toggle,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FormField {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// One line explaining the field, shown while it is selected.
+    pub help: &'static str,
+    pub kind: FieldKind,
+    pub value: String,
+}
+
+impl FormField {
+    pub fn text(
+        key: &'static str,
+        label: &'static str,
+        help: &'static str,
+        hint: &'static str,
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            key,
+            label,
+            help,
+            kind: FieldKind::Text { hint },
+            value: value.into(),
+        }
+    }
+
+    pub fn choice(
+        key: &'static str,
+        label: &'static str,
+        help: &'static str,
+        options: &'static [&'static str],
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            key,
+            label,
+            help,
+            kind: FieldKind::Choice { options },
+            value: value.into(),
+        }
+    }
+
+    pub fn toggle(key: &'static str, label: &'static str, help: &'static str, value: bool) -> Self {
+        Self {
+            key,
+            label,
+            help,
+            kind: FieldKind::Toggle,
+            value: if value { "yes" } else { "no" }.to_owned(),
+        }
+    }
+
+    /// Moves a choice or toggle to its next value; text fields ignore this.
+    fn cycle(&mut self, forward: bool) {
+        let options: &[&str] = match &self.kind {
+            FieldKind::Choice { options } => options,
+            FieldKind::Toggle => &["no", "yes"],
+            FieldKind::Text { .. } => return,
+        };
+        if options.is_empty() {
+            return;
+        }
+        let current = options
+            .iter()
+            .position(|option| *option == self.value)
+            .unwrap_or(0);
+        let length = options.len();
+        let next = if forward {
+            current.saturating_add(1) % length
+        } else {
+            current.checked_sub(1).unwrap_or(length.saturating_sub(1))
+        };
+        self.value = options.get(next).map_or("", |option| option).to_owned();
+    }
+
+    const fn is_text(&self) -> bool {
+        matches!(self.kind, FieldKind::Text { .. })
+    }
+}
+
+/// A form the user fills in field by field. Anything already known — the row
+/// they selected, the machine they are on — is stated, not asked for.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ServiceFormState {
     pub action_id: ActionId,
-    pub input: String,
+    pub title: &'static str,
+    /// Context the form acts on but does not ask for, as label and value.
+    pub subject: Vec<(&'static str, String)>,
+    pub fields: Vec<FormField>,
+    pub selected: usize,
+    /// The value held before editing began, restored if the edit is abandoned.
+    pub draft: Option<String>,
     pub error: Option<String>,
+}
+
+impl ServiceFormState {
+    fn selected_field_mut(&mut self) -> Option<&mut FormField> {
+        self.fields.get_mut(self.selected)
+    }
+
+    pub const fn is_editing(&self) -> bool {
+        self.draft.is_some()
+    }
+
+    /// The row past the last field submits the form, so Enter means the same
+    /// thing everywhere: act on what is selected.
+    pub fn on_submit_row(&self) -> bool {
+        self.selected >= self.fields.len()
+    }
+
+    fn begin_edit(&mut self) {
+        self.draft = self
+            .fields
+            .get(self.selected)
+            .map(|field| field.value.clone());
+    }
+
+    fn commit_edit(&mut self) {
+        self.draft = None;
+    }
+
+    fn abandon_edit(&mut self) {
+        if let Some(previous) = self.draft.take()
+            && let Some(field) = self.fields.get_mut(self.selected)
+        {
+            field.value = previous;
+        }
+    }
+
+    fn move_selection(&mut self, offset: isize) {
+        // One past the fields is the submit row.
+        let length = self.fields.len().saturating_add(1);
+        let step = offset.rem_euclid(length as isize).unsigned_abs();
+        self.selected = self.selected.saturating_add(step) % length;
+    }
+
+    pub fn value(&self, key: &str) -> &str {
+        self.fields
+            .iter()
+            .find(|field| field.key == key)
+            .map_or("", |field| field.value.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -578,6 +732,7 @@ pub enum CopyField {
     DeviceId,
     DisplayName,
     Hostname,
+    DnsName,
     Owner,
     Addresses,
     Tags,
@@ -585,14 +740,62 @@ pub enum CopyField {
     Endpoint,
     DiagnosticSummary,
     Metrics,
+    ServiceUrl,
+    ServiceListener,
+    ServiceBackend,
+}
+
+/// The headings the copy menu offers, in the order it shows them.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CopyGroup {
+    Service,
+    Identity,
+    Network,
+    Diagnostics,
+}
+
+impl CopyGroup {
+    pub const ALL: [Self; 4] = [
+        Self::Service,
+        Self::Identity,
+        Self::Network,
+        Self::Diagnostics,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Service => "Service",
+            Self::Identity => "Identity",
+            Self::Network => "Network",
+            Self::Diagnostics => "Diagnostics",
+        }
+    }
 }
 
 impl CopyField {
+    /// Which heading this field appears under. A total match rather than a
+    /// list of members held beside the menu: the list version silently dropped
+    /// any field nobody remembered to add to it.
+    pub const fn group(self) -> CopyGroup {
+        match self {
+            Self::ServiceUrl | Self::ServiceListener | Self::ServiceBackend => CopyGroup::Service,
+            Self::DeviceId
+            | Self::DisplayName
+            | Self::Hostname
+            | Self::DnsName
+            | Self::Owner
+            | Self::Tags => CopyGroup::Identity,
+            Self::Addresses | Self::PublicKey | Self::Endpoint => CopyGroup::Network,
+            Self::DiagnosticSummary | Self::Metrics => CopyGroup::Diagnostics,
+        }
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::DeviceId => "id",
             Self::DisplayName => "name",
             Self::Hostname => "hostname",
+            Self::DnsName => "DNS name",
             Self::Owner => "owner",
             Self::Addresses => "addresses",
             Self::Tags => "tags",
@@ -600,6 +803,9 @@ impl CopyField {
             Self::Endpoint => "endpoint",
             Self::DiagnosticSummary => "diagnostic summary",
             Self::Metrics => "metrics",
+            Self::ServiceUrl => "url",
+            Self::ServiceListener => "listener",
+            Self::ServiceBackend => "backend",
         }
     }
 }
@@ -745,6 +951,11 @@ pub struct DeviceViewState {
     pub sort: SortSpec,
     pub sort_terms: Vec<SortSpec>,
     pub wide_columns: bool,
+    /// Whether the side inspector shares the pane with the table. Off by
+    /// default: the table is what the route is for, and the inspector repeats
+    /// a row it is already showing. `i` brings it in; it says nothing about
+    /// focus.
+    pub inspector: bool,
     pub columns: Vec<String>,
 }
 
@@ -758,6 +969,7 @@ impl Default for DeviceViewState {
             sort: SortSpec::default(),
             sort_terms: vec![SortSpec::default()],
             wide_columns: false,
+            inspector: false,
             columns: Vec::new(),
         }
     }
@@ -785,6 +997,7 @@ struct DeviceVisibleCache {
 pub struct Views {
     pub devices: DeviceViewState,
     pub services: ServiceViewState,
+    pub diagnostics: DiagnosticsViewState,
 }
 
 #[derive(Debug, Clone)]
@@ -792,6 +1005,9 @@ pub struct ServiceViewState {
     pub section: ServiceSection,
     pub selected: usize,
     pub scroll: usize,
+    pub filter_draft: String,
+    pub applied_filter: FilterExpression,
+    pub sort: ServiceSortSpec,
 }
 
 impl Default for ServiceViewState {
@@ -800,8 +1016,33 @@ impl Default for ServiceViewState {
             section: ServiceSection::Serve,
             selected: 0,
             scroll: 0,
+            filter_draft: String::new(),
+            applied_filter: FilterExpression::empty(),
+            sort: ServiceSortSpec::default(),
         }
     }
+}
+
+/// How the mapping table is ordered. Exposure first, so the public rows — the
+/// ones that carry risk — sit together at a predictable end of the list.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct ServiceSortSpec {
+    pub field: ServiceSortField,
+    pub direction: SortDirection,
+}
+
+impl Default for ServiceSortSpec {
+    fn default() -> Self {
+        Self {
+            field: ServiceSortField::Exposure,
+            direction: SortDirection::Ascending,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiagnosticsViewState {
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -975,6 +1216,7 @@ impl App {
             views: Views {
                 devices: DeviceViewState::default(),
                 services: ServiceViewState::default(),
+                diagnostics: DiagnosticsViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
             admin,
@@ -1018,7 +1260,11 @@ impl App {
             local_cli_state,
             local_executable: None,
             local_capabilities: LocalCapabilities::default(),
-            services_snapshot: LocalServicesSnapshot::new(),
+            services_snapshot: if source_mode == SourceMode::Mock {
+                mock_services_snapshot()
+            } else {
+                LocalServicesSnapshot::new()
+            },
             alpha_local_features: false,
             certificate_verification: None,
             service_locks: Vec::new(),
@@ -1573,8 +1819,8 @@ impl App {
                     Err(detail) => self.runtime_error = Some(detail),
                 }
             }
-            CredentialEvent::ClipboardTextCopied { label, result } => match result {
-                Ok(()) => self.copied_value = Some(label),
+            CredentialEvent::ClipboardTextCopied { text, result } => match result {
+                Ok(()) => self.copied_value = Some(text),
                 Err(detail) => self.runtime_error = Some(detail),
             },
         }
@@ -1643,7 +1889,9 @@ impl App {
             {
                 let context = self.action_context();
                 let mut x = layout.footer.x;
-                for hint in action::footer_actions(context, layout.footer.width) {
+                for hint in
+                    action::footer_actions(context, self.current_route(), layout.footer.width)
+                {
                     let end = x.saturating_add(
                         u16::try_from(hint.width()).map_or(u16::MAX, |value| value),
                     );
@@ -1781,17 +2029,21 @@ impl App {
         Vec::new()
     }
 
-    fn action_context(&self) -> ActionContext {
+    /// Which keys are live right now. This is the single answer: key dispatch,
+    /// the footer, and contextual help all read it, so they cannot disagree.
+    pub fn action_context(&self) -> ActionContext {
         match self.current_route() {
             Route::Activity => ActionContext::Activity,
-            Route::Devices | Route::Services if self.focus == Focus::Inspector => {
+            Route::Devices | Route::Services if matches!(self.focus, Focus::Inspector) => {
                 ActionContext::Detail
             }
             Route::Devices
             | Route::Users
             | Route::Routes
             | Route::Credentials
-            | Route::Services => ActionContext::Collection,
+            | Route::Services
+            // Metrics is a long text body, so the movement keys scroll it.
+            | Route::Diagnostics => ActionContext::Collection,
             _ => ActionContext::Root,
         }
     }
@@ -2045,8 +2297,13 @@ impl App {
                 state.error = None;
             }
             Overlay::ServiceForm(state) => {
-                state.input.push_str(text);
                 state.error = None;
+                if state.is_editing()
+                    && let Some(field) = state.selected_field_mut()
+                    && field.is_text()
+                {
+                    field.value.push_str(text);
+                }
             }
             Overlay::HandoffInput(state) => {
                 state.input.push_str(text);
@@ -2099,15 +2356,7 @@ impl App {
             return Vec::new();
         }
 
-        let context = match self.current_route() {
-            Route::Activity => ActionContext::Activity,
-            Route::Devices if self.focus == Focus::Inspector => ActionContext::Detail,
-            Route::Devices => ActionContext::Collection,
-            Route::Users | Route::Routes | Route::Credentials => ActionContext::Collection,
-            Route::Services if self.focus == Focus::Inspector => ActionContext::Detail,
-            Route::Services => ActionContext::Collection,
-            _ => ActionContext::Root,
-        };
+        let context = self.action_context();
         let Some(action_id) = action::action_for_key(key, context) else {
             return Vec::new();
         };
@@ -2156,6 +2405,11 @@ impl App {
                 if self.current_route() == Route::Activity {
                     self.task_filter = restoration.task_filter;
                     self.tasks.selected = restoration.task_selection;
+                } else if self.current_route() == Route::Services {
+                    self.views.services.filter_draft = restoration.input;
+                    self.views.services.applied_filter = restoration.expression;
+                    self.views.services.selected = 0;
+                    self.views.services.scroll = 0;
                 } else {
                     self.views.devices.filter_draft = restoration.input;
                     self.views.devices.applied_filter = restoration.expression;
@@ -2288,7 +2542,7 @@ impl App {
                 // Inside the address level a digit picks one address.
                 if prefix == Some(ADDRESS_PREFIX) {
                     if character == ADDRESS_PREFIX {
-                        let effects = self.copy_text("All addresses", addresses.join("\n"));
+                        let effects = self.copy_text(addresses.join("\n"));
                         self.interaction = InteractionMode::Normal;
                         return effects;
                     }
@@ -2299,7 +2553,7 @@ impl App {
                         && let Some(address) = addresses.get(index)
                     {
                         let address = address.clone();
-                        let effects = self.copy_text("Address", address);
+                        let effects = self.copy_text(address);
                         self.interaction = InteractionMode::Normal;
                         return effects;
                     }
@@ -2370,9 +2624,16 @@ impl App {
         let parsed = filter::parse(&input, &self.filter_schema());
         match parsed {
             Ok(expression) => {
-                self.views.devices.filter_draft = input;
-                self.views.devices.applied_filter = expression;
-                self.reconcile_selection(None);
+                if self.current_route() == Route::Services {
+                    self.views.services.filter_draft = input;
+                    self.views.services.applied_filter = expression;
+                    self.views.services.selected = 0;
+                    self.views.services.scroll = 0;
+                } else {
+                    self.views.devices.filter_draft = input;
+                    self.views.devices.applied_filter = expression;
+                    self.reconcile_selection(None);
+                }
                 if let InteractionMode::FilterLine(state) = &mut self.interaction {
                     state.error = None;
                     state.generation = generation;
@@ -2407,6 +2668,13 @@ impl App {
     pub fn filter_schema(&self) -> FilterSchema {
         match self.current_route() {
             Route::Activity => filter::activity_schema(),
+            Route::Services => match self.views.services.section {
+                ServiceSection::Serve => filter::service_schema(),
+                // The other sections are short lists of names; a query language
+                // would be more machinery than they have rows.
+                _ => filter::empty_schema(),
+            },
+            Route::Diagnostics => filter::empty_schema(),
             _ => filter::device_schema(),
         }
     }
@@ -2492,6 +2760,25 @@ impl App {
     /// Deduplicated, deterministically ordered values already present in the snapshot.
     fn snapshot_values(&self, field: FilterField) -> Vec<String> {
         let mut values = BTreeSet::new();
+        // Mapping fields draw their suggestions from the mappings on screen,
+        // not from the device list.
+        if matches!(
+            field,
+            FilterField::Port | FilterField::Mount | FilterField::Backend
+        ) {
+            for mapping in self.services_snapshot.mappings() {
+                let _ = match field {
+                    FilterField::Port => values.insert(mapping.listener.port().to_string()),
+                    FilterField::Mount => values.insert(mapping.mount.as_path().to_owned()),
+                    _ => values.insert(mapping.backend.argument()),
+                };
+            }
+            return values
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .take(SNAPSHOT_VALUE_LIMIT)
+                .collect();
+        }
         for device in &self.devices_resource.snapshot {
             match field {
                 FilterField::Id => {
@@ -2579,26 +2866,66 @@ impl App {
         let overlay = self.overlays.last_mut()?;
         match overlay {
             Overlay::ServiceForm(state) => {
+                // Two modes, and the same rule in both: Enter acts on what is
+                // selected. Browsing, that means edit this field or submit;
+                // editing, it means keep the value and stop editing.
+                if state.is_editing() {
+                    match key.code {
+                        KeyCode::Enter => state.commit_edit(),
+                        KeyCode::Esc => state.abandon_edit(),
+                        KeyCode::Left => {
+                            if let Some(field) = state.selected_field_mut() {
+                                field.cycle(false);
+                            }
+                        }
+                        KeyCode::Right => {
+                            if let Some(field) = state.selected_field_mut() {
+                                field.cycle(true);
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if let Some(field) = state.selected_field_mut()
+                                && field.is_text()
+                            {
+                                let _ = field.value.pop();
+                            }
+                        }
+                        KeyCode::Char(character) if is_typed_text(key) => {
+                            if let Some(field) = state.selected_field_mut() {
+                                if field.is_text() {
+                                    field.value.push(character);
+                                } else if character == ' ' {
+                                    field.cycle(true);
+                                }
+                            }
+                        }
+                        _ => return None,
+                    }
+                    state.error = None;
+                    return Some(Vec::new());
+                }
                 match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
-                        state.input.push(character);
-                        state.error = None;
-                    }
-                    KeyCode::Backspace => {
-                        let _ = state.input.pop();
-                        state.error = None;
-                    }
                     KeyCode::Enter => {
-                        let state = state.clone();
-                        return Some(self.accept_service_form(state));
+                        if state.on_submit_row() {
+                            let state = state.clone();
+                            return Some(self.accept_service_form(state));
+                        }
+                        state.begin_edit();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => {
+                        state.move_selection(-1);
+                    }
+                    KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => {
+                        state.move_selection(1);
                     }
                     _ => return None,
                 }
+                state.error = None;
                 Some(Vec::new())
             }
             Overlay::DiagnosticInput(state) => {
                 match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                    KeyCode::Char(character) if is_typed_text(key) => {
                         state.input.push(character);
                         state.error = None;
                     }
@@ -2658,7 +2985,7 @@ impl App {
                     }
                 }
                 match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                    KeyCode::Char(character) if is_typed_text(key) => {
                         if state.secret_editing {
                             if let Some(secret) = state.secret_input.as_mut() {
                                 secret.push(character);
@@ -2695,7 +3022,7 @@ impl App {
             }
             Overlay::HandoffInput(state) => {
                 match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                    KeyCode::Char(character) if is_typed_text(key) => {
                         state.input.push(character);
                         state.error = None;
                     }
@@ -2713,7 +3040,7 @@ impl App {
             }
             Overlay::Confirmation(state) => {
                 match key.code {
-                    KeyCode::Char(character) if key.modifiers.is_empty() => {
+                    KeyCode::Char(character) if is_typed_text(key) => {
                         state.input.push(character);
                         state.error = None;
                     }
@@ -2893,9 +3220,16 @@ impl App {
         }
         match filter::parse(input, &self.filter_schema()) {
             Ok(expression) => {
-                self.views.devices.filter_draft = input.to_owned();
-                self.views.devices.applied_filter = expression;
-                self.reconcile_selection(None);
+                if self.current_route() == Route::Services {
+                    self.views.services.filter_draft = input.to_owned();
+                    self.views.services.applied_filter = expression;
+                    self.views.services.selected = 0;
+                    self.views.services.scroll = 0;
+                } else {
+                    self.views.devices.filter_draft = input.to_owned();
+                    self.views.devices.applied_filter = expression;
+                    self.reconcile_selection(None);
+                }
                 self.interaction = InteractionMode::Normal;
             }
             Err(error) => {
@@ -3059,18 +3393,27 @@ impl App {
                 Vec::new()
             }
             ActionId::ViewFilter => {
-                if !matches!(self.current_route(), Route::Devices | Route::Activity) {
-                    self.runtime_error = Some("this view has no filter schema".to_owned());
+                if self.filter_schema().is_empty() && self.current_route() != Route::Activity {
+                    let subject = if self.current_route() == Route::Services {
+                        self.views.services.section.label()
+                    } else {
+                        self.current_route().label()
+                    };
+                    self.runtime_error = Some(format!("{subject} has nothing to filter on"));
                     return Vec::new();
                 }
-                let input = if self.current_route() == Route::Activity {
-                    self.task_filter.clone()
-                } else {
-                    self.views.devices.filter_draft.clone()
+                let input = match self.current_route() {
+                    Route::Activity => self.task_filter.clone(),
+                    Route::Services => self.views.services.filter_draft.clone(),
+                    _ => self.views.devices.filter_draft.clone(),
                 };
                 let restoration = FilterRestoration {
                     input: input.clone(),
-                    expression: self.views.devices.applied_filter.clone(),
+                    expression: if self.current_route() == Route::Services {
+                        self.views.services.applied_filter.clone()
+                    } else {
+                        self.views.devices.applied_filter.clone()
+                    },
                     selection: self.views.devices.selected_id.clone(),
                     scroll: self.views.devices.scroll,
                     task_filter: self.task_filter.clone(),
@@ -3109,6 +3452,10 @@ impl App {
             }
             ActionId::ViewServices => {
                 self.navigate(Route::Services);
+                Vec::new()
+            }
+            ActionId::ViewDiagnostics => {
+                self.navigate(Route::Diagnostics);
                 Vec::new()
             }
             ActionId::ProfileSelect => self.select_next_profile(),
@@ -3222,6 +3569,8 @@ impl App {
                     self.move_admin_activity_selection(-1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-1);
+                } else if self.current_route() == Route::Diagnostics {
+                    self.move_diagnostics_scroll(-1);
                 } else if self.current_route() == Route::Users {
                     self.move_admin_user_selection(-1);
                 } else if self.current_route() == Route::Routes {
@@ -3239,6 +3588,8 @@ impl App {
                     self.move_admin_activity_selection(1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(1);
+                } else if self.current_route() == Route::Diagnostics {
+                    self.move_diagnostics_scroll(1);
                 } else if self.current_route() == Route::Users {
                     self.move_admin_user_selection(1);
                 } else if self.current_route() == Route::Routes {
@@ -3279,9 +3630,9 @@ impl App {
                         .map_or(0, |snapshot| snapshot.events.len().saturating_sub(1));
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = self.service_row_count().saturating_sub(1);
-                    if self.views.services.section == ServiceSection::Metrics {
-                        self.views.services.scroll = self.metrics_max_scroll();
-                    }
+                    self.views.services.scroll = self.views.services.selected;
+                } else if self.current_route() == Route::Diagnostics {
+                    self.views.diagnostics.scroll = self.metrics_max_scroll();
                 } else if self.current_route() == Route::Users {
                     self.admin_user_selected = self
                         .admin
@@ -3310,6 +3661,8 @@ impl App {
                     self.move_admin_activity_selection(-5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-5);
+                } else if self.current_route() == Route::Diagnostics {
+                    self.move_diagnostics_scroll(-5);
                 } else if self.current_route() == Route::Users {
                     self.move_admin_user_selection(-5);
                 } else if self.current_route() == Route::Routes {
@@ -3327,6 +3680,8 @@ impl App {
                     self.move_admin_activity_selection(5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(5);
+                } else if self.current_route() == Route::Diagnostics {
+                    self.move_diagnostics_scroll(5);
                 } else if self.current_route() == Route::Users {
                     self.move_admin_user_selection(5);
                 } else if self.current_route() == Route::Routes {
@@ -3347,18 +3702,6 @@ impl App {
                     if let Some(task_id) = self.tasks.selected {
                         self.overlays.push(Overlay::TaskInspector(task_id));
                     }
-                } else if self.current_route() == Route::Services && self.terminal_width < 80 {
-                    self.interaction = InteractionMode::Transient(TransientMenuState {
-                        kind: TransientKind::Choice,
-                        title: "Section",
-                        actions: Vec::new(),
-                        choices: self.section_choices(),
-                        fields: Vec::new(),
-                        addresses: Vec::new(),
-                        prefix: None,
-                        message: None,
-                    });
-                    return Vec::new();
                 } else if self.current_route() == Route::Services
                     || self.selected_device().is_some()
                 {
@@ -3389,6 +3732,16 @@ impl App {
                 }
                 Vec::new()
             }
+            ActionId::CollectionInspect => {
+                if self.current_route() == Route::Devices {
+                    self.views.devices.inspector = !self.views.devices.inspector;
+                    // Hiding the pane cannot leave the keys pointed at it.
+                    if !self.views.devices.inspector {
+                        self.focus = Focus::Collection;
+                    }
+                }
+                Vec::new()
+            }
             ActionId::ResourceActions => {
                 let actions = self.contextual_actions();
                 if let Err(error) = action::validate_transient_sequences(&actions) {
@@ -3409,6 +3762,10 @@ impl App {
             }
             ActionId::ResourceCopy => {
                 let fields = self.contextual_copy_fields();
+                if fields.is_empty() {
+                    self.runtime_error = Some("nothing here to copy".to_owned());
+                    return Vec::new();
+                }
                 let addresses = self
                     .selected_device()
                     .map(|device| device.addresses.clone())
@@ -3468,7 +3825,7 @@ impl App {
             ActionId::LocalWhois => self.open_whois_input(),
             ActionId::DiagnosticCopy => {
                 let value = self.diagnostic_summary();
-                self.copy_text("diagnostic summary", value)
+                self.copy_text(value)
             }
             ActionId::LocalConnect => self.open_mutation_confirmation(LocalMutation::Connect),
             ActionId::LocalDisconnect => {
@@ -3501,17 +3858,18 @@ impl App {
                 Vec::new()
             }
             ActionId::ServicesServeRefresh
-            | ActionId::ServicesFunnelRefresh
             | ActionId::ServicesDriveRefresh
             | ActionId::ServicesMetricsRefresh => self.start_services_action(action_id),
             ActionId::ServicesServeCreate
             | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeRemove
             | ActionId::ServicesServeReset
             | ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesFunnelReset
-            | ActionId::ServicesTaildropSend
-            | ActionId::ServicesTaildropReceive
+            | ActionId::DevicesTaildropSend
+            | ActionId::DevicesTaildropReceive
             | ActionId::ServicesDriveShare
             | ActionId::ServicesDriveRename
             | ActionId::ServicesDriveUnshare
@@ -4049,7 +4407,10 @@ impl App {
     }
 
     fn local_action_available(&self, action_id: ActionId) -> bool {
-        if action_id == ActionId::ViewServices {
+        if matches!(
+            action_id,
+            ActionId::ViewServices | ActionId::ViewDiagnostics
+        ) {
             return true;
         }
         if is_phase_four_action(action_id) && self.source_mode != SourceMode::Local {
@@ -4090,15 +4451,19 @@ impl App {
             ActionId::LocalSshOpen => capabilities.ssh,
             ActionId::LocalNcOpen => capabilities.nc,
             ActionId::LocalSyspolicyReload => capabilities.syspolicy,
+            // Removing and unpublishing both run `tailscale serve`, so they
+            // survive a node that has lost Funnel: the way out of a public
+            // mapping must never depend on the capability that created it.
             ActionId::ServicesServeRefresh
             | ActionId::ServicesServeCreate
             | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeRemove
+            | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesServeReset => capabilities.serve,
-            ActionId::ServicesFunnelRefresh
-            | ActionId::ServicesFunnelCreate
+            ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
             | ActionId::ServicesFunnelReset => capabilities.funnel,
-            ActionId::ServicesTaildropSend | ActionId::ServicesTaildropReceive => {
+            ActionId::DevicesTaildropSend | ActionId::DevicesTaildropReceive => {
                 capabilities.taildrop
             }
             ActionId::ServicesDriveRefresh
@@ -8235,7 +8600,7 @@ impl App {
 
     fn start_admin_current_view_refresh(&mut self) -> Vec<Effect> {
         let resources = match self.current_route() {
-            Route::Overview | Route::Services => vec![
+            Route::Overview | Route::Services | Route::Diagnostics => vec![
                 AdminRefreshResource::Devices,
                 AdminRefreshResource::Users,
                 AdminRefreshResource::Nameservers,
@@ -8346,7 +8711,7 @@ impl App {
                 self.start_admin_resource_refresh(vec![AdminRefreshResource::Activity])
             }
             Route::Settings => self.start_admin_current_view_refresh(),
-            Route::Overview | Route::Local | Route::Services => {
+            Route::Overview | Route::Local | Route::Services | Route::Diagnostics => {
                 self.start_admin_current_view_refresh()
             }
         }
@@ -9674,33 +10039,33 @@ impl App {
         }
     }
 
+    /// Tab moves to the next tab and wraps, which is what a tab strip implies.
     fn change_service_section(&mut self, offset: isize) {
-        let current = self.views.services.section.index();
-        let length = ServiceSection::ALL.len();
-        let next = if offset.is_negative() {
-            current.saturating_sub(offset.unsigned_abs())
-        } else {
-            current
-                .saturating_add(offset as usize)
-                .min(length.saturating_sub(1))
-        };
-        self.views.services.section = ServiceSection::from_index(next);
+        let sections = ServiceSection::ALL;
+        let length = sections.len();
+        let current = sections
+            .iter()
+            .position(|section| *section == self.views.services.section)
+            .unwrap_or(0);
+        let step = offset.rem_euclid(length as isize).unsigned_abs();
+        let next = current.saturating_add(step) % length;
+        self.views.services.section = sections.get(next).copied().unwrap_or(ServiceSection::Serve);
         self.views.services.selected = 0;
         self.views.services.scroll = 0;
         self.focus = Focus::Collection;
     }
 
+    fn move_diagnostics_scroll(&mut self, offset: isize) {
+        let current = self.views.diagnostics.scroll;
+        let next = if offset.is_negative() {
+            current.saturating_sub(offset.unsigned_abs())
+        } else {
+            current.saturating_add(offset.unsigned_abs())
+        };
+        self.views.diagnostics.scroll = next.min(self.metrics_max_scroll());
+    }
+
     fn move_service_selection(&mut self, offset: isize) {
-        if self.views.services.section == ServiceSection::Metrics {
-            let current = self.views.services.scroll;
-            let next = if offset.is_negative() {
-                current.saturating_sub(offset.unsigned_abs())
-            } else {
-                current.saturating_add(offset as usize)
-            };
-            self.views.services.scroll = next.min(self.metrics_max_scroll());
-            return;
-        }
         let count = self.service_row_count();
         if count == 0 {
             self.views.services.selected = 0;
@@ -9717,26 +10082,38 @@ impl App {
         self.views.services.scroll = self.views.services.selected;
     }
 
+    /// Serve and Funnel as one table: filtered, then ordered by the chosen
+    /// column. Public rows are mappings whose exposure is public, nothing more.
+    pub fn visible_service_mappings(&self) -> Vec<&ServiceMapping> {
+        let filter = &self.views.services.applied_filter;
+        let mut mappings = self
+            .services_snapshot
+            .mappings()
+            .filter(|mapping| filter.matches_mapping(mapping))
+            .collect::<Vec<_>>();
+        let sort = self.views.services.sort;
+        mappings.sort_by(|left, right| {
+            let ordering = sort
+                .field
+                .ordering_key(left)
+                .cmp(&sort.field.ordering_key(right));
+            match sort.direction {
+                SortDirection::Ascending => ordering,
+                SortDirection::Descending => ordering.reverse(),
+            }
+        });
+        mappings
+    }
+
+    pub fn service_mapping_total(&self) -> usize {
+        self.services_snapshot.mappings().count()
+    }
+
     fn service_row_count(&self) -> usize {
         match self.views.services.section {
-            ServiceSection::Serve => self
-                .services_snapshot
-                .serve
-                .value
-                .as_ref()
-                .map_or(0, |status| status.mappings.len()),
-            ServiceSection::Funnel => self
-                .services_snapshot
-                .funnel
-                .value
-                .as_ref()
-                .map_or(0, |status| status.mappings.len()),
-            ServiceSection::Taildrop => self
-                .services_snapshot
-                .taildrop_targets
-                .value
-                .as_ref()
-                .map_or(0, Vec::len),
+            ServiceSection::Serve => self.visible_service_mappings().len(),
+            // With the alpha feature off nothing is listed, so nothing counts.
+            ServiceSection::Taildrive if !self.alpha_local_features => 0,
             ServiceSection::Taildrive => self
                 .services_snapshot
                 .taildrive
@@ -9749,41 +10126,39 @@ impl App {
                 .value
                 .as_ref()
                 .map_or(0, Vec::len),
-            ServiceSection::Metrics => usize::from(self.services_snapshot.metrics.value.is_some()),
-            ServiceSection::BugReport => {
-                usize::from(self.services_snapshot.bug_report.value.is_some())
-            }
         }
     }
 
     pub fn selected_service_mapping(&self) -> Option<ServiceMapping> {
-        let selected = self.views.services.selected;
-        match self.views.services.section {
-            ServiceSection::Serve => self
-                .services_snapshot
-                .serve
-                .value
-                .as_ref()
-                .and_then(|status| status.mappings.get(selected))
-                .cloned(),
-            ServiceSection::Funnel => self
-                .services_snapshot
-                .funnel
-                .value
-                .as_ref()
-                .and_then(|status| status.mappings.get(selected))
-                .cloned(),
-            _ => None,
+        if self.views.services.section != ServiceSection::Serve {
+            return None;
         }
+        self.visible_service_mappings()
+            .get(self.views.services.selected)
+            .map(|mapping| (*mapping).clone())
     }
 
+    /// The discovered Taildrop target for the selected device row. An address
+    /// is exact, so it decides on its own; a display name is not, so it is used
+    /// only when it picks out exactly one target and no address matched. A
+    /// destination is never inferred from a name several devices share.
     pub fn selected_taildrop_target(&self) -> Option<TaildropTarget> {
-        self.services_snapshot
-            .taildrop_targets
-            .value
-            .as_ref()
-            .and_then(|targets| targets.get(self.views.services.selected))
-            .cloned()
+        let device = self.selected_device()?;
+        let targets = self.services_snapshot.taildrop_targets.value.as_ref()?;
+        only(targets.iter().filter(|target| {
+            device
+                .addresses
+                .iter()
+                .any(|address| address.eq_ignore_ascii_case(&target.command_target))
+        }))
+        .or_else(|| {
+            only(
+                targets
+                    .iter()
+                    .filter(|target| taildrop_target_names_device(target, device)),
+            )
+        })
+        .cloned()
     }
 
     pub fn selected_taildrive_share(&self) -> Option<TaildriveShare> {
@@ -9866,15 +10241,35 @@ impl App {
         } else {
             Vec::new()
         };
+        // Taildrop acts on the selected device, so it is offered wherever
+        // devices are listed rather than only beside the local machine's
+        // actions.
+        if self.current_route() == Route::Devices && self.source_mode == SourceMode::Local {
+            actions.extend([
+                ActionId::DevicesTaildropSend,
+                ActionId::DevicesTaildropReceive,
+            ]);
+        }
         actions.extend(self.phase_eight_resource_actions());
         actions
     }
 
     pub fn contextual_copy_fields(&self) -> Vec<CopyField> {
-        if self.current_route() == Route::Services
-            && self.views.services.section == ServiceSection::Metrics
-        {
+        if self.current_route() == Route::Diagnostics {
             return vec![CopyField::Metrics];
+        }
+        if self.current_route() == Route::Services {
+            // Only the mapping table has a row worth copying; the other
+            // sections are a name or a path already visible in full.
+            return if self.selected_service_mapping().is_some() {
+                vec![
+                    CopyField::ServiceUrl,
+                    CopyField::ServiceListener,
+                    CopyField::ServiceBackend,
+                ]
+            } else {
+                Vec::new()
+            };
         }
         if self.current_route() != Route::Devices {
             return Vec::new();
@@ -9883,10 +10278,13 @@ impl App {
             CopyField::DeviceId,
             CopyField::DisplayName,
             CopyField::Hostname,
-            CopyField::Owner,
-            CopyField::Addresses,
-            CopyField::Tags,
         ];
+        // Offered only when a name was actually reported: a key that copies
+        // "not returned" is worse than a key that is not there.
+        if self.selected_dns_name().is_some() {
+            fields.push(CopyField::DnsName);
+        }
+        fields.extend([CopyField::Owner, CopyField::Addresses, CopyField::Tags]);
         if self.source_mode == SourceMode::Local {
             fields.push(CopyField::PublicKey);
             fields.push(CopyField::Endpoint);
@@ -9894,23 +10292,37 @@ impl App {
         fields
     }
 
+    /// The selected device's full MagicDNS name. The local client reports it
+    /// with a trailing dot, which is correct in a zone file and wrong in every
+    /// place this value gets pasted.
+    pub fn selected_dns_name(&self) -> Option<String> {
+        let id = self.views.devices.selected_id.as_ref()?;
+        let name = self.local_dns_name(id).map(str::to_owned).or_else(|| {
+            self.admin
+                .devices
+                .snapshot
+                .as_ref()?
+                .iter()
+                .find(|device| device.stable_id == id.0)
+                .and_then(|device| device.name.clone())
+        })?;
+        let name = name.trim_end_matches('.');
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
     fn service_actions_for_section(&self) -> Vec<ActionId> {
         match self.views.services.section {
+            // One table, so both sets of actions belong to it. Which command
+            // runs is decided by the exposure of the row, not by a tab.
             ServiceSection::Serve => vec![
                 ActionId::ServicesServeRefresh,
                 ActionId::ServicesServeCreate,
-                ActionId::ServicesServeEdit,
-                ActionId::ServicesServeReset,
-            ],
-            ServiceSection::Funnel => vec![
-                ActionId::ServicesFunnelRefresh,
                 ActionId::ServicesFunnelCreate,
-                ActionId::ServicesFunnelEdit,
+                ActionId::ServicesServeEdit,
+                ActionId::ServicesFunnelUnpublish,
+                ActionId::ServicesServeRemove,
+                ActionId::ServicesServeReset,
                 ActionId::ServicesFunnelReset,
-            ],
-            ServiceSection::Taildrop => vec![
-                ActionId::ServicesTaildropSend,
-                ActionId::ServicesTaildropReceive,
             ],
             ServiceSection::Taildrive => {
                 let mut actions = vec![ActionId::ServicesDriveRefresh];
@@ -9926,8 +10338,6 @@ impl App {
                 actions
             }
             ServiceSection::Certificates => vec![ActionId::ServicesCertificateObtain],
-            ServiceSection::Metrics => vec![ActionId::ServicesMetricsRefresh],
-            ServiceSection::BugReport => vec![ActionId::ServicesBugReportCreate],
         }
     }
 
@@ -9962,6 +10372,10 @@ impl App {
                 ActionId::AdminLogStreamDelete,
                 ActionId::AdminNetworkLogsSettings,
             ]),
+            Route::Diagnostics => actions.extend([
+                ActionId::ServicesMetricsRefresh,
+                ActionId::ServicesBugReportCreate,
+            ]),
             Route::Settings => actions.extend([
                 ActionId::SettingsAppearance,
                 ActionId::AdminLogStreamReplace,
@@ -9993,91 +10407,198 @@ impl App {
             ActionId::ServicesFunnelReset => {
                 self.open_service_confirmation(ServiceActionRequest::FunnelReset)
             }
-            ActionId::ServicesServeCreate | ActionId::ServicesServeEdit => {
-                let edit = action_id == ActionId::ServicesServeEdit;
-                let input = if edit {
-                    self.selected_service_mapping()
-                        .filter(|mapping| mapping.exposure == Exposure::Tailnet)
-                        .map(|mapping| service_form_mapping(&mapping))
-                        .unwrap_or_default()
-                } else {
-                    "listener=https;port=443;path=/;backend=3000;proxy=none".to_owned()
+            // Neither of these asks anything the row does not already answer,
+            // so they go straight to the confirmation with no form in between.
+            ActionId::ServicesServeRemove => {
+                let Some(mapping) = self.selected_service_mapping() else {
+                    self.runtime_error = Some("select a mapping to remove".to_owned());
+                    return Vec::new();
                 };
-                if edit && input.is_empty() {
-                    self.runtime_error = Some("select a Serve mapping to edit".to_owned());
+                self.open_service_confirmation(ServiceActionRequest::MappingRemove { mapping })
+            }
+            ActionId::ServicesFunnelUnpublish => {
+                let Some(mapping) = self.selected_service_mapping() else {
+                    self.runtime_error = Some("select a public mapping to unpublish".to_owned());
+                    return Vec::new();
+                };
+                if mapping.exposure != Exposure::Public {
+                    self.runtime_error =
+                        Some("the selected mapping is already tailnet-only".to_owned());
                     return Vec::new();
                 }
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                self.open_service_confirmation(ServiceActionRequest::FunnelUnpublish { mapping })
+            }
+            ActionId::ServicesServeCreate | ActionId::ServicesFunnelCreate => {
+                let public = action_id == ActionId::ServicesFunnelCreate;
+                self.push_service_form(
                     action_id,
-                    input,
-                    error: None,
-                }));
+                    if public {
+                        "New public mapping"
+                    } else {
+                        "New tailnet mapping"
+                    },
+                    vec![(
+                        "reachable by",
+                        reachability(&if public {
+                            Exposure::Public
+                        } else {
+                            Exposure::Tailnet
+                        })
+                        .to_owned(),
+                    )],
+                    mapping_fields(public, None),
+                );
                 Vec::new()
             }
-            ActionId::ServicesFunnelCreate | ActionId::ServicesFunnelEdit => {
-                let edit = action_id == ActionId::ServicesFunnelEdit;
-                let input = if edit {
-                    self.selected_service_mapping()
-                        .filter(|mapping| mapping.exposure == Exposure::Public)
-                        .map(|mapping| service_form_mapping(&mapping))
-                        .unwrap_or_default()
-                } else {
-                    "listener=https;port=443;path=/;backend=3000;proxy=none".to_owned()
+            ActionId::ServicesServeEdit => {
+                // The selected row already knows its exposure, and Tailscale
+                // replaces a mapping by listener and path, so those are stated
+                // rather than offered: changing them is a new mapping.
+                let Some(mapping) = self.selected_service_mapping() else {
+                    self.runtime_error = Some("select a mapping to edit".to_owned());
+                    return Vec::new();
                 };
-                if edit && input.is_empty() {
-                    self.runtime_error = Some("select a PUBLIC Funnel mapping to edit".to_owned());
+                self.push_service_form(
+                    action_id,
+                    "Edit mapping",
+                    vec![
+                        ("reachable by", reachability(&mapping.exposure).to_owned()),
+                        (
+                            "listener",
+                            format!("{}:{}", mapping.listener.label(), mapping.listener.port()),
+                        ),
+                        ("path", mapping.mount.as_path().to_owned()),
+                    ],
+                    vec![
+                        FormField::text(
+                            "backend",
+                            "Serve",
+                            "A local port, an http:// URL, or a folder to serve files from",
+                            "3000",
+                            mapping.backend.argument(),
+                        ),
+                        FormField::choice(
+                            "proxy",
+                            "PROXY protocol",
+                            "Only used by TCP listeners; leave off unless the backend expects it",
+                            &["none", "1", "2"],
+                            mapping.proxy_protocol.cli_value().unwrap_or("none"),
+                        ),
+                    ],
+                );
+                Vec::new()
+            }
+            ActionId::DevicesTaildropSend => {
+                // The selected row is the target, so the form asks only what
+                // it cannot already know.
+                let Some(device) = self.selected_device() else {
+                    self.runtime_error = Some("select a device to send files to".to_owned());
+                    return Vec::new();
+                };
+                let name = device.display_name.clone();
+                let Some(target) = self.selected_taildrop_target() else {
+                    self.runtime_error = Some(format!(
+                        "{name} was not offered as a Taildrop target by this client"
+                    ));
+                    return Vec::new();
+                };
+                if !target.available() {
+                    self.runtime_error = Some(match target.capability_reason.as_deref() {
+                        Some(reason) => format!("{name} cannot receive files: {reason}"),
+                        None => format!("{name} is offline"),
+                    });
                     return Vec::new();
                 }
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                self.push_service_form(
                     action_id,
-                    input,
-                    error: None,
-                }));
+                    "Send files",
+                    vec![("to", target.display_name.clone())],
+                    vec![FormField::text(
+                        "files",
+                        "Files",
+                        "Full paths, separated by commas",
+                        "/path/to/file",
+                        String::new(),
+                    )],
+                );
                 Vec::new()
             }
-            ActionId::ServicesTaildropSend => {
-                let target = self
-                    .selected_taildrop_target()
-                    .filter(TaildropTarget::available)
-                    .map_or_else(String::new, |target| target.command_target);
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+            ActionId::DevicesTaildropReceive => {
+                self.push_service_form(
                     action_id,
-                    input: format!("target={target};files="),
-                    error: None,
-                }));
-                Vec::new()
-            }
-            ActionId::ServicesTaildropReceive => {
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
-                    action_id,
-                    input: "directory=;conflict=rename;wait=false".to_owned(),
-                    error: None,
-                }));
+                    "Receive files",
+                    Vec::new(),
+                    vec![
+                        FormField::text(
+                            "directory",
+                            "Save to",
+                            "An existing directory on this machine",
+                            "/path/to/directory",
+                            String::new(),
+                        ),
+                        FormField::choice(
+                            "conflict",
+                            "If a name is taken",
+                            "What to do when a file of that name already exists",
+                            &["rename", "skip", "overwrite"],
+                            "rename",
+                        ),
+                        FormField::toggle(
+                            "wait",
+                            "Keep waiting",
+                            "Stay open for files that arrive later",
+                            false,
+                        ),
+                    ],
+                );
                 Vec::new()
             }
             ActionId::ServicesDriveShare => {
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                self.push_service_form(
                     action_id,
-                    input: "name=;path=".to_owned(),
-                    error: None,
-                }));
+                    "Share a folder",
+                    Vec::new(),
+                    vec![
+                        FormField::text(
+                            "name",
+                            "Share name",
+                            "What the tailnet will see; letters, digits and dashes",
+                            "documents",
+                            String::new(),
+                        ),
+                        FormField::text(
+                            "path",
+                            "Folder",
+                            "An existing directory on this machine",
+                            "/path/to/folder",
+                            String::new(),
+                        ),
+                    ],
+                );
                 Vec::new()
             }
             ActionId::ServicesDriveRename => {
-                let input = self.selected_taildrive_share().map_or_else(
-                    || "old=;new=".to_owned(),
-                    |share| format!("old={};new={}", share.name, share.name),
-                );
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                let Some(share) = self.selected_taildrive_share() else {
+                    self.runtime_error = Some("select a share to rename".to_owned());
+                    return Vec::new();
+                };
+                self.push_service_form(
                     action_id,
-                    input,
-                    error: None,
-                }));
+                    "Rename share",
+                    vec![("current name", share.name.clone())],
+                    vec![FormField::text(
+                        "new",
+                        "New name",
+                        "Letters, digits and dashes",
+                        "documents",
+                        share.name,
+                    )],
+                );
                 Vec::new()
             }
             ActionId::ServicesDriveUnshare => {
                 let Some(share) = self.selected_taildrive_share() else {
-                    self.runtime_error = Some("select a Taildrive share to unshare".to_owned());
+                    self.runtime_error = Some("select a share to stop sharing".to_owned());
                     return Vec::new();
                 };
                 self.open_service_confirmation(ServiceActionRequest::TaildriveUnshare {
@@ -10085,34 +10606,93 @@ impl App {
                 })
             }
             ActionId::ServicesCertificateObtain => {
-                let domain = self
+                let Some(domain) = self
                     .services_snapshot
                     .certificate_domains
                     .value
                     .as_ref()
-                    .and_then(|domains| domains.first())
+                    .and_then(|domains| domains.get(self.views.services.selected))
                     .cloned()
-                    .unwrap_or_default();
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                else {
+                    self.runtime_error = Some("select a domain".to_owned());
+                    return Vec::new();
+                };
+                self.push_service_form(
                     action_id,
-                    input: format!("domain={domain};cert=;key=;min-validity="),
-                    error: None,
-                }));
+                    "Get a certificate",
+                    vec![("domain", domain)],
+                    vec![
+                        FormField::text(
+                            "cert",
+                            "Certificate file",
+                            "Where to write the certificate; blank uses the client default",
+                            "default location",
+                            String::new(),
+                        ),
+                        FormField::text(
+                            "key",
+                            "Key file",
+                            "Where to write the private key; blank uses the client default",
+                            "default location",
+                            String::new(),
+                        ),
+                        FormField::text(
+                            "min-validity",
+                            "Renew if under",
+                            "Renew when less than this remains, such as 30d; blank never forces",
+                            "30d",
+                            String::new(),
+                        ),
+                    ],
+                );
                 Vec::new()
             }
             ActionId::ServicesMetricsRefresh => {
                 self.start_service_request(ServiceActionRequest::Metrics)
             }
             ActionId::ServicesBugReportCreate => {
-                self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+                self.push_service_form(
                     action_id,
-                    input: "diagnose=false;note=".to_owned(),
-                    error: None,
-                }));
+                    "Create a bug report",
+                    Vec::new(),
+                    vec![
+                        FormField::text(
+                            "note",
+                            "Note",
+                            "What went wrong, in your own words",
+                            "optional",
+                            String::new(),
+                        ),
+                        FormField::toggle(
+                            "diagnose",
+                            "Run diagnostics",
+                            "Collect extra network checks; takes longer",
+                            false,
+                        ),
+                    ],
+                );
                 Vec::new()
             }
             _ => Vec::new(),
         }
+    }
+
+    fn push_service_form(
+        &mut self,
+        action_id: ActionId,
+        title: &'static str,
+        subject: Vec<(&'static str, String)>,
+        fields: Vec<FormField>,
+    ) {
+        self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+            action_id,
+            title,
+            subject,
+            fields,
+            selected: 0,
+            draft: None,
+            error: None,
+        }));
     }
 
     fn accept_service_form(&mut self, state: ServiceFormState) -> Vec<Effect> {
@@ -10135,63 +10715,72 @@ impl App {
     }
 
     fn parse_service_form(&self, state: &ServiceFormState) -> Result<ServiceActionRequest, String> {
-        let fields = parse_service_fields(&state.input)?;
+        let fields = state
+            .fields
+            .iter()
+            .map(|field| (field.key.to_owned(), field.value.trim().to_owned()))
+            .collect::<BTreeMap<_, _>>();
         match state.action_id {
-            ActionId::ServicesServeCreate | ActionId::ServicesServeEdit => {
-                let mapping = self.parse_mapping_form(&fields, Exposure::Tailnet)?;
-                if state.action_id == ActionId::ServicesServeEdit
-                    && !self
-                        .selected_service_mapping()
-                        .is_some_and(|selected| selected.exact_identity_matches(&mapping))
-                {
-                    return Err(
-                        "Serve edit cannot replace a different listener and mount; create a new mapping instead"
-                            .to_owned(),
-                    );
-                }
-                Ok(ServiceActionRequest::Serve {
-                    mapping,
-                    edit: state.action_id == ActionId::ServicesServeEdit,
+            ActionId::ServicesServeCreate | ActionId::ServicesFunnelCreate => {
+                let exposure = if state.action_id == ActionId::ServicesFunnelCreate {
+                    Exposure::Public
+                } else {
+                    Exposure::Tailnet
+                };
+                let mapping = self.parse_mapping_form(&fields, exposure.clone())?;
+                Ok(if exposure == Exposure::Public {
+                    ServiceActionRequest::Funnel {
+                        mapping,
+                        edit: false,
+                    }
+                } else {
+                    ServiceActionRequest::Serve {
+                        mapping,
+                        edit: false,
+                    }
                 })
             }
-            ActionId::ServicesFunnelCreate | ActionId::ServicesFunnelEdit => {
-                let mapping = self.parse_mapping_form(&fields, Exposure::Public)?;
-                if state.action_id == ActionId::ServicesFunnelEdit
-                    && !self
-                        .selected_service_mapping()
-                        .is_some_and(|selected| selected.exact_identity_matches(&mapping))
-                {
-                    return Err(
-                        "PUBLIC Funnel edit cannot replace a different listener and mount; create a new mapping instead"
-                            .to_owned(),
-                    );
-                }
-                Ok(ServiceActionRequest::Funnel {
-                    mapping,
-                    edit: state.action_id == ActionId::ServicesFunnelEdit,
+            // One edit action: the selected row decides which command runs, and
+            // its listener and path are not editable, so identity always holds.
+            ActionId::ServicesServeEdit => {
+                let Some(selected) = self.selected_service_mapping() else {
+                    return Err("select a mapping to edit".to_owned());
+                };
+                let backend = Backend::parse(required_field(&fields, "backend")?)
+                    .map_err(|error| error.to_string())?;
+                let proxy_protocol =
+                    ProxyProtocol::parse(optional_field(&fields, "proxy").unwrap_or("none"))
+                        .map_err(|error| error.to_string())?;
+                let mapping = ServiceMapping {
+                    backend,
+                    proxy_protocol,
+                    ..selected
+                };
+                mapping.validate().map_err(|error| error.to_string())?;
+                Ok(if mapping.exposure == Exposure::Public {
+                    ServiceActionRequest::Funnel {
+                        mapping,
+                        edit: true,
+                    }
+                } else {
+                    ServiceActionRequest::Serve {
+                        mapping,
+                        edit: true,
+                    }
                 })
             }
-            ActionId::ServicesTaildropSend => {
-                let target_name = required_field(&fields, "target")?;
-                let target = self
-                    .services_snapshot
-                    .taildrop_targets
-                    .value
-                    .as_ref()
-                    .and_then(|targets| {
-                        targets
-                            .iter()
-                            .find(|target| target.command_target == target_name)
-                    })
-                    .cloned()
-                    .ok_or_else(|| {
-                        "target must exactly match a discovered Taildrop target".to_owned()
-                    })?;
+            // The target is the selected device, never typed: the form is
+            // modal, so the row it names is still the row underneath it.
+            ActionId::DevicesTaildropSend => {
+                let target = self.selected_taildrop_target().ok_or_else(|| {
+                    "the selected device is no longer a Taildrop target".to_owned()
+                })?;
                 if !target.available() {
                     return Err("the selected Taildrop target is unavailable".to_owned());
                 }
                 let files = required_field(&fields, "files")?
-                    .split('|')
+                    .split(',')
+                    .map(str::trim)
                     .filter(|path| !path.is_empty())
                     .map(std::path::PathBuf::from)
                     .map(|path| validate_regular_file(&path))
@@ -10204,7 +10793,7 @@ impl App {
                     target,
                 }))
             }
-            ActionId::ServicesTaildropReceive => {
+            ActionId::DevicesTaildropReceive => {
                 let directory = std::path::PathBuf::from(required_field(&fields, "directory")?);
                 validate_receive_directory(&directory)?;
                 let conflict = TaildropConflict::parse(required_field(&fields, "conflict")?)
@@ -10412,6 +11001,12 @@ impl App {
             ServiceActionRequest::FunnelReset => {
                 services::funnel_reset_command(command_path, timeout)
             }
+            ServiceActionRequest::MappingRemove { mapping } => {
+                services::mapping_off_command(command_path, timeout, mapping, true).ok()?
+            }
+            ServiceActionRequest::FunnelUnpublish { mapping } => {
+                services::mapping_unpublish_command(command_path, timeout, mapping, true).ok()?
+            }
             ServiceActionRequest::TaildropSend(request) => transfers::taildrop_send_command(
                 command_path,
                 timeout,
@@ -10465,26 +11060,19 @@ impl App {
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        let mut preview = vec!["direct argv (each line is one argument):".to_owned()];
-        preview.extend(
-            argv.iter()
-                .enumerate()
-                .map(|(index, value)| format!("  argv[{index}] = {value:?}")),
-        );
-        if matches!(
-            request,
-            ServiceActionRequest::Funnel { .. } | ServiceActionRequest::FunnelReset
-        ) {
-            preview.insert(0, "PUBLIC: this changes public reachability".to_owned());
-        }
+        // The argv already appears under Command; the preview says what the
+        // change means, in the reader's terms.
+        let mut preview = vec![service_effect_sentence(request)];
         if let ServiceActionRequest::TaildriveShare {
             input_name,
             normalized_name,
             ..
         } = request
+            && input_name != normalized_name
         {
-            preview.push(format!("input share name: {input_name}"));
-            preview.push(format!("normalized share name: {normalized_name}"));
+            preview.push(format!(
+                "\"{input_name}\" is not a usable share name; it will be shared as \"{normalized_name}\"."
+            ));
         }
         Some((preview, argv))
     }
@@ -10539,6 +11127,31 @@ impl App {
             timeout: self.resolved_config.local.command_timeout,
             request,
         }]
+    }
+
+    /// Whether the last status read still shows this exact mapping, in the list
+    /// its exposure puts it in. Identity is listener and path, so the backend is
+    /// compared too: the same address serving something else is a different row.
+    fn service_mapping_is_current(&self, mapping: &ServiceMapping) -> bool {
+        let listed: Option<&[ServiceMapping]> = match mapping.exposure {
+            Exposure::Public => self
+                .services_snapshot
+                .funnel
+                .value
+                .as_ref()
+                .map(|status| status.mappings.as_slice()),
+            Exposure::Tailnet => self
+                .services_snapshot
+                .serve
+                .value
+                .as_ref()
+                .map(|status| status.mappings.as_slice()),
+        };
+        listed.is_some_and(|mappings| {
+            mappings.iter().any(|actual| {
+                actual.exact_identity_matches(mapping) && actual.backend == mapping.backend
+            })
+        })
     }
 
     fn revalidate_service_request(&self, request: &ServiceActionRequest) -> Result<(), String> {
@@ -10616,6 +11229,39 @@ impl App {
                 validate_mapping_backend(mapping)
             }
             ServiceActionRequest::FunnelReset => Ok(()),
+            // A stale row is the whole hazard here: removing by listener and
+            // path would happily take down whatever now sits at that address.
+            ServiceActionRequest::MappingRemove { mapping } => {
+                mapping.validate().map_err(|error| error.to_string())?;
+                if !self.service_mapping_is_current(mapping) {
+                    return Err("the selected mapping changed; refresh and remove again".to_owned());
+                }
+                Ok(())
+            }
+            ServiceActionRequest::FunnelUnpublish { mapping } => {
+                mapping.validate().map_err(|error| error.to_string())?;
+                if mapping.exposure != Exposure::Public {
+                    return Err("only a public mapping can stop being published".to_owned());
+                }
+                if !self
+                    .local_capabilities
+                    .supports_service_listener(&mapping.listener, false)
+                {
+                    return Err(format!(
+                        "{} Serve listeners are unsupported by this CLI",
+                        mapping.listener.label()
+                    ));
+                }
+                if !self.service_mapping_is_current(mapping) {
+                    return Err(
+                        "the selected PUBLIC mapping changed; refresh and unpublish again"
+                            .to_owned(),
+                    );
+                }
+                // The mapping is re-served verbatim, so the backend has to be
+                // as usable now as it was when it was first accepted.
+                validate_mapping_backend(mapping)
+            }
             ServiceActionRequest::TaildropSend(request) => {
                 let target = self
                     .services_snapshot
@@ -10722,12 +11368,16 @@ impl App {
         let (_, argv) = self.service_preview(request)?;
         let fields = match request {
             ServiceActionRequest::Serve { mapping, .. }
-            | ServiceActionRequest::Funnel { mapping, .. } => {
+            | ServiceActionRequest::Funnel { mapping, .. }
+            | ServiceActionRequest::FunnelUnpublish { mapping } => {
                 vec![
                     "listener".to_owned(),
                     "mount".to_owned(),
                     mapping.backend.label().to_owned(),
                 ]
+            }
+            ServiceActionRequest::MappingRemove { .. } => {
+                vec!["listener".to_owned(), "mount".to_owned()]
             }
             ServiceActionRequest::TaildropSend(request) => {
                 let mut fields = vec!["target".to_owned()];
@@ -11700,7 +12350,9 @@ impl App {
                     &request,
                     ServiceActionRequest::Serve { .. }
                         | ServiceActionRequest::ServeReset
+                        | ServiceActionRequest::MappingRemove { .. }
                         | ServiceActionRequest::Funnel { .. }
+                        | ServiceActionRequest::FunnelUnpublish { .. }
                         | ServiceActionRequest::FunnelReset
                         | ServiceActionRequest::TaildriveShare { .. }
                         | ServiceActionRequest::TaildriveRename { .. }
@@ -12498,7 +13150,34 @@ impl App {
     /// field-and-direction pair.
     /// Field and direction in one mnemonic: the field key names the column, the
     /// second key names the order.
+    /// The mapping table's own columns. Ascending and descending live behind
+    /// the field key, the same two-key shape the device sort uses.
+    fn service_sort_choices(&self) -> Vec<MenuChoice> {
+        let current = self.views.services.sort;
+        ServiceSortField::ALL
+            .into_iter()
+            .flat_map(|field| {
+                [
+                    (SortDirection::Ascending, 'a', "ascending"),
+                    (SortDirection::Descending, 'd', "descending"),
+                ]
+                .into_iter()
+                .map(move |(direction, order, label)| MenuChoice {
+                    sequence: format!("{}{order}", field.key()),
+                    group: "Column".to_owned(),
+                    subject: field.label().to_owned(),
+                    label: label.to_owned(),
+                    active: current.field == field && current.direction == direction,
+                    outcome: ChoiceOutcome::ServiceSort(ServiceSortSpec { field, direction }),
+                })
+            })
+            .collect()
+    }
+
     fn sort_choices(&self) -> Vec<MenuChoice> {
+        if self.current_route() == Route::Services {
+            return self.service_sort_choices();
+        }
         const FIELDS: [(char, SortField, &str, &str); 10] = [
             ('n', SortField::Name, "Identity", "name"),
             ('i', SortField::DeviceId, "Identity", "id"),
@@ -12528,22 +13207,6 @@ impl App {
                     active: current.field == field && current.direction == direction,
                     outcome: ChoiceOutcome::Sort(SortSpec { field, direction }),
                 })
-            })
-            .collect()
-    }
-
-    fn section_choices(&self) -> Vec<MenuChoice> {
-        const KEYS: [char; 7] = ['s', 'f', 'd', 'v', 'c', 'm', 'b'];
-        ServiceSection::ALL
-            .into_iter()
-            .enumerate()
-            .map(|(index, section)| MenuChoice {
-                sequence: KEYS.get(index).copied().map_or('?', |key| key).to_string(),
-                group: "Section".to_owned(),
-                subject: String::new(),
-                label: section.label().to_ascii_lowercase(),
-                active: self.views.services.section == section,
-                outcome: ChoiceOutcome::ServiceSection(section),
             })
             .collect()
     }
@@ -12594,9 +13257,10 @@ impl App {
                 self.set_sort(sort);
                 Vec::new()
             }
-            ChoiceOutcome::ServiceSection(section) => {
-                self.views.services.section = section;
+            ChoiceOutcome::ServiceSort(sort) => {
+                self.views.services.sort = sort;
                 self.views.services.selected = 0;
+                self.views.services.scroll = 0;
                 Vec::new()
             }
             ChoiceOutcome::Theme(id) => {
@@ -12627,7 +13291,7 @@ impl App {
     fn copy_field(&mut self, field: CopyField) -> Vec<Effect> {
         if field == CopyField::DiagnosticSummary {
             let value = self.diagnostic_summary();
-            return self.copy_text(field.label(), value);
+            return self.copy_text(value);
         }
         if field == CopyField::Metrics {
             let value = self
@@ -12636,7 +13300,29 @@ impl App {
                 .value
                 .as_ref()
                 .map_or_else(String::new, |metrics| metrics.text.clone());
-            return self.copy_text(field.label(), value);
+            return self.copy_text(value);
+        }
+        if matches!(
+            field,
+            CopyField::ServiceUrl | CopyField::ServiceListener | CopyField::ServiceBackend
+        ) {
+            let Some(mapping) = self.selected_service_mapping() else {
+                return Vec::new();
+            };
+            let value = match field {
+                CopyField::ServiceListener => {
+                    format!("{}:{}", mapping.listener.label(), mapping.listener.port())
+                }
+                CopyField::ServiceBackend => mapping.backend.argument(),
+                _ => self.service_url(&mapping),
+            };
+            return self.copy_text(value);
+        }
+        if field == CopyField::DnsName {
+            let Some(value) = self.selected_dns_name() else {
+                return Vec::new();
+            };
+            return self.copy_text(value);
         }
         if matches!(field, CopyField::PublicKey | CopyField::Endpoint) {
             let value = self.selected_local_device().and_then(|device| match field {
@@ -12648,7 +13334,7 @@ impl App {
                 Some(value) => value,
                 None => "not returned".to_owned(),
             };
-            return self.copy_text(field.label(), value);
+            return self.copy_text(value);
         }
         let Some(device) = self.selected_device() else {
             return Vec::new();
@@ -12663,10 +13349,42 @@ impl App {
             },
             CopyField::Addresses => device.addresses.join(", "),
             CopyField::Tags => device.tags.join(", "),
-            CopyField::PublicKey | CopyField::Endpoint => "not returned".to_owned(),
-            CopyField::DiagnosticSummary | CopyField::Metrics => "not returned".to_owned(),
+            CopyField::DnsName
+            | CopyField::PublicKey
+            | CopyField::Endpoint
+            | CopyField::DiagnosticSummary
+            | CopyField::Metrics => "not returned".to_owned(),
+            CopyField::ServiceUrl | CopyField::ServiceListener | CopyField::ServiceBackend => {
+                "not returned".to_owned()
+            }
         };
-        self.copy_text(field.label(), value)
+        self.copy_text(value)
+    }
+
+    /// What a mapping is reachable at: this machine's DNS name, the listener's
+    /// scheme and port, and the mount path. This is the thing worth pasting
+    /// somewhere, which is why it is the first entry in the copy menu.
+    fn service_url(&self, mapping: &ServiceMapping) -> String {
+        // The first eligible certificate domain is exactly the name a Serve
+        // mapping answers on, which is why the client offers it at all.
+        let host = self
+            .services_snapshot
+            .certificate_domains
+            .value
+            .as_ref()
+            .and_then(|domains| domains.first())
+            .map(String::as_str)
+            .unwrap_or("this-machine");
+        let host = host.trim_end_matches('.');
+        let scheme = match mapping.listener {
+            Listener::Https(_) | Listener::TlsTerminatedTcp(_) => "https",
+            Listener::Http(_) => "http",
+            Listener::Tcp(_) => "tcp",
+        };
+        let port = mapping.listener.port();
+        let path = mapping.mount.as_path();
+        let path = if path == "/" { "" } else { path };
+        format!("{scheme}://{host}:{port}{path}")
     }
 
     /// Says which command is missing, where Tale looked, and what to do. The
@@ -12689,16 +13407,21 @@ impl App {
         }
     }
 
-    fn copy_text(&mut self, label: &str, text: String) -> Vec<Effect> {
+    /// The status bar reports the text, so simulated copies report it too:
+    /// `--mock` must show the same sentence the real clipboard produces.
+    fn copy_text(&mut self, text: String) -> Vec<Effect> {
         if self.source_mode == SourceMode::Mock {
-            self.copied_value = Some(label.to_owned());
+            self.copied_value = Some(text);
             Vec::new()
         } else {
-            vec![Effect::CopyText {
-                label: label.to_owned(),
-                text,
-            }]
+            vec![Effect::CopyText { text }]
         }
+    }
+
+    /// Whether the side inspector shares the content pane. Only the devices
+    /// table can give it up; every other route's inspector is the route.
+    pub fn inspector_pane_visible(&self) -> bool {
+        self.current_route() != Route::Devices || self.views.devices.inspector
     }
 
     pub fn selected_device(&self) -> Option<&Device> {
@@ -13402,6 +14125,11 @@ fn canonical_filter_term(term: &FilterTerm) -> String {
                 FilterField::Sharing => "sharing",
                 FilterField::Posture => "posture",
                 FilterField::RouteRole => "route_role",
+                FilterField::Exposure => "exposure",
+                FilterField::Listener => "listener",
+                FilterField::Port => "port",
+                FilterField::Mount => "mount",
+                FilterField::Backend => "backend",
             };
             let value = if let Some(comparison) = comparison {
                 let (operator, duration) = match comparison {
@@ -13441,6 +14169,11 @@ fn canonical_filter_term(term: &FilterTerm) -> String {
                 FilterField::Sharing => "sharing",
                 FilterField::Posture => "posture",
                 FilterField::RouteRole => "route_role",
+                FilterField::Exposure => "exposure",
+                FilterField::Listener => "listener",
+                FilterField::Port => "port",
+                FilterField::Mount => "mount",
+                FilterField::Backend => "backend",
             };
             let mode = match mode {
                 FieldMatchMode::Exact => "equals",
@@ -13678,11 +14411,112 @@ fn navigation_candidates(query: &str) -> Vec<NavigationCandidate> {
     candidates
 }
 
-fn navigation_catalog() -> [(Route, &'static str, &'static str); 11] {
+/// Local services for `--mock`. Without these the route is a blank screen, so
+/// it cannot be demonstrated or snapshot-tested. Two of the mappings are public
+/// so the exposure column has something to say.
+fn mock_services_snapshot() -> LocalServicesSnapshot {
+    /// `tcp` selects a raw TCP listener; otherwise the listener is HTTPS.
+    fn mapping(
+        exposure: Exposure,
+        port: u16,
+        tcp: bool,
+        mount: &str,
+        backend: &str,
+    ) -> Option<ServiceMapping> {
+        let port = Port::new(port).ok()?;
+        Some(ServiceMapping {
+            exposure,
+            listener: if tcp {
+                Listener::Tcp(port)
+            } else {
+                Listener::Https(port)
+            },
+            mount: PathMount::parse(mount).ok()?,
+            backend: Backend::parse(backend).ok()?,
+            proxy_protocol: ProxyProtocol::None,
+            hostname: None,
+        })
+    }
+    let observed_at = 1_785_751_200;
+    let mut snapshot = LocalServicesSnapshot::new();
+    let serve = [
+        mapping(Exposure::Tailnet, 443, false, "/", "3000"),
+        mapping(
+            Exposure::Tailnet,
+            443,
+            false,
+            "/metrics",
+            "http://127.0.0.1:9090",
+        ),
+        mapping(Exposure::Tailnet, 22, true, "/", "22"),
+    ];
+    let funnel = [
+        mapping(Exposure::Public, 8443, false, "/", "8080"),
+        mapping(Exposure::Public, 10000, false, "/share", "/srv/public"),
+    ];
+    snapshot.serve.succeed(
+        1,
+        observed_at,
+        ServeStatus {
+            mappings: serve.into_iter().flatten().collect(),
+        },
+    );
+    snapshot.funnel.succeed(
+        1,
+        observed_at,
+        FunnelStatus {
+            mappings: funnel.into_iter().flatten().collect(),
+        },
+    );
+    snapshot.taildrop_targets.succeed(
+        1,
+        observed_at,
+        vec![
+            TaildropTarget {
+                command_target: "alpha".to_owned(),
+                display_name: "alpha".to_owned(),
+                device_name: Some("alpha.example.ts.net".to_owned()),
+                online: Some(true),
+                capability_reason: None,
+            },
+            TaildropTarget {
+                command_target: "beta".to_owned(),
+                display_name: "beta".to_owned(),
+                device_name: Some("beta.example.ts.net".to_owned()),
+                online: Some(false),
+                capability_reason: None,
+            },
+        ],
+    );
+    snapshot.taildrive.succeed(
+        1,
+        observed_at,
+        vec![TaildriveShare {
+            name: "documents".to_owned(),
+            path: std::path::PathBuf::from("/Users/example/Documents"),
+            as_user: None,
+        }],
+    );
+    snapshot.certificate_domains.succeed(
+        1,
+        observed_at,
+        vec!["mock-machine.example.ts.net".to_owned()],
+    );
+    snapshot.observed_at = Some(observed_at);
+    snapshot.command_version = Some("1.98.9".to_owned());
+    snapshot
+}
+
+fn navigation_catalog() -> [(Route, &'static str, &'static str); 12] {
     [
         (Route::Devices, "devices", "machines & status"),
         (Route::Local, "local", "this machine"),
-        (Route::Services, "services", "serve & funnel"),
+        (Route::Services, "services", "serve, funnel & files"),
+        (
+            Route::Diagnostics,
+            "diagnostics",
+            "client metrics & bug report",
+        ),
         (Route::Users, "users", "members"),
         (Route::Routes, "routes", "network routes"),
         (Route::Dns, "dns", "name resolution"),
@@ -13855,11 +14689,18 @@ fn quote_value(value: &str) -> String {
     }
 }
 
+/// Whether this key is someone typing a character rather than pressing a
+/// command. Shift is how a capital arrives, so it cannot be what disqualifies a
+/// key; Control and Alt are what turn a letter into a command. Every text input
+/// in the app asks this one question, so they all answer it the same way.
+fn is_typed_text(key: KeyEvent) -> bool {
+    !key.modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
 fn edit_line(editor: &mut LineEditorState, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        (KeyCode::Char(character), modifiers)
-            if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-        {
+        (KeyCode::Char(character), _) if is_typed_text(key) => {
             let mut encoded = [0_u8; 4];
             insert_text(editor, character.encode_utf8(&mut encoded));
             true
@@ -13939,11 +14780,14 @@ fn next_scalar_boundary(value: &str, cursor: usize) -> usize {
         .map_or(value.len(), |(index, _)| cursor.saturating_add(index))
 }
 
-const fn copy_field_key(field: CopyField) -> char {
+/// The key that copies one field. One table: the menu drew its own copy of
+/// this list and the two had to be kept in step by hand.
+pub const fn copy_field_key(field: CopyField) -> char {
     match field {
         CopyField::DeviceId => 'i',
         CopyField::DisplayName => 'n',
         CopyField::Hostname => 'h',
+        CopyField::DnsName => 'd',
         CopyField::Owner => 'o',
         CopyField::Addresses => 'a',
         CopyField::Tags => 't',
@@ -13951,51 +14795,10 @@ const fn copy_field_key(field: CopyField) -> char {
         CopyField::Endpoint => 'e',
         CopyField::DiagnosticSummary => 'd',
         CopyField::Metrics => 'm',
+        CopyField::ServiceUrl => 'u',
+        CopyField::ServiceListener => 'l',
+        CopyField::ServiceBackend => 'b',
     }
-}
-
-fn parse_service_fields(input: &str) -> Result<BTreeMap<String, String>, String> {
-    let mut fields = BTreeMap::new();
-    let mut remaining = input;
-    while !remaining.is_empty() {
-        let (item, rest) = remaining
-            .split_once(';')
-            .map_or((remaining, ""), |(item, rest)| (item, rest));
-        if item.is_empty() {
-            remaining = rest;
-            continue;
-        }
-        let (key, value) = item
-            .split_once('=')
-            .ok_or_else(|| format!("field {item:?} must use key=value"))?;
-        let key = key.trim().to_ascii_lowercase();
-        if key.is_empty() || key.chars().any(char::is_control) {
-            return Err("form field name is invalid".to_owned());
-        }
-        let allow_note_controls = key == "note";
-        if value.chars().any(|character| {
-            character.is_control()
-                && !(allow_note_controls && (character == '\n' || character == '\t'))
-        }) {
-            return Err(format!("{key} contains a control character"));
-        }
-        if allow_note_controls && !rest.is_empty() {
-            let mut note = value.to_owned();
-            note.push(';');
-            note.push_str(rest);
-            if note
-                .chars()
-                .any(|character| character.is_control() && character != '\n' && character != '\t')
-            {
-                return Err("note contains a disallowed control character".to_owned());
-            }
-            fields.insert(key, note);
-            break;
-        }
-        fields.insert(key, value.to_owned());
-        remaining = rest;
-    }
-    Ok(fields)
 }
 
 fn required_field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> Result<&'a str, String> {
@@ -14018,117 +14821,218 @@ fn parse_bool_field(fields: &BTreeMap<String, String>, name: &str) -> Result<boo
     }
 }
 
-fn service_form_mapping(mapping: &ServiceMapping) -> String {
-    let listener = mapping.listener.label();
-    let proxy = mapping
-        .proxy_protocol
-        .cli_value()
-        .map_or("none", |value| value);
-    format!(
-        "listener={listener};port={};path={};backend={};proxy={}",
-        mapping.listener.port(),
-        mapping.mount.as_path(),
-        mapping.backend.argument(),
-        proxy
-    )
+/// The fields a mapping is made of. Funnel is not offered HTTP, so its choice
+/// list simply does not contain it rather than rejecting it after the fact.
+const fn reachability(exposure: &Exposure) -> &'static str {
+    match exposure {
+        Exposure::Public => "anyone on the internet",
+        Exposure::Tailnet => "this tailnet only",
+    }
 }
 
-fn service_confirmation_text(request: &ServiceActionRequest) -> (String, Option<String>) {
+fn mapping_fields(public: bool, existing: Option<&ServiceMapping>) -> Vec<FormField> {
+    const PUBLIC_LISTENERS: &[&str] = &["https", "tcp", "tls-terminated-tcp"];
+    const TAILNET_LISTENERS: &[&str] = &["https", "http", "tcp", "tls-terminated-tcp"];
+    let listeners = if public {
+        PUBLIC_LISTENERS
+    } else {
+        TAILNET_LISTENERS
+    };
+    vec![
+        FormField::choice(
+            "listener",
+            "Protocol",
+            "How clients connect",
+            listeners,
+            existing.map_or("https", |mapping| mapping.listener.label()),
+        ),
+        FormField::text(
+            "port",
+            "Port",
+            "The port this machine listens on",
+            "443",
+            existing.map_or_else(
+                || "443".to_owned(),
+                |mapping| mapping.listener.port().to_string(),
+            ),
+        ),
+        FormField::text(
+            "path",
+            "Path",
+            "The URL path to serve at; / for everything",
+            "/",
+            existing.map_or("/", |mapping| mapping.mount.as_path()),
+        ),
+        FormField::text(
+            "backend",
+            "Serve",
+            "A local port, an http:// URL, or a folder to serve files from",
+            "3000",
+            existing.map_or_else(String::new, |mapping| mapping.backend.argument()),
+        ),
+        FormField::choice(
+            "proxy",
+            "PROXY protocol",
+            "Only used by TCP listeners; leave off unless the backend expects it",
+            &["none", "1", "2"],
+            existing.map_or("none", |mapping| {
+                mapping.proxy_protocol.cli_value().unwrap_or("none")
+            }),
+        ),
+    ]
+}
+
+/// One sentence saying what this request does to the machine, so the reader
+/// does not have to decode an argument list to find out.
+fn service_effect_sentence(request: &ServiceActionRequest) -> String {
     match request {
-        ServiceActionRequest::Funnel { .. } => (
-            "PUBLIC Funnel reachability will change. Tailnet policy or node capability may still deny the operation."
-                .to_owned(),
-            Some("PUBLIC-FUNNEL".to_owned()),
+        ServiceActionRequest::Serve { mapping, edit } => format!(
+            "{} {}:{}{} to serve {}, reachable by this tailnet.",
+            if *edit { "Change" } else { "Add" },
+            mapping.listener.label(),
+            mapping.listener.port(),
+            mapping.mount.as_path(),
+            mapping.backend.argument()
         ),
-        ServiceActionRequest::FunnelReset => (
-            "PUBLIC Funnel reset removes every public mapping on this node. Tailnet policy or node capability may still deny the operation."
-                .to_owned(),
-            Some("RESET-FUNNEL".to_owned()),
+        ServiceActionRequest::Funnel { mapping, edit } => format!(
+            "{} {}:{}{} to serve {}, reachable by anyone on the internet.",
+            if *edit { "Change" } else { "Add" },
+            mapping.listener.label(),
+            mapping.listener.port(),
+            mapping.mount.as_path(),
+            mapping.backend.argument()
         ),
-        ServiceActionRequest::ServeReset => (
-            "Reset removes every Serve mapping on this node.".to_owned(),
-            Some("RESET-SERVE".to_owned()),
+        ServiceActionRequest::ServeReset => {
+            "Remove every tailnet mapping on this machine.".to_owned()
+        }
+        ServiceActionRequest::FunnelReset => {
+            "Remove every public mapping on this machine.".to_owned()
+        }
+        ServiceActionRequest::MappingRemove { mapping } => format!(
+            "Remove {}:{}{}, and leave every other mapping in place.",
+            mapping.listener.label(),
+            mapping.listener.port(),
+            mapping.mount.as_path()
         ),
-        ServiceActionRequest::TaildropReceive(request)
-            if request.conflict == TaildropConflict::Overwrite => (
-                format!(
-                    "Taildrop overwrite may replace files in {}.",
-                    request.directory.display()
-                ),
-                Some("OVERWRITE".to_owned()),
-            ),
-        ServiceActionRequest::TaildriveUnshare { name } => (
-            format!("Unsharing {name} removes access for existing Taildrive clients."),
-            Some("UNSHARE".to_owned()),
+        ServiceActionRequest::FunnelUnpublish { mapping } => format!(
+            "Keep {}:{}{} serving {}, but reachable by this tailnet only.",
+            mapping.listener.label(),
+            mapping.listener.port(),
+            mapping.mount.as_path(),
+            mapping.backend.argument()
         ),
-        ServiceActionRequest::Certificate(request) if request.overwrites_existing => (
+        ServiceActionRequest::TaildropSend(request) => format!(
+            "Send {} file{} to {}.",
+            request.files.len(),
+            if request.files.len() == 1 { "" } else { "s" },
+            request.target.display_name
+        ),
+        ServiceActionRequest::TaildropReceive(request) => {
             format!(
-                "Overwrite the certificate file {} and key file {}. Key contents will never be displayed.",
-                request.certificate_path.display(),
-                request.key_path.display()
-            ),
-            Some("OVERWRITE".to_owned()),
-        ),
-        ServiceActionRequest::BugReport(_) => (
-            "Tailscale will receive a diagnostic report. Tale will display only the returned identifier."
-                .to_owned(),
-            None,
-        ),
-        ServiceActionRequest::TaildropReceive(request) => (
-            format!(
-                "Receive one Taildrop batch into {} with conflict behavior {}.",
+                "Save incoming files into {}, and {} when a name is already taken.",
                 request.directory.display(),
-                request.conflict.label()
-            ),
-            None,
-        ),
-        ServiceActionRequest::Certificate(request) => (
-            format!(
-                "Obtain a certificate for {} at {} and {}. Key contents will never be displayed.",
-                request.domain,
-                request.certificate_path.display(),
-                request.key_path.display()
-            ),
-            None,
-        ),
+                match request.conflict {
+                    TaildropConflict::Skip => "leave the existing file alone",
+                    TaildropConflict::Overwrite => "replace the existing file",
+                    TaildropConflict::Rename => "give the new file another name",
+                }
+            )
+        }
         ServiceActionRequest::TaildriveShare {
-            input_name,
             normalized_name,
             path,
-        } => (
-            format!(
-                "Create alpha Taildrive share {input_name:?} as {normalized_name:?} for {}.",
-                path.display()
-            ),
-            None,
+            ..
+        } => format!(
+            "Share {} with the tailnet as \"{normalized_name}\".",
+            path.display()
         ),
         ServiceActionRequest::TaildriveRename {
             old_name,
-            input_name,
             normalized_name,
-        } => (
-            format!(
-                "Rename alpha Taildrive share {old_name:?} to {input_name:?} ({normalized_name:?})."
-            ),
-            None,
+            ..
+        } => format!("Rename the share \"{old_name}\" to \"{normalized_name}\"."),
+        ServiceActionRequest::TaildriveUnshare { name } => {
+            format!("Stop sharing \"{name}\" with the tailnet.")
+        }
+        ServiceActionRequest::Certificate(request) => {
+            format!("Get a certificate for {}.", request.domain)
+        }
+        ServiceActionRequest::Metrics => "Read this client's metrics.".to_owned(),
+        ServiceActionRequest::BugReport(_) => {
+            "Send a diagnostic report to Tailscale and show the identifier.".to_owned()
+        }
+    }
+}
+
+/// The warning worth reading twice, and the phrase that has to be typed. The
+/// effect itself is stated once, under "What will happen"; anything benign has
+/// no warning at all rather than a restatement of it.
+fn service_confirmation_text(request: &ServiceActionRequest) -> (String, Option<String>) {
+    match request {
+        ServiceActionRequest::Funnel { .. } => (
+            "This makes the mapping reachable from the public internet.".to_owned(),
+            Some("PUBLIC".to_owned()),
         ),
-        ServiceActionRequest::Serve { .. } => (
-            "Apply this tailnet-only Serve mapping after reviewing the direct command preview."
+        ServiceActionRequest::FunnelReset => (
+            "Everything this machine serves publicly stops being reachable.".to_owned(),
+            Some("RESET-PUBLIC".to_owned()),
+        ),
+        // Funnel is held per listener rather than per path, so a port that
+        // serves several paths loses public reach on all of them at once.
+        ServiceActionRequest::FunnelUnpublish { mapping } => (
+            format!(
+                "This mapping stays served to your tailnet but stops being reachable from the \
+                 public internet. Funnel is set per listener, so everything on {}:{} stops being \
+                 public.",
+                mapping.listener.label(),
+                mapping.listener.port()
+            ),
+            Some("UNPUBLISH".to_owned()),
+        ),
+        ServiceActionRequest::MappingRemove { mapping } if mapping.exposure == Exposure::Public => {
+            (
+                "This public mapping is removed. Nothing on the internet or your tailnet reaches \
+                 it afterwards."
+                    .to_owned(),
+                Some("REMOVE-PUBLIC".to_owned()),
+            )
+        }
+        ServiceActionRequest::MappingRemove { .. } => (
+            "This mapping stops being reachable from your tailnet. Other mappings are left alone."
                 .to_owned(),
+            Some("REMOVE".to_owned()),
+        ),
+        ServiceActionRequest::ServeReset => (
+            "Everything this machine serves to the tailnet stops being reachable.".to_owned(),
+            Some("RESET".to_owned()),
+        ),
+        ServiceActionRequest::TaildropReceive(request)
+            if request.conflict == TaildropConflict::Overwrite =>
+        {
+            (
+                "Existing files of the same name are replaced and cannot be recovered.".to_owned(),
+                Some("OVERWRITE".to_owned()),
+            )
+        }
+        ServiceActionRequest::TaildriveUnshare { .. } => (
+            "Anyone currently using this share loses access.".to_owned(),
+            Some("UNSHARE".to_owned()),
+        ),
+        ServiceActionRequest::Certificate(request) if request.overwrites_existing => (
+            "The existing certificate and key files are replaced.".to_owned(),
+            Some("OVERWRITE".to_owned()),
+        ),
+        ServiceActionRequest::BugReport(_) => (
+            "The report is sent to Tailscale. Only the identifier is shown here.".to_owned(),
             None,
         ),
-        ServiceActionRequest::TaildropSend(request) => (
-            format!(
-                "Send {} file(s) to Taildrop target {}.",
-                request.files.len(),
-                request.target.display_name
-            ),
-            None,
-        ),
-        ServiceActionRequest::Metrics => (
-            "Capture bounded local metrics from the installed CLI.".to_owned(),
-            None,
-        ),
+        ServiceActionRequest::Serve { .. }
+        | ServiceActionRequest::TaildropSend(_)
+        | ServiceActionRequest::TaildropReceive(_)
+        | ServiceActionRequest::TaildriveShare { .. }
+        | ServiceActionRequest::TaildriveRename { .. }
+        | ServiceActionRequest::Certificate(_)
+        | ServiceActionRequest::Metrics => (String::new(), None),
     }
 }
 
@@ -14209,12 +15113,14 @@ fn is_mutating_action(action_id: ActionId) -> bool {
             | ActionId::LocalSyspolicyReload
             | ActionId::ServicesServeCreate
             | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeRemove
             | ActionId::ServicesServeReset
             | ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesFunnelReset
-            | ActionId::ServicesTaildropSend
-            | ActionId::ServicesTaildropReceive
+            | ActionId::DevicesTaildropSend
+            | ActionId::DevicesTaildropReceive
             | ActionId::ServicesDriveShare
             | ActionId::ServicesDriveRename
             | ActionId::ServicesDriveUnshare
@@ -14865,17 +15771,62 @@ fn admin_confirmation_text(
     (prompt.to_owned(), phrase)
 }
 
+/// The one element of an iterator, or nothing when it is empty or holds more
+/// than one. Used where picking the first of several would be a guess.
+fn only<'a, T>(mut candidates: impl Iterator<Item = &'a T>) -> Option<&'a T> {
+    let first = candidates.next()?;
+    candidates.next().is_none().then_some(first)
+}
+
+/// Whether a Taildrop target names this device. The two come from different
+/// commands — `file cp --targets` reports an address and the name it knows,
+/// `status` reports the device — so they are compared on the names both carry.
+fn taildrop_target_names_device(target: &TaildropTarget, device: &Device) -> bool {
+    [target.command_target.as_str(), target.display_name.as_str()]
+        .into_iter()
+        .chain(target.device_name.as_deref())
+        .any(|name| {
+            device_name_matches(name, &device.display_name)
+                || device_name_matches(name, &device.hostname)
+        })
+}
+
+/// `status` reports the short name where `file cp --targets` may report the
+/// full MagicDNS name. Addresses are never shortened: `100.64.0.2` and
+/// `100.64.0.3` would otherwise share a first label.
+fn device_name_matches(left: &str, right: &str) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
+    if left.parse::<std::net::IpAddr>().is_ok() || right.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    let short = |value: &str| {
+        value
+            .split('.')
+            .next()
+            .unwrap_or(value)
+            .to_ascii_lowercase()
+    };
+    short(left) == short(right)
+}
+
 fn is_service_write_action(action_id: ActionId) -> bool {
     matches!(
         action_id,
         ActionId::ServicesServeCreate
             | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeRemove
             | ActionId::ServicesServeReset
             | ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesFunnelReset
-            | ActionId::ServicesTaildropSend
-            | ActionId::ServicesTaildropReceive
+            | ActionId::DevicesTaildropSend
+            | ActionId::DevicesTaildropReceive
             | ActionId::ServicesDriveShare
             | ActionId::ServicesDriveRename
             | ActionId::ServicesDriveUnshare
@@ -14901,13 +15852,14 @@ fn is_phase_four_action(action_id: ActionId) -> bool {
         ActionId::ServicesServeRefresh
             | ActionId::ServicesServeCreate
             | ActionId::ServicesServeEdit
+            | ActionId::ServicesServeRemove
             | ActionId::ServicesServeReset
-            | ActionId::ServicesFunnelRefresh
             | ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesFunnelReset
-            | ActionId::ServicesTaildropSend
-            | ActionId::ServicesTaildropReceive
+            | ActionId::DevicesTaildropSend
+            | ActionId::DevicesTaildropReceive
             | ActionId::ServicesDriveRefresh
             | ActionId::ServicesDriveShare
             | ActionId::ServicesDriveRename

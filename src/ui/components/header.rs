@@ -118,37 +118,49 @@ fn status_block(app: &App) -> Vec<Vec<Span<'static>>> {
         ));
     }
     let mut block = vec![first];
-    let mut second = Vec::new();
+    // Who is signed in.
     if let Some(identity) = tailnet_identity(app) {
-        second.push(Span::styled(
+        block.push(vec![Span::styled(
             identity,
             app.theme.style(theme::StyleRole::TextPrimary),
+        )]);
+    }
+    // Which tailnet their devices are on. A different fact from the account
+    // name, so it gets its own row rather than being run together with it.
+    let mut third = Vec::new();
+    if let Some(domain) = tailnet_domain(app) {
+        third.push(Span::styled(
+            domain,
+            app.theme.style(theme::StyleRole::TextMuted),
         ));
     }
     // Freshness is silent while the data is current; it only speaks up when
     // the snapshot has fallen behind.
-    if let Some((note, role)) = staleness(app) {
-        if !second.is_empty() {
-            second.push(Span::styled(
+    for (note, role) in [staleness(app), task_state(app)].into_iter().flatten() {
+        if !third.is_empty() {
+            third.push(Span::styled(
                 "   ",
                 app.theme.style(theme::StyleRole::Surface),
             ));
         }
-        second.push(Span::styled(note, app.theme.style(role)));
+        third.push(Span::styled(note, app.theme.style(role)));
     }
-    if let Some((tasks, role)) = task_state(app) {
-        if !second.is_empty() {
-            second.push(Span::styled(
-                "   ",
-                app.theme.style(theme::StyleRole::Surface),
-            ));
-        }
-        second.push(Span::styled(tasks, app.theme.style(role)));
-    }
-    if !second.is_empty() {
-        block.push(second);
+    if !third.is_empty() {
+        block.push(third);
     }
     block
+}
+
+/// The tailnet's own domain, which is what a device's full name ends with.
+/// Absent rather than guessed when the client did not report it.
+fn tailnet_domain(app: &App) -> Option<String> {
+    app.local_resource
+        .snapshot
+        .as_ref()?
+        .magic_dns_suffix
+        .as_deref()
+        .filter(|suffix| !suffix.is_empty())
+        .map(str::to_owned)
 }
 
 fn version_block(app: &App) -> Vec<(&'static str, String)> {
@@ -182,6 +194,18 @@ fn compact_line(app: &App) -> Line<'static> {
             identity,
             app.theme.style(theme::StyleRole::TextPrimary),
         ));
+        // One line has no rows to spend, so the domain follows the account
+        // rather than being dropped.
+        if let Some(domain) = tailnet_domain(app) {
+            spans.push(Span::styled(
+                "   ",
+                app.theme.style(theme::StyleRole::Surface),
+            ));
+            spans.push(Span::styled(
+                domain,
+                app.theme.style(theme::StyleRole::TextMuted),
+            ));
+        }
     }
     if let Some((note, role)) = staleness(app) {
         spans.push(Span::styled(

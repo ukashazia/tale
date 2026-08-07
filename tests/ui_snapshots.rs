@@ -837,3 +837,71 @@ fn the_header_is_a_spaced_block_that_hides_what_does_not_matter() {
         }
     }
 }
+
+/// An overlay is a panel above the screen, not a hole through it. `Clear` only
+/// resets cells to the terminal default, so a renderer whose base style carries
+/// a foreground and no background used to leave the view showing through.
+#[test]
+fn every_overlay_paints_a_surface_rather_than_showing_the_view_through_it() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    let Some(raised) = app.theme.style(StyleRole::SurfaceRaised).bg else {
+        return;
+    };
+    let Some(backdrop) = app.theme.style(StyleRole::Backdrop).bg else {
+        return;
+    };
+    assert_ne!(
+        raised, backdrop,
+        "a panel cannot be told from its backdrop in this theme"
+    );
+
+    let confirmation = tale::app::Overlay::Confirmation(Box::new(tale::app::ConfirmationState {
+        action_id: ActionId::ServicesFunnelUnpublish,
+        mutation: None,
+        admin_mutation: None,
+        admin_batch: None,
+        service_request: None,
+        operational_mutation: None,
+        handoff: None,
+        prompt: "This mapping stops being reachable from the public internet.".to_owned(),
+        required_phrase: Some("UNPUBLISH".to_owned()),
+        input: String::new(),
+        lose_ssh_checked: false,
+        preview_lines: vec!["Keep https:8443/ serving 3001.".to_owned()],
+        redacted_argv: vec!["serve".to_owned(), "--bg".to_owned()],
+        error: None,
+    }));
+
+    for overlay in [confirmation, tale::app::Overlay::QuitConfirmation] {
+        app.overlays.clear();
+        app.overlays.push(overlay);
+        let (width, height) = (80_u16, 24_u16);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = match Terminal::new(backend) {
+            Ok(terminal) => terminal,
+            Err(_) => return,
+        };
+        assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+        let buffer = terminal.backend().buffer();
+
+        // The middle of the screen is inside a two-thirds panel; the top-left
+        // corner is outside every one of them.
+        let inside = buffer.cell((width / 2, height / 2));
+        let outside = buffer.cell((0, 0));
+        assert!(inside.is_some());
+        assert!(outside.is_some());
+        if let (Some(inside), Some(outside)) = (inside, outside) {
+            assert_eq!(
+                inside.bg, raised,
+                "the panel interior is not painted with the raised surface"
+            );
+            assert_eq!(outside.bg, backdrop, "the backdrop stopped being painted");
+            assert_ne!(
+                inside.bg, outside.bg,
+                "the panel is indistinguishable from what is behind it"
+            );
+        }
+    }
+}

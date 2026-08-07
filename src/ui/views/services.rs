@@ -1,12 +1,13 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, Focus};
-use crate::domain::service::ServiceSection;
+use crate::domain::service::{ServiceMapping, ServiceResourceStatus, ServiceSection};
+use crate::ui::components::{grid, panel};
+use crate::ui::text;
 use crate::ui::theme;
-use crate::ui::views::{diagnostics, transfers};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector: Option<Rect>) {
     if app.focus == Focus::Inspector || wide_inspector.is_none() {
@@ -21,216 +22,236 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector: Opti
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
-    render_collection(frame, app, horizontal[0]);
-    render_inspector(frame, app, wide_inspector.unwrap_or(horizontal[1]));
+    if let Some(&collection) = horizontal.first() {
+        render_collection(frame, app, collection);
+    }
+    let inspector = wide_inspector.or_else(|| horizontal.get(1).copied());
+    if let Some(inspector) = inspector {
+        render_inspector(frame, app, inspector);
+    }
+}
+
+/// The sections as a tab strip. This belongs to the collection pane, not to
+/// the app, so it is drawn inside that pane's border.
+fn tab_line(app: &App) -> Line<'static> {
+    let current = app.views.services.section;
+    let mut spans = Vec::new();
+    for section in ServiceSection::ALL {
+        let selected = section == current;
+        spans.push(Span::styled(
+            format!(" {} ", section.label()),
+            if selected {
+                app.theme
+                    .style(theme::StyleRole::Focus)
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                app.theme.style(theme::StyleRole::TextMuted)
+            },
+        ));
+        spans.push(Span::styled(
+            " ",
+            app.theme.style(theme::StyleRole::Surface),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The route's own context, in the border where every other view keeps it.
+fn collection_title(app: &App) -> String {
+    let section = app.views.services.section;
+    let shown = section_row_count(app);
+    let total = match section {
+        ServiceSection::Serve => app.service_mapping_total(),
+        _ => shown,
+    };
+    let mut detail = Vec::new();
+    if section == ServiceSection::Serve {
+        let public = app
+            .visible_service_mappings()
+            .iter()
+            .filter(|mapping| mapping.exposure.is_public())
+            .count();
+        if public > 0 {
+            detail.push(format!("{public} public"));
+        }
+        let filter = app.views.services.filter_draft.trim();
+        if !filter.is_empty() {
+            detail.push(format!("/{filter}"));
+        }
+        let sort = app.views.services.sort;
+        detail.push(format!(
+            "{} {}",
+            sort.field.label(),
+            if sort.direction.is_ascending() {
+                "\u{2191}"
+            } else {
+                "\u{2193}"
+            }
+        ));
+    }
+    text::view_title(section.noun(), shown, total, &detail)
+}
+
+fn section_row_count(app: &App) -> usize {
+    match app.views.services.section {
+        ServiceSection::Serve => app.visible_service_mappings().len(),
+        ServiceSection::Taildrive if !app.alpha_local_features => 0,
+        ServiceSection::Taildrive => app
+            .services_snapshot
+            .taildrive
+            .value
+            .as_ref()
+            .map_or(0, Vec::len),
+        ServiceSection::Certificates => app
+            .services_snapshot
+            .certificate_domains
+            .value
+            .as_ref()
+            .map_or(0, Vec::len),
+    }
 }
 
 fn render_collection(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let mut lines = vec![Line::from(
-        ServiceSection::ALL
-            .iter()
-            .map(|section| {
-                if *section == app.views.services.section {
-                    format!("[{}]", section.label())
-                } else {
-                    section.label().to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("  "),
-    )];
-    lines.push(Line::from(format!(
-        "section: {} · status: {}",
-        app.views.services.section.label(),
-        section_status(app),
-    )));
+    let mut lines = vec![tab_line(app), Line::default()];
     if app.resolved_config.read_only {
         lines.push(Line::from(Span::styled(
-            "mode: read-only · local mutations disabled",
+            "Read-only: nothing here can be changed",
             app.theme.style(theme::StyleRole::StateDisabled),
         )));
     }
     if let Some(failure) = section_failure(app) {
         lines.push(Line::from(Span::styled(
-            format!("error: {} · {}", failure.kind.label(), failure.detail),
+            format!("{} · {}", failure.kind.label(), failure.detail),
             app.theme.style(theme::StyleRole::StateDanger),
         )));
     }
+    let (columns, mut rows) = section_rows(app);
+    if let Some(row) = rows.get_mut(app.views.services.selected) {
+        *row = row.clone().selected(true);
+    }
+    let body = if rows.is_empty() {
+        Vec::new()
+    } else {
+        grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
+    };
+    if body.is_empty() {
+        lines.extend(section_empty_message(app).into_iter().map(|line| {
+            Line::from(Span::styled(
+                line,
+                app.theme.style(theme::StyleRole::TextMuted),
+            ))
+        }));
+    } else {
+        lines.extend(body);
+    }
+    panel::render(frame, app, area, &collection_title(app), lines);
+}
+
+/// Every section is the same table, differing only in its columns. Exposure is
+/// the one genuinely dangerous state on this screen, so it is the one styled.
+fn section_rows(app: &App) -> (Vec<grid::Column>, Vec<grid::Row>) {
     match app.views.services.section {
-        ServiceSection::Serve => {
-            if let Some(status) = app.services_snapshot.serve.value.as_ref() {
-                lines.extend(status.mappings.iter().enumerate().map(|(index, mapping)| {
-                    Line::from(format!(
-                        "{} {}:{}{} → {} · {}",
-                        marker(index, app.views.services.selected),
-                        mapping.listener.label(),
-                        mapping.listener.port(),
-                        mapping.mount,
+        ServiceSection::Serve => (
+            vec![
+                grid::Column::fixed("EXPOSURE", 8),
+                grid::Column::fixed("LISTENER", 22),
+                grid::Column::fill("PATH", 1),
+                grid::Column::fill("BACKEND", 2),
+            ],
+            app.visible_service_mappings()
+                .into_iter()
+                .map(|mapping| {
+                    grid::Row::new(vec![
+                        mapping.exposure.label().to_owned(),
+                        listener_label(mapping),
+                        mapping.mount.as_path().to_owned(),
                         mapping.backend.argument(),
-                        mapping.exposure.label()
-                    ))
-                }));
-            }
-        }
-        ServiceSection::Funnel => {
-            if let Some(status) = app.services_snapshot.funnel.value.as_ref() {
-                lines.extend(status.mappings.iter().enumerate().map(|(index, mapping)| {
-                    Line::from(Span::styled(
-                        format!(
-                            "{} ◆ PUBLIC {}:{}{} → {}",
-                            marker(index, app.views.services.selected),
-                            mapping.listener.label(),
-                            mapping.listener.port(),
-                            mapping.mount,
-                            mapping.backend.argument()
-                        ),
-                        app.theme.style(theme::StyleRole::StatePublic),
-                    ))
-                }));
-            }
-        }
-        ServiceSection::Taildrop => {
-            lines.extend(transfers::taildrop_lines(app));
-        }
-        ServiceSection::Taildrive => {
-            lines.extend(transfers::taildrive_lines(app));
-        }
-        ServiceSection::Certificates => {
-            if let Some(domains) = app.services_snapshot.certificate_domains.value.as_ref() {
-                lines.extend(domains.iter().enumerate().map(|(index, domain)| {
-                    Line::from(format!(
-                        "{} eligible domain {domain}",
-                        marker(index, app.views.services.selected)
-                    ))
-                }));
-            }
-        }
-        ServiceSection::Metrics => lines.extend(diagnostics::metrics_lines(
-            app,
-            area.height.saturating_sub(6),
-        )),
-        ServiceSection::BugReport => lines.extend(diagnostics::bug_report_lines(app)),
+                    ])
+                    .with_role(if mapping.exposure.is_public() {
+                        theme::StyleRole::StatePublic
+                    } else {
+                        theme::StyleRole::TextPrimary
+                    })
+                })
+                .collect(),
+        ),
+        ServiceSection::Taildrive => (
+            vec![
+                grid::Column::fixed("NAME", 20),
+                grid::Column::fill("FOLDER", 1),
+            ],
+            if app.alpha_local_features {
+                app.services_snapshot
+                    .taildrive
+                    .value
+                    .iter()
+                    .flat_map(|shares| shares.iter())
+                    .map(|share| {
+                        grid::Row::new(vec![share.name.clone(), share.path.display().to_string()])
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        ),
+        ServiceSection::Certificates => (
+            vec![grid::Column::fill("DOMAIN", 1)],
+            app.services_snapshot
+                .certificate_domains
+                .value
+                .iter()
+                .flat_map(|domains| domains.iter())
+                .map(|domain| grid::Row::new(vec![domain.clone()]))
+                .collect(),
+        ),
     }
-    if lines.len() == 2 {
-        lines.push(Line::from(section_empty_message(app)));
-    }
-    lines.push(Line::from(
-        "j/k select · [/] section · a actions · Enter inspector",
-    ));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("local services"),
-            ),
-        area,
-    );
+}
+
+fn listener_label(mapping: &ServiceMapping) -> String {
+    format!("{}:{}", mapping.listener.label(), mapping.listener.port())
 }
 
 fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let section = app.views.services.section;
-    let capability = capability_text(app, section);
-    let mut lines = vec![
-        Line::from(format!("section     {}", section.label())),
-        Line::from(format!("capability  {capability}")),
-        Line::from(format!("source      {}", app.source_mode.label())),
-        Line::from(format!(
-            "client      {}",
-            app.services_snapshot
-                .command_version
-                .as_deref()
-                .unwrap_or("not returned")
-        )),
-        Line::from(format!(
-            "observed    {}",
-            app.services_snapshot
-                .observed_at
-                .map_or_else(|| "not returned".to_owned(), |value| value.to_string())
-        )),
-    ];
-    if let Some(failure) = section_failure(app) {
-        lines.push(Line::from(Span::styled(
-            format!("error: {} · {}", failure.kind.label(), failure.detail),
-            app.theme.style(theme::StyleRole::StateDanger),
-        )));
-    }
+    let mut lines = Vec::new();
     match section {
         ServiceSection::Serve => {
             if let Some(mapping) = app.selected_service_mapping() {
-                lines.push(Line::from(format!(
-                    "exposure    {}",
-                    mapping.exposure.label()
-                )));
-                lines.push(Line::from(format!(
-                    "listener    {}:{}",
-                    mapping.listener.label(),
-                    mapping.listener.port()
-                )));
-                lines.push(Line::from(format!("mount       {}", mapping.mount)));
-                lines.push(Line::from(format!(
-                    "backend     {}",
-                    mapping.backend.argument()
-                )));
-                lines.push(Line::from(format!(
-                    "proxy       {}",
-                    mapping.proxy_protocol.cli_value().unwrap_or("none")
-                )));
-            }
-        }
-        ServiceSection::Funnel => {
-            if let Some(mapping) = app.selected_service_mapping() {
-                lines.push(Line::from(Span::styled(
-                    "◆ PUBLIC     yes · public exposure",
-                    app.theme.style(theme::StyleRole::StatePublic),
-                )));
-                lines.push(Line::from(format!(
-                    "listener    {}:{}",
-                    mapping.listener.label(),
-                    mapping.listener.port()
-                )));
-                lines.push(Line::from(format!("mount       {}", mapping.mount)));
-                lines.push(Line::from(format!(
-                    "backend     {}",
-                    mapping.backend.argument()
-                )));
-            }
-        }
-        ServiceSection::Taildrop => {
-            if let Some(target) = app.selected_taildrop_target() {
-                lines.push(Line::from(format!("target      {}", target.command_target)));
-                lines.push(Line::from(format!("display     {}", target.display_name)));
-                lines.push(Line::from(format!("device      {}", target.device_name)));
-                lines.push(Line::from(format!(
-                    "online      {}",
-                    target
-                        .online
-                        .map_or("unknown", |value| if value { "yes" } else { "no" })
-                )));
-                if let Some(reason) = target.capability_reason.as_deref() {
-                    lines.push(Line::from(format!("reason      {reason}")));
+                if mapping.exposure.is_public() {
+                    lines.push(Line::from(Span::styled(
+                        "Reachable from the public internet",
+                        app.theme.style(theme::StyleRole::StatePublic),
+                    )));
+                    lines.push(Line::default());
                 }
-            } else {
-                lines.push(Line::from(
-                    "No waiting-file inventory is provided by this contract.",
-                ));
-            }
-            if app.resolved_config.read_only {
-                lines.push(Line::from(
-                    "mode        read-only · local mutations disabled",
-                ));
+                lines.push(field(app, "exposure", mapping.exposure.label()));
+                lines.push(field(app, "listener", &listener_label(&mapping)));
+                lines.push(field(app, "path", mapping.mount.as_path()));
+                lines.push(field(app, "backend", &mapping.backend.argument()));
+                lines.push(field(app, "backend kind", mapping.backend.label()));
+                if let Some(proxy) = mapping.proxy_protocol.cli_value() {
+                    lines.push(field(app, "proxy protocol", proxy));
+                }
             }
         }
         ServiceSection::Taildrive => {
-            lines.push(Line::from("ALPHA        enabled only for this run"));
-            if let Some(share) = app.selected_taildrive_share() {
-                lines.push(Line::from(format!("name        {}", share.name)));
-                lines.push(Line::from(format!("path        {}", share.path.display())));
-                lines.push(Line::from(format!(
-                    "as          {}",
-                    share.as_user.as_deref().unwrap_or("not returned")
+            if !app.alpha_local_features {
+                lines.push(Line::from(Span::styled(
+                    "Taildrive is alpha and off for this run",
+                    app.theme.style(theme::StyleRole::StateWarning),
                 )));
+                lines.push(Line::default());
+            }
+            if let Some(share) = app
+                .alpha_local_features
+                .then(|| app.selected_taildrive_share())
+                .flatten()
+            {
+                lines.push(field(app, "name", &share.name));
+                lines.push(field(app, "path", &share.path.display().to_string()));
+                if let Some(user) = share.as_user.as_deref() {
+                    lines.push(field(app, "as user", user));
+                }
             }
         }
         ServiceSection::Certificates => {
@@ -241,88 +262,88 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .as_ref()
                 .and_then(|domains| domains.get(app.views.services.selected))
             {
-                lines.push(Line::from(format!("domain      {domain}")));
+                lines.push(field(app, "domain", domain));
+                lines.push(Line::default());
             }
-            lines.push(Line::from(
-                "private-key contents are never rendered, copied, logged, or stored",
-            ));
-        }
-        ServiceSection::Metrics => {
-            lines.extend(diagnostics::metrics_lines(
-                app,
-                area.height.saturating_sub(8),
-            ));
-        }
-        ServiceSection::BugReport => {
-            lines.extend(diagnostics::bug_report_lines(app));
+            lines.push(Line::from(Span::styled(
+                "Private keys are never shown, copied, logged, or stored.",
+                app.theme.style(theme::StyleRole::TextMuted),
+            )));
         }
     }
-    lines.push(Line::from("a actions · Esc collection"));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("service inspector"),
-            ),
-        area,
-    );
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Nothing selected",
+            app.theme.style(theme::StyleRole::TextMuted),
+        )));
+    }
+    panel::render(frame, app, area, "inspector", lines);
 }
 
-fn marker(index: usize, selected: usize) -> &'static str {
-    if index == selected { ">" } else { " " }
+fn field(app: &App, name: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            text::pad_or_trim(name, 15),
+            app.theme.style(theme::StyleRole::TextMuted),
+        ),
+        Span::styled(
+            value.to_owned(),
+            app.theme.style(theme::StyleRole::TextPrimary),
+        ),
+    ])
 }
 
-fn section_status(app: &App) -> &'static str {
+fn section_status(app: &App) -> ServiceResourceStatus {
     match app.views.services.section {
-        ServiceSection::Serve => app.services_snapshot.serve.status.label(),
-        ServiceSection::Funnel => app.services_snapshot.funnel.status.label(),
-        ServiceSection::Taildrop => app.services_snapshot.taildrop_targets.status.label(),
-        ServiceSection::Taildrive => app.services_snapshot.taildrive.status.label(),
-        ServiceSection::Certificates => app.services_snapshot.certificate_domains.status.label(),
-        ServiceSection::Metrics => app.services_snapshot.metrics.status.label(),
-        ServiceSection::BugReport => app.services_snapshot.bug_report.status.label(),
+        ServiceSection::Serve => app.services_snapshot.mapping_status(),
+        ServiceSection::Taildrive => app.services_snapshot.taildrive.status,
+        ServiceSection::Certificates => app.services_snapshot.certificate_domains.status,
     }
 }
 
 fn section_failure(app: &App) -> Option<&crate::domain::service::ServiceFailure> {
     match app.views.services.section {
-        ServiceSection::Serve => app.services_snapshot.serve.failure.as_ref(),
-        ServiceSection::Funnel => app.services_snapshot.funnel.failure.as_ref(),
-        ServiceSection::Taildrop => app.services_snapshot.taildrop_targets.failure.as_ref(),
+        ServiceSection::Serve => app.services_snapshot.mapping_failure(),
         ServiceSection::Taildrive => app.services_snapshot.taildrive.failure.as_ref(),
         ServiceSection::Certificates => app.services_snapshot.certificate_domains.failure.as_ref(),
-        ServiceSection::Metrics => app.services_snapshot.metrics.failure.as_ref(),
-        ServiceSection::BugReport => app.services_snapshot.bug_report.failure.as_ref(),
     }
 }
 
-fn capability_text(app: &App, section: ServiceSection) -> String {
-    let state = match section {
-        ServiceSection::Serve => &app.services_snapshot.capabilities.serve,
-        ServiceSection::Funnel => &app.services_snapshot.capabilities.funnel,
-        ServiceSection::Taildrop => &app.services_snapshot.capabilities.taildrop,
-        ServiceSection::Taildrive => &app.services_snapshot.capabilities.taildrive,
-        ServiceSection::Certificates => &app.services_snapshot.capabilities.certificates,
-        ServiceSection::Metrics => &app.services_snapshot.capabilities.metrics,
-        ServiceSection::BugReport => &app.services_snapshot.capabilities.bug_report,
-    };
-    state
-        .reason
-        .as_deref()
-        .unwrap_or(state.status.label())
-        .to_owned()
-}
-
-fn section_empty_message(app: &App) -> String {
-    match app.views.services.section {
-        ServiceSection::Taildrop => {
-            "No Taildrop targets returned; waiting files are not inventoried.".to_owned()
+/// An empty box is a dead end. Name the reason and the next step.
+fn section_empty_message(app: &App) -> Vec<String> {
+    let section = app.views.services.section;
+    let noun = section.noun();
+    if section == ServiceSection::Taildrive && !app.alpha_local_features {
+        return vec![
+            "Taildrive is alpha and off for this run".to_owned(),
+            String::new(),
+            "  enable for this run    a e".to_owned(),
+        ];
+    }
+    if section == ServiceSection::Serve && !app.views.services.filter_draft.trim().is_empty() {
+        return vec![
+            format!("No {noun} match this filter"),
+            String::new(),
+            "  clear the filter       / then Esc".to_owned(),
+        ];
+    }
+    match section_status(app) {
+        ServiceResourceStatus::Idle => vec![
+            format!("No {noun} loaded yet"),
+            String::new(),
+            "  load                   r".to_owned(),
+        ],
+        ServiceResourceStatus::Loading => vec![format!("Loading {noun}…")],
+        ServiceResourceStatus::Unsupported => vec![format!(
+            "This version of the Tailscale client does not report {noun}."
+        )],
+        ServiceResourceStatus::Failed => vec![
+            format!("Reading {noun} failed"),
+            String::new(),
+            "  retry                  r".to_owned(),
+        ],
+        ServiceResourceStatus::Ready | ServiceResourceStatus::Stale => {
+            vec![format!("This machine has no {noun}")]
         }
-        ServiceSection::Taildrive if !app.alpha_local_features => {
-            "Taildrive is ALPHA and disabled. Use actions to enable it for this run.".to_owned()
-        }
-        _ => "No rows returned.".to_owned(),
     }
 }

@@ -1,16 +1,16 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::text::Line;
 
 use crate::app::App;
-use crate::ui::theme;
+use crate::ui::components::panel;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let resource = &app.admin.users;
     let mut items = Vec::new();
     if let Some(users) = resource.snapshot.as_ref() {
         for (index, user) in users.iter().enumerate() {
-            items.push(ListItem::new(format!(
+            items.push(Line::from(format!(
                 "{} {:<24} {:<18} {:<12} devices:{} last:{}",
                 if index == app.admin_user_selected {
                     ">"
@@ -33,7 +33,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .as_ref()
             .and_then(|users| users.get(app.admin_user_selected))
         {
-            items.push(ListItem::new(format!(
+            items.push(Line::from(format!(
                 "selected: {} · id:{} · currently_connected:{}",
                 user.label(),
                 user.id,
@@ -50,17 +50,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             resource.state,
             resource.error.as_deref(),
         ) {
-            items.push(ListItem::new(line));
+            items.push(Line::from(line));
         }
     }
-    frame.render_widget(
-        List::new(items)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("users · admin"),
-            ),
-        area,
-    );
+    panel::render(frame, app, area, "users · admin", items);
 }

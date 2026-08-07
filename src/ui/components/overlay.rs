@@ -14,7 +14,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         screen,
     );
     let area = overlay_area(frame.area(), overlay);
+    // `Clear` only resets cells to the terminal default, so an overlay whose own
+    // base style carries a foreground and no background reads as a hole in the
+    // screen rather than a panel above it. The surface is painted here, once,
+    // so no overlay can forget it; a renderer that sets its own raised surface
+    // paints the same colour over the top and nothing changes.
     frame.render_widget(Clear, area);
+    frame.render_widget(
+        ratatui::widgets::Block::default().style(app.theme.style(StyleRole::SurfaceRaised)),
+        area,
+    );
     match overlay {
         Overlay::QuitConfirmation => frame.render_widget(
             Paragraph::new(

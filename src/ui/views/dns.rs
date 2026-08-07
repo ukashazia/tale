@@ -1,11 +1,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::domain::diagnostic::DiagnosticResult;
-use crate::ui::theme;
+use crate::ui::components::panel;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let status =
@@ -119,10 +118,5 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             "Admin DNS edits replace only the selected server subresource; local DNS remains separate.",
         ));
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(Block::default().borders(Borders::ALL).title("dns")),
-        area,
-    );
+    panel::render(frame, app, area, "dns", lines);
 }

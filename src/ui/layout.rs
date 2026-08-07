@@ -84,7 +84,10 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
         ])
         .split(area);
     let content = vertical[1];
-    let inspector = if mode == LayoutMode::Wide && app.focus != Focus::Inspector {
+    let inspector = if mode == LayoutMode::Wide
+        && app.focus != Focus::Inspector
+        && app.inspector_pane_visible()
+    {
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])

@@ -102,6 +102,18 @@ pub fn capability_list(capabilities: &[(&str, bool)]) -> String {
     }
 }
 
+/// Tags are stored with the `tag:` prefix the API requires, but the prefix is
+/// the same on every row and buys the reader nothing, so it is dropped here.
+pub fn tag_list(tags: &[String]) -> String {
+    if tags.is_empty() {
+        return "-".to_owned();
+    }
+    tags.iter()
+        .map(|tag| tag.strip_prefix("tag:").unwrap_or(tag))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn format_bytes(value: Option<u64>) -> String {
     let Some(value) = value else {
         return "not reported".to_owned();

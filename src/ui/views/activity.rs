@@ -2,8 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::app::App;
-use crate::ui::components::{inspector, task_view};
-use crate::ui::theme::StyleRole;
+use crate::ui::components::{inspector, panel, task_view};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let regions = Layout::default()
@@ -24,35 +23,21 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             crate::ui::views::log_streams::summary(app),
             crate::ui::views::webhooks::summary(app)
         );
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(detail)
-                .style(app.theme.style(StyleRole::Surface))
-                .block(
-                    ratatui::widgets::Block::default()
-                        .borders(ratatui::widgets::Borders::ALL)
-                        .border_style(app.theme.style(StyleRole::BorderNormal))
-                        .title("task detail"),
-                ),
-            regions[1],
-        );
+        panel::render(frame, app, regions[1], "task detail", detail);
     } else {
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(format!(
+        panel::render(
+            frame,
+            app,
+            regions[1],
+            "task detail",
+            format!(
                 "Select a task with j/k; x cancels a cancellable task\n\nAdmin audit\n{}\n{}\n\n{}\n\n{}\n\n{}",
                 admin_audit_summary(app),
                 admin_audit_events(app),
                 crate::ui::views::flows::summary(app),
                 crate::ui::views::log_streams::summary(app),
                 crate::ui::views::webhooks::summary(app)
-            ))
-            .style(app.theme.style(StyleRole::Surface))
-            .block(
-                ratatui::widgets::Block::default()
-                    .borders(ratatui::widgets::Borders::ALL)
-                    .border_style(app.theme.style(StyleRole::BorderNormal))
-                    .title("task detail"),
             ),
-            regions[1],
         );
     }
     let _ = inspector::render;

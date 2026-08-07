@@ -1,8 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::App;
+use crate::ui::components::panel;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -37,14 +38,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         secret,
         metadata.warning,
     );
-    frame.render_widget(
-        Paragraph::new(text)
-            .style(app.theme.style(theme::StyleRole::Secret))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("secret result · closes permanently"),
-            ),
+    panel::render_styled(
+        frame,
+        app,
         area,
+        "secret result · closes permanently",
+        text,
+        theme::StyleRole::Secret,
+        theme::StyleRole::BorderDanger,
     );
 }

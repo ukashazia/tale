@@ -212,7 +212,7 @@ pub fn parse_taildrop_targets(input: &str) -> Result<Vec<TaildropTarget>, Transf
         let device_name = fields
             .get(2)
             .filter(|value| !value.is_empty())
-            .map_or_else(|| "not returned".to_owned(), |value| (*value).to_owned());
+            .map(|value| (*value).to_owned());
         if display_name.is_empty() {
             return Err(TransferParseError::new(
                 "Taildrop target display names must not be empty",

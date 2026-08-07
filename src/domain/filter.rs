@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use super::Timestamp;
 use super::device::{AdminDevice, Device, Liveness};
+use super::service::ServiceMapping;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FilterOperator {
@@ -292,6 +293,75 @@ pub const fn activity_schema() -> FilterSchema {
     }
 }
 
+const EXPOSURE_VALUES: &[&str] = &["tailnet", "public"];
+const LISTENER_VALUES: &[&str] = &["https", "http", "tcp", "tls-terminated-tcp"];
+
+const SERVICE_EXPOSURE_FIELDS: &[FilterFieldSpec] = &[
+    spec(
+        "exposure",
+        FilterField::Exposure,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(EXPOSURE_VALUES),
+        "who can reach it",
+    ),
+    spec(
+        "listener",
+        FilterField::Listener,
+        ENUM_OPERATORS,
+        FilterValueKind::Enumeration(LISTENER_VALUES),
+        "protocol",
+    ),
+    spec(
+        "port",
+        FilterField::Port,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "listening port",
+    ),
+];
+
+const SERVICE_TARGET_FIELDS: &[FilterFieldSpec] = &[
+    spec(
+        "path",
+        FilterField::Mount,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "mount path",
+    ),
+    spec(
+        "backend",
+        FilterField::Backend,
+        TEXT_OPERATORS,
+        FilterValueKind::Snapshot,
+        "what it proxies to",
+    ),
+];
+
+const SERVICE_FILTER_GROUPS: &[FilterFieldGroup] = &[
+    FilterFieldGroup {
+        label: "Exposure",
+        fields: SERVICE_EXPOSURE_FIELDS,
+    },
+    FilterFieldGroup {
+        label: "Target",
+        fields: SERVICE_TARGET_FIELDS,
+    },
+];
+
+pub const fn service_schema() -> FilterSchema {
+    FilterSchema {
+        free_text: "matches listener, path, and backend",
+        groups: SERVICE_FILTER_GROUPS,
+    }
+}
+
+pub const fn empty_schema() -> FilterSchema {
+    FilterSchema {
+        free_text: "",
+        groups: &[],
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FilterExpression {
     pub terms: Vec<FilterTerm>,
@@ -350,6 +420,10 @@ impl FilterExpression {
             .iter()
             .all(|term| term.matches_admin(device, now))
     }
+
+    pub fn matches_mapping(&self, mapping: &ServiceMapping) -> bool {
+        self.terms.iter().all(|term| term.matches_mapping(mapping))
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -386,6 +460,11 @@ pub enum FilterField {
     Sharing,
     Posture,
     RouteRole,
+    Exposure,
+    Listener,
+    Port,
+    Mount,
+    Backend,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -770,6 +849,18 @@ impl Comparison {
     }
 }
 
+/// Closed vocabularies compare exactly; free-text ones take a substring.
+fn mapping_field_matches(field: FilterField, value: &str, mapping: &ServiceMapping) -> bool {
+    match field {
+        FilterField::Exposure => mapping.exposure.label().eq_ignore_ascii_case(value),
+        FilterField::Listener => mapping.listener.label().eq_ignore_ascii_case(value),
+        FilterField::Port => contains_matches(&mapping.listener.port().to_string(), value),
+        FilterField::Mount => contains_matches(mapping.mount.as_path(), value),
+        FilterField::Backend => contains_matches(&mapping.backend.argument(), value),
+        _ => false,
+    }
+}
+
 impl FilterTerm {
     fn matches(&self, device: &Device, dns_name: Option<&str>, now: Timestamp) -> bool {
         match self {
@@ -827,6 +918,12 @@ impl FilterTerm {
                         | FilterField::Posture
                         | FilterField::RouteRole
                         | FilterField::LastSeen => true,
+                        // Mapping fields describe a Serve entry, never a device.
+                        FilterField::Exposure
+                        | FilterField::Listener
+                        | FilterField::Port
+                        | FilterField::Mount
+                        | FilterField::Backend => false,
                     })
                 };
                 if *negated { !matched } else { matched }
@@ -841,6 +938,51 @@ impl FilterTerm {
                     return true;
                 }
                 let matched = structured_device_field_matches(*field, value, *mode, device);
+                if *negated { !matched } else { matched }
+            }
+        }
+    }
+
+    fn matches_mapping(&self, mapping: &ServiceMapping) -> bool {
+        let port = mapping.listener.port().to_string();
+        let backend = mapping.backend.argument();
+        match self {
+            Self::Text(value) => [
+                mapping.listener.label(),
+                mapping.mount.as_path(),
+                backend.as_str(),
+                port.as_str(),
+            ]
+            .into_iter()
+            .any(|field| fuzzy_matches(field, value)),
+            Self::Field {
+                field,
+                negated,
+                values,
+                comparison,
+            } => {
+                // Mappings carry no age, so a comparison can never hold.
+                let matched = comparison.is_none()
+                    && values
+                        .iter()
+                        .any(|value| mapping_field_matches(*field, value, mapping));
+                if *negated { !matched } else { matched }
+            }
+            Self::StructuredField {
+                field,
+                negated,
+                value,
+                mode,
+            } => {
+                let candidate = match field {
+                    FilterField::Exposure => mapping.exposure.label(),
+                    FilterField::Listener => mapping.listener.label(),
+                    FilterField::Port => port.as_str(),
+                    FilterField::Mount => mapping.mount.as_path(),
+                    FilterField::Backend => backend.as_str(),
+                    _ => return !*negated,
+                };
+                let matched = text_matches(candidate, value, *mode);
                 if *negated { !matched } else { matched }
             }
         }
@@ -902,6 +1044,11 @@ fn admin_field_matches(
     now: Timestamp,
 ) -> bool {
     match field {
+        FilterField::Exposure
+        | FilterField::Listener
+        | FilterField::Port
+        | FilterField::Mount
+        | FilterField::Backend => false,
         FilterField::Id => contains_matches(&device.stable_id, value),
         FilterField::Name => {
             contains_matches(device.display_name(), value)
@@ -1024,6 +1171,11 @@ fn structured_device_field_matches(
         | FilterField::Sharing
         | FilterField::Posture
         | FilterField::RouteRole => true,
+        FilterField::Exposure
+        | FilterField::Listener
+        | FilterField::Port
+        | FilterField::Mount
+        | FilterField::Backend => false,
     }
 }
 
@@ -1093,6 +1245,11 @@ fn structured_admin_field_matches(
             admin_field_matches(field, candidate, device, now)
                 && text_matches(candidate, value, mode)
         }),
+        FilterField::Exposure
+        | FilterField::Listener
+        | FilterField::Port
+        | FilterField::Mount
+        | FilterField::Backend => false,
     }
 }
 

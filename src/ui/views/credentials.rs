@@ -1,16 +1,16 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::text::Line;
 
 use crate::app::App;
-use crate::ui::theme;
+use crate::ui::components::panel;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let resource = &app.admin.credentials;
     let mut items = Vec::new();
     if let Some(snapshot) = resource.snapshot.as_ref() {
         for credential in &snapshot.records {
-            items.push(ListItem::new(format!(
+            items.push(Line::from(format!(
                 "{:<18} {:<16} owner:{} scopes:{} tags:{} created:{} expires:{}{}",
                 credential.id,
                 credential.key_type,
@@ -33,11 +33,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 }
             )));
             if let Some(description) = credential.description.as_deref() {
-                items.push(ListItem::new(format!("  description: {description}")));
+                items.push(Line::from(format!("  description: {description}")));
             }
         }
         if snapshot.partial {
-            items.push(ListItem::new(format!(
+            items.push(Line::from(format!(
                 "partial inventory: {}",
                 snapshot
                     .partial_reason
@@ -49,7 +49,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         resource.state,
         crate::admin::AdminResourceState::Forbidden | crate::admin::AdminResourceState::Unsupported
     ) {
-        items.push(ListItem::new(
+        items.push(Line::from(
             "partial inventory: credential-specific read scope was not observed",
         ));
     }
@@ -61,17 +61,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             resource.state,
             resource.error.as_deref(),
         ) {
-            items.push(ListItem::new(line));
+            items.push(Line::from(line));
         }
     }
-    frame.render_widget(
-        List::new(items)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("credentials · metadata only"),
-            ),
-        area,
-    );
+    panel::render(frame, app, area, "credentials · metadata only", items);
 }

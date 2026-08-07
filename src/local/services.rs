@@ -132,17 +132,11 @@ pub fn mapping_command(
             "Funnel does not offer HTTP listeners".to_owned(),
         ));
     }
-    let listener_flag = match &mapping.listener {
-        Listener::Https(port) => format!("--https={port}"),
-        Listener::Http(port) => format!("--http={port}"),
-        Listener::Tcp(port) => format!("--tcp={port}"),
-        Listener::TlsTerminatedTcp(port) => format!("--tls-terminated-tcp={port}"),
-    };
     let mut args = vec![
         OsString::from(command),
         OsString::from("--bg"),
         OsString::from("--yes"),
-        OsString::from(listener_flag),
+        OsString::from(listener_flag(&mapping.listener)),
     ];
     if let PathMount::Path(path) = &mapping.mount {
         args.push(OsString::from(format!("--set-path={path}")));
@@ -152,6 +146,74 @@ pub fn mapping_command(
     }
     args.push(OsString::from(mapping.backend.argument()));
     Ok(LocalCommand::new(path.as_os_str().to_os_string(), operation, args).with_timeout(timeout))
+}
+
+/// Take down one mapping. `funnel … off` and `serve … off` are the same
+/// operation in the CLI — both delete the handler — but `funnel` first insists
+/// the node advertises Funnel, so the narrower command is always the right one.
+///
+/// `--set-path` is mandatory for HTTP and HTTPS: without it the CLI removes
+/// every mount on the port rather than the selected one.
+pub fn mapping_off_command(
+    path: &Path,
+    timeout: Duration,
+    mapping: &ServiceMapping,
+    confirmed: bool,
+) -> Result<LocalCommand, ServiceValueError> {
+    mapping.validate()?;
+    if !confirmed {
+        return Err(ServiceValueError(
+            "service commands require an accepted confirmation".to_owned(),
+        ));
+    }
+    let mut args = vec![
+        OsString::from("serve"),
+        OsString::from("--yes"),
+        OsString::from(listener_flag(&mapping.listener)),
+    ];
+    if mapping.listener.allows_path() {
+        args.push(OsString::from(format!(
+            "--set-path={}",
+            mapping.mount.as_path()
+        )));
+    }
+    args.push(OsString::from("off"));
+    Ok(LocalCommand::new(
+        path.as_os_str().to_os_string(),
+        LocalOperation::ServeOff,
+        args,
+    )
+    .with_timeout(timeout))
+}
+
+/// Stop publishing one mapping without taking it down. Nothing in the CLI turns
+/// Funnel off on its own, so the mapping is re-served as a tailnet mapping and
+/// the CLI clears the Funnel bit for that port on the way through.
+pub fn mapping_unpublish_command(
+    path: &Path,
+    timeout: Duration,
+    mapping: &ServiceMapping,
+    confirmed: bool,
+) -> Result<LocalCommand, ServiceValueError> {
+    if mapping.exposure != Exposure::Public {
+        return Err(ServiceValueError(
+            "only a public mapping can stop being published".to_owned(),
+        ));
+    }
+    let tailnet = ServiceMapping {
+        exposure: Exposure::Tailnet,
+        ..mapping.clone()
+    };
+    mapping_command(path, timeout, &tailnet, confirmed)
+}
+
+fn listener_flag(listener: &Listener) -> String {
+    match listener {
+        Listener::Https(port) => format!("--https={port}"),
+        Listener::Http(port) => format!("--http={port}"),
+        Listener::Tcp(port) => format!("--tcp={port}"),
+        Listener::TlsTerminatedTcp(port) => format!("--tls-terminated-tcp={port}"),
+    }
 }
 
 pub fn parse_serve_status(input: &str) -> Result<ServeStatus, ServiceDecodeError> {

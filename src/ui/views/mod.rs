@@ -16,6 +16,5 @@ pub mod routes;
 pub mod secret_result;
 pub mod services;
 pub mod settings;
-pub mod transfers;
 pub mod users;
 pub mod webhooks;

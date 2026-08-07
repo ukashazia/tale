@@ -183,7 +183,6 @@ pub enum Effect {
         secret: Arc<SecretBuffer>,
     },
     CopyText {
-        label: String,
         text: String,
     },
     CancelAdminRefresh,

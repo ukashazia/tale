@@ -1,229 +1,164 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 
 use crate::app::App;
-use crate::domain::device::{Device, Liveness};
+use crate::domain::device::{AdminDevice, Device, Liveness};
+use crate::ui::components::{grid, panel};
 use crate::ui::{text, theme};
 
-pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if !app.views.devices.columns.is_empty() {
-        render_registered_columns(frame, app, area);
-        return;
-    }
-    let local_extended = app.source_mode == crate::app::SourceMode::Local
-        && app.views.devices.wide_columns
-        && area.width >= 120;
-    let admin_extended =
-        app.admin.profile.is_some() && app.views.devices.wide_columns && area.width >= 120;
-    let local_traffic = local_extended && area.width >= 150;
-    let visible = app.visible_indices_arc();
-    let start = app.views.devices.scroll.min(visible.len());
-    let viewport = usize::from(area.height.saturating_sub(3));
-    let rows = visible
-        .iter()
-        .skip(start)
-        .take(viewport)
-        .filter_map(|index| {
-            let device = app.devices_resource.snapshot.get(*index)?;
-            let selected = app
-                .views
-                .devices
-                .selected_id
-                .as_ref()
-                .is_some_and(|id| id == &device.id);
-            Some(device_row(
-                app,
-                device,
-                selected,
-                area.width,
-                local_extended,
-                local_traffic,
-                admin_extended,
-            ))
-        });
-    let header_values = if local_traffic {
-        vec![
-            "S",
-            "NAME",
-            "OWNER/TAGS",
-            "OS",
-            "PATH",
-            "SEEN",
-            "IP",
-            "VER",
-            "ROUTES",
-            "ROLE",
-            "RX",
-            "TX",
-        ]
-    } else if local_extended {
-        vec![
-            "S",
-            "NAME",
-            "OWNER/TAGS",
-            "OS",
-            "PATH",
-            "SEEN",
-            "IP",
-            "VER",
-            "ROUTES",
-            "ROLE",
-        ]
-    } else if admin_extended {
-        vec![
-            "S",
-            "NAME",
-            "OWNER/TAGS",
-            "OS",
-            "PATH",
-            "SEEN",
-            "IP",
-            "VER",
-            "APPROVAL",
-            "KEY",
-            "ROLE",
-            "POSTURE",
-        ]
-    } else if app.views.devices.wide_columns {
-        vec!["S", "NAME", "OWNER/TAGS", "OS", "PATH", "SEEN", "IP", "VER"]
-    } else {
-        vec!["S", "NAME", "OWNER/TAGS", "OS", "PATH", "SEEN"]
-    };
-    let header = Row::new(header_values).style(app.theme.style(theme::StyleRole::TextPrimary));
-    let widths = if local_traffic {
-        vec![
-            ConstraintWidth::Fixed(2),
-            ConstraintWidth::Fill(13),
-            ConstraintWidth::Fill(16),
-            ConstraintWidth::Fill(7),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(6),
-            ConstraintWidth::Fill(14),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(14),
-            ConstraintWidth::Fill(10),
-            ConstraintWidth::Fill(10),
-            ConstraintWidth::Fill(10),
-        ]
-    } else if local_extended {
-        vec![
-            ConstraintWidth::Fixed(2),
-            ConstraintWidth::Fill(13),
-            ConstraintWidth::Fill(16),
-            ConstraintWidth::Fill(7),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(6),
-            ConstraintWidth::Fill(14),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(14),
-            ConstraintWidth::Fill(10),
-        ]
-    } else if admin_extended {
-        vec![
-            ConstraintWidth::Fixed(2),
-            ConstraintWidth::Fill(13),
-            ConstraintWidth::Fill(16),
-            ConstraintWidth::Fill(7),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(6),
-            ConstraintWidth::Fill(14),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(12),
-            ConstraintWidth::Fill(12),
-            ConstraintWidth::Fill(14),
-            ConstraintWidth::Fill(10),
-        ]
-    } else if app.views.devices.wide_columns {
-        vec![
-            ConstraintWidth::Fixed(2),
-            ConstraintWidth::Fill(13),
-            ConstraintWidth::Fill(16),
-            ConstraintWidth::Fill(7),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(6),
-            ConstraintWidth::Fill(14),
-            ConstraintWidth::Fill(9),
-        ]
-    } else {
-        vec![
-            ConstraintWidth::Fixed(2),
-            ConstraintWidth::Fill(13),
-            ConstraintWidth::Fill(16),
-            ConstraintWidth::Fill(7),
-            ConstraintWidth::Fill(9),
-            ConstraintWidth::Fill(6),
-        ]
-    };
-    let constraints = widths
-        .into_iter()
-        .map(ConstraintWidth::constraint)
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        Table::new(rows, constraints)
-            .header(header)
-            .column_spacing(1)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
-                    .title(devices_title(app)),
-            ),
-        area,
-    );
+/// When a column is worth its width. The device table used to carry five
+/// parallel header lists and five parallel width lists that had to be kept in
+/// step by hand; it is one ordered list with a predicate instead.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Tier {
+    Always,
+    /// Shown once the user asks for wide columns.
+    Wide,
+    /// Needs the local client and the width to carry it.
+    Local,
+    /// Needs an admin profile.
+    Admin,
+    /// Either of the two above, sharing one column.
+    LocalOrAdmin,
+    /// Local, and wide enough for traffic counters.
+    Traffic,
 }
 
-fn render_registered_columns(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let visible = app.visible_indices_arc();
-    let start = app.views.devices.scroll.min(visible.len());
-    let viewport = usize::from(area.height.saturating_sub(3));
-    let rows = visible
+struct Layout {
+    wide: bool,
+    local: bool,
+    admin: bool,
+    traffic: bool,
+}
+
+impl Layout {
+    fn shows(&self, tier: Tier) -> bool {
+        match tier {
+            Tier::Always => true,
+            Tier::Wide => self.wide,
+            Tier::Local => self.local,
+            Tier::Admin => self.admin,
+            Tier::LocalOrAdmin => self.local || self.admin,
+            Tier::Traffic => self.traffic,
+        }
+    }
+}
+
+/// Header, width, and when it appears. The order here is the order on screen.
+const COLUMNS: &[(&str, Tier, grid::Width)] = &[
+    ("S", Tier::Always, grid::Width::Fixed(2)),
+    ("NAME", Tier::Always, grid::Width::Fill(13)),
+    ("OWNER", Tier::Always, grid::Width::Fill(14)),
+    ("TAGS", Tier::Always, grid::Width::Fill(12)),
+    ("OS", Tier::Always, grid::Width::Fill(7)),
+    ("RELAY", Tier::Always, grid::Width::Fill(9)),
+    ("SEEN", Tier::Always, grid::Width::Fill(6)),
+    ("IP", Tier::Wide, grid::Width::Fill(14)),
+    ("VER", Tier::Wide, grid::Width::Fill(9)),
+    ("ROUTES", Tier::Local, grid::Width::Fill(14)),
+    ("APPROVAL", Tier::Admin, grid::Width::Fill(12)),
+    ("KEY", Tier::Admin, grid::Width::Fill(12)),
+    ("ROLE", Tier::LocalOrAdmin, grid::Width::Fill(14)),
+    ("POSTURE", Tier::Admin, grid::Width::Fill(10)),
+    ("RX", Tier::Traffic, grid::Width::Fill(10)),
+    ("TX", Tier::Traffic, grid::Width::Fill(10)),
+];
+
+pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let (columns, rows) = if app.views.devices.columns.is_empty() {
+        default_table(app, area)
+    } else {
+        registered_table(app, area)
+    };
+    let lines = grid::lines(app, &columns, &rows, area.width.saturating_sub(4));
+    panel::render(frame, app, area, &devices_title(app), lines);
+}
+
+fn layout_for(app: &App, area: Rect) -> Layout {
+    let local = app.source_mode == crate::app::SourceMode::Local;
+    let wide = app.views.devices.wide_columns && area.width >= 120;
+    Layout {
+        wide: app.views.devices.wide_columns,
+        local: local && wide,
+        admin: app.admin.profile.is_some() && wide,
+        traffic: local && wide && area.width >= 150,
+    }
+}
+
+fn default_table(app: &App, area: Rect) -> (Vec<grid::Column>, Vec<grid::Row>) {
+    let layout = layout_for(app, area);
+    let columns = COLUMNS
         .iter()
-        .skip(start)
-        .take(viewport)
-        .filter_map(|index| {
-            let device = app.devices_resource.snapshot.get(*index)?;
-            let selected = app
-                .views
-                .devices
-                .selected_id
-                .as_ref()
-                .is_some_and(|id| id == &device.id);
-            Some(registered_device_row(app, device, selected, area.width))
-        });
-    let mut headers = vec!["S".to_owned()];
-    headers.extend(app.views.devices.columns.iter().cloned());
-    let header = Row::new(headers).style(app.theme.style(theme::StyleRole::TextPrimary));
-    let mut widths = vec![ConstraintWidth::Fixed(2)];
-    widths.extend(
+        .filter(|(_, tier, _)| layout.shows(*tier))
+        .map(|(header, _, width)| grid::Column {
+            header: (*header).to_owned(),
+            width: *width,
+        })
+        .collect::<Vec<_>>();
+    let rows = visible_devices(app, area)
+        .map(|(device, selected)| {
+            let cells = COLUMNS
+                .iter()
+                .filter(|(_, tier, _)| layout.shows(*tier))
+                .map(|(header, _, _)| cell(app, device, header))
+                .collect::<Vec<_>>();
+            grid::Row::new(cells).selected(selected)
+        })
+        .collect();
+    (columns, rows)
+}
+
+/// A saved view names its own columns, so the header is whatever it asked for.
+fn registered_table(app: &App, area: Rect) -> (Vec<grid::Column>, Vec<grid::Row>) {
+    let mut columns = vec![grid::Column::fixed("S", 2)];
+    columns.extend(
         app.views
             .devices
             .columns
             .iter()
-            .map(|_| ConstraintWidth::Fill(12)),
+            .map(|name| grid::Column::fill(name.to_uppercase(), 10)),
     );
-    let constraints = widths
-        .into_iter()
-        .map(ConstraintWidth::constraint)
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        Table::new(rows, constraints)
-            .header(header)
-            .column_spacing(1)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
-                    .title("devices · saved columns"),
-            ),
-        area,
-    );
+    let rows = visible_devices(app, area)
+        .map(|(device, selected)| {
+            let mut cells = vec![liveness_cell(app, device)];
+            cells.extend(
+                app.views
+                    .devices
+                    .columns
+                    .iter()
+                    .map(|name| grid::Cell::new(registered_value(app, device, name))),
+            );
+            grid::Row::new(cells).selected(selected)
+        })
+        .collect();
+    (columns, rows)
 }
 
-fn registered_device_row(app: &App, device: &Device, selected: bool, width: u16) -> Row<'static> {
+fn visible_devices<'a>(app: &'a App, area: Rect) -> impl Iterator<Item = (&'a Device, bool)> + 'a {
+    let visible = app.visible_indices_arc();
+    let start = app.views.devices.scroll.min(visible.len());
+    let viewport = usize::from(area.height.saturating_sub(3));
+    visible
+        .iter()
+        .skip(start)
+        .take(viewport)
+        .filter_map(|index| app.devices_resource.snapshot.get(*index))
+        .map(|device| {
+            let selected = app
+                .views
+                .devices
+                .selected_id
+                .as_ref()
+                .is_some_and(|id| id == &device.id);
+            (device, selected)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// The one cell that means something the row does not: whether the device is
+/// reachable at all.
+fn liveness_cell(app: &App, device: &Device) -> grid::Cell {
     let marker = if app.resolved_config.ui.symbols.unicode() {
         match device.liveness {
             Liveness::Online => "●",
@@ -233,258 +168,138 @@ fn registered_device_row(app: &App, device: &Device, selected: bool, width: u16)
     } else {
         device.liveness.marker()
     };
-    let cells = app
-        .views
-        .devices
-        .columns
-        .iter()
-        .map(|column| {
-            let value = match column.as_str() {
-                "id" => device.id.0.clone(),
-                "name" => device.display_name.clone(),
-                "owner" => device
-                    .owner
-                    .as_deref()
-                    .or(device.owner_label.as_deref())
-                    .map_or_else(|| "-".to_owned(), str::to_owned),
-                "version" => device.version.clone(),
-                "last_seen" => device
-                    .age_at(app.now)
-                    .map_or_else(|| "-".to_owned(), format_age),
-                "os" => device.os.label().to_owned(),
-                "path" => device.path.label().to_owned(),
-                "tags" => {
-                    if device.tags.is_empty() {
-                        "-".to_owned()
-                    } else {
-                        device.tags.join(",")
-                    }
-                }
-                "online" | "state" => device.liveness.label().to_owned(),
-                "source" => app.source_mode.label().to_owned(),
-                _ => "not returned".to_owned(),
-            };
-            Cell::from(text::ellipsize(&value, usize::from(width.max(12))))
+    grid::Cell::new(marker).with_role(match device.liveness {
+        Liveness::Online => theme::StyleRole::StateHealthy,
+        Liveness::Offline => theme::StyleRole::StateOffline,
+        Liveness::Unknown => theme::StyleRole::StateUnknown,
+    })
+}
+
+fn cell(app: &App, device: &Device, header: &str) -> grid::Cell {
+    match header {
+        "S" => liveness_cell(app, device),
+        "NAME" => grid::Cell::new(device.display_name.clone()),
+        "OWNER" => grid::Cell::new(
+            device
+                .owner
+                .as_deref()
+                .or(device.owner_label.as_deref())
+                .unwrap_or("-"),
+        ),
+        "TAGS" => grid::Cell::new(text::tag_list(&device.tags)),
+        "OS" => grid::Cell::new(device.os.label()),
+        "RELAY" => grid::Cell::new(device.path.relay_label()),
+        "SEEN" => grid::Cell::new(
+            device
+                .age_at(app.now)
+                .map_or_else(|| "-".to_owned(), text::format_age),
+        ),
+        "IP" => grid::Cell::new(device.addresses.join(", ")),
+        "VER" => grid::Cell::new(device.version.clone()),
+        "ROUTES" => grid::Cell::new(device.advertised_routes.join(", ")),
+        "RX" => grid::Cell::new(optional_bytes(device.rx_bytes)),
+        "TX" => grid::Cell::new(optional_bytes(device.tx_bytes)),
+        "ROLE" if app.source_mode == crate::app::SourceMode::Local => {
+            grid::Cell::new(text::capability_list(&[
+                ("exit", device.capabilities.exit_node),
+                ("option", device.capabilities.exit_node_option),
+                ("router", device.capabilities.subnet_router),
+                ("ssh", device.capabilities.ssh),
+                ("shared", device.capabilities.shared),
+            ]))
+        }
+        _ => admin_cell(app, device, header),
+    }
+}
+
+fn admin_cell(app: &App, device: &Device, header: &str) -> grid::Cell {
+    let admin = app.admin.devices.snapshot.as_ref().and_then(|devices| {
+        devices.iter().find(|candidate| {
+            candidate.stable_id == device.id.0
+                || candidate.exact_node_id() == Some(device.id.0.as_str())
         })
-        .collect::<Vec<_>>();
-    let marker_role = match device.liveness {
-        Liveness::Online => theme::StyleRole::StateHealthy,
-        Liveness::Offline => theme::StyleRole::StateOffline,
-        Liveness::Unknown => theme::StyleRole::StateUnknown,
+    });
+    let Some(admin) = admin else {
+        return grid::Cell::new("unknown");
     };
-    let mut values = vec![Cell::from(Span::styled(
-        marker.to_owned(),
-        app.theme.style(marker_role),
-    ))];
-    values.extend(cells);
-    let row = Row::new(values);
-    if selected {
-        row.style(app.theme.style(theme::StyleRole::Selection))
-    } else {
-        row
+    grid::Cell::new(match header {
+        "APPROVAL" => match admin.authorized {
+            Some(true) => "approved".to_owned(),
+            Some(false) => "pending".to_owned(),
+            None => "unknown".to_owned(),
+        },
+        "KEY" => key_expiry(app, admin),
+        "ROLE" => route_role(admin),
+        "POSTURE" => match admin.posture_present {
+            Some(true) => "present".to_owned(),
+            Some(false) => "empty".to_owned(),
+            None => "not loaded".to_owned(),
+        },
+        _ => "unknown".to_owned(),
+    })
+}
+
+fn key_expiry(app: &App, admin: &AdminDevice) -> String {
+    if admin.key_expiry_disabled == Some(true) {
+        return "disabled".to_owned();
     }
+    admin.expires_at.map_or_else(
+        || "unknown".to_owned(),
+        |expires| {
+            if expires <= app.now {
+                "expired".to_owned()
+            } else {
+                text::format_age(expires.saturating_sub(app.now))
+            }
+        },
+    )
 }
 
-#[derive(Clone, Copy)]
-enum ConstraintWidth {
-    Fixed(u16),
-    Fill(u16),
-}
-
-impl ConstraintWidth {
-    const fn constraint(self) -> ratatui::layout::Constraint {
-        match self {
-            Self::Fixed(value) => ratatui::layout::Constraint::Length(value),
-            Self::Fill(value) => ratatui::layout::Constraint::Min(value),
-        }
+fn route_role(admin: &AdminDevice) -> String {
+    if !admin.advertised_routes_returned && !admin.enabled_routes_returned {
+        return "unknown".to_owned();
     }
-}
-
-fn device_row(
-    app: &App,
-    device: &Device,
-    selected: bool,
-    width: u16,
-    local_extended: bool,
-    local_traffic: bool,
-    admin_extended: bool,
-) -> Row<'static> {
-    let owner = device
-        .owner
-        .as_deref()
-        .or(device.owner_label.as_deref())
-        .map_or("-", |value| value);
-    let owner_tags = if device.tags.is_empty() {
-        owner.to_owned()
-    } else {
-        format!("{} · {}", owner, device.tags.join(","))
+    let exit = |routes: &[String]| {
+        routes
+            .iter()
+            .any(|route| route == "0.0.0.0/0" || route == "::/0")
     };
-    let seen = device
-        .age_at(app.now)
-        .map_or_else(|| "-".to_owned(), format_age);
-    let marker = if app.resolved_config.ui.symbols.unicode() {
-        match device.liveness {
-            Liveness::Online => "●",
-            Liveness::Offline => "○",
-            Liveness::Unknown => "?",
-        }
-    } else {
-        match device.liveness {
-            Liveness::Online => "*",
-            Liveness::Offline => "o",
-            Liveness::Unknown => "?",
-        }
-    };
-    let name_width = usize::from(width.saturating_sub(45));
-    let marker_role = match device.liveness {
-        Liveness::Online => theme::StyleRole::StateHealthy,
-        Liveness::Offline => theme::StyleRole::StateOffline,
-        Liveness::Unknown => theme::StyleRole::StateUnknown,
-    };
-    let mut cells = vec![
-        Cell::from(Span::styled(
-            marker.to_owned(),
-            app.theme.style(marker_role),
-        )),
-        Cell::from(text::ellipsize(&device.display_name, name_width.max(8))),
-        Cell::from(text::ellipsize(&owner_tags, 22)),
-        Cell::from(text::ellipsize(device.os.label(), 9)),
-        Cell::from(text::ellipsize(device.path.label(), 11)),
-        Cell::from(seen),
-    ];
-    if app.views.devices.wide_columns {
-        cells.push(Cell::from(text::ellipsize(
-            &device.addresses.join(", "),
-            20,
-        )));
-        cells.push(Cell::from(text::ellipsize(&device.version, 12)));
-    }
-    if local_extended {
-        cells.push(Cell::from(text::ellipsize(
-            &device.advertised_routes.join(", "),
-            20,
-        )));
-        let mut roles = Vec::new();
-        if device.capabilities.exit_node {
-            roles.push("exit");
-        }
-        if device.capabilities.exit_node_option {
-            roles.push("option");
-        }
-        if device.capabilities.subnet_router {
-            roles.push("router");
-        }
-        if device.capabilities.ssh {
-            roles.push("ssh");
-        }
-        if device.capabilities.shared {
-            roles.push("shared");
-        }
-        cells.push(Cell::from(text::ellipsize(&roles.join(","), 14)));
-    }
-    if admin_extended {
-        let admin = app.admin.devices.snapshot.as_ref().and_then(|devices| {
-            devices.iter().find(|candidate| {
-                candidate.stable_id == device.id.0
-                    || candidate.exact_node_id() == Some(device.id.0.as_str())
-            })
-        });
-        let approval = admin.map_or_else(
-            || "unknown".to_owned(),
-            |value| match value.authorized {
-                Some(true) => "approved".to_owned(),
-                Some(false) => "pending".to_owned(),
-                None => "unknown".to_owned(),
-            },
-        );
-        let key = admin.map_or_else(
-            || "unknown".to_owned(),
-            |value| {
-                if value.key_expiry_disabled == Some(true) {
-                    "disabled".to_owned()
-                } else {
-                    value.expires_at.map_or_else(
-                        || "unknown".to_owned(),
-                        |expires| {
-                            if expires <= app.now {
-                                "expired".to_owned()
-                            } else {
-                                expires.to_string()
-                            }
-                        },
-                    )
-                }
-            },
-        );
-        let role = admin.map_or_else(
-            || "unknown".to_owned(),
-            |value| {
-                if !value.advertised_routes_returned && !value.enabled_routes_returned {
-                    "unknown".to_owned()
-                } else {
-                    let mut roles = Vec::new();
-                    if value
-                        .advertised_routes
-                        .iter()
-                        .any(|route| route == "0.0.0.0/0" || route == "::/0")
-                    {
-                        roles.push("exit-advert");
-                    }
-                    if value
-                        .enabled_routes
-                        .iter()
-                        .any(|route| route == "0.0.0.0/0" || route == "::/0")
-                    {
-                        roles.push("exit-enabled");
-                    }
-                    if !value.advertised_routes.is_empty() {
-                        roles.push("subnet-advert");
-                    }
-                    if roles.is_empty() {
-                        "none".to_owned()
-                    } else {
-                        roles.join(",")
-                    }
-                }
-            },
-        );
-        let posture = admin.map_or("unknown", |value| match value.posture_present {
-            Some(true) => "present",
-            Some(false) => "empty",
-            None => "not loaded",
-        });
-        cells.push(Cell::from(text::ellipsize(&approval, 12)));
-        cells.push(Cell::from(text::ellipsize(&key, 12)));
-        cells.push(Cell::from(text::ellipsize(&role, 14)));
-        cells.push(Cell::from(posture));
-    }
-    if local_traffic {
-        cells.push(Cell::from(format_optional_bytes(device.rx_bytes)));
-        cells.push(Cell::from(format_optional_bytes(device.tx_bytes)));
-    }
-    let row = Row::new(cells);
-    if selected {
-        row.style(app.theme.style(theme::StyleRole::Selection))
-    } else {
-        row
+    text::capability_list(&[
+        ("exit-advert", exit(&admin.advertised_routes)),
+        ("exit-enabled", exit(&admin.enabled_routes)),
+        ("subnet-advert", !admin.advertised_routes.is_empty()),
+    ])
+}
+
+fn registered_value(app: &App, device: &Device, name: &str) -> String {
+    match name {
+        "id" => device.id.0.clone(),
+        "name" => device.display_name.clone(),
+        "owner" => device
+            .owner
+            .as_deref()
+            .or(device.owner_label.as_deref())
+            .map_or_else(|| "-".to_owned(), str::to_owned),
+        "version" => device.version.clone(),
+        "last_seen" => device
+            .age_at(app.now)
+            .map_or_else(|| "-".to_owned(), text::format_age),
+        "os" => device.os.label().to_owned(),
+        "path" => device.path.label().to_owned(),
+        "relay" => device.path.relay_label().to_owned(),
+        "tags" => text::tag_list(&device.tags),
+        "online" | "state" => device.liveness.label().to_owned(),
+        "source" => app.source_mode.label().to_owned(),
+        _ => "-".to_owned(),
     }
 }
 
-fn format_age(seconds: u64) -> String {
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3_599 => format!("{}m", seconds / 60),
-        3_600..=86_399 => format!("{}h", seconds / 3_600),
-        _ => format!("{}d", seconds / 86_400),
-    }
+fn optional_bytes(value: Option<u64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |value| text::format_bytes(Some(value)))
 }
 
-fn format_optional_bytes(value: Option<u64>) -> String {
-    value.map_or_else(|| "-".to_owned(), |value| value.to_string())
-}
-
-/// Route context now lives in the border: what this is, how much of it is
-/// showing, and the terms that narrowed it.
+/// Route context lives in the border: what this is, how much of it is showing,
+/// and the terms that narrowed it.
 fn devices_title(app: &App) -> String {
     let mut detail = Vec::new();
     if !app.views.devices.filter_draft.is_empty() {
@@ -496,9 +311,10 @@ fn devices_title(app: &App) -> String {
     detail.push(format!(
         "{} {}",
         app.views.devices.sort.field.display_label(),
-        match app.views.devices.sort.direction {
-            crate::domain::device::SortDirection::Ascending => "↑",
-            crate::domain::device::SortDirection::Descending => "↓",
+        if app.views.devices.sort.direction.is_ascending() {
+            "\u{2191}"
+        } else {
+            "\u{2193}"
         }
     ));
     if app.admin.profile.is_some() {

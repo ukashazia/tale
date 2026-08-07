@@ -6,7 +6,9 @@ use super::Timestamp;
 pub struct TaildropTarget {
     pub command_target: String,
     pub display_name: String,
-    pub device_name: String,
+    /// The client does not always report a separate device name; when it does
+    /// not, there is nothing to show rather than a sentinel to print.
+    pub device_name: Option<String>,
     pub online: Option<bool>,
     pub capability_reason: Option<String>,
 }

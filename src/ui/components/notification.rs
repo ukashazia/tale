@@ -29,7 +29,7 @@ fn message(app: &App) -> String {
                 || {
                     app.copied_value.as_ref().map_or_else(
                         || option_string_or_empty(app.devices_resource.error.clone()),
-                        |value| format!("copied: {value}"),
+                        |value| format!("copied: {}", one_line(value)),
                     )
                 },
                 |notification| notification.message.clone(),
@@ -54,6 +54,23 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         area,
     );
 }
+
+/// What went to the clipboard, said back in one line. A copied field can be
+/// several addresses or a whole policy; the bar confirms what landed there, so
+/// it shows the beginning rather than growing to fit or wrapping into the view.
+fn one_line(value: &str) -> String {
+    let joined = value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    crate::ui::text::ellipsize(&joined, COPIED_WIDTH)
+}
+
+/// Long enough for an address list or a URL, short enough to stay on one row
+/// beside the widths Tale supports.
+const COPIED_WIDTH: usize = 72;
 
 fn option_string_or_empty(value: Option<String>) -> String {
     let mut result = String::new();

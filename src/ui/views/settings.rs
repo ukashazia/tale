@@ -1,9 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
 
 use crate::app::App;
+use crate::ui::components::panel;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -175,11 +175,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // applies at once, so this row is the preview. It goes first because the
     // settings list below it is long.
     let mut items = vec![
-        ListItem::new(Line::from(vec![Span::styled(
+        Line::from(vec![Span::styled(
             format!("{:<25} {}", "PALETTE", "a appearance changes the theme"),
             app.theme.style(theme::StyleRole::SectionHeading),
-        )])),
-        ListItem::new(Line::from(vec![
+        )]),
+        Line::from(vec![
             Span::raw(" ".repeat(26)),
             Span::styled("✓ healthy", app.theme.style(theme::StyleRole::StateHealthy)),
             Span::raw("  "),
@@ -189,8 +189,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 "X danger/public",
                 app.theme.style(theme::StyleRole::StatePublic),
             ),
-        ])),
-        ListItem::new(Line::from(vec![
+        ]),
+        Line::from(vec![
             Span::raw(" ".repeat(26)),
             Span::styled("local", app.theme.style(theme::StyleRole::SourceLocal)),
             Span::raw("  "),
@@ -200,29 +200,20 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 "local+admin",
                 app.theme.style(theme::StyleRole::SourceCombined),
             ),
-        ])),
-        ListItem::new(Line::default()),
-        ListItem::new(Line::from(vec![Span::styled(
+        ]),
+        Line::default(),
+        Line::from(vec![Span::styled(
             format!("{:<25} {:<32} [{}]", "SETTING", "VALUE", "SOURCE"),
             app.theme.style(theme::StyleRole::SectionHeading),
-        )])),
+        )]),
     ];
     items.extend(values.into_iter().map(|setting| {
-        ListItem::new(format!(
+        Line::from(format!(
             "{:<25} {:<32} [{}]",
             setting.name,
             setting.value,
             setting.source.label()
         ))
     }));
-    frame.render_widget(
-        List::new(items)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("settings · read-only"),
-            ),
-        area,
-    );
+    panel::render(frame, app, area, "settings · read-only", items);
 }

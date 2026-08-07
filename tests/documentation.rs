@@ -124,3 +124,34 @@ fn semantic_theme_decision_ledger_and_evidence_are_present() {
         }
     }
 }
+
+/// Shared components exist so a second copy cannot drift from the first. A view
+/// building its own bordered box or its own table is how `┌inspector─` ended up
+/// beside `┌ devices ─`, and how two width solvers ended up in one crate.
+#[test]
+fn views_do_not_build_their_own_panels_or_tables() {
+    let mut offenders = Vec::new();
+    let Ok(entries) = std::fs::read_dir("src/ui/views") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "rs") {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if source.contains("Block::default()") {
+            offenders.push(format!("{} builds its own border", path.display()));
+        }
+        if source.contains("Borders::ALL") {
+            offenders.push(format!("{} sets its own borders", path.display()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "use components::panel instead:\n{}",
+        offenders.join("\n")
+    );
+}

@@ -247,10 +247,13 @@ fn parse_node(value: &Value, users: &BTreeMap<String, String>) -> Result<LocalDe
     }
     let id = first_string(value, &["ID", "Id", "NodeID", "NodeId"])
         .ok_or_else(|| "local node has no stable identity".to_owned())?;
-    let display_name = match first_string(value, &["HostName", "Hostname", "Name", "DNSName"]) {
-        Some(value) => value,
-        None => id.clone(),
-    };
+    let dns_name = first_string(value, &["DNSName", "DnsName", "dnsName"]);
+    let display_name = dns_name
+        .as_deref()
+        .and_then(dns_label)
+        .map(str::to_owned)
+        .or_else(|| first_string(value, &["HostName", "Hostname", "Name"]))
+        .unwrap_or_else(|| id.clone());
     let hostname = match first_string(value, &["HostName", "Hostname", "Name"]) {
         Some(value) => value,
         None => display_name.clone(),
@@ -282,7 +285,7 @@ fn parse_node(value: &Value, users: &BTreeMap<String, String>) -> Result<LocalDe
         public_key: first_string(value, &["PublicKey", "publicKey"]),
         display_name,
         hostname,
-        dns_name: first_string(value, &["DNSName", "DnsName", "dnsName"]),
+        dns_name,
         os: parse_os(first_string(value, &["OS", "Os", "os"])),
         version: first_string(value, &["ClientVersion", "Version", "version"]),
         owner_label,
@@ -330,6 +333,12 @@ fn parse_users(value: Option<&Value>) -> BTreeMap<String, String> {
     users
 }
 
+/// `tailscale status` names a node by the first label of its MagicDNS name,
+/// which is often not the OS hostname. Follow it so the two agree.
+fn dns_label(value: &str) -> Option<&str> {
+    value.split('.').next().filter(|label| !label.is_empty())
+}
+
 fn parse_os(value: Option<String>) -> OperatingSystem {
     match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
         Some("linux") => OperatingSystem::Linux,
@@ -342,19 +351,24 @@ fn parse_os(value: Option<String>) -> OperatingSystem {
     }
 }
 
+/// The daemon reports these fields as empty strings rather than omitting them,
+/// and `Relay` names a peer's home DERP region whether or not that region is
+/// carrying traffic. So a current address decides the path first, as it does in
+/// `tailscale status`, and the region only speaks for a peer with no address.
 fn parse_path(value: &Value, endpoint: Option<&str>, relay: Option<&str>) -> ConnectionPath {
-    if let Some(peer) = first_string(value, &["PeerRelay", "PeerRelayNode", "peerRelay"]) {
+    let present = |value: &str| !value.is_empty() && !value.eq_ignore_ascii_case("false");
+    if let Some(peer) =
+        first_string(value, &["PeerRelay", "PeerRelayNode", "peerRelay"]).filter(|v| present(v))
+    {
         return ConnectionPath::PeerRelay { peer };
     }
-    if let Some(relay) =
-        relay.filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("false"))
-    {
-        return ConnectionPath::Derp {
-            region: relay.to_owned(),
-        };
-    }
-    if endpoint.is_some_and(|value| !value.is_empty()) {
+    if endpoint.is_some_and(present) {
         return ConnectionPath::Direct { latency_ms: None };
+    }
+    if let Some(region) = relay.filter(|v| present(v)) {
+        return ConnectionPath::Derp {
+            region: region.to_owned(),
+        };
     }
     match first_bool(value, &["Active", "active"]) {
         Some(true) => ConnectionPath::Unknown("active without endpoint".to_owned()),

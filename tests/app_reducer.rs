@@ -202,7 +202,7 @@ fn navigation_palette_is_canonical_and_fuzzy() {
         assert!(matches!(
             &app.interaction,
             InteractionMode::CommandLine(state)
-                if state.candidates.len() == 11
+                if state.candidates.len() == 12
                     && state.candidates.first().map(|candidate| candidate.route)
                         == Some(Route::Devices)
         ));
@@ -947,9 +947,9 @@ fn opening_a_detail_can_always_be_left_again() {
 
         // And the way back is advertised while it applies.
         press(&mut app, KeyCode::Enter);
-        let detail = action::footer_hints(ActionContext::Detail, 200);
+        let detail = action::footer_hints(ActionContext::Detail, Route::Devices, 200);
         assert!(detail.iter().any(|hint| hint == "h back"));
-        let collection = action::footer_hints(ActionContext::Collection, 200);
+        let collection = action::footer_hints(ActionContext::Collection, Route::Devices, 200);
         assert!(!collection.iter().any(|hint| hint == "h back"));
     }
 }

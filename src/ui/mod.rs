@@ -21,14 +21,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             "Tale needs at least 60 columns and 18 rows. Current terminal: {}x{}\nResize the terminal or press q to quit.",
             area.width, area.height
         );
-        frame.render_widget(
-            components::panel::paragraph(
-                message,
-                "minimum size",
-                app.theme.style(theme::StyleRole::SurfaceRaised),
-            ),
-            area,
-        );
+        components::panel::render(frame, app, area, "minimum size", message);
         components::interaction_shell::render_minimum(frame, app, area);
         return;
     }
@@ -46,6 +39,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Route::Activity => views::activity::render(frame, app, layout.content),
         Route::Settings => views::settings::render(frame, app, layout.content),
         Route::Services => views::services::render(frame, app, layout.content, layout.inspector),
+        Route::Diagnostics => views::diagnostics::render(frame, app, layout.content),
     }
     components::notification::render(frame, app, layout.notification);
     components::interaction_shell::render(frame, app, layout.footer);

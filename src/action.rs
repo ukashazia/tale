@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::Route;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum ActionId {
     AppQuit,
@@ -21,6 +23,7 @@ pub enum ActionId {
     CollectionBack,
     CollectionSort,
     CollectionWideColumns,
+    CollectionInspect,
     ResourceActions,
     ResourceCopy,
     TaskCancel,
@@ -49,18 +52,20 @@ pub enum ActionId {
     LocalNcOpen,
     LocalSyspolicyReload,
     ViewServices,
+    ViewDiagnostics,
     ServicesSectionNext,
     ServicesSectionPrevious,
     ServicesServeRefresh,
     ServicesServeCreate,
     ServicesServeEdit,
+    ServicesServeRemove,
     ServicesServeReset,
-    ServicesFunnelRefresh,
     ServicesFunnelCreate,
     ServicesFunnelEdit,
+    ServicesFunnelUnpublish,
     ServicesFunnelReset,
-    ServicesTaildropSend,
-    ServicesTaildropReceive,
+    DevicesTaildropSend,
+    DevicesTaildropReceive,
     ServicesDriveRefresh,
     ServicesDriveShare,
     ServicesDriveRename,
@@ -173,6 +178,7 @@ impl ActionId {
             Self::CollectionBack => "collection.back",
             Self::CollectionSort => "collection.sort",
             Self::CollectionWideColumns => "collection.wide_columns",
+            Self::CollectionInspect => "collection.inspect",
             Self::ResourceActions => "resource.actions",
             Self::ResourceCopy => "resource.copy",
             Self::TaskCancel => "task.cancel",
@@ -201,18 +207,20 @@ impl ActionId {
             Self::LocalNcOpen => "local.nc.open",
             Self::LocalSyspolicyReload => "local.syspolicy.reload",
             Self::ViewServices => "view.services",
+            Self::ViewDiagnostics => "view.diagnostics",
             Self::ServicesSectionNext => "services.section.next",
             Self::ServicesSectionPrevious => "services.section.previous",
             Self::ServicesServeRefresh => "services.serve.refresh",
             Self::ServicesServeCreate => "services.serve.create",
             Self::ServicesServeEdit => "services.serve.edit",
+            Self::ServicesServeRemove => "services.serve.remove",
             Self::ServicesServeReset => "services.serve.reset",
-            Self::ServicesFunnelRefresh => "services.funnel.refresh",
             Self::ServicesFunnelCreate => "services.funnel.create",
             Self::ServicesFunnelEdit => "services.funnel.edit",
+            Self::ServicesFunnelUnpublish => "services.funnel.unpublish",
             Self::ServicesFunnelReset => "services.funnel.reset",
-            Self::ServicesTaildropSend => "services.taildrop.send",
-            Self::ServicesTaildropReceive => "services.taildrop.receive",
+            Self::DevicesTaildropSend => "devices.taildrop.send",
+            Self::DevicesTaildropReceive => "devices.taildrop.receive",
             Self::ServicesDriveRefresh => "services.drive.refresh",
             Self::ServicesDriveShare => "services.drive.share",
             Self::ServicesDriveRename => "services.drive.rename",
@@ -325,6 +333,7 @@ impl ActionId {
             Self::CollectionBack,
             Self::CollectionSort,
             Self::CollectionWideColumns,
+            Self::CollectionInspect,
             Self::ResourceActions,
             Self::ResourceCopy,
             Self::TaskCancel,
@@ -353,18 +362,20 @@ impl ActionId {
             Self::LocalNcOpen,
             Self::LocalSyspolicyReload,
             Self::ViewServices,
+            Self::ViewDiagnostics,
             Self::ServicesSectionNext,
             Self::ServicesSectionPrevious,
             Self::ServicesServeRefresh,
             Self::ServicesServeCreate,
             Self::ServicesServeEdit,
+            Self::ServicesServeRemove,
             Self::ServicesServeReset,
-            Self::ServicesFunnelRefresh,
             Self::ServicesFunnelCreate,
             Self::ServicesFunnelEdit,
+            Self::ServicesFunnelUnpublish,
             Self::ServicesFunnelReset,
-            Self::ServicesTaildropSend,
-            Self::ServicesTaildropReceive,
+            Self::DevicesTaildropSend,
+            Self::DevicesTaildropReceive,
             Self::ServicesDriveRefresh,
             Self::ServicesDriveShare,
             Self::ServicesDriveRename,
@@ -523,40 +534,40 @@ pub enum Binding {
     Char(char),
     Ctrl(char),
     Enter,
+    Tab,
+    BackTab,
+}
+
+/// Every printable ASCII character as its own string, indexed by code point.
+/// This is a table rather than a match so that binding a key Tale has not used
+/// before cannot silently render as a placeholder.
+const PRINTABLE_ASCII: [&str; 95] = [
+    " ", "!", "\"", "#", "$", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/", "0", "1", "2",
+    "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@", "A", "B", "C", "D", "E",
+    "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X",
+    "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k",
+    "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~",
+];
+
+const fn printable_label(character: char) -> &'static str {
+    let index = (character as u32).wrapping_sub(0x20) as usize;
+    if index < PRINTABLE_ASCII.len() {
+        PRINTABLE_ASCII[index]
+    } else {
+        "key"
+    }
 }
 
 impl Binding {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Char(' ') => "Space",
-            Self::Char(':') => ":",
-            Self::Char('/') => "/",
-            Self::Char('?') => "?",
-            Self::Char('@') => "@",
-            Self::Char('[') => "[",
-            Self::Char(']') => "]",
-            Self::Char('H') => "H",
-            Self::Char('L') => "L",
-            Self::Char('R') => "R",
-            Self::Char(value) => match value {
-                'j' => "j",
-                'k' => "k",
-                'g' => "g",
-                'G' => "G",
-                'r' => "r",
-                's' => "s",
-                'w' => "w",
-                'a' => "a",
-                'y' => "y",
-                'q' => "q",
-                'x' => "x",
-                'l' => "l",
-                'h' => "h",
-                _ => "key",
-            },
+            Self::Char(character) => printable_label(character),
             Self::Ctrl('d') => "C-d",
             Self::Ctrl('u') => "C-u",
             Self::Enter => "Enter",
+            Self::Tab => "Tab",
+            Self::BackTab => "S-Tab",
             Self::Ctrl(_) => "C-key",
         }
     }
@@ -574,6 +585,12 @@ impl Binding {
                     && key.modifiers.contains(KeyModifiers::CONTROL)
             }
             Self::Enter => key.code == KeyCode::Enter && key.modifiers.is_empty(),
+            Self::Tab => key.code == KeyCode::Tab && key.modifiers.is_empty(),
+            // Crossterm reports Shift-Tab as BackTab and still sets SHIFT.
+            Self::BackTab => {
+                key.code == KeyCode::BackTab
+                    && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+            }
         }
     }
 }
@@ -626,6 +643,7 @@ const BIND_OPEN: &[Binding] = &[Binding::Enter, Binding::Char('l')];
 const BIND_BACK: &[Binding] = &[Binding::Char('h')];
 const BIND_SORT: &[Binding] = &[Binding::Char('s')];
 const BIND_WIDE: &[Binding] = &[Binding::Char('w')];
+const BIND_INSPECT: &[Binding] = &[Binding::Char('i')];
 const BIND_ACTIONS: &[Binding] = &[Binding::Char('a')];
 const BIND_COPY: &[Binding] = &[Binding::Char('y')];
 const BIND_CANCEL: &[Binding] = &[Binding::Char('x')];
@@ -828,6 +846,18 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             capability: Capability::Available,
             risk: Risk::Observe,
         },
+        // `Enter` opens the inspector and `h` leaves it; one key that does both
+        // is what you want when the pane is a reference you glance at.
+        ActionSpec {
+            id: ActionId::CollectionInspect,
+            label: "Inspector",
+            description: "Show or hide the inspector pane",
+            contexts: COLLECTION,
+            selection_rule: SelectionRule::None,
+            default_bindings: BIND_INSPECT,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
         ActionSpec {
             id: ActionId::ResourceActions,
             label: "Actions",
@@ -947,12 +977,20 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::LocalNetcheckLive => Some("dl"),
         ActionId::LocalDnsStatus => Some("ds"),
         ActionId::LocalDnsQuery => Some("dq"),
-        ActionId::ServicesServeRefresh | ActionId::ServicesFunnelRefresh => Some("r"),
-        ActionId::ServicesServeCreate | ActionId::ServicesFunnelCreate => Some("c"),
-        ActionId::ServicesServeEdit | ActionId::ServicesFunnelEdit => Some("e"),
-        ActionId::ServicesServeReset | ActionId::ServicesFunnelReset => Some("x"),
-        ActionId::ServicesTaildropSend => Some("s"),
-        ActionId::ServicesTaildropReceive => Some("r"),
+        ActionId::ServicesServeRefresh => Some("r"),
+        ActionId::ServicesServeCreate => Some("ct"),
+        ActionId::ServicesFunnelCreate => Some("cp"),
+        ActionId::ServicesServeEdit => Some("e"),
+        // `d` deletes the one selected row; the `x` prefix stays reserved for
+        // the two resets so a single letter never means "all of them".
+        ActionId::ServicesServeRemove => Some("d"),
+        ActionId::ServicesFunnelUnpublish => Some("u"),
+        ActionId::ServicesServeReset => Some("xt"),
+        ActionId::ServicesFunnelReset => Some("xp"),
+        // `f` for files, drilled into, because the devices menu already spends
+        // `s`, `r` and `d` on admin device actions.
+        ActionId::DevicesTaildropSend => Some("fs"),
+        ActionId::DevicesTaildropReceive => Some("fr"),
         ActionId::ServicesDriveRefresh => Some("r"),
         ActionId::ServicesDriveShare => Some("s"),
         ActionId::ServicesDriveRename => Some("n"),
@@ -964,7 +1002,9 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::AdminDeviceRename => Some("r"),
         ActionId::AdminDeviceTagsReplace => Some("t"),
         ActionId::AdminDeviceApprove => Some("a"),
-        ActionId::AdminDeviceRevokeApproval => Some("v"),
+        // Not `v`: the saved-view sequences are `v` followed by a letter, and a
+        // leaf that is also a prefix makes the whole devices menu unopenable.
+        ActionId::AdminDeviceRevokeApproval => Some("u"),
         ActionId::AdminDeviceKeyExpiryConfigure => Some("k"),
         ActionId::AdminDeviceKeyExpireNow => Some("x"),
         ActionId::AdminDeviceDelete => Some("d"),
@@ -1101,12 +1141,13 @@ pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
         ActionId::ServicesServeRefresh
         | ActionId::ServicesServeCreate
         | ActionId::ServicesServeEdit
-        | ActionId::ServicesServeReset => Some(TransientGroup::Serve),
-        ActionId::ServicesFunnelRefresh
+        | ActionId::ServicesServeRemove
+        | ActionId::ServicesServeReset
         | ActionId::ServicesFunnelCreate
         | ActionId::ServicesFunnelEdit
-        | ActionId::ServicesFunnelReset => Some(TransientGroup::Funnel),
-        ActionId::ServicesTaildropSend | ActionId::ServicesTaildropReceive => {
+        | ActionId::ServicesFunnelUnpublish
+        | ActionId::ServicesFunnelReset => Some(TransientGroup::Serve),
+        ActionId::DevicesTaildropSend | ActionId::DevicesTaildropReceive => {
             Some(TransientGroup::Taildrop)
         }
         ActionId::ServicesDriveRefresh
@@ -1188,8 +1229,8 @@ pub fn validate_transient_sequences(actions: &[ActionId]) -> Result<(), String> 
     Ok(())
 }
 
-pub fn footer_hints(context: ActionContext, width: u16) -> Vec<String> {
-    footer_actions(context, width)
+pub fn footer_hints(context: ActionContext, route: Route, width: u16) -> Vec<String> {
+    footer_actions(context, route, width)
         .into_iter()
         .map(|hint| hint.text())
         .collect()
@@ -1216,7 +1257,7 @@ impl FooterHint {
     }
 }
 
-pub fn footer_actions(context: ActionContext, width: u16) -> Vec<FooterHint> {
+pub fn footer_actions(context: ActionContext, route: Route, width: u16) -> Vec<FooterHint> {
     let mut used = 0usize;
     let mut hints = Vec::new();
     let mut specs = all_actions()
@@ -1224,12 +1265,8 @@ pub fn footer_actions(context: ActionContext, width: u16) -> Vec<FooterHint> {
         .filter(|spec| {
             spec.contexts.contains(&context)
                 && !spec.default_bindings.is_empty()
-                && !matches!(
-                    spec.id,
-                    ActionId::ViewHelp
-                        | ActionId::ServicesSectionNext
-                        | ActionId::ServicesSectionPrevious
-                )
+                && spec.id != ActionId::ViewHelp
+                && applies_to_route(spec.id, route)
         })
         .collect::<Vec<_>>();
     specs.sort_by_key(|spec| footer_priority(spec.id));
@@ -1264,16 +1301,39 @@ pub fn footer_actions(context: ActionContext, width: u16) -> Vec<FooterHint> {
     hints
 }
 
+/// Some keys are bound in a shared context but only mean something on one
+/// route. Offering them everywhere is how `w columns` ended up on a screen with
+/// no columns and `S section` never appeared on the one screen that has them.
+pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
+    match id {
+        ActionId::ServicesSectionNext | ActionId::ServicesSectionPrevious => {
+            matches!(route, Route::Services)
+        }
+        ActionId::CollectionWideColumns | ActionId::CollectionInspect => {
+            matches!(route, Route::Devices)
+        }
+        // Diagnostics is one scrolling body: nothing to open into, no rows to
+        // filter, no columns to order by.
+        ActionId::CollectionOpen | ActionId::ViewFilter | ActionId::CollectionSort => {
+            !matches!(route, Route::Diagnostics)
+        }
+        _ => true,
+    }
+}
+
 const fn footer_priority(id: ActionId) -> u8 {
     match id {
         ActionId::CollectionMoveUp => 0,
         ActionId::CollectionMoveDown => 1,
         ActionId::CollectionOpen => 2,
+        ActionId::ServicesSectionNext => 2,
+        ActionId::ServicesSectionPrevious => 3,
         ActionId::CollectionBack => 3,
         ActionId::TaskCancel => 3,
         ActionId::ViewFilter => 4,
         ActionId::CollectionSort => 5,
         ActionId::CollectionWideColumns => 6,
+        ActionId::CollectionInspect => 6,
         ActionId::ResourceActions => 7,
         ActionId::ResourceCopy => 8,
         ActionId::ViewCommandLine => 9,
@@ -1312,11 +1372,12 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
         ActionId::CollectionBack => Some("back"),
         ActionId::CollectionSort => Some("sort"),
         ActionId::CollectionWideColumns => Some("columns"),
+        ActionId::CollectionInspect => Some("inspector"),
         ActionId::ResourceActions => Some("actions"),
         ActionId::ResourceCopy => Some("copy"),
         ActionId::TaskCancel => Some("cancel"),
-        ActionId::ServicesSectionNext => Some("next-section"),
-        ActionId::ServicesSectionPrevious => Some("prev-section"),
+        ActionId::ServicesSectionNext => Some("next tab"),
+        ActionId::ServicesSectionPrevious => Some("previous tab"),
         _ => None,
     }
 }
@@ -1605,29 +1666,39 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
             risk: Risk::Observe,
         },
         ActionSpec {
+            id: ActionId::ViewDiagnostics,
+            label: "Diagnostics",
+            description: "Open client metrics and the bug report",
+            contexts: GLOBAL,
+            selection_rule: SelectionRule::None,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
             id: ActionId::ServicesSectionNext,
-            label: "Next service section",
-            description: "Select the next local services subsection",
+            label: "Next tab",
+            description: "Move to the next local service tab",
             contexts: SERVICES_NAVIGATION,
             selection_rule: SelectionRule::None,
-            default_bindings: &[Binding::Char('L')],
+            default_bindings: &[Binding::Tab],
             capability: Capability::Available,
             risk: Risk::Observe,
         },
         ActionSpec {
             id: ActionId::ServicesSectionPrevious,
-            label: "Previous service section",
-            description: "Select the previous local services subsection",
+            label: "Previous tab",
+            description: "Move to the previous local service tab",
             contexts: SERVICES_NAVIGATION,
             selection_rule: SelectionRule::None,
-            default_bindings: &[Binding::Char('H')],
+            default_bindings: &[Binding::BackTab],
             capability: Capability::Available,
             risk: Risk::Observe,
         },
         ActionSpec {
             id: ActionId::ServicesServeRefresh,
-            label: "Refresh Serve",
-            description: "Inspect local Serve mappings",
+            label: "Refresh mappings",
+            description: "Re-read Serve and Funnel mappings",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -1636,8 +1707,8 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesServeCreate,
-            label: "Create Serve mapping",
-            description: "Create a tailnet-only Serve mapping",
+            label: "Create tailnet mapping",
+            description: "Serve a backend to the tailnet only",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -1646,8 +1717,8 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesServeEdit,
-            label: "Edit Serve mapping",
-            description: "Replace one local Serve mapping",
+            label: "Edit mapping",
+            description: "Change what the selected mapping serves",
             contexts: SERVICES,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -1655,8 +1726,18 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
             risk: Risk::Reversible,
         },
         ActionSpec {
+            id: ActionId::ServicesServeRemove,
+            label: "Remove mapping",
+            description: "Remove only the selected mapping",
+            contexts: SERVICES,
+            selection_rule: SelectionRule::One,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
+        },
+        ActionSpec {
             id: ActionId::ServicesServeReset,
-            label: "Reset Serve",
+            label: "Remove all tailnet mappings",
             description: "Remove every local Serve mapping",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
@@ -1665,18 +1746,8 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
             risk: Risk::Disruptive,
         },
         ActionSpec {
-            id: ActionId::ServicesFunnelRefresh,
-            label: "Refresh Funnel",
-            description: "Inspect public Funnel mappings",
-            contexts: SERVICES,
-            selection_rule: SelectionRule::None,
-            default_bindings: NO_BINDING,
-            capability: Capability::Available,
-            risk: Risk::Observe,
-        },
-        ActionSpec {
             id: ActionId::ServicesFunnelCreate,
-            label: "Create public Funnel",
+            label: "Create public mapping",
             description: "Expose one mapping publicly through Funnel",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
@@ -1686,7 +1757,7 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesFunnelEdit,
-            label: "Edit public Funnel",
+            label: "Edit public mapping",
             description: "Replace one public Funnel mapping",
             contexts: SERVICES,
             selection_rule: SelectionRule::One,
@@ -1695,8 +1766,18 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
             risk: Risk::Disruptive,
         },
         ActionSpec {
+            id: ActionId::ServicesFunnelUnpublish,
+            label: "Stop publishing",
+            description: "Keep the selected mapping but make it tailnet-only",
+            contexts: SERVICES,
+            selection_rule: SelectionRule::One,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
+        },
+        ActionSpec {
             id: ActionId::ServicesFunnelReset,
-            label: "Reset Funnel",
+            label: "Remove all public mappings",
             description: "Remove every public Funnel mapping",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
@@ -1704,19 +1785,21 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
             capability: Capability::Available,
             risk: Risk::Disruptive,
         },
+        // Taildrop is device to device, so it lives on `:devices`: the selected
+        // row is the target rather than a second list of the same machines.
         ActionSpec {
-            id: ActionId::ServicesTaildropSend,
-            label: "Send with Taildrop",
-            description: "Send selected regular files to a visible target",
+            id: ActionId::DevicesTaildropSend,
+            label: "Send files",
+            description: "Send regular files to the selected device",
             contexts: SERVICES,
-            selection_rule: SelectionRule::None,
+            selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
             risk: Risk::Reversible,
         },
         ActionSpec {
-            id: ActionId::ServicesTaildropReceive,
-            label: "Receive with Taildrop",
+            id: ActionId::DevicesTaildropReceive,
+            label: "Receive files",
             description: "Receive one Taildrop batch into a directory",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,

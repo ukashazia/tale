@@ -1,9 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
+use crate::ui::components::panel;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -43,12 +43,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Line::from(Span::styled(line.to_owned(), style))
         }));
     } else {
-        lines.push(Line::from(
-            resource
-                .error
-                .as_deref()
-                .map_or("policy source not returned", |value| value),
-        ));
+        lines.push(Line::from(resource.error.as_deref().map_or_else(
+            || "policy source not returned".to_owned(),
+            str::to_owned,
+        )));
     }
     lines.push(Line::from(""));
     lines.extend(
@@ -56,14 +54,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .lines()
             .map(|line| Line::from(line.to_owned())),
     );
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("access · preserved HuJSON source · read-only"),
-            ),
+    panel::render(
+        frame,
+        app,
         area,
+        "access · preserved HuJSON source · read-only",
+        lines,
     );
 }

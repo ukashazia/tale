@@ -9,8 +9,9 @@ use tale::domain::service::{
 use tale::domain::transfer::TaildropConflict;
 use tale::local::certificates::certificate_command;
 use tale::local::services::{
-    bugreport_command, funnel_status_command, mapping_command, parse_bugreport_identifier,
-    parse_funnel_status, parse_serve_status, redacted_metrics, serve_status_command,
+    bugreport_command, funnel_status_command, mapping_command, mapping_off_command,
+    mapping_unpublish_command, parse_bugreport_identifier, parse_funnel_status, parse_serve_status,
+    redacted_metrics, serve_status_command,
 };
 use tale::local::transfers::{
     drive_list_command, drive_rename_command, drive_share_command, drive_unshare_command,
@@ -265,13 +266,14 @@ fn parser_and_transfer_commands_cover_targets_progress_and_conflicts() {
     let minimal = parse_taildrop_targets(include_str!(
         "fixtures/local/transfers/1.98.9/linux/taildrop-targets-minimal.tsv"
     ));
+    // A field the client did not send is absent, not the words "not returned".
     assert_eq!(
         minimal
             .as_ref()
             .ok()
             .and_then(|targets| targets.first())
-            .map(|target| target.device_name.as_str()),
-        Some("not returned")
+            .map(|target| target.device_name.as_deref()),
+        Some(None)
     );
     let progress = parse_taildrop_progress("copying file 25%", 100);
     assert_eq!(progress.as_ref().and_then(|value| value.percent), Some(25));
@@ -418,4 +420,148 @@ fn taildrive_mutation_commands_keep_names_and_paths_distinct() {
     let unshare =
         drive_unshare_command(Path::new("tailscale"), Duration::from_secs(1), "new share");
     assert!(unshare.is_ok());
+}
+
+fn public_mapping(port_value: u16, mount: &str) -> Option<tale::domain::service::ServiceMapping> {
+    Some(tale::domain::service::ServiceMapping {
+        exposure: Exposure::Public,
+        listener: Listener::Https(valid_port(port_value)?),
+        mount: PathMount::parse(mount).ok()?,
+        backend: Backend::Port(valid_port(3001)?),
+        proxy_protocol: ProxyProtocol::None,
+        hostname: Some("public.example.ts.net".to_owned()),
+    })
+}
+
+fn argv(command: &tale::local::process::LocalCommand) -> Vec<String> {
+    command
+        .args
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Removing one mapping must name its mount. Without `--set-path` the CLI takes
+/// down every handler on the port, which is the reset this action exists to
+/// avoid, and a root mount is exactly the case where forgetting it is easiest.
+#[test]
+fn removing_one_mapping_always_names_its_mount_and_never_asks_for_funnel() {
+    let Some(root) = public_mapping(8443, "/") else {
+        return;
+    };
+    let removal = mapping_off_command(Path::new("tailscale"), Duration::from_secs(1), &root, true);
+    assert!(removal.is_ok());
+    if let Ok(removal) = removal {
+        assert_eq!(
+            argv(&removal),
+            vec!["serve", "--yes", "--https=8443", "--set-path=/", "off"]
+        );
+    }
+
+    let Some(nested) = public_mapping(8443, "/api") else {
+        return;
+    };
+    let nested = mapping_off_command(
+        Path::new("tailscale"),
+        Duration::from_secs(1),
+        &nested,
+        true,
+    );
+    assert!(nested.is_ok());
+    if let Ok(nested) = nested {
+        assert!(argv(&nested).contains(&"--set-path=/api".to_owned()));
+    }
+
+    // TCP listeners have no mount at all, and the CLI rejects a path for them.
+    let Some(tcp_port) = valid_port(5432) else {
+        return;
+    };
+    let Some(backend) = valid_port(5432) else {
+        return;
+    };
+    let tcp = tale::domain::service::ServiceMapping {
+        exposure: Exposure::Tailnet,
+        listener: Listener::Tcp(tcp_port),
+        mount: PathMount::Root,
+        backend: Backend::Port(backend),
+        proxy_protocol: ProxyProtocol::None,
+        hostname: None,
+    };
+    let tcp = mapping_off_command(Path::new("tailscale"), Duration::from_secs(1), &tcp, true);
+    assert!(tcp.is_ok());
+    if let Ok(tcp) = tcp {
+        assert_eq!(argv(&tcp), vec!["serve", "--yes", "--tcp=5432", "off"]);
+    }
+
+    // The confirmation gate is the same one every other write goes through.
+    let Some(unconfirmed) = public_mapping(8443, "/") else {
+        return;
+    };
+    assert!(
+        mapping_off_command(
+            Path::new("tailscale"),
+            Duration::from_secs(1),
+            &unconfirmed,
+            false
+        )
+        .is_err()
+    );
+}
+
+/// Nothing in the CLI turns Funnel off while keeping the handler, so the
+/// mapping is re-served as a tailnet mapping and the CLI drops the Funnel bit.
+#[test]
+fn unpublishing_reserves_the_same_mapping_without_funnel() {
+    let Some(mapping) = public_mapping(8443, "/") else {
+        return;
+    };
+    let unpublish = mapping_unpublish_command(
+        Path::new("tailscale"),
+        Duration::from_secs(1),
+        &mapping,
+        true,
+    );
+    assert!(unpublish.is_ok());
+    if let Ok(unpublish) = unpublish {
+        let args = argv(&unpublish);
+        assert_eq!(args, vec!["serve", "--bg", "--yes", "--https=8443", "3001"]);
+        assert!(!args.iter().any(|value| value == "funnel"));
+        assert!(!args.iter().any(|value| value == "off"));
+    }
+
+    let request = ServiceActionRequest::FunnelUnpublish {
+        mapping: mapping.clone(),
+    };
+    assert_eq!(request.risk(), Risk::Disruptive);
+    assert_eq!(request.action_id(), ActionId::ServicesFunnelUnpublish);
+    assert_eq!(
+        ServiceActionRequest::MappingRemove { mapping }.action_id(),
+        ActionId::ServicesServeRemove
+    );
+
+    // A tailnet mapping has nothing to unpublish, and saying so beats sending a
+    // command that would look like a no-op edit.
+    let Some(port_value) = valid_port(443) else {
+        return;
+    };
+    let Some(backend) = valid_port(3000) else {
+        return;
+    };
+    let tailnet = tale::domain::service::ServiceMapping {
+        exposure: Exposure::Tailnet,
+        listener: Listener::Https(port_value),
+        mount: PathMount::Root,
+        backend: Backend::Port(backend),
+        proxy_protocol: ProxyProtocol::None,
+        hostname: None,
+    };
+    assert!(
+        mapping_unpublish_command(
+            Path::new("tailscale"),
+            Duration::from_secs(1),
+            &tailnet,
+            true
+        )
+        .is_err()
+    );
 }

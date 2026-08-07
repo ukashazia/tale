@@ -1,6 +1,7 @@
 pub mod batch_result;
 pub mod confirm;
 pub mod form;
+pub mod grid;
 pub mod header;
 pub mod inspector;
 pub mod interaction_shell;

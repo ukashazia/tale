@@ -1022,7 +1022,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     .await;
             });
         }
-        Effect::CopyText { label, text } => {
+        Effect::CopyText { text } => {
             let queue = queue.clone();
             tasks.spawn(async move {
                 let result = crate::clipboard::SystemClipboard::new().and_then(|mut clipboard| {
@@ -1031,7 +1031,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 queue
                     .send(Event::Credential(Box::new(
                         CredentialEvent::ClipboardTextCopied {
-                            label,
+                            text,
                             result: result.map_err(|error| error.to_string()),
                         },
                     )))
@@ -5104,6 +5104,86 @@ async fn run_service_task(
                 .await
             }
         }
+        // Both of these run `tailscale serve`, so Serve is the capability that
+        // has to be there — a node that can no longer Funnel must still be able
+        // to take its public mappings down.
+        ServiceActionRequest::MappingRemove { mapping } => {
+            if !executable.capabilities.serve {
+                Err(unsupported_service(
+                    "serve off",
+                    "Serve is not advertised by this CLI",
+                ))
+            } else {
+                match services::mapping_off_command(&executable.path, timeout, &mapping, true) {
+                    Ok(command) => {
+                        let run = run_service_command(
+                            command,
+                            &cancellation,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
+                        outcome_from_run(run, |run| async {
+                            verify_mapping_removed(
+                                &executable,
+                                timeout,
+                                &cancellation,
+                                mapping,
+                                run,
+                            )
+                            .await
+                        })
+                        .await
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::Unsupported,
+                        "serve off",
+                        "Removal request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
+        ServiceActionRequest::FunnelUnpublish { mapping } => {
+            if !executable.capabilities.serve
+                || !executable
+                    .capabilities
+                    .supports_service_listener(&mapping.listener, false)
+            {
+                Err(unsupported_service(
+                    "serve",
+                    "Serve is not advertised by this CLI",
+                ))
+            } else {
+                match services::mapping_unpublish_command(&executable.path, timeout, &mapping, true)
+                {
+                    Ok(command) => {
+                        let run = run_service_command(
+                            command,
+                            &cancellation,
+                            executable.socket_path.as_deref(),
+                        )
+                        .await;
+                        outcome_from_run(run, |run| async {
+                            verify_funnel_unpublish(
+                                &executable,
+                                timeout,
+                                &cancellation,
+                                mapping,
+                                run,
+                            )
+                            .await
+                        })
+                        .await
+                    }
+                    Err(error) => Err(ServiceFailure::new(
+                        ServiceFailureKind::Unsupported,
+                        "serve",
+                        "Unpublish request is invalid",
+                        error.to_string(),
+                    )),
+                }
+            }
+        }
         ServiceActionRequest::Funnel { mapping, .. } => {
             if !executable.capabilities.funnel
                 || !executable
@@ -5637,6 +5717,90 @@ async fn verify_serve_reset(
                 "Serve reset completed and state verified".to_owned()
             } else {
                 "Serve reset completed but mappings remain".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+/// A removal is verified against whichever list the row was showing in. The
+/// claim being checked is the one the user made: this row is gone.
+async fn verify_mapping_removed(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    requested: crate::domain::service::ServiceMapping,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    if requested.exposure == crate::domain::service::Exposure::Public {
+        let status = read_funnel_status(executable, timeout, cancellation).await?;
+        let verified = !status
+            .mappings
+            .iter()
+            .any(|actual| actual.exact_identity_matches(&requested));
+        return Ok((
+            ServiceTaskData::Funnel {
+                status,
+                verified,
+                summary: if verified {
+                    "PUBLIC mapping removed and state verified".to_owned()
+                } else {
+                    "Removal completed but the PUBLIC mapping is still listed".to_owned()
+                },
+            },
+            run,
+        ));
+    }
+    let status = read_serve_status(executable, timeout, cancellation).await?;
+    let verified = !status
+        .mappings
+        .iter()
+        .any(|actual| actual.exact_identity_matches(&requested));
+    Ok((
+        ServiceTaskData::Serve {
+            status,
+            verified,
+            summary: if verified {
+                "Mapping removed and state verified".to_owned()
+            } else {
+                "Removal completed but the mapping is still listed".to_owned()
+            },
+        },
+        run,
+    ))
+}
+
+/// Unpublishing makes two claims — no longer public, still served — so both
+/// lists are read. Gone from Funnel but also gone from Serve is not a success:
+/// that is a removal the user did not ask for.
+async fn verify_funnel_unpublish(
+    executable: &crate::domain::source::LocalExecutable,
+    timeout: Duration,
+    cancellation: &Cancellation,
+    requested: crate::domain::service::ServiceMapping,
+    run: crate::local::process::LocalCommandResult,
+) -> Result<(ServiceTaskData, crate::local::process::LocalCommandResult), ServiceFailure> {
+    let status = read_funnel_status(executable, timeout, cancellation).await?;
+    let still_public = status
+        .mappings
+        .iter()
+        .any(|actual| actual.exact_identity_matches(&requested));
+    let serve = read_serve_status(executable, timeout, cancellation).await?;
+    let still_served = serve
+        .mappings
+        .iter()
+        .any(|actual| actual.exact_identity_matches(&requested));
+    let verified = !still_public && still_served;
+    Ok((
+        ServiceTaskData::Funnel {
+            status,
+            verified,
+            summary: if verified {
+                "PUBLIC Funnel stopped; the mapping is now tailnet-only".to_owned()
+            } else if still_public {
+                "Unpublish completed but the mapping is still PUBLIC".to_owned()
+            } else {
+                "PUBLIC Funnel stopped but the mapping is no longer served".to_owned()
             },
         },
         run,

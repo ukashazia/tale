@@ -105,6 +105,10 @@ impl Exposure {
             Self::Public => "public",
         }
     }
+
+    pub const fn is_public(&self) -> bool {
+        matches!(self, Self::Public)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -296,6 +300,61 @@ impl ServiceMapping {
     }
 }
 
+/// What the mapping table can be ordered by. Every one of these is a column the
+/// table actually shows.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ServiceSortField {
+    Exposure,
+    Listener,
+    Port,
+    Mount,
+    Backend,
+}
+
+impl ServiceSortField {
+    pub const ALL: [Self; 5] = [
+        Self::Exposure,
+        Self::Listener,
+        Self::Port,
+        Self::Mount,
+        Self::Backend,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Exposure => "exposure",
+            Self::Listener => "listener",
+            Self::Port => "port",
+            Self::Mount => "path",
+            Self::Backend => "backend",
+        }
+    }
+
+    pub const fn key(self) -> char {
+        match self {
+            Self::Exposure => 'e',
+            Self::Listener => 'l',
+            Self::Port => 'p',
+            Self::Mount => 'm',
+            Self::Backend => 'b',
+        }
+    }
+
+    /// A comparable key for one mapping. The port is always the tiebreak so the
+    /// order is total and stable across refreshes.
+    pub fn ordering_key(self, mapping: &ServiceMapping) -> (String, u16) {
+        let port = mapping.listener.port().get();
+        let text = match self {
+            Self::Exposure => mapping.exposure.label().to_owned(),
+            Self::Listener => mapping.listener.label().to_owned(),
+            Self::Port => String::new(),
+            Self::Mount => mapping.mount.as_path().to_owned(),
+            Self::Backend => mapping.backend.argument(),
+        };
+        (text, port)
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct ServeStatus {
     pub mappings: Vec<ServiceMapping>,
@@ -308,6 +367,9 @@ pub struct FunnelStatus {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ServiceResourceStatus {
+    /// Nothing has been asked of the local client yet. Distinct from `Loading`,
+    /// which claims a request is outstanding.
+    Idle,
     Loading,
     Ready,
     Stale,
@@ -318,11 +380,24 @@ pub enum ServiceResourceStatus {
 impl ServiceResourceStatus {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Idle => "not requested",
             Self::Loading => "loading",
             Self::Ready => "ready",
             Self::Stale => "stale",
             Self::Unsupported => "unsupported",
             Self::Failed => "failed",
+        }
+    }
+
+    /// How badly a status reflects on the data, used to combine two of them.
+    const fn severity(self) -> u8 {
+        match self {
+            Self::Ready => 0,
+            Self::Loading => 1,
+            Self::Idle => 2,
+            Self::Stale => 3,
+            Self::Unsupported => 4,
+            Self::Failed => 5,
         }
     }
 }
@@ -398,7 +473,7 @@ pub struct ServiceResource<T> {
 impl<T> ServiceResource<T> {
     pub const fn new() -> Self {
         Self {
-            status: ServiceResourceStatus::Loading,
+            status: ServiceResourceStatus::Idle,
             value: None,
             observed_at: None,
             generation: 0,
@@ -497,54 +572,44 @@ impl ServiceCapabilities {
     }
 }
 
+/// The three things this route actually offers. Serve and Funnel are one
+/// section: a Funnel mapping is a Serve mapping whose exposure is public, and
+/// the local client already partitions them by `AllowFunnel`. Taildrop is not
+/// here: its rows were the tailnet's devices, so it lives on `:devices`.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ServiceSection {
     Serve,
-    Funnel,
-    Taildrop,
     Taildrive,
     Certificates,
-    Metrics,
-    BugReport,
 }
 
 impl ServiceSection {
-    pub const ALL: [Self; 7] = [
-        Self::Serve,
-        Self::Funnel,
-        Self::Taildrop,
-        Self::Taildrive,
-        Self::Certificates,
-        Self::Metrics,
-        Self::BugReport,
-    ];
+    pub const ALL: [Self; 3] = [Self::Serve, Self::Taildrive, Self::Certificates];
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Serve => "Serve",
-            Self::Funnel => "Funnel",
-            Self::Taildrop => "Taildrop",
-            Self::Taildrive => "Taildrive",
-            Self::Certificates => "Certificates",
-            Self::Metrics => "Metrics",
-            Self::BugReport => "Bug report",
+            Self::Serve => "serve",
+            Self::Taildrive => "taildrive",
+            Self::Certificates => "certificates",
         }
     }
 
-    pub const fn index(self) -> usize {
+    /// What a row of this section is, for counts and empty states.
+    pub const fn noun(self) -> &'static str {
         match self {
-            Self::Serve => 0,
-            Self::Funnel => 1,
-            Self::Taildrop => 2,
-            Self::Taildrive => 3,
-            Self::Certificates => 4,
-            Self::Metrics => 5,
-            Self::BugReport => 6,
+            Self::Serve => "mappings",
+            Self::Taildrive => "shares",
+            Self::Certificates => "domains",
         }
     }
 
-    pub fn from_index(index: usize) -> Self {
-        Self::ALL[index.min(Self::ALL.len().saturating_sub(1))]
+    /// The key that selects this section in the section menu.
+    pub const fn key(self) -> char {
+        match self {
+            Self::Serve => 's',
+            Self::Taildrive => 'v',
+            Self::Certificates => 'c',
+        }
     }
 }
 
@@ -588,6 +653,38 @@ impl LocalServicesSnapshot {
         self.taildrive.begin(generation);
         self.certificate_domains.begin(generation);
     }
+
+    /// Serve and Funnel as one list. `serve status` and `funnel status` read the
+    /// same configuration and partition it by `AllowFunnel`, so the two are
+    /// disjoint and their concatenation is the whole set.
+    pub fn mappings(&self) -> impl Iterator<Item = &ServiceMapping> {
+        self.serve
+            .value
+            .iter()
+            .flat_map(|status| status.mappings.iter())
+            .chain(
+                self.funnel
+                    .value
+                    .iter()
+                    .flat_map(|status| status.mappings.iter()),
+            )
+    }
+
+    /// The worse of the two mapping statuses, since the table shows both.
+    pub fn mapping_status(&self) -> ServiceResourceStatus {
+        let (serve, funnel) = (self.serve.status, self.funnel.status);
+        if serve == funnel {
+            return serve;
+        }
+        [serve, funnel]
+            .into_iter()
+            .max_by_key(|status| status.severity())
+            .unwrap_or(serve)
+    }
+
+    pub fn mapping_failure(&self) -> Option<&ServiceFailure> {
+        self.serve.failure.as_ref().or(self.funnel.failure.as_ref())
+    }
 }
 
 impl Default for LocalServicesSnapshot {
@@ -603,9 +700,20 @@ pub enum ServiceActionRequest {
         edit: bool,
     },
     ServeReset,
+    /// Take down exactly one mapping. `tailscale serve … off` is the same code
+    /// path for both exposures, so the selected row decides nothing here except
+    /// how loudly the confirmation has to shout.
+    MappingRemove {
+        mapping: ServiceMapping,
+    },
     Funnel {
         mapping: ServiceMapping,
         edit: bool,
+    },
+    /// Demote one public mapping to tailnet-only. There is no `funnel off` that
+    /// keeps the handler, so this re-serves the same mapping without Funnel.
+    FunnelUnpublish {
+        mapping: ServiceMapping,
     },
     FunnelReset,
     TaildropSend(TaildropSendRequest),
@@ -634,11 +742,13 @@ impl ServiceActionRequest {
             Self::Serve { edit: true, .. } => ActionId::ServicesServeEdit,
             Self::Serve { edit: false, .. } => ActionId::ServicesServeCreate,
             Self::ServeReset => ActionId::ServicesServeReset,
+            Self::MappingRemove { .. } => ActionId::ServicesServeRemove,
             Self::Funnel { edit: true, .. } => ActionId::ServicesFunnelEdit,
             Self::Funnel { edit: false, .. } => ActionId::ServicesFunnelCreate,
+            Self::FunnelUnpublish { .. } => ActionId::ServicesFunnelUnpublish,
             Self::FunnelReset => ActionId::ServicesFunnelReset,
-            Self::TaildropSend(_) => ActionId::ServicesTaildropSend,
-            Self::TaildropReceive(_) => ActionId::ServicesTaildropReceive,
+            Self::TaildropSend(_) => ActionId::DevicesTaildropSend,
+            Self::TaildropReceive(_) => ActionId::DevicesTaildropReceive,
             Self::TaildriveShare { .. } => ActionId::ServicesDriveShare,
             Self::TaildriveRename { .. } => ActionId::ServicesDriveRename,
             Self::TaildriveUnshare { .. } => ActionId::ServicesDriveUnshare,
@@ -650,7 +760,11 @@ impl ServiceActionRequest {
 
     pub const fn risk(&self) -> Risk {
         match self {
-            Self::ServeReset | Self::Funnel { .. } | Self::FunnelReset => Risk::Disruptive,
+            Self::ServeReset
+            | Self::MappingRemove { .. }
+            | Self::Funnel { .. }
+            | Self::FunnelUnpublish { .. }
+            | Self::FunnelReset => Risk::Disruptive,
             Self::TaildriveUnshare { .. } => Risk::Disruptive,
             Self::Certificate(request) if request.overwrites_existing => Risk::Disruptive,
             Self::TaildropReceive(request) if request.conflict.is_overwrite() => Risk::Disruptive,
@@ -667,7 +781,10 @@ impl ServiceActionRequest {
 
     pub fn target_label(&self) -> String {
         match self {
-            Self::Serve { mapping, .. } | Self::Funnel { mapping, .. } => mapping.key(),
+            Self::Serve { mapping, .. }
+            | Self::MappingRemove { mapping }
+            | Self::Funnel { mapping, .. }
+            | Self::FunnelUnpublish { mapping } => mapping.key(),
             Self::ServeReset => "all Serve mappings".to_owned(),
             Self::FunnelReset => "all Funnel mappings".to_owned(),
             Self::TaildropSend(request) => request.target.command_target.clone(),
@@ -699,6 +816,13 @@ impl ServiceActionRequest {
         match self {
             Self::Serve { .. } | Self::ServeReset => Some(ServiceConflictKey::Serve),
             Self::Funnel { .. } | Self::FunnelReset => Some(ServiceConflictKey::Funnel),
+            // Both run `tailscale serve`, but the resource the user is changing
+            // is the one the row is currently listed under.
+            Self::MappingRemove { mapping } => Some(match mapping.exposure {
+                Exposure::Public => ServiceConflictKey::Funnel,
+                Exposure::Tailnet => ServiceConflictKey::Serve,
+            }),
+            Self::FunnelUnpublish { .. } => Some(ServiceConflictKey::Funnel),
             Self::TaildropSend(request) => Some(ServiceConflictKey::TaildropTarget(
                 request.target.command_target.clone(),
             )),

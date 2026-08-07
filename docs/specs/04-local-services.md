@@ -33,7 +33,8 @@ reports. Every operation is performed by directly spawning the installed
 ### In scope
 
 - local Serve and Funnel status;
-- guided creation, editing, and reset of node Serve and Funnel mappings;
+- guided creation, editing, per-mapping removal, unpublishing, and reset of node
+  Serve and Funnel mappings;
 - Taildrop file send and receive;
 - alpha-gated Taildrive share management;
 - certificate acquisition to explicit local paths;
@@ -101,8 +102,8 @@ arguments themselves.
 Register the canonical `services` route when this phase ships. Its default
 wide layout contains:
 
-1. a section selector for Serve, Funnel, Taildrop, Taildrive, Certificates,
-   Metrics, and Bug report;
+1. a section selector for Serve, Funnel, Taildrive, and Certificates
+   (Taildrop moved to `devices`; metrics and bug reports to `diagnostics`);
 2. a collection appropriate to the selected section;
 3. an inspector containing source, capability, current configuration, and
    available actions.
@@ -183,9 +184,11 @@ field. Add malformed and incomplete fixtures that must fail without a panic.
 
 ### Entry points
 
-Provide `services.serve.create`, `services.serve.edit`, and
-`services.serve.reset` actions. Edit pre-fills a typed form; it does not expose
-raw arguments or raw Serve configuration.
+Provide `services.serve.create`, `services.serve.edit`,
+`services.serve.remove`, and `services.serve.reset` actions. Edit pre-fills a
+typed form; it does not expose raw arguments or raw Serve configuration. Remove
+acts on the selected row alone and asks nothing, because the row already states
+everything the command needs.
 
 The form collects:
 
@@ -218,6 +221,32 @@ accepted. Never invoke a shell, `sudo`, or an interactive prompt.
 An edit is implemented only with a documented replacement operation for the
 installed CLI. If the command cannot replace the selected mapping precisely,
 mark edit unsupported rather than resetting unrelated mappings.
+
+### Removing one mapping
+
+`services.serve.remove` takes down exactly the selected row:
+
+```text
+tailscale serve --yes --https=<PORT> --set-path=<PATH> off
+tailscale serve --yes --http=<PORT> --set-path=<PATH> off
+tailscale serve --yes --tcp=<PORT> off
+tailscale serve --yes --tls-terminated-tcp=<PORT> off
+```
+
+`--set-path` is mandatory for HTTP and HTTPS listeners. Omitting it makes the
+CLI remove every mount on the port, which is the reset this action exists to
+avoid. `--bg` is not sent: the CLI never runs `off` in the foreground.
+
+The same command serves both exposures. `tailscale funnel … off` is the same
+operation in the CLI but additionally requires the node to advertise Funnel, so
+removal must not depend on the Funnel capability: a node that has lost Funnel
+must still be able to take its public mappings down.
+
+Removing a public row is Tier 2 and is verified against Funnel status; removing
+a tailnet row is verified against Serve status. Re-check that the selected
+listener, path, and backend are still the ones last observed before dispatch. A
+mapping identified only by listener and path would otherwise take down whatever
+now answers at that address.
 
 ### Reset
 
@@ -274,11 +303,34 @@ Reset invokes `tailscale funnel reset`. Verify all writes by refreshing Funnel
 status. Display CLI policy-denial text as a redacted, actionable error; do not
 attempt to modify policy or node attributes.
 
+### Unpublishing one mapping
+
+Register `services.funnel.unpublish`, on a selected public row. It stops public
+reachability without taking the mapping down. No CLI command turns Funnel off on
+its own — `funnel … off` deletes the handler — so the mapping is re-served as a
+tailnet mapping and the CLI clears the Funnel bit for that listener:
+
+```text
+tailscale serve --bg --yes --https=<PORT> [--set-path=<PATH>] <BACKEND>
+```
+
+Because the command is `serve`, this action is gated on the Serve capability
+rather than Funnel, for the same reason removal is.
+
+Funnel is held per listener and not per path. State in the confirmation that
+every mapping on that listener stops being public, not only the selected row.
+
+Unpublishing makes two claims and both are verified: the mapping is absent from
+Funnel status, and still present in Serve status. Absent from both is
+`SucceededUnverified` — that is a removal nobody asked for.
+
 ## 04.5 Taildrop send
 
 ### Target discovery
 
-Register `services.taildrop.send`. Discover candidate targets with:
+Register `devices.taildrop.send`, on the `devices` route: its rows are the
+tailnet's devices, and the selected row is the target. Discover candidate
+targets with:
 
 ```text
 tailscale file cp --targets
@@ -320,7 +372,8 @@ transfer may remain. Tale does not attempt remote cleanup.
 
 ### Form
 
-Register `services.taildrop.receive`. Collect:
+Register `devices.taildrop.receive`, beside send on the `devices` route.
+Collect:
 
 - an existing writable destination directory;
 - conflict behavior `skip`, `overwrite`, or `rename`;
@@ -461,13 +514,15 @@ services.section.previous
 services.serve.refresh
 services.serve.create
 services.serve.edit
+services.serve.remove
 services.serve.reset
 services.funnel.refresh
 services.funnel.create
 services.funnel.edit
+services.funnel.unpublish
 services.funnel.reset
-services.taildrop.send
-services.taildrop.receive
+devices.taildrop.send
+devices.taildrop.receive
 services.drive.refresh
 services.drive.share
 services.drive.rename
@@ -546,7 +601,8 @@ stdout/stderr. Prove for every operation that:
 Test each subsection in loading, empty, ready, partial, stale, unsupported,
 read-only, running, failed, and compact-layout states. Snapshot at 60x18,
 80x24, 110x30, and 160x45. Include confirmation previews for public Funnel,
-Serve reset, Taildrop overwrite, Taildrive unshare, and certificate overwrite.
+Serve reset, public mapping removal, Funnel unpublish, Taildrop overwrite,
+Taildrive unshare, and certificate overwrite.
 
 ### Required verification commands
 

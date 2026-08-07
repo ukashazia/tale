@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 use crate::action::{self, ActionContext, ActionId};
 use crate::app::{
     App, CopyField, FilterLineState, FilterSuggestion, FilterSuggestionKind,
-    FilterSuggestionSection, Focus, InteractionMode, Route, TransientKind, TransientMenuState,
+    FilterSuggestionSection, InteractionMode, Route, TransientKind, TransientMenuState,
 };
 use crate::domain::filter;
 use crate::ui::{layout, text, theme};
@@ -82,7 +82,7 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     let context = context(app);
     let mut spans = Vec::new();
-    for (index, hint) in action::footer_actions(context, width)
+    for (index, hint) in action::footer_actions(context, app.current_route(), width)
         .into_iter()
         .enumerate()
     {
@@ -182,7 +182,7 @@ impl NavigationSectionKind {
     const fn for_route(route: Route) -> Self {
         match route {
             Route::Overview | Route::Devices | Route::Users => Self::Fleet,
-            Route::Local | Route::Services => Self::Local,
+            Route::Local | Route::Services | Route::Diagnostics => Self::Local,
             Route::Routes | Route::Dns | Route::Access => Self::Network,
             Route::Credentials | Route::Activity | Route::Settings => Self::Operations,
         }
@@ -1447,45 +1447,24 @@ fn copy_grid_sections(state: &TransientMenuState) -> Vec<MenuSection> {
     if state.prefix == Some(crate::app::ADDRESS_PREFIX) {
         return address_grid_sections(state);
     }
-    const GROUPS: [(&str, &[CopyField]); 3] = [
-        (
-            "Identity",
-            &[
-                CopyField::DeviceId,
-                CopyField::DisplayName,
-                CopyField::Hostname,
-                CopyField::Owner,
-                CopyField::Tags,
-            ],
-        ),
-        (
-            "Network",
-            &[
-                CopyField::Addresses,
-                CopyField::Endpoint,
-                CopyField::PublicKey,
-            ],
-        ),
-        (
-            "Diagnostics",
-            &[CopyField::DiagnosticSummary, CopyField::Metrics],
-        ),
-    ];
-    GROUPS
+    // Each field names its own heading, so the route decides which fields
+    // exist and in what order, and no field can be offered without appearing.
+    crate::app::CopyGroup::ALL
         .into_iter()
-        .filter_map(|(label, members)| {
-            let entries = members
+        .filter_map(|group| {
+            let entries = state
+                .fields
                 .iter()
-                .filter(|field| state.fields.contains(field))
+                .filter(|field| field.group() == group)
                 .map(|field| MenuEntry {
-                    key: copy_key(*field).to_string(),
+                    key: crate::app::copy_field_key(*field).to_string(),
                     label: copy_entry_label(state, *field),
                     key_role: theme::StyleRole::KeyHint,
                     label_role: theme::StyleRole::TextMuted,
                 })
                 .collect::<Vec<_>>();
             (!entries.is_empty()).then_some(MenuSection {
-                label: label.to_owned(),
+                label: group.label().to_owned(),
                 heading_role: theme::StyleRole::SectionHeading,
                 entries,
             })
@@ -1700,10 +1679,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
 }
 
 fn help_action_is_relevant(app: &App, id: ActionId) -> bool {
-    !matches!(
-        id,
-        ActionId::ServicesSectionNext | ActionId::ServicesSectionPrevious
-    ) || app.current_route() == Route::Services
+    action::applies_to_route(id, app.current_route())
 }
 
 fn help_grid_sections(app: &App) -> Vec<MenuSection> {
@@ -1762,27 +1738,5 @@ fn help_status(app: &App) -> Line<'static> {
 }
 
 fn context(app: &App) -> ActionContext {
-    match app.current_route() {
-        Route::Activity => ActionContext::Activity,
-        Route::Devices | Route::Services if app.focus == Focus::Inspector => ActionContext::Detail,
-        Route::Devices | Route::Users | Route::Routes | Route::Credentials | Route::Services => {
-            ActionContext::Collection
-        }
-        _ => ActionContext::Root,
-    }
-}
-
-const fn copy_key(field: CopyField) -> char {
-    match field {
-        CopyField::DeviceId => 'i',
-        CopyField::DisplayName => 'n',
-        CopyField::Hostname => 'h',
-        CopyField::Owner => 'o',
-        CopyField::Addresses => 'a',
-        CopyField::Tags => 't',
-        CopyField::PublicKey => 'p',
-        CopyField::Endpoint => 'e',
-        CopyField::DiagnosticSummary => 'd',
-        CopyField::Metrics => 'm',
-    }
+    app.action_context()
 }

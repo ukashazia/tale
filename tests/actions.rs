@@ -100,18 +100,20 @@ fn every_phase_four_action_is_registered_with_required_risk_metadata() {
         .collect();
     for id in [
         ActionId::ViewServices,
+        ActionId::ViewDiagnostics,
         ActionId::ServicesSectionNext,
         ActionId::ServicesSectionPrevious,
         ActionId::ServicesServeRefresh,
         ActionId::ServicesServeCreate,
         ActionId::ServicesServeEdit,
+        ActionId::ServicesServeRemove,
         ActionId::ServicesServeReset,
-        ActionId::ServicesFunnelRefresh,
         ActionId::ServicesFunnelCreate,
         ActionId::ServicesFunnelEdit,
+        ActionId::ServicesFunnelUnpublish,
         ActionId::ServicesFunnelReset,
-        ActionId::ServicesTaildropSend,
-        ActionId::ServicesTaildropReceive,
+        ActionId::DevicesTaildropSend,
+        ActionId::DevicesTaildropReceive,
         ActionId::ServicesDriveRefresh,
         ActionId::ServicesDriveShare,
         ActionId::ServicesDriveRename,
@@ -142,6 +144,22 @@ fn every_phase_four_action_is_registered_with_required_risk_metadata() {
             .map(|(_, risk)| *risk),
         Some(tale::action::Risk::Disruptive)
     );
+    // Taking one mapping down is narrower than a reset but no less disruptive
+    // to whoever is using it.
+    for id in [
+        ActionId::ServicesServeRemove,
+        ActionId::ServicesFunnelUnpublish,
+    ] {
+        assert_eq!(
+            registered
+                .iter()
+                .find(|(registered_id, _)| *registered_id == id)
+                .map(|(_, risk)| *risk),
+            Some(tale::action::Risk::Disruptive),
+            "{} is not disruptive",
+            id.as_str()
+        );
+    }
     assert_eq!(
         registered
             .iter()
@@ -195,11 +213,12 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
         ),
         Some(ActionId::ViewCommandLine)
     );
-    let footer = action::footer_hints(ActionContext::Collection, 20);
+    let footer = action::footer_hints(ActionContext::Collection, Route::Devices, 20);
     assert!(footer.last().is_some_and(|hint| hint == "? more"));
-    let footer = action::footer_hints(ActionContext::Collection, 100);
+    let footer = action::footer_hints(ActionContext::Collection, Route::Devices, 120);
     assert!(footer.first().is_some_and(|hint| hint == "k up"));
     assert!(footer.iter().any(|hint| hint == ": command"));
+    assert!(footer.iter().any(|hint| hint == "i inspector"));
     assert_eq!(
         footer.iter().filter(|hint| hint.starts_with("? ")).count(),
         1
@@ -278,6 +297,27 @@ fn every_transient_action_has_an_explicit_menu_group() {
                 action::transient_group(*id).is_some(),
                 "missing group for {}",
                 id.as_str()
+            );
+        }
+    }
+}
+
+/// Binding labels used to come from a hand-listed match that fell through to
+/// the placeholder "key". A newly bound character has to name itself.
+#[test]
+fn every_registered_binding_names_its_own_key() {
+    for spec in action::all_actions() {
+        for binding in spec.default_bindings {
+            let label = binding.label();
+            assert_ne!(
+                label, "key",
+                "{:?} renders its binding as a placeholder",
+                spec.id
+            );
+            assert_ne!(
+                label, "C-key",
+                "{:?} renders its binding as a placeholder",
+                spec.id
             );
         }
     }

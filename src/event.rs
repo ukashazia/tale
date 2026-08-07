@@ -206,8 +206,10 @@ pub enum CredentialEvent {
         result_id: u64,
         result: Result<(), String>,
     },
+    /// Carries the text itself, not a name for it: the status bar reports what
+    /// landed on the clipboard so it can be checked without pasting.
     ClipboardTextCopied {
-        label: String,
+        text: String,
         result: Result<(), String>,
     },
 }

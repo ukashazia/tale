@@ -1,9 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
+use crate::ui::components::panel;
 use crate::ui::{text, theme};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -16,17 +16,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     let Some(device) = app.selected_device() else {
-        frame.render_widget(
-            Paragraph::new("No device selected")
-                .style(app.theme.style(theme::StyleRole::Surface))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(app.theme.style(theme::StyleRole::BorderNormal))
-                        .title("inspector"),
-                ),
-            area,
-        );
+        panel::render(frame, app, area, "inspector", "No device selected");
         return;
     };
     let owner = device
@@ -39,11 +29,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         device.addresses.join(", ")
     };
-    let tags = if device.tags.is_empty() {
-        "-".to_owned()
-    } else {
-        device.tags.join(", ")
-    };
+    let tags = text::tag_list(&device.tags);
     let lines = vec![
         Line::from(Span::styled(
             text::ellipsize(
@@ -80,37 +66,19 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::from("source       mock · deterministic fictional data"),
     ];
-    let style = if app.focus == crate::app::Focus::Inspector {
-        app.theme.style(theme::StyleRole::BorderFocused)
-    } else {
-        app.theme.style(theme::StyleRole::BorderNormal)
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(style)
-                    .title("inspector"),
-            ),
+    panel::render_focusable(
+        frame,
+        app,
         area,
+        "inspector",
+        lines,
+        app.focus == crate::app::Focus::Inspector,
     );
 }
 
 fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(device) = app.selected_device() else {
-        frame.render_widget(
-            Paragraph::new("No device selected")
-                .style(app.theme.style(theme::StyleRole::Surface))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(app.theme.style(theme::StyleRole::BorderNormal))
-                        .title("inspector"),
-                ),
-            area,
-        );
+        panel::render(frame, app, area, "inspector", "No device selected");
         return;
     };
     let admin = app.admin.devices.snapshot.as_ref().and_then(|devices| {
@@ -170,32 +138,12 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(format!("admin source {}", app.admin.devices.state.label())),
         Line::from("identity composition uses the exact stable node ID only"),
     ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
-                    .title("inspector · combined"),
-            ),
-        area,
-    );
+    panel::render(frame, app, area, "inspector · combined", lines);
 }
 
 fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(device) = app.selected_local_device() else {
-        frame.render_widget(
-            Paragraph::new("No device selected")
-                .style(app.theme.style(theme::StyleRole::Surface))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(app.theme.style(theme::StyleRole::BorderNormal))
-                        .title("inspector"),
-                ),
-            area,
-        );
+        panel::render(frame, app, area, "inspector", "No device selected");
         return;
     };
     let addresses = if device.tailscale_ips.is_empty() {
@@ -295,21 +243,13 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.local_resource.status.label()
         )),
     ];
-    let style = if app.focus == crate::app::Focus::Inspector {
-        app.theme.style(theme::StyleRole::BorderFocused)
-    } else {
-        app.theme.style(theme::StyleRole::BorderNormal)
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(style)
-                    .title("inspector"),
-            ),
+    panel::render_focusable(
+        frame,
+        app,
         area,
+        "inspector",
+        lines,
+        app.focus == crate::app::Focus::Inspector,
     );
 }
 

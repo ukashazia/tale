@@ -1,9 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{AccountPickerState, App, HandoffInputState, OperatorFormState, ServiceFormState};
-use crate::ui::theme;
+use crate::app::{
+    AccountPickerState, App, FieldKind, HandoffInputState, OperatorFormState, ServiceFormState,
+};
+use crate::ui::{text, theme};
 
 pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &OperatorFormState) {
     let hint = match state.action_id {
@@ -262,44 +265,158 @@ pub fn render_handoff(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Hand
     );
 }
 
+/// A field-by-field form. Every row states what it wants in words, the selected
+/// row explains itself, and nothing asks for something already on screen.
 pub fn render_service(frame: &mut Frame<'_>, app: &App, area: Rect, state: &ServiceFormState) {
-    let hint = match state.action_id {
-        crate::action::ActionId::ServicesServeCreate
-        | crate::action::ActionId::ServicesServeEdit
-        | crate::action::ActionId::ServicesFunnelCreate
-        | crate::action::ActionId::ServicesFunnelEdit => {
-            "listener=https|http|tcp|tls-terminated-tcp;port=443;path=/;backend=3000|http://...|/absolute/path;proxy=none|1|2"
+    let label_width = state
+        .fields
+        .iter()
+        .map(|field| field.label.chars().count())
+        .chain(state.subject.iter().map(|(label, _)| label.chars().count()))
+        .max()
+        .unwrap_or(0)
+        .max(10);
+    let mut lines = Vec::new();
+    // What the form acts on, stated rather than asked for.
+    for (label, value) in &state.subject {
+        lines.push(Line::from(vec![
+            Span::styled(
+                text::pad_or_trim(label, label_width.saturating_add(2)),
+                app.theme.style(theme::StyleRole::TextMuted),
+            ),
+            Span::styled(
+                value.clone(),
+                app.theme.style(theme::StyleRole::TextPrimary),
+            ),
+        ]));
+    }
+    if !state.subject.is_empty() {
+        lines.push(Line::default());
+    }
+    for (index, field) in state.fields.iter().enumerate() {
+        let selected = index == state.selected;
+        let editing = selected && state.is_editing();
+        let (value, value_role) = match (&field.kind, field.value.as_str()) {
+            (FieldKind::Text { hint }, "") => ((*hint).to_owned(), theme::StyleRole::TextDisabled),
+            (_, value) => (value.to_owned(), theme::StyleRole::TextPrimary),
+        };
+        let mut spans = vec![
+            Span::styled(
+                if selected { "> " } else { "  " }.to_owned(),
+                app.theme.style(theme::StyleRole::KeyHint),
+            ),
+            Span::styled(
+                text::pad_or_trim(field.label, label_width),
+                app.theme.style(if selected {
+                    theme::StyleRole::Focus
+                } else {
+                    theme::StyleRole::TextMuted
+                }),
+            ),
+            Span::styled("  ", app.theme.style(theme::StyleRole::SurfaceRaised)),
+            Span::styled(
+                value,
+                if editing {
+                    app.theme.style(theme::StyleRole::Focus)
+                } else {
+                    app.theme.style(value_role)
+                },
+            ),
+        ];
+        // A caret only where typing does something: inside an open text field.
+        if editing && matches!(field.kind, FieldKind::Text { .. }) {
+            spans.push(Span::styled(
+                "\u{2588}",
+                app.theme.style(theme::StyleRole::Focus),
+            ));
         }
-        crate::action::ActionId::ServicesTaildropSend => {
-            "target=<exact discovered target>;files=/path/one|/path with spaces/two"
+        if editing && !matches!(field.kind, FieldKind::Text { .. }) {
+            spans.push(Span::styled(
+                "  \u{2039} \u{203a}",
+                app.theme.style(theme::StyleRole::KeyHint),
+            ));
         }
-        crate::action::ActionId::ServicesTaildropReceive => {
-            "directory=/existing/dir;conflict=skip|overwrite|rename;wait=true|false"
-        }
-        crate::action::ActionId::ServicesDriveShare => "name=<name>;path=/existing/directory",
-        crate::action::ActionId::ServicesDriveRename => "old=<current name>;new=<new name>",
-        crate::action::ActionId::ServicesCertificateObtain => {
-            "domain=<eligible local domain>;cert=/explicit/cert.pem;key=/explicit/key.pem;min-validity=30d"
-        }
-        crate::action::ActionId::ServicesBugReportCreate => "diagnose=true|false;note=<plain text>",
-        _ => "enter a typed local service request",
-    };
-    let error = state
-        .error
-        .as_deref()
-        .map_or(String::new(), |value| format!("\nerror: {value}"));
-    frame.render_widget(
-        Paragraph::new(format!(
-            "{hint}\n\n> {}{}\nEnter previews   Esc cancels",
-            state.input, error
-        ))
-        .style(app.theme.style(theme::StyleRole::SurfaceRaised))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(app.theme.style(theme::StyleRole::BorderFocused))
-                .title("local service form"),
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled(
+            if state.on_submit_row() { "> " } else { "  " }.to_owned(),
+            app.theme.style(theme::StyleRole::KeyHint),
         ),
+        Span::styled(
+            "Continue",
+            app.theme.style(if state.on_submit_row() {
+                theme::StyleRole::Focus
+            } else {
+                theme::StyleRole::TextMuted
+            }),
+        ),
+    ]));
+    lines.push(Line::default());
+    let help = state
+        .fields
+        .get(state.selected)
+        .map_or("Review the change before anything happens", |field| {
+            field.help
+        });
+    lines.push(Line::from(Span::styled(
+        help.to_owned(),
+        app.theme.style(theme::StyleRole::TextMuted),
+    )));
+    if let Some(error) = state.error.as_deref() {
+        lines.push(Line::from(Span::styled(
+            error.to_owned(),
+            app.theme.style(theme::StyleRole::StateDanger),
+        )));
+    }
+    lines.push(Line::default());
+    lines.push(hints(app, state));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(app.theme.style(theme::StyleRole::SurfaceRaised))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderFocused))
+                    .title(format!(" {} ", state.title)),
+            ),
         area,
     );
+}
+
+/// Only the keys that do something on the field the user is standing on.
+fn hints(app: &App, state: &ServiceFormState) -> Line<'static> {
+    let pairs = if state.is_editing() {
+        match state.fields.get(state.selected).map(|field| &field.kind) {
+            Some(FieldKind::Text { .. }) => vec![("Enter", "keep"), ("Esc", "discard")],
+            _ => vec![("←/→", "change"), ("Enter", "keep"), ("Esc", "discard")],
+        }
+    } else if state.on_submit_row() {
+        vec![("j/k", "move"), ("Enter", "review"), ("Esc", "cancel")]
+    } else {
+        vec![("j/k", "move"), ("Enter", "edit"), ("Esc", "cancel")]
+    };
+    let mut spans = Vec::new();
+    for (index, (key, label)) in pairs.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(
+                "   ",
+                app.theme.style(theme::StyleRole::SurfaceRaised),
+            ));
+        }
+        spans.push(Span::styled(
+            key,
+            app.theme.style(theme::StyleRole::KeyHint),
+        ));
+        spans.push(Span::styled(
+            " ",
+            app.theme.style(theme::StyleRole::SurfaceRaised),
+        ));
+        spans.push(Span::styled(
+            label,
+            app.theme.style(theme::StyleRole::TextMuted),
+        ));
+    }
+    Line::from(spans)
 }

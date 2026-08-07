@@ -64,6 +64,18 @@ impl ConnectionPath {
             Self::NoPath => "no-path",
         }
     }
+
+    /// What is carrying the traffic, rather than what kind of path it is: a
+    /// direct connection has no relay to name, so it names itself. `label` is
+    /// what the `path:` filter still matches on.
+    pub fn relay_label(&self) -> &str {
+        match self {
+            Self::Direct { .. } => "direct",
+            Self::Derp { region } => region,
+            Self::PeerRelay { peer } => peer,
+            Self::Idle | Self::Unknown(_) | Self::NoPath => "-",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -437,6 +449,10 @@ impl SortDirection {
             Self::Ascending => "asc",
             Self::Descending => "desc",
         }
+    }
+
+    pub const fn is_ascending(self) -> bool {
+        matches!(self, Self::Ascending)
     }
 
     pub const fn reverse(self) -> Self {

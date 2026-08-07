@@ -1,10 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
-use crate::ui::theme;
+use crate::ui::components::panel;
 use crate::ui::views::routes;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -149,12 +148,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         preference_line("nickname", &app.local_preferences.nickname),
         preference_line("web client", &app.local_preferences.web_client),
     ]);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(Block::default().borders(Borders::ALL).title("local")),
-        chunks[0],
-    );
+    panel::render(frame, app, chunks[0], "local", lines);
     routes::render(frame, app, chunks[1]);
 }
 
@@ -219,10 +213,5 @@ fn render_without_snapshot(frame: &mut Frame<'_>, app: &App, area: Rect) {
             lines.push(Line::from("  retry   r"));
         }
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .block(Block::default().borders(Borders::ALL).title("local")),
-        area,
-    );
+    panel::render(frame, app, area, "local", lines);
 }
