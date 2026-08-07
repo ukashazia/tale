@@ -586,3 +586,134 @@ async fn request_timeout_is_distinct_and_debug_is_secret_safe() -> Result<(), St
     assert!(!debug.contains("fictional-secret"));
     Ok(())
 }
+
+/// Wraps a store and counts reads so a test can assert how often the OS keyring would
+/// have been touched. On macOS every read can raise a modal unlock prompt that blocks
+/// the calling thread, so the count is a correctness property, not a performance one.
+#[derive(Default)]
+struct CountingCredentialStore {
+    inner: MemoryCredentialStore,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingCredentialStore {
+    fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl CredentialStore for CountingCredentialStore {
+    fn get(
+        &self,
+        reference: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, tale::admin::auth::AuthError> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get(reference)
+    }
+
+    fn set(&self, reference: &str, value: &str) -> Result<(), tale::admin::auth::AuthError> {
+        self.inner.set(reference, value)
+    }
+
+    fn delete(&self, reference: &str) -> Result<bool, tale::admin::auth::AuthError> {
+        self.inner.delete(reference)
+    }
+}
+
+#[tokio::test]
+async fn credential_status_reuses_the_record_the_token_read_already_decoded()
+-> Result<(), String> {
+    let store = Arc::new(CountingCredentialStore::default());
+    let record = CredentialRecord::AccessToken(AccessTokenRecord {
+        version: 1,
+        access_token: SecretValue::new("canary-token-for-tests"),
+    });
+    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
+    store
+        .set("fixture", &encoded)
+        .map_err(|error| error.to_string())?;
+
+    let manager = TokenManager::new(store.clone(), None);
+    manager
+        .access_token("fixture", "fixture")
+        .await
+        .map_err(|error| error.to_string())?;
+    assert_eq!(store.reads(), 1, "the token read is the only unavoidable one");
+
+    for _ in 0..5 {
+        let status = manager
+            .credential_status("fixture")
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "status was missing".to_owned())?;
+        assert_eq!(status.kind.label(), "access_token");
+    }
+    assert_eq!(
+        store.reads(),
+        1,
+        "every admin refresh calls credential_status; none may reach the keyring again"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn credential_status_still_reads_when_nothing_is_cached() -> Result<(), String> {
+    let store = Arc::new(CountingCredentialStore::default());
+    let record = CredentialRecord::OAuthClient(tale::admin::auth::OAuthClientRecord {
+        version: 1,
+        client_id: SecretValue::new("fictional-client"),
+        client_secret: SecretValue::new("fictional-secret"),
+        requested_scopes: vec!["devices:core:read".to_owned()],
+    });
+    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
+    store
+        .set("fixture", &encoded)
+        .map_err(|error| error.to_string())?;
+
+    let manager = TokenManager::new(store.clone(), None);
+    let status = manager
+        .credential_status("fixture")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "status was missing".to_owned())?;
+    assert_eq!(status.requested_scopes, vec!["devices:core:read".to_owned()]);
+    assert_eq!(store.reads(), 1);
+
+    manager.clear_all().await;
+    manager
+        .credential_status("fixture")
+        .map_err(|error| error.to_string())?;
+    assert_eq!(store.reads(), 2, "clearing the cache must force a re-read");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_environment_token_override_never_touches_the_keyring() -> Result<(), String> {
+    let store = Arc::new(CountingCredentialStore::default());
+    let record = CredentialRecord::AccessToken(AccessTokenRecord {
+        version: 1,
+        access_token: SecretValue::new("keyring-token-that-must-stay-unread"),
+    });
+    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
+    store
+        .set("fixture", &encoded)
+        .map_err(|error| error.to_string())?;
+
+    let manager = TokenManager::new(store.clone(), Some("override-token".to_owned()));
+    for _ in 0..3 {
+        manager
+            .access_token("fixture", "fixture")
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = manager
+            .credential_status("fixture")
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "status was missing".to_owned())?;
+        assert_eq!(status.kind.label(), "access_token");
+        assert!(status.requested_scopes.is_empty());
+    }
+    assert_eq!(
+        store.reads(),
+        0,
+        "TALE_ACCESS_TOKEN is the documented way to run without an unlock prompt"
+    );
+    Ok(())
+}

@@ -335,7 +335,14 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     })
     .await;
     tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
+    // A task parked in a blocking call — an OS keyring read raising a modal unlock
+    // prompt, say — only observes the abort at an await point it will never reach, so
+    // this join is bounded. Dropping the set detaches whatever is still stuck.
+    let _ = tokio::time::timeout(grace_duration(), async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
+    drop(tasks);
 
     let restore_result = terminal.restore();
     if let Some(error) = final_error {

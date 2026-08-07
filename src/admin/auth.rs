@@ -285,6 +285,10 @@ pub struct TokenManager {
     token_url: String,
     environment_token: Option<Arc<SecretValue>>,
     cache: Mutex<BTreeMap<String, CachedToken>>,
+    /// Credential metadata keyed by keyring reference. Reading the OS keyring is a
+    /// blocking call that can raise a modal unlock prompt, so the kind and scopes are
+    /// remembered from the record `access_token` already decoded rather than fetched again.
+    statuses: std::sync::Mutex<BTreeMap<String, CredentialStatus>>,
 }
 
 impl fmt::Debug for TokenManager {
@@ -326,6 +330,7 @@ impl TokenManager {
             token_url: "https://api.tailscale.com/api/v2/oauth/token".to_owned(),
             environment_token,
             cache: Mutex::new(BTreeMap::new()),
+            statuses: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -341,6 +346,24 @@ impl TokenManager {
             token_url: token_url.into(),
             environment_token: environment_token.map(|value| Arc::new(SecretValue::new(value))),
             cache: Mutex::new(BTreeMap::new()),
+            statuses: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn status_of(record: &CredentialRecord) -> CredentialStatus {
+        CredentialStatus {
+            kind: record.kind(),
+            requested_scopes: match record {
+                CredentialRecord::OAuthClient(record) => record.requested_scopes.clone(),
+                CredentialRecord::AccessToken(_) => Vec::new(),
+            },
+            keyring_available: true,
+        }
+    }
+
+    fn remember_status(&self, reference: &str, record: &CredentialRecord) {
+        if let Ok(mut statuses) = self.statuses.lock() {
+            statuses.insert(reference.to_owned(), Self::status_of(record));
         }
     }
 
@@ -348,20 +371,33 @@ impl TokenManager {
         &self,
         reference: &str,
     ) -> Result<Option<CredentialStatus>, AuthError> {
+        // An environment override replaces the keyring for the whole process, so
+        // describing the credential in use must not read the keyring: that raises a modal
+        // unlock prompt for a record this process is never going to consult. Callers that
+        // deliberately report on keyring contents alongside an override build the manager
+        // without one.
+        if let Some(environment_token) = self.environment_token.as_ref() {
+            if environment_token.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(CredentialStatus {
+                kind: CredentialKind::AccessToken,
+                requested_scopes: Vec::new(),
+                keyring_available: false,
+            }));
+        }
+        if let Ok(statuses) = self.statuses.lock()
+            && let Some(status) = statuses.get(reference)
+        {
+            return Ok(Some(status.clone()));
+        }
         let value = self.store.get(reference)?;
         let Some(value) = value else {
             return Ok(None);
         };
         let record = decode_record(value.as_str())?;
-        let requested_scopes = match &record {
-            CredentialRecord::OAuthClient(record) => record.requested_scopes.clone(),
-            CredentialRecord::AccessToken(_) => Vec::new(),
-        };
-        Ok(Some(CredentialStatus {
-            kind: record.kind(),
-            requested_scopes,
-            keyring_available: true,
-        }))
+        self.remember_status(reference, &record);
+        Ok(Some(Self::status_of(&record)))
     }
 
     pub async fn access_token(
@@ -386,6 +422,7 @@ impl TokenManager {
             return Err(AuthError::Unauthenticated);
         };
         let record = decode_record(encoded.as_str())?;
+        self.remember_status(reference, &record);
         match record {
             CredentialRecord::AccessToken(record) => {
                 cache.insert(
@@ -417,10 +454,21 @@ impl TokenManager {
 
     pub async fn clear_profile(&self, profile: &str) {
         self.cache.lock().await.remove(profile);
+        self.clear_statuses();
     }
 
     pub async fn clear_all(&self) {
         self.cache.lock().await.clear();
+        self.clear_statuses();
+    }
+
+    /// Drops every remembered status. The token cache is keyed by profile and the status
+    /// cache by keyring reference, so a profile-scoped eviction cannot target one entry;
+    /// discarding all of them only costs a re-read.
+    fn clear_statuses(&self) {
+        if let Ok(mut statuses) = self.statuses.lock() {
+            statuses.clear();
+        }
     }
 
     pub async fn refresh_after_unauthenticated(

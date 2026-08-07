@@ -32,7 +32,7 @@ use crate::admin::auth::{
     AccessTokenRecord, CredentialRecord, CredentialStore, OAuthClientRecord, OsCredentialStore,
     SecretValue,
 };
-use crate::cli::{AuthCommand, Cli, Command, ConfigCommand};
+use crate::cli::{AuthAddArgs, AuthCommand, Cli, Command, ConfigCommand};
 use crate::config::{EnvironmentValues, ResolvedConfig};
 use crate::error::TaleError;
 use crate::paths::PathEnvironment;
@@ -126,37 +126,78 @@ fn run_auth(
     let checked =
         config::resolve(&check_cli, &check_environment, path_environment).map_err(config_error)?;
     match command {
-        AuthCommand::Add(args) => auth_add(args.profile, &checked),
+        AuthCommand::Add(args) => auth_add(args, &checked),
         AuthCommand::Status(args) => auth_status(args.profile, &checked, environment),
         AuthCommand::Remove(args) => auth_remove(args.profile, &checked),
     }
 }
 
-fn auth_add(profile_name: String, checked: &ResolvedConfig) -> Result<(), TaleError> {
+fn auth_add(args: AuthAddArgs, checked: &ResolvedConfig) -> Result<(), TaleError> {
+    let profile_name = args.profile;
     if !config::is_valid_profile_name(&profile_name) {
         return Err(TaleError::InvalidArguments(
             "profile name contains unsupported characters".to_owned(),
         ));
     }
+    // Reading the secret from standard input means no prompt can be answered, so every
+    // remaining value has to arrive as a flag rather than silently blocking on a tty.
+    let scripted = args.secret_stdin;
     let existing = checked.profiles.get(&profile_name).cloned();
-    let tailnet = match existing.as_ref() {
-        Some(profile) => profile.tailnet.clone(),
-        None => prompt_line("tailnet ID (or -): ")?,
+    let tailnet = match args.tailnet {
+        Some(tailnet) => tailnet,
+        None => match existing.as_ref() {
+            Some(profile) => profile.tailnet.clone(),
+            None if scripted => {
+                return Err(TaleError::InvalidArguments(
+                    "--tailnet is required when the secret is read from standard input"
+                        .to_owned(),
+                ));
+            }
+            None => prompt_line("tailnet ID (or -): ")?,
+        },
     };
     if tailnet.is_empty() {
         return Err(TaleError::InvalidArguments(
             "tailnet ID cannot be empty".to_owned(),
         ));
     }
-    let kind = prompt_line("credential kind [oauth_client/access_token]: ")?;
+    let kind = match args.kind {
+        Some(kind) => kind.label().to_owned(),
+        None if scripted => {
+            return Err(TaleError::InvalidArguments(
+                "--kind is required when the secret is read from standard input".to_owned(),
+            ));
+        }
+        None => prompt_line("credential kind [oauth_client/access_token]: ")?,
+    };
     let record = match kind.trim() {
         "oauth_client" => {
-            let client_id = prompt_secret("OAuth client ID: ")?;
-            let client_secret = prompt_secret("OAuth client secret: ")?;
-            let scopes = prompt_line("requested scopes (space separated): ")?
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
+            let client_id = match args.client_id {
+                Some(client_id) => client_id,
+                None if scripted => {
+                    return Err(TaleError::InvalidArguments(
+                        "--client-id is required for oauth_client when the secret is read \
+                         from standard input"
+                            .to_owned(),
+                    ));
+                }
+                None => prompt_secret("OAuth client ID: ")?,
+            };
+            let client_secret = read_secret("OAuth client secret: ", scripted)?;
+            let scopes = match args.scopes {
+                Some(scopes) => scopes,
+                None if scripted => {
+                    return Err(TaleError::InvalidArguments(
+                        "--scopes is required for oauth_client when the secret is read \
+                         from standard input"
+                            .to_owned(),
+                    ));
+                }
+                None => prompt_line("requested scopes (space separated): ")?,
+            }
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
             if client_id.is_empty() || client_secret.is_empty() || scopes.is_empty() {
                 return Err(TaleError::InvalidArguments(
                     "OAuth client ID, secret, and at least one scope are required".to_owned(),
@@ -173,7 +214,7 @@ fn auth_add(profile_name: String, checked: &ResolvedConfig) -> Result<(), TaleEr
             })
         }
         "access_token" => {
-            let access_token = prompt_secret("access token: ")?;
+            let access_token = read_secret("access token: ", scripted)?;
             if access_token.is_empty() {
                 return Err(TaleError::InvalidArguments(
                     "access token cannot be empty".to_owned(),
@@ -373,6 +414,18 @@ fn prompt_secret(prompt: &str) -> Result<String, TaleError> {
         .map_err(|_| TaleError::Application("credential input was cancelled".to_owned()))
 }
 
+/// `rpassword` opens `/dev/tty` directly, so prompting fails outright wherever there is
+/// no controlling terminal. Reading standard input covers those callers.
+fn read_secret(prompt: &str, from_stdin: bool) -> Result<String, TaleError> {
+    if !from_stdin {
+        return Ok(prompt_secret(prompt)?);
+    }
+    let mut value = String::new();
+    io::Read::read_to_string(&mut io::stdin(), &mut value)
+        .map_err(|_| TaleError::Application("could not read the secret from stdin".to_owned()))?;
+    Ok(value.trim().to_owned())
+}
+
 fn auth_runtime() -> Result<tokio::runtime::Runtime, TaleError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -409,6 +462,9 @@ fn launch_tui(config: ResolvedConfig, view: Option<&str>) -> Result<(), TaleErro
         .build()
         .map_err(|error| TaleError::RuntimeInitialization(error.to_string()))?;
     let result = runtime.block_on(runtime::run(&mut app, &mut terminal));
+    // Dropping the runtime joins its worker threads, which would reintroduce the very
+    // stall the bounded shutdown above avoids if one is parked in a blocking call.
+    runtime.shutdown_timeout(crate::task::grace_duration());
     let _ = std::io::stdout().flush();
     result
 }

@@ -54,9 +54,49 @@ pub enum Command {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum AuthCommand {
-    Add(AuthProfileArgs),
+    Add(AuthAddArgs),
     Remove(AuthProfileArgs),
     Status(AuthStatusArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CredentialKindArg {
+    OauthClient,
+    AccessToken,
+}
+
+impl CredentialKindArg {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OauthClient => "oauth_client",
+            Self::AccessToken => "access_token",
+        }
+    }
+}
+
+/// `auth add` is the only writer to the credential store, so it has to be usable
+/// without a terminal: the prompts cannot be reached from a script, a container, or
+/// a CI job, and they are the sole recovery path once a profile has been removed.
+#[derive(Debug, Clone, Args)]
+pub struct AuthAddArgs {
+    pub profile: String,
+
+    #[arg(long, value_name = "ID")]
+    pub tailnet: Option<String>,
+
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<CredentialKindArg>,
+
+    /// Read the secret from standard input instead of prompting. Selects the access
+    /// token, or the client secret when the kind is `oauth_client`.
+    #[arg(long)]
+    pub secret_stdin: bool,
+
+    #[arg(long, value_name = "ID")]
+    pub client_id: Option<String>,
+
+    #[arg(long, value_name = "SCOPES")]
+    pub scopes: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

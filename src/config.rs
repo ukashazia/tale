@@ -243,8 +243,13 @@ pub enum ConfigError {
     WriteFailure,
     #[error("profile does not exist: {0}")]
     UnknownProfile(String),
-    #[error("TALE_ACCESS_TOKEN requires a selected profile")]
-    AccessTokenWithoutProfile,
+    #[error("no profiles are configured in {0}; add one with `tale auth add <name>`")]
+    NoProfilesConfigured(String),
+    #[error(
+        "no profile is selected; set default_profile in {path} or pass --profile, \
+         choosing from: {available}"
+    )]
+    NoProfileSelected { path: String, available: String },
     #[error("--mock cannot be combined with a profile or TALE_ACCESS_TOKEN")]
     MockConflict,
     #[error("route name is not available in Phase 1: {0}")]
@@ -324,8 +329,24 @@ pub fn resolve(
     {
         return Err(ConfigError::UnknownProfile(profile.to_owned()));
     }
+    // A token with nowhere to point is always a configuration error, but the useful part
+    // is which axis is missing: an empty or absent config file is a different problem
+    // from a file that declares profiles and simply names no default.
     if environment.access_token_present && selected_profile.is_none() {
-        return Err(ConfigError::AccessTokenWithoutProfile);
+        let path = paths.config_file.display().to_string();
+        return Err(if file.profiles.is_empty() {
+            ConfigError::NoProfilesConfigured(path)
+        } else {
+            ConfigError::NoProfileSelected {
+                path,
+                available: file
+                    .profiles
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            }
+        });
     }
     if cli.mock && selected_profile.is_some() {
         return Err(ConfigError::MockConflict);
