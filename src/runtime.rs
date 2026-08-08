@@ -3455,14 +3455,18 @@ async fn run_admin_device_enrichment(
         },
         Err(error) => (None, Some(error)),
     };
+    let mut device = device;
     let (posture_present, posture_error) = match posture {
-        Ok(response) => (
-            Some(response.value.attributes.is_some() || response.value.expiries.is_some()),
-            None,
-        ),
+        Ok(response) => {
+            admin::devices::apply_posture(
+                &mut device,
+                response.value.attributes,
+                response.value.expiries,
+            );
+            (device.posture_present, None)
+        }
         Err(error) => (None, Some(error)),
     };
-    let mut device = device;
     device.source_observed_at = observed_at;
     queue
         .send(Event::Admin(Box::new(

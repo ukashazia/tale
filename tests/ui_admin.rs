@@ -138,6 +138,57 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
 }
 
 #[test]
+fn admin_device_details_render_inventory_routes_and_posture_values() {
+    let Some(mut app) = admin_app("device-details") else {
+        return;
+    };
+    let Ok(dto) = serde_json::from_str::<tale::admin::dto::DevicesResponse>(include_str!(
+        "fixtures/admin/devices.json"
+    )) else {
+        return;
+    };
+    let Ok(mut devices) = tale::admin::devices::decode_devices(dto.devices, app.now) else {
+        return;
+    };
+    let Ok(posture) = serde_json::from_str::<tale::admin::dto::DevicePostureAttributesDto>(
+        include_str!("fixtures/admin/posture.json"),
+    ) else {
+        return;
+    };
+    let Some(device) = devices.first_mut() else {
+        return;
+    };
+    tale::admin::devices::apply_posture(device, posture.attributes, posture.expiries);
+    let selected = device.stable_id.clone();
+    app.admin.devices.snapshot = Some(devices);
+    app.refresh_device_view();
+    app.set_route(Route::Devices);
+    app.views.devices.selected_id = Some(tale::domain::device::DeviceId::new(selected));
+
+    press(&mut app, KeyCode::Enter);
+    let Some(lines) = render_lines(&app, 160, 60) else {
+        return;
+    };
+    let rendered = lines.join("\n");
+    for wanted in [
+        "device details · admin",
+        "Identity · admin",
+        "legacy-fictional-001",
+        "Status and key · admin",
+        "Addresses and routing · admin",
+        "192.0.2.0/24",
+        "Posture · admin",
+        "node:fictional = observed",
+        "Not observable from adopted APIs",
+    ] {
+        assert!(
+            rendered.contains(wanted),
+            "device details are missing {wanted}"
+        );
+    }
+}
+
+#[test]
 fn phase_eight_sections_render_derived_and_authoritative_states() {
     let app = admin_app("sections");
     assert!(app.is_some());

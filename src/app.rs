@@ -1132,6 +1132,9 @@ impl DeviceResource {
 pub struct DeviceViewState {
     pub selected_id: Option<DeviceId>,
     pub scroll: usize,
+    /// First visible line in the full-screen device detail opened by Enter.
+    /// The side inspector always stays at its summary's first line.
+    pub detail_scroll: usize,
     pub filter_draft: String,
     pub applied_filter: FilterExpression,
     pub sort: SortSpec,
@@ -1150,6 +1153,7 @@ impl Default for DeviceViewState {
         Self {
             selected_id: None,
             scroll: 0,
+            detail_scroll: 0,
             filter_draft: String::new(),
             applied_filter: FilterExpression::empty(),
             sort: SortSpec::default(),
@@ -2566,6 +2570,7 @@ impl App {
         if let Some(inspector) = frame.inspector
             && contains_point(inspector, column, row)
         {
+            self.views.devices.detail_scroll = 0;
             self.focus = Focus::Inspector;
             return;
         }
@@ -4020,7 +4025,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionMoveUp => {
-                if self.current_route() == Route::Overview {
+                if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
+                    self.move_device_detail_scroll(-1);
+                } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(-1);
                 } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, -1);
@@ -4044,7 +4051,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionMoveDown => {
-                if self.current_route() == Route::Overview {
+                if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
+                    self.move_device_detail_scroll(1);
+                } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(1);
                 } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, 1);
@@ -4068,7 +4077,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionFirst => {
-                if self.current_route() == Route::Overview {
+                if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
+                    self.views.devices.detail_scroll = 0;
+                } else if self.current_route() == Route::Overview {
                     self.select_overview_position(0);
                 } else if self.current_route() == Route::Tasks {
                     self.tasks.select_filtered_first(&self.task_filter);
@@ -4091,7 +4102,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionLast => {
-                if self.current_route() == Route::Overview {
+                if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
+                    self.views.devices.detail_scroll = self.device_detail_max_scroll();
+                } else if self.current_route() == Route::Overview {
                     self.select_overview_position(usize::MAX);
                 } else if self.current_route() == Route::Tasks {
                     self.tasks.select_filtered_last(&self.task_filter);
@@ -4127,7 +4140,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionPageUp => {
-                if self.current_route() == Route::Overview {
+                if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
+                    self.move_device_detail_scroll(-5);
+                } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(-5);
                 } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, -5);
@@ -4151,7 +4166,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionPageDown => {
-                if self.current_route() == Route::Overview {
+                if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
+                    self.move_device_detail_scroll(5);
+                } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(5);
                 } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, 5);
@@ -4208,6 +4225,9 @@ impl App {
                     || self.selected_device().is_some()
                 {
                     let selected_id = self.selected_device().map(|device| device.id.0.clone());
+                    if self.current_route() == Route::Devices {
+                        self.views.devices.detail_scroll = 0;
+                    }
                     self.focus = Focus::Inspector;
                     if let Some(effect) = self.start_admin_device_enrichment(selected_id) {
                         return vec![effect];
@@ -5887,6 +5907,7 @@ impl App {
                 self.navigate(Route::Devices);
                 self.views.devices.selected_id = Some(selected);
                 self.reconcile_selection(None);
+                self.views.devices.detail_scroll = 0;
                 self.focus = Focus::Inspector;
                 return self
                     .start_admin_device_enrichment(Some(affected_id))
@@ -10375,6 +10396,10 @@ impl App {
         })
     }
 
+    pub fn admin_device_enrichment_in_flight(&self, stable_id: &str) -> bool {
+        self.admin_read_locks.contains_key(stable_id)
+    }
+
     fn update_admin(&mut self, event: AdminEvent) -> Vec<Effect> {
         match event {
             AdminEvent::RefreshStarted {
@@ -14574,6 +14599,27 @@ impl App {
         self.admin_user_selected = move_bounded_index(self.admin_user_selected, length, offset);
     }
 
+    fn move_device_detail_scroll(&mut self, offset: isize) {
+        let length = self.device_detail_max_scroll().saturating_add(1);
+        self.views.devices.detail_scroll =
+            move_bounded_index(self.views.devices.detail_scroll, length, offset);
+    }
+
+    fn device_detail_max_scroll(&self) -> usize {
+        let frame = crate::ui::layout::compute(
+            ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: self.terminal_width,
+                height: self.terminal_height,
+            },
+            self,
+        );
+        let visible_lines = usize::from(frame.content.height.saturating_sub(2));
+        crate::ui::components::inspector::device_detail_line_count(self)
+            .saturating_sub(visible_lines)
+    }
+
     fn move_admin_route_selection(&mut self, offset: isize) {
         let length = self.admin.route_observations().len();
         self.admin_route_selected = move_bounded_index(self.admin_route_selected, length, offset);
@@ -14745,6 +14791,7 @@ impl App {
                         .map(|device| device.stable_id.clone());
                     self.views.devices.selected_id = device_id.map(DeviceId::new);
                     self.navigate(Route::Devices);
+                    self.views.devices.detail_scroll = 0;
                     self.focus = Focus::Inspector;
                     return self
                         .views
@@ -14815,6 +14862,7 @@ impl App {
         self.views.devices.filter_draft.clear();
         self.views.devices.applied_filter = FilterExpression::empty();
         self.navigate(Route::Devices);
+        self.views.devices.detail_scroll = 0;
         self.focus = Focus::Inspector;
         let selected = self
             .views

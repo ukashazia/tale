@@ -235,6 +235,70 @@ fn a_device_without_a_reported_version_shows_a_dash() {
     );
 }
 
+#[test]
+fn enter_opens_a_scrollable_full_device_record_without_moving_selection() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    let Ok(snapshot) = decode_status(STATUS, "1.98.9".to_owned(), None, 1_754_000_000) else {
+        return;
+    };
+    app.local_resource.generation = 1;
+    let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+        generation: 1,
+        snapshot: Box::new(snapshot),
+    })));
+    app.set_route(Route::Devices);
+    app.views.devices.selected_id = Some(DeviceId::new("nodekey:direct"));
+
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.focus, Focus::Inspector);
+    let selected = app.views.devices.selected_id.clone();
+    let Some(top) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    let top = top.join("\n");
+    for wanted in [
+        "device details · local",
+        "Identity · local daemon",
+        "node public key",
+        "full domain",
+        "build.tail.example.ts.net",
+    ] {
+        assert!(top.contains(wanted), "device details are missing {wanted}");
+    }
+
+    press(&mut app, 'G');
+    assert_eq!(app.views.devices.selected_id, selected);
+    assert!(app.views.devices.detail_scroll > 0);
+    let Some(bottom) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    let bottom = bottom.join("\n");
+    for wanted in [
+        "Source · local daemon",
+        "Not observable from adopted APIs",
+        "relay latency",
+        "TLS certificate",
+    ] {
+        assert!(
+            bottom.contains(wanted),
+            "scrolled details are missing {wanted}"
+        );
+    }
+
+    let previous_scroll = app.views.devices.detail_scroll;
+    press(&mut app, 'k');
+    assert_eq!(app.views.devices.selected_id, selected);
+    assert_eq!(
+        app.views.devices.detail_scroll,
+        previous_scroll.saturating_sub(1)
+    );
+}
+
 /// The bar names what landed on the clipboard, not what it was called. A field
 /// label only repeats the key that was just pressed; the value is the thing
 /// worth checking without pasting somewhere to see it.

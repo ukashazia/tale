@@ -80,6 +80,8 @@ pub fn admin_device(id: &str, suffix: &str) -> AdminDevice {
         is_ephemeral: None,
         ssh_enabled: None,
         posture_present: None,
+        posture_attributes: BTreeMap::new(),
+        posture_expiries: BTreeMap::new(),
         source_observed_at: OBSERVED_AT,
     }
 }

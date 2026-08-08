@@ -78,6 +78,32 @@ pub fn render_focusable(
     );
 }
 
+/// A focused document pane whose body is taller than the terminal. Collection
+/// side panes deliberately do not use this: their summaries stay anchored at
+/// the first line while Enter opens the navigable document.
+pub fn render_focusable_scrolled(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    title: &str,
+    content: impl Into<Text<'static>>,
+    scroll: u16,
+) {
+    frame.render_widget(
+        Paragraph::new(content.into())
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .scroll((scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderFocused))
+                    .padding(Padding::horizontal(1))
+                    .title(pad(title)),
+            ),
+        area,
+    );
+}
+
 pub fn block<'a>(app: &App, title: &str, content: impl Into<Text<'static>>) -> Paragraph<'a> {
     Paragraph::new(content.into())
         .style(app.theme.style(theme::StyleRole::Surface))

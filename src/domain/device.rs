@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use serde_json::Value;
+
 use super::Timestamp;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -193,6 +195,8 @@ pub struct AdminDevice {
     pub is_ephemeral: Option<bool>,
     pub ssh_enabled: Option<bool>,
     pub posture_present: Option<bool>,
+    pub posture_attributes: BTreeMap<String, Value>,
+    pub posture_expiries: BTreeMap<String, Value>,
     pub source_observed_at: Timestamp,
 }
 

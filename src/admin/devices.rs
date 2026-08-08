@@ -63,6 +63,8 @@ pub fn decode_device(device: DeviceDto, observed_at: Timestamp) -> Result<AdminD
         is_ephemeral: device.is_ephemeral,
         ssh_enabled: device.ssh_enabled,
         posture_present: None,
+        posture_attributes: BTreeMap::new(),
+        posture_expiries: BTreeMap::new(),
         source_observed_at: observed_at,
     })
 }
@@ -79,8 +81,15 @@ pub fn apply_routes(
     Ok(())
 }
 
-pub fn apply_posture(device: &mut AdminDevice, present: bool) {
-    device.posture_present = Some(present);
+pub fn apply_posture(
+    device: &mut AdminDevice,
+    attributes: Option<serde_json::Map<String, serde_json::Value>>,
+    expiries: Option<serde_json::Map<String, serde_json::Value>>,
+) {
+    device.posture_attributes = attributes.unwrap_or_default().into_iter().collect();
+    device.posture_expiries = expiries.unwrap_or_default().into_iter().collect();
+    device.posture_present =
+        Some(!device.posture_attributes.is_empty() || !device.posture_expiries.is_empty());
 }
 
 fn parse_os(value: &str) -> OperatingSystem {

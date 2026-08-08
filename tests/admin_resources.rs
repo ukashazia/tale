@@ -1,5 +1,5 @@
-use tale::admin::devices::decode_devices;
-use tale::admin::dto::DevicesResponse;
+use tale::admin::devices::{apply_posture, decode_devices};
+use tale::admin::dto::{DevicePostureAttributesDto, DevicesResponse};
 use tale::admin::{AdminResource, AdminResourceState, AdminSnapshot};
 use tale::domain::SourceHealth;
 use tale::domain::device::{ConnectionPath, DeviceId, LocalDevice, OperatingSystem};
@@ -34,6 +34,33 @@ fn admin_device_display_name_uses_the_device_name_not_the_hostname() -> Result<(
         device.hostname.as_deref(),
         Some("MacBooks-MacBook-Pro.local")
     );
+    Ok(())
+}
+
+#[test]
+fn posture_enrichment_preserves_opaque_values_and_distinguishes_empty() -> Result<(), String> {
+    let dto: DevicesResponse = serde_json::from_str(include_str!("fixtures/admin/devices.json"))
+        .map_err(|error| error.to_string())?;
+    let mut devices = decode_devices(dto.devices, 1).map_err(|error| error.to_string())?;
+    let device = devices
+        .first_mut()
+        .ok_or_else(|| "decoded device is missing".to_owned())?;
+    let posture: DevicePostureAttributesDto =
+        serde_json::from_str(include_str!("fixtures/admin/posture.json"))
+            .map_err(|error| error.to_string())?;
+
+    apply_posture(device, posture.attributes, posture.expiries);
+    assert_eq!(device.posture_present, Some(true));
+    assert_eq!(
+        device.posture_attributes.get("node:fictional"),
+        Some(&serde_json::Value::String("observed".to_owned()))
+    );
+    assert!(device.posture_expiries.contains_key("node:fictional"));
+
+    apply_posture(device, Some(serde_json::Map::new()), None);
+    assert_eq!(device.posture_present, Some(false));
+    assert!(device.posture_attributes.is_empty());
+    assert!(device.posture_expiries.is_empty());
     Ok(())
 }
 
