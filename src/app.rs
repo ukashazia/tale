@@ -699,7 +699,7 @@ impl FormField {
 /// A form the user fills in field by field. Anything already known — the row
 /// they selected, the machine they are on — is stated, not asked for.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ServiceFormState {
+pub struct FormState {
     pub action_id: ActionId,
     pub title: &'static str,
     /// Context the form acts on but does not ask for, as label and value.
@@ -711,7 +711,7 @@ pub struct ServiceFormState {
     pub error: Option<String>,
 }
 
-impl ServiceFormState {
+impl FormState {
     fn selected_field_mut(&mut self) -> Option<&mut FormField> {
         self.fields.get_mut(self.selected)
     }
@@ -783,13 +783,6 @@ pub struct HandoffInputState {
     pub host: String,
     pub input: String,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AccountPickerState {
-    pub action_id: ActionId,
-    pub accounts: Vec<LocalAccount>,
-    pub selected: usize,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -920,7 +913,7 @@ pub enum Overlay {
     DiagnosticInput(DiagnosticInputState),
     Confirmation(Box<ConfirmationState>),
     OperatorForm(OperatorFormState),
-    ServiceForm(ServiceFormState),
+    Form(FormState),
     HandoffInput(HandoffInputState),
     PolicyEditor,
     SecretResult,
@@ -2619,7 +2612,7 @@ impl App {
                 }
                 state.error = None;
             }
-            Overlay::ServiceForm(state) => {
+            Overlay::Form(state) => {
                 state.error = None;
                 if state.is_editing()
                     && let Some(field) = state.selected_field_mut()
@@ -3206,7 +3199,7 @@ impl App {
     fn handle_text_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
         let overlay = self.overlays.last_mut()?;
         match overlay {
-            Overlay::ServiceForm(state) => {
+            Overlay::Form(state) => {
                 // Two modes, and the same rule in both: Enter acts on what is
                 // selected. Browsing, that means edit this field or submit;
                 // editing, it means keep the value and stop editing.
@@ -3249,7 +3242,7 @@ impl App {
                     KeyCode::Enter => {
                         if state.on_submit_row() {
                             let state = state.clone();
-                            return Some(self.accept_service_form(state));
+                            return Some(self.accept_form(state));
                         }
                         state.begin_edit();
                     }
@@ -3430,8 +3423,8 @@ impl App {
                 self.overlays.push(Overlay::OperatorForm(state));
                 Vec::new()
             }
-            Overlay::ServiceForm(state) => {
-                self.overlays.push(Overlay::ServiceForm(state));
+            Overlay::Form(state) => {
+                self.overlays.push(Overlay::Form(state));
                 Vec::new()
             }
             Overlay::HandoffInput(state) => {
@@ -11359,7 +11352,7 @@ impl App {
         subject: Vec<(&'static str, String)>,
         fields: Vec<FormField>,
     ) {
-        self.overlays.push(Overlay::ServiceForm(ServiceFormState {
+        self.overlays.push(Overlay::Form(FormState {
             action_id,
             title,
             subject,
@@ -11370,7 +11363,7 @@ impl App {
         }));
     }
 
-    fn accept_service_form(&mut self, state: ServiceFormState) -> Vec<Effect> {
+    fn accept_form(&mut self, state: FormState) -> Vec<Effect> {
         match self.parse_service_form(&state) {
             Ok(request) => {
                 self.overlays.pop();
@@ -11381,7 +11374,7 @@ impl App {
                 }
             }
             Err(error) => {
-                if let Some(Overlay::ServiceForm(current)) = self.overlays.last_mut() {
+                if let Some(Overlay::Form(current)) = self.overlays.last_mut() {
                     current.error = Some(error);
                 }
                 Vec::new()
@@ -11389,7 +11382,7 @@ impl App {
         }
     }
 
-    fn parse_service_form(&self, state: &ServiceFormState) -> Result<ServiceActionRequest, String> {
+    fn parse_service_form(&self, state: &FormState) -> Result<ServiceActionRequest, String> {
         let fields = state
             .fields
             .iter()
@@ -14228,7 +14221,7 @@ impl App {
             Overlay::DiagnosticInput(_) => "diagnostic input",
             Overlay::Confirmation(_) => "confirm local action",
             Overlay::OperatorForm(_) => "local operator form",
-            Overlay::ServiceForm(_) => "local service form",
+            Overlay::Form(_) => "local service form",
             Overlay::HandoffInput(_) => "terminal handoff",
             Overlay::PolicyEditor => "policy workflow",
             Overlay::SecretResult => "secret result",

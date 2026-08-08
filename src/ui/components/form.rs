@@ -3,9 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{
-    AccountPickerState, App, FieldKind, HandoffInputState, OperatorFormState, ServiceFormState,
-};
+use crate::app::{App, FieldKind, FormState, HandoffInputState, OperatorFormState};
 use crate::ui::{text, theme};
 
 pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &OperatorFormState) {
@@ -209,37 +207,6 @@ fn preference_status<T: std::fmt::Display>(
     )
 }
 
-pub fn render_accounts(frame: &mut Frame<'_>, app: &App, area: Rect, state: &AccountPickerState) {
-    let lines = state
-        .accounts
-        .iter()
-        .enumerate()
-        .map(|(index, account)| {
-            format!(
-                "{} {}{} · {}",
-                if index == state.selected { ">" } else { " " },
-                account.display_label(),
-                if account.active { " (active)" } else { "" },
-                account.id
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    frame.render_widget(
-        Paragraph::new(format!(
-            "{lines}\n\nj/k select   Enter preview   Esc cancels"
-        ))
-        .style(app.theme.style(theme::StyleRole::SurfaceRaised))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(app.theme.style(theme::StyleRole::BorderFocused))
-                .title("local accounts"),
-        ),
-        area,
-    );
-}
-
 pub fn render_handoff(frame: &mut Frame<'_>, app: &App, area: Rect, state: &HandoffInputState) {
     let label = match state.kind {
         crate::app::HandoffInputKind::Ssh => "optional SSH username",
@@ -267,7 +234,7 @@ pub fn render_handoff(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Hand
 
 /// A field-by-field form. Every row states what it wants in words, the selected
 /// row explains itself, and nothing asks for something already on screen.
-pub fn render_service(frame: &mut Frame<'_>, app: &App, area: Rect, state: &ServiceFormState) {
+pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
     let label_width = state
         .fields
         .iter()
@@ -386,7 +353,7 @@ pub fn render_service(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Serv
 }
 
 /// Only the keys that do something on the field the user is standing on.
-fn hints(app: &App, state: &ServiceFormState) -> Line<'static> {
+fn hints(app: &App, state: &FormState) -> Line<'static> {
     let pairs = if state.is_editing() {
         match state.fields.get(state.selected).map(|field| &field.kind) {
             Some(FieldKind::Text { .. }) => vec![("Enter", "keep"), ("Esc", "discard")],

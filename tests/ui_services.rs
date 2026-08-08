@@ -805,7 +805,7 @@ fn forms_browse_with_jk_and_edit_one_field_at_a_time() {
 
 fn form_value<'a>(app: &'a App, key: &str) -> Option<&'a str> {
     app.overlays.iter().find_map(|overlay| match overlay {
-        tale::app::Overlay::ServiceForm(state) => Some(state.value(key)),
+        tale::app::Overlay::Form(state) => Some(state.value(key)),
         _ => None,
     })
 }

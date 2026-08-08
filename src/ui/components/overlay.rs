@@ -76,7 +76,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         }
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
         Overlay::OperatorForm(state) => form::render_operator(frame, app, area, state),
-        Overlay::ServiceForm(state) => form::render_service(frame, app, area, state),
+        Overlay::Form(state) => form::render(frame, app, area, state),
         Overlay::HandoffInput(state) => form::render_handoff(frame, app, area, state),
         Overlay::PolicyEditor => policy_editor::render(frame, app, area),
         Overlay::SecretResult => secret_result::render(frame, app, area),
@@ -102,7 +102,7 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
         | Overlay::AuditInvestigation => area,
         Overlay::DiagnosticInput(_)
         | Overlay::OperatorForm(_)
-        | Overlay::ServiceForm(_)
+        | Overlay::Form(_)
         | Overlay::HandoffInput(_) => {
             let height = area.height.saturating_mul(2) / 5;
             Rect {
