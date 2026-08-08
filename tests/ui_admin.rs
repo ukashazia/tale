@@ -107,7 +107,6 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
             Route::Credentials,
             Route::Tasks,
             Route::Audit,
-            Route::Settings,
         ] {
             app.set_route(route);
             for (width, height) in [(60, 18), (80, 24), (110, 30), (160, 45)] {

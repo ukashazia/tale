@@ -136,6 +136,29 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 }
                 pairs.push(("verified", probe_summary(app, &status.probe)));
             }
+            // What this session actually asked for and got back, which only the
+            // profile the app is reading from can answer.
+            if row.active() {
+                pairs.push((
+                    "requested",
+                    if app.admin.requested_scopes.is_empty() {
+                        "not recorded".to_owned()
+                    } else {
+                        app.admin.requested_scopes.join(" ")
+                    },
+                ));
+                if !app.admin.capabilities.is_empty() {
+                    pairs.push((
+                        "allowed",
+                        app.admin
+                            .capabilities
+                            .iter()
+                            .map(|(name, state)| format!("{name}={}", state.label()))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ));
+                }
+            }
         }
     }
     let mut lines = vec![Line::from(Span::styled(

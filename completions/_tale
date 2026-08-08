@@ -151,6 +151,19 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(show)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[]:NAME:_default' \
+'--config=[]:PATH:_files' \
+'--view=[]:ROUTE:_default' \
+'--tailscale-path=[]:PATH:_files' \
+'--tailscale-socket=[]:PATH:_files' \
+'--read-only[]' \
+'--no-local[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -212,6 +225,7 @@ _tale__subcmd__config_commands() {
     local commands; commands=(
 'path:' \
 'check:' \
+'show:Every resolved value and what decided it' \
     )
     _describe -t commands 'tale config commands' commands "$@"
 }
@@ -224,6 +238,11 @@ _tale__subcmd__config__subcmd__check_commands() {
 _tale__subcmd__config__subcmd__path_commands() {
     local commands; commands=()
     _describe -t commands 'tale config path commands' commands "$@"
+}
+(( $+functions[_tale__subcmd__config__subcmd__show_commands] )) ||
+_tale__subcmd__config__subcmd__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'tale config show commands' commands "$@"
 }
 (( $+functions[_tale__subcmd__doctor_commands] )) ||
 _tale__subcmd__doctor_commands() {

@@ -40,6 +40,9 @@ _tale() {
             tale__subcmd__config,path)
                 cmd="tale__subcmd__config__subcmd__path"
                 ;;
+            tale__subcmd__config,show)
+                cmd="tale__subcmd__config__subcmd__show"
+                ;;
             *)
                 ;;
         esac
@@ -221,7 +224,7 @@ _tale() {
             return 0
             ;;
         tale__subcmd__config)
-            opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help path check"
+            opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help path check show"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -289,6 +292,40 @@ _tale() {
             return 0
             ;;
         tale__subcmd__config__subcmd__path)
+            opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --view)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-socket)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        tale__subcmd__config__subcmd__show)
             opts="-h --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

@@ -139,7 +139,6 @@ pub enum Route {
     Credentials,
     Tasks,
     Audit,
-    Settings,
     Services,
     Diagnostics,
 }
@@ -158,7 +157,6 @@ impl Route {
             Self::Credentials => "credentials",
             Self::Tasks => "tasks",
             Self::Audit => "audit",
-            Self::Settings => "settings",
             Self::Services => "services",
             Self::Diagnostics => "diagnostics",
         }
@@ -10008,20 +10006,6 @@ impl App {
             Route::Audit => vec![
                 AdminRefreshResource::Activity,
                 AdminRefreshResource::Webhooks,
-                AdminRefreshResource::LogStreamConfiguration(
-                    crate::domain::log_stream::LogType::Configuration,
-                ),
-                AdminRefreshResource::LogStreamStatus(
-                    crate::domain::log_stream::LogType::Configuration,
-                ),
-                AdminRefreshResource::LogStreamConfiguration(
-                    crate::domain::log_stream::LogType::Network,
-                ),
-                AdminRefreshResource::LogStreamStatus(crate::domain::log_stream::LogType::Network),
-            ],
-            Route::Settings => vec![
-                AdminRefreshResource::Settings,
-                AdminRefreshResource::Contacts,
                 AdminRefreshResource::NetworkLogSettings,
                 AdminRefreshResource::LogStreamConfiguration(
                     crate::domain::log_stream::LogType::Configuration,
@@ -10072,7 +10056,6 @@ impl App {
                 self.start_admin_resource_refresh(vec![AdminRefreshResource::Credentials])
             }
             Route::Audit => self.start_admin_resource_refresh(vec![AdminRefreshResource::Activity]),
-            Route::Settings => self.start_admin_current_view_refresh(),
             Route::Overview
             | Route::Local
             | Route::Profiles
@@ -11865,12 +11848,6 @@ impl App {
             Route::Diagnostics => actions.extend([
                 ActionId::ServicesMetricsRefresh,
                 ActionId::ServicesBugReportCreate,
-            ]),
-            Route::Settings => actions.extend([
-                ActionId::SettingsAppearance,
-                ActionId::AdminLogStreamReplace,
-                ActionId::AdminLogStreamDelete,
-                ActionId::AdminNetworkLogsSettings,
             ]),
             // The one thing a row on this page can be asked to do.
             Route::Profiles => actions.push(ActionId::ProfileActivate),

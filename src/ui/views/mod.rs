@@ -16,7 +16,6 @@ pub mod profiles;
 pub mod routes;
 pub mod secret_result;
 pub mod services;
-pub mod settings;
 pub mod tasks;
 pub mod users;
 pub mod webhooks;

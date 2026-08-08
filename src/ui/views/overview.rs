@@ -127,11 +127,95 @@ fn render_combined(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .join(", ");
         lines.push(Line::from(format!("client versions  {versions}")));
     }
+    append_tailnet(&mut lines, app);
     append_health(&mut lines, app);
     lines.push(Line::from(
         "Use :devices, :users, :routes, :dns, :access, or :credentials for read-only detail.",
     ));
     panel::render(frame, app, area, "overview", lines);
+}
+
+/// How the tailnet itself is configured, as the control plane reports it. Only
+/// network flow logging can be changed from here; the rest is stated so the
+/// fleet above it can be read against the rules it lives under.
+fn append_tailnet(lines: &mut Vec<Line<'static>>, app: &App) {
+    let Some(settings) = app.admin.settings.snapshot.as_ref() else {
+        return;
+    };
+    lines.push(Line::from("Tailnet · as the control plane reports it"));
+    for (label, value) in [
+        (
+            "device approval required",
+            flag(settings.devices_approval_on),
+        ),
+        ("user approval required", flag(settings.users_approval_on)),
+        (
+            "ACLs managed elsewhere",
+            flag(settings.acls_externally_managed_on),
+        ),
+        (
+            "device auto-updates",
+            flag(settings.devices_auto_updates_on),
+        ),
+        (
+            "device key lifetime",
+            settings
+                .devices_key_duration_days
+                .map_or_else(|| "not returned".to_owned(), |days| format!("{days} days")),
+        ),
+        (
+            "network flow logging",
+            flag(settings.network_flow_logging_on),
+        ),
+        ("regional routing", flag(settings.regional_routing_on)),
+        (
+            "posture identity collection",
+            flag(settings.posture_identity_collection_on),
+        ),
+        ("HTTPS certificates", flag(settings.https_enabled)),
+    ] {
+        lines.push(Line::from(format!("  {label:<31} {value}")));
+    }
+    if let Some(contacts) = app.admin.contacts.snapshot.as_ref() {
+        for (label, contact) in [
+            ("account contact", contacts.account.as_ref()),
+            ("support contact", contacts.support.as_ref()),
+            ("security contact", contacts.security.as_ref()),
+        ] {
+            lines.push(Line::from(format!(
+                "  {label:<31} {}",
+                contact_email(contact)
+            )));
+        }
+    }
+}
+
+fn flag(value: Option<bool>) -> String {
+    value.map_or_else(
+        || "not returned".to_owned(),
+        |value| if value { "on" } else { "off" }.to_owned(),
+    )
+}
+
+/// An address the control plane returned empty is as absent as one it omitted,
+/// so both read the same rather than leaving a blank where a value belongs.
+fn contact_email(contact: Option<&crate::admin::AdminContact>) -> String {
+    let Some(contact) = contact else {
+        return "not returned".to_owned();
+    };
+    let email = contact
+        .email
+        .as_deref()
+        .or(contact.fallback_email.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match email {
+        None => "not returned".to_owned(),
+        Some(email) if contact.needs_verification == Some(true) => {
+            format!("{email} · needs verification")
+        }
+        Some(email) => email.to_owned(),
+    }
 }
 
 fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {

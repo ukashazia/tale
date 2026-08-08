@@ -83,6 +83,27 @@ pub fn run(mut cli: Cli) -> Result<(), TaleError> {
             );
             Ok(())
         }
+        Some(Command::Config {
+            command: ConfigCommand::Show,
+        }) => {
+            let config =
+                config::resolve(&cli, &environment, &path_environment).map_err(config_error)?;
+            let settings = config.settings();
+            let width = settings
+                .iter()
+                .map(|setting| setting.name.chars().count())
+                .max()
+                .unwrap_or(0);
+            for setting in settings {
+                println!(
+                    "{:<width$}  {}  [{}]",
+                    setting.name,
+                    setting.value,
+                    setting.source.label()
+                );
+            }
+            Ok(())
+        }
         Some(Command::Doctor(args)) => {
             cli.mock = args.mock;
             let config =

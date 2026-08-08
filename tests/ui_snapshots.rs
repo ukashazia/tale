@@ -660,7 +660,6 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
                         2 => press(&mut app, KeyCode::Char('a')),
                         3 => press(&mut app, KeyCode::Char('?')),
                         4 => {
-                            app.set_route(Route::Settings);
                             let effects = app.dispatch_action(ActionId::SettingsAppearance);
                             assert!(effects.is_empty());
                         }
@@ -702,24 +701,14 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
     }
 }
 
+/// The palette moved off a page of its own: appearance is reachable from
+/// wherever the user already is, and shows its swatches in the menu.
 #[test]
-fn settings_shows_the_live_palette_and_appearance_is_a_choice_menu() {
+fn appearance_is_a_choice_menu_reachable_from_any_page() {
     let app = populated_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
-        app.set_route(Route::Settings);
-        // The palette lives on the page, not behind a modal.
-        let lines = lines_at(&app, 100, 32);
-        assert!(lines.is_some());
-        if let Some(lines) = lines {
-            let rendered = lines.join("\n");
-            assert!(rendered.contains("SETTING"));
-            assert!(rendered.contains("tailscale-dark"));
-            assert!(rendered.contains("healthy"));
-            assert!(rendered.contains("danger/public"));
-            assert!(rendered.contains("local+admin"));
-            assert!(rendered.contains("ui.theme"));
-        }
+        app.set_route(Route::Devices);
         // Appearance is a bottom choice menu, not a centered overlay.
         let effects = app.dispatch_action(ActionId::SettingsAppearance);
         assert!(effects.is_empty());

@@ -122,7 +122,7 @@ fn local_actions_are_offered_only_where_their_subject_is() {
     };
 
     // A route about neither the machine nor a device gets neither set.
-    for route in [Route::Credentials, Route::Access, Route::Settings] {
+    for route in [Route::Credentials, Route::Access, Route::Audit] {
         app.set_route(route);
         let actions = app.contextual_actions();
         for id in [

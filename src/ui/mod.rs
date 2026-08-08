@@ -39,7 +39,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Route::Credentials => views::credentials::render(frame, app, layout.content),
         Route::Tasks => views::tasks::render(frame, app, layout.content, layout.inspector),
         Route::Audit => views::audit::render(frame, app, layout.content),
-        Route::Settings => views::settings::render(frame, app, layout.content),
         Route::Services => views::services::render(frame, app, layout.content, layout.inspector),
         Route::Diagnostics => views::diagnostics::render(frame, app, layout.content),
     }

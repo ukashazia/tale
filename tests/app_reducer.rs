@@ -843,7 +843,6 @@ fn appearance_is_a_direct_key_choice_and_cancelling_changes_nothing() {
     let app = mock_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
-        app.set_route(Route::Settings);
         let original = app.theme;
         let route = app.current_route();
         let history_len = app.view_history.frames.len();

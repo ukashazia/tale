@@ -113,6 +113,8 @@ pub struct AuthStatusArgs {
 pub enum ConfigCommand {
     Path,
     Check,
+    /// Every resolved value and what decided it.
+    Show,
 }
 
 #[derive(Debug, Clone, Args)]

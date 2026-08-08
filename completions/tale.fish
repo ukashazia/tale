@@ -74,16 +74,17 @@ complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcomma
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -l no-local
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -f -a "path"
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check" -f -a "check"
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l profile -r
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l config -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l view -r
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l tailscale-socket -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l read-only
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -s h -l help -d 'Print help'
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "path"
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "check"
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "show" -d 'Every resolved value and what decided it'
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l profile -r
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l view -r
@@ -100,6 +101,14 @@ complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcom
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -s h -l help -d 'Print help'
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l profile -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l config -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l view -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l tailscale-socket -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l read-only
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -s h -l help -d 'Print help'
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l output -r -F
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l profile -r
 complete -c tale -n "__fish_tale_using_subcommand doctor" -l config -r -F
