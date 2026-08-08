@@ -199,7 +199,7 @@ pub struct AdminDevice {
 impl AdminDevice {
     pub fn display_name(&self) -> &str {
         match (self.name.as_deref(), self.hostname.as_deref()) {
-            (Some(name), _) => name,
+            (Some(name), _) => magic_dns_device_name(name),
             (None, Some(hostname)) => hostname,
             (None, None) => &self.stable_id,
         }
@@ -269,6 +269,13 @@ impl AdminDevice {
             },
         }
     }
+}
+
+/// The device name carried by a full MagicDNS name. This is intentionally not
+/// the OS hostname: the two can differ after a device has been renamed.
+fn magic_dns_device_name(name: &str) -> &str {
+    name.split_once('.')
+        .map_or(name, |(device_name, _)| device_name)
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

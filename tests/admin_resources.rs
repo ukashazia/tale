@@ -5,6 +5,39 @@ use tale::domain::SourceHealth;
 use tale::domain::device::{ConnectionPath, DeviceId, LocalDevice, OperatingSystem};
 
 #[test]
+fn admin_device_display_name_uses_the_device_name_not_the_hostname() -> Result<(), String> {
+    let dto: DevicesResponse = serde_json::from_str(
+        r#"{
+            "devices": [{
+                "nodeId": "node-fictional-001",
+                "name": "macbooks-macbook-pro.zuul-insen.ts.net",
+                "hostname": "MacBooks-MacBook-Pro.local"
+            }]
+        }"#,
+    )
+    .map_err(|error| error.to_string())?;
+    let devices = decode_devices(dto.devices, 1).map_err(|error| error.to_string())?;
+    let device = devices
+        .first()
+        .ok_or_else(|| "decoded device is missing".to_owned())?;
+
+    assert_eq!(device.display_name(), "macbooks-macbook-pro");
+    assert_eq!(
+        device.to_display_device().display_name,
+        "macbooks-macbook-pro"
+    );
+    assert_eq!(
+        device.name.as_deref(),
+        Some("macbooks-macbook-pro.zuul-insen.ts.net")
+    );
+    assert_eq!(
+        device.hostname.as_deref(),
+        Some("MacBooks-MacBook-Pro.local")
+    );
+    Ok(())
+}
+
+#[test]
 fn exact_id_composition_keeps_unmatched_records() -> Result<(), String> {
     let local = vec![LocalDevice {
         id: DeviceId::new("node-fictional-001"),
