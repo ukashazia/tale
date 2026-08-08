@@ -255,3 +255,85 @@ fn phase_eight_sections_render_derived_and_authoritative_states() {
         }
     }
 }
+
+/// The old settings page mixed two unrelated things. How the managed tailnet is
+/// configured is only knowable through a credential, so it hangs off the
+/// profile that holds one; how this client is set up is its own page.
+#[test]
+fn the_managed_tailnet_is_read_from_the_profile_that_manages_it() {
+    let Some(mut app) = admin_app("acme") else {
+        return;
+    };
+    app.set_route(Route::Profiles);
+    app.focus = tale::app::Focus::Inspector;
+    app.views.profiles.selected = 1;
+    app.admin.settings.snapshot = Some(tale::admin::AdminSettings {
+        acls_externally_managed_on: Some(false),
+        acls_external_link: None,
+        devices_approval_on: Some(true),
+        devices_auto_updates_on: Some(true),
+        devices_key_duration_days: Some(180),
+        users_approval_on: Some(true),
+        network_flow_logging_on: Some(false),
+        regional_routing_on: Some(false),
+        posture_identity_collection_on: Some(false),
+        https_enabled: Some(true),
+    });
+    app.admin.contacts.snapshot = Some(tale::admin::AdminContacts {
+        // An address the control plane returned empty, which used to render as
+        // a blank cell rather than saying nothing came back.
+        account: Some(tale::admin::AdminContact {
+            email: Some(String::new()),
+            fallback_email: None,
+            needs_verification: None,
+        }),
+        support: Some(tale::admin::AdminContact {
+            email: Some("ops@example.test".to_owned()),
+            fallback_email: None,
+            needs_verification: Some(true),
+        }),
+        security: None,
+    });
+    let Some(lines) = render_lines(&app, 120, 40) else {
+        return;
+    };
+    let rendered = lines.join("\n");
+    for wanted in [
+        "device approval   required",
+        "key lifetime      180 days",
+        "flow logging      off",
+        "HTTPS certs       on",
+        "account contact   not returned",
+        "support contact   ops@example.test · needs verification",
+        "security contact  not returned",
+    ] {
+        assert!(rendered.contains(wanted), "inspector is missing {wanted}");
+    }
+
+    // The client's own configuration is a page of its own, and every row lines
+    // its source up with the rest however long the name is.
+    app.set_route(Route::Config);
+    let Some(lines) = render_lines(&app, 120, 40) else {
+        return;
+    };
+    // Column positions are counted in characters: a truncated path ends in an
+    // ellipsis, which is one column but three bytes.
+    let sources = lines
+        .iter()
+        .filter_map(|line| {
+            line.find(" default")
+                .or_else(|| line.find(" cli"))
+                .map(|index| line[..index].chars().count())
+        })
+        .collect::<Vec<_>>();
+    assert!(sources.len() > 5);
+    assert!(
+        sources.windows(2).all(|pair| pair[0] == pair[1]),
+        "the source column does not line up: {sources:?}"
+    );
+    let rendered = lines.join("\n");
+    assert!(rendered.contains("config · read-only"));
+    assert!(rendered.contains("ui.color.resolved"));
+    // Nothing a tailnet owns belongs on this page.
+    assert!(!rendered.contains("tailnet.https_enabled"));
+}

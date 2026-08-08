@@ -2,6 +2,7 @@ pub mod access;
 pub mod access_explorer;
 pub mod audit;
 pub mod audit_investigation;
+pub mod config;
 pub mod credentials;
 pub mod devices;
 pub mod diagnostics;

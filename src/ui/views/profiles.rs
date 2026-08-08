@@ -158,6 +158,7 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
                             .join(", "),
                     ));
                 }
+                append_managed_tailnet(&mut pairs, app);
             }
         }
     }
@@ -180,6 +181,89 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         lines,
         app.focus == Focus::Inspector,
     );
+}
+
+/// How the tailnet this credential manages is configured, as its control plane
+/// reports it. It hangs off the profile because it is only ever knowable
+/// through one: change the active profile and this is a different tailnet.
+fn append_managed_tailnet(pairs: &mut Vec<(&'static str, String)>, app: &App) {
+    if let Some(settings) = app.admin.settings.snapshot.as_ref() {
+        pairs.extend([
+            ("device approval", required(settings.devices_approval_on)),
+            ("user approval", required(settings.users_approval_on)),
+            ("ACLs managed", acls(settings.acls_externally_managed_on)),
+            ("auto-updates", flag(settings.devices_auto_updates_on)),
+            (
+                "key lifetime",
+                settings
+                    .devices_key_duration_days
+                    .map_or_else(|| "not returned".to_owned(), |days| format!("{days} days")),
+            ),
+            ("flow logging", flag(settings.network_flow_logging_on)),
+            ("regional routing", flag(settings.regional_routing_on)),
+            (
+                "posture identity",
+                flag(settings.posture_identity_collection_on),
+            ),
+            ("HTTPS certs", flag(settings.https_enabled)),
+        ]);
+    }
+    let Some(contacts) = app.admin.contacts.snapshot.as_ref() else {
+        return;
+    };
+    pairs.extend([
+        ("account contact", contact_email(contacts.account.as_ref())),
+        ("support contact", contact_email(contacts.support.as_ref())),
+        (
+            "security contact",
+            contact_email(contacts.security.as_ref()),
+        ),
+    ]);
+}
+
+/// Whether a tailnet-wide switch is on. Only the two approval gates read as a
+/// requirement; the rest are simply on or off, and saying otherwise would
+/// describe a setting that does not exist.
+fn flag(value: Option<bool>) -> String {
+    value.map_or_else(
+        || "not returned".to_owned(),
+        |value| if value { "on" } else { "off" }.to_owned(),
+    )
+}
+
+fn required(value: Option<bool>) -> String {
+    value.map_or_else(
+        || "not returned".to_owned(),
+        |value| if value { "required" } else { "not required" }.to_owned(),
+    )
+}
+
+fn acls(value: Option<bool>) -> String {
+    value.map_or_else(
+        || "not returned".to_owned(),
+        |value| if value { "elsewhere" } else { "here" }.to_owned(),
+    )
+}
+
+/// An address the control plane returned empty is as absent as one it omitted,
+/// so both read the same rather than leaving a blank where a value belongs.
+fn contact_email(contact: Option<&crate::admin::AdminContact>) -> String {
+    let Some(contact) = contact else {
+        return "not returned".to_owned();
+    };
+    let email = contact
+        .email
+        .as_deref()
+        .or(contact.fallback_email.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match email {
+        None => "not returned".to_owned(),
+        Some(email) if contact.needs_verification == Some(true) => {
+            format!("{email} · needs verification")
+        }
+        Some(email) => email.to_owned(),
+    }
 }
 
 /// A profile is only ever verified because someone tried to activate it, so the

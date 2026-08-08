@@ -191,9 +191,11 @@ fn navigation_palette_is_canonical_and_fuzzy() {
     assert_eq!(Route::parse("devices"), Some(Route::Devices));
     assert_eq!(Route::parse("dev"), None);
     assert_eq!(Route::parse("home"), None);
-    // The settings page is read-only and everything it can do lives elsewhere,
-    // so nothing in the interface navigates to it.
+    // The old settings page mixed this client's configuration with the tailnet
+    // its profile manages. `config` keeps the first; the profile inspector
+    // states the second.
     assert_eq!(Route::parse("settings"), None);
+    assert_eq!(Route::parse("config"), Some(Route::Config));
 
     let app = mock_app();
     assert!(app.is_some());
@@ -203,7 +205,7 @@ fn navigation_palette_is_canonical_and_fuzzy() {
         assert!(matches!(
             &app.interaction,
             InteractionMode::CommandLine(state)
-                if state.candidates.len() == 13
+                if state.candidates.len() == 14
                     && state.candidates.first().map(|candidate| candidate.route)
                         == Some(Route::Devices)
         ));
@@ -235,6 +237,12 @@ fn navigation_palette_is_canonical_and_fuzzy() {
             &app.interaction,
             InteractionMode::CommandLine(state) if state.candidates.is_empty()
         ));
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("config".to_owned())));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.current_route(), Route::Config);
     }
 }
 

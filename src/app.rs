@@ -127,6 +127,8 @@ impl SourceMode {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Route {
     Overview,
+    /// What this client resolved for itself, and what decided each value.
+    Config,
     Local,
     /// The local client and every configured admin profile, and which of them
     /// the rest of the app is reading from.
@@ -147,6 +149,7 @@ impl Route {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Overview => "overview",
+            Self::Config => "config",
             Self::Local => "local",
             Self::Profiles => "profiles",
             Self::Devices => "devices",
@@ -165,6 +168,7 @@ impl Route {
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "overview" => Some(Self::Overview),
+            "config" => Some(Self::Config),
             "local" => Some(Self::Local),
             "profiles" => Some(Self::Profiles),
             "devices" => Some(Self::Devices),
@@ -10019,8 +10023,16 @@ impl App {
                 AdminRefreshResource::LogStreamStatus(crate::domain::log_stream::LogType::Network),
             ],
             Route::Local => vec![AdminRefreshResource::Devices],
-            // Handled above: this page reads stores, not the control plane.
-            Route::Profiles => Vec::new(),
+            // The rows come from stores, but the inspector states how the
+            // active credential's tailnet is configured, and only the control
+            // plane knows that.
+            Route::Profiles => vec![
+                AdminRefreshResource::Settings,
+                AdminRefreshResource::Contacts,
+            ],
+            // Resolved from files and flags at startup: there is nothing to
+            // re-read, so `r` has nothing to fetch.
+            Route::Config => Vec::new(),
         };
         self.start_admin_resource_refresh(resources)
     }
@@ -10061,6 +10073,7 @@ impl App {
             | Route::Profiles
             | Route::Services
             | Route::Diagnostics
+            | Route::Config
             | Route::Tasks => self.start_admin_current_view_refresh(),
         }
     }
@@ -11858,6 +11871,7 @@ impl App {
             | Route::Credentials
             | Route::Local
             | Route::Tasks
+            | Route::Config
             | Route::Services => {}
         }
         actions
@@ -16116,7 +16130,7 @@ fn mock_services_snapshot() -> LocalServicesSnapshot {
     snapshot
 }
 
-fn navigation_catalog() -> [(Route, &'static str, &'static str); 13] {
+fn navigation_catalog() -> [(Route, &'static str, &'static str); 14] {
     [
         (Route::Devices, "devices", "machines & status"),
         (Route::Local, "local", "this machine"),
@@ -16135,6 +16149,7 @@ fn navigation_catalog() -> [(Route, &'static str, &'static str); 13] {
         (Route::Tasks, "tasks", "what this client did"),
         (Route::Audit, "audit", "tailnet log & streams"),
         (Route::Overview, "overview", "fleet summary"),
+        (Route::Config, "config", "how this client is set up"),
     ]
 }
 

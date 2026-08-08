@@ -209,7 +209,7 @@ impl NavigationSectionKind {
             Route::Overview | Route::Devices | Route::Users => Self::Fleet,
             Route::Local | Route::Profiles | Route::Services | Route::Diagnostics => Self::Local,
             Route::Routes | Route::Dns | Route::Access => Self::Network,
-            Route::Credentials | Route::Tasks | Route::Audit => Self::Operations,
+            Route::Credentials | Route::Tasks | Route::Audit | Route::Config => Self::Operations,
         }
     }
 
