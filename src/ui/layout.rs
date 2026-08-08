@@ -118,7 +118,7 @@ pub const fn navigation_columns(width: u16) -> usize {
 }
 
 pub const fn navigation_palette_height() -> u16 {
-    14
+    crate::ui::components::interaction_shell::navigation_height()
 }
 
 pub const fn action_menu_columns(width: u16) -> usize {

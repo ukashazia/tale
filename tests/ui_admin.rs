@@ -104,7 +104,8 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
             Route::Dns,
             Route::Access,
             Route::Credentials,
-            Route::Activity,
+            Route::Tasks,
+            Route::Audit,
             Route::Settings,
         ] {
             app.set_route(route);
@@ -238,9 +239,9 @@ fn phase_eight_sections_render_derived_and_authoritative_states() {
     });
     for (route, expected) in [
         (Route::Overview, "Health"),
-        (Route::Activity, "Flow Logs"),
-        (Route::Activity, "Log streams"),
-        (Route::Activity, "Webhooks"),
+        (Route::Audit, "Flow Logs"),
+        (Route::Audit, "Log streams"),
+        (Route::Audit, "Webhooks"),
         (Route::Access, "Access Explorer"),
     ] {
         app.set_route(route);

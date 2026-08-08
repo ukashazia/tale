@@ -286,7 +286,7 @@ pub const fn device_schema() -> FilterSchema {
     }
 }
 
-pub const fn activity_schema() -> FilterSchema {
+pub const fn tasks_schema() -> FilterSchema {
     FilterSchema {
         free_text: "matches action, target, state, and summary",
         groups: &[],

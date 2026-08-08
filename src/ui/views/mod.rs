@@ -1,7 +1,7 @@
 pub mod access;
 pub mod access_explorer;
-pub mod activity;
 pub mod audit;
+pub mod audit_investigation;
 pub mod credentials;
 pub mod devices;
 pub mod diagnostics;
@@ -16,5 +16,6 @@ pub mod routes;
 pub mod secret_result;
 pub mod services;
 pub mod settings;
+pub mod tasks;
 pub mod users;
 pub mod webhooks;

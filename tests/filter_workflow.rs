@@ -255,7 +255,7 @@ fn suggestions_follow_the_route_and_never_offer_another_views_fields() {
     let app = app();
     assert!(app.is_some());
     if let Some(mut app) = app {
-        app.set_route(Route::Activity);
+        app.set_route(Route::Tasks);
         press(&mut app, KeyCode::Char('/'));
         assert!(matches!(app.interaction, InteractionMode::FilterLine(_)));
         assert!(

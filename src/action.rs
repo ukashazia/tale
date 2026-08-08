@@ -474,7 +474,7 @@ pub enum ActionContext {
     Collection,
     Detail,
     Overlay,
-    Activity,
+    Audit,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -612,15 +612,15 @@ const GLOBAL: &[ActionContext] = &[
     ActionContext::Root,
     ActionContext::Collection,
     ActionContext::Detail,
-    ActionContext::Activity,
+    ActionContext::Audit,
 ];
 const NAVIGATION: &[ActionContext] = &[
     ActionContext::Collection,
     ActionContext::Detail,
-    ActionContext::Activity,
+    ActionContext::Audit,
 ];
 const COLLECTION: &[ActionContext] = &[ActionContext::Collection, ActionContext::Detail];
-const ACTIVITY: &[ActionContext] = &[ActionContext::Activity];
+const AUDIT: &[ActionContext] = &[ActionContext::Audit];
 const OVERLAY: &[ActionContext] = &[ActionContext::Overlay];
 
 const NO_BINDING: &[Binding] = &[];
@@ -676,7 +676,7 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             id: ActionId::ViewFilter,
             label: "Filter",
             description: "Edit the active collection filter",
-            contexts: &[ActionContext::Collection, ActionContext::Activity],
+            contexts: &[ActionContext::Collection],
             selection_rule: SelectionRule::None,
             default_bindings: BIND_SLASH,
             capability: Capability::Available,
@@ -816,11 +816,7 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             id: ActionId::CollectionOpen,
             label: "Open details",
             description: "Open selected resource details",
-            contexts: &[
-                ActionContext::Collection,
-                ActionContext::Detail,
-                ActionContext::Activity,
-            ],
+            contexts: COLLECTION,
             selection_rule: SelectionRule::One,
             default_bindings: BIND_OPEN,
             capability: Capability::Available,
@@ -882,7 +878,7 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             id: ActionId::TaskCancel,
             label: "Cancel task",
             description: "Cancel the focused cancellable task",
-            contexts: ACTIVITY,
+            contexts: COLLECTION,
             selection_rule: SelectionRule::One,
             default_bindings: BIND_CANCEL,
             capability: Capability::Available,
@@ -1310,14 +1306,23 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
             matches!(route, Route::Services)
         }
         ActionId::CollectionWideColumns => matches!(route, Route::Devices),
-        // Both routes keep a table with a row worth describing, and both start
-        // with the pane closed.
-        ActionId::CollectionInspect => matches!(route, Route::Devices | Route::Users),
+        // Every route here keeps a table with a row worth describing, and each
+        // starts with the pane closed.
+        ActionId::CollectionInspect => {
+            matches!(route, Route::Devices | Route::Users | Route::Tasks)
+        }
+        // A task is this client's own record, so cancelling and reviewing one
+        // only mean something on the page that lists them.
+        ActionId::TaskCancel | ActionId::BatchReviewOutcomes | ActionId::BatchRetrySelected => {
+            matches!(route, Route::Tasks)
+        }
+        // Sorting offers device fields, so it is offered where those fields
+        // are. Tasks are already in the order they happened, which is the only
+        // order a history reads well in.
+        ActionId::CollectionSort => !matches!(route, Route::Diagnostics | Route::Tasks),
         // Diagnostics is one scrolling body: nothing to open into, no rows to
         // filter, no columns to order by.
-        ActionId::CollectionOpen | ActionId::ViewFilter | ActionId::CollectionSort => {
-            !matches!(route, Route::Diagnostics)
-        }
+        ActionId::CollectionOpen | ActionId::ViewFilter => !matches!(route, Route::Diagnostics),
         _ => true,
     }
 }
@@ -1929,7 +1934,7 @@ pub fn phase_eight_actions() -> Vec<ActionSpec> {
             id: ActionId::ActivityFlowsSelectWindow,
             label: "Select flow window",
             description: "Choose an explicit bounded UTC flow-log window",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -1939,7 +1944,7 @@ pub fn phase_eight_actions() -> Vec<ActionSpec> {
             id: ActionId::ActivityFlowsAggregate,
             label: "Aggregate flow logs",
             description: "Aggregate the observed flow counters by registered dimensions",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -1949,7 +1954,7 @@ pub fn phase_eight_actions() -> Vec<ActionSpec> {
             id: ActionId::ActivityFlowsOpenDevice,
             label: "Open flow device",
             description: "Open the reporting device for a selected flow row",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2254,7 +2259,7 @@ pub fn phase_five_actions() -> Vec<ActionSpec> {
             id: ActionId::ActivitySelectWindow,
             label: "Select audit window",
             description: "Choose a bounded audit window",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2264,7 +2269,7 @@ pub fn phase_five_actions() -> Vec<ActionSpec> {
             id: ActionId::ActivityOpenActor,
             label: "Open audit actor",
             description: "Open an audit actor when an exact ID is present",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2274,7 +2279,7 @@ pub fn phase_five_actions() -> Vec<ActionSpec> {
             id: ActionId::ActivityOpenTarget,
             label: "Open audit target",
             description: "Open an audit target when an exact ID is present",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2506,7 +2511,7 @@ pub fn phase_six_actions() -> Vec<ActionSpec> {
             id: ActionId::BatchReviewOutcomes,
             label: "Review batch outcomes",
             description: "Inspect per-target mutation outcomes",
-            contexts: ACTIVITY,
+            contexts: COLLECTION,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2516,7 +2521,7 @@ pub fn phase_six_actions() -> Vec<ActionSpec> {
             id: ActionId::BatchRetrySelected,
             label: "Retry selected targets",
             description: "Build a new batch from freshly fetched failed targets",
-            contexts: ACTIVITY,
+            contexts: COLLECTION,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2671,7 +2676,7 @@ pub fn phase_seven_actions() -> Vec<ActionSpec> {
             id: ActionId::AuditFilterTime,
             label: "Filter audit time",
             description: "Filter audit events by UTC time window",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2681,7 +2686,7 @@ pub fn phase_seven_actions() -> Vec<ActionSpec> {
             id: ActionId::AuditFilterActor,
             label: "Filter audit actor",
             description: "Filter audit events by actor",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2691,7 +2696,7 @@ pub fn phase_seven_actions() -> Vec<ActionSpec> {
             id: ActionId::AuditFilterAction,
             label: "Filter audit action",
             description: "Filter audit events by action",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2701,7 +2706,7 @@ pub fn phase_seven_actions() -> Vec<ActionSpec> {
             id: ActionId::AuditFilterTarget,
             label: "Filter audit target",
             description: "Filter audit events by target",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2711,7 +2716,7 @@ pub fn phase_seven_actions() -> Vec<ActionSpec> {
             id: ActionId::AuditOpenTarget,
             label: "Open audit target",
             description: "Open an exact target from an audit event",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
@@ -2721,7 +2726,7 @@ pub fn phase_seven_actions() -> Vec<ActionSpec> {
             id: ActionId::AuditOpenPolicyDiff,
             label: "Open policy diff",
             description: "Open the retained policy workflow diff from an audit event",
-            contexts: ACTIVITY,
+            contexts: AUDIT,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,

@@ -318,7 +318,7 @@ fn no_duplicate_active_binding_exists_in_one_context() {
         ActionContext::Root,
         ActionContext::Collection,
         ActionContext::Detail,
-        ActionContext::Activity,
+        ActionContext::Audit,
     ] {
         let actions = action::phase_one_actions();
         for (index, left) in actions.iter().enumerate() {

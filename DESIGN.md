@@ -171,6 +171,19 @@ action on `:devices`, where the selected row is already the target.
 The same test again: a tab whose rows duplicate another route's collection is
 not a section, it is that collection with one extra verb.
 
+The inverse also happens. `:activity` meant two subjects — what this client
+did, and what the tailnet was told — and so was neither. Its rows were a
+`List` of `* succeeded  task-3 laptop-0`, and its right pane concatenated task
+detail, an audit summary, audit events, flow logs, log streams and webhooks
+into one `format!`. Nothing in it could be sorted, filtered or copied, because
+there was no collection to bind to. Split by subject: `:tasks` is a grid of
+runs with an inspector, `:audit` is the tailnet's log with the delivery
+mechanisms beside it. Each then answers one question, which is the only way a
+border title can honestly say how much of it is showing.
+
+A route named after a category rather than a subject is the warning sign.
+`activity` covers anything that happened; so does `stuff`.
+
 **An action belongs to the route that shows its subject.** The local client's
 verbs were one list handed to every route that had none of its own, so
 `:credentials` offered `remove local account` and `open tailscale ssh` — the

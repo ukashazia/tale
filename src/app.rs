@@ -132,7 +132,8 @@ pub enum Route {
     Dns,
     Access,
     Credentials,
-    Activity,
+    Tasks,
+    Audit,
     Settings,
     Services,
     Diagnostics,
@@ -149,7 +150,8 @@ impl Route {
             Self::Dns => "dns",
             Self::Access => "access",
             Self::Credentials => "credentials",
-            Self::Activity => "activity",
+            Self::Tasks => "tasks",
+            Self::Audit => "audit",
             Self::Settings => "settings",
             Self::Services => "services",
             Self::Diagnostics => "diagnostics",
@@ -166,7 +168,11 @@ impl Route {
             "dns" => Some(Self::Dns),
             "access" => Some(Self::Access),
             "credentials" => Some(Self::Credentials),
-            "activity" => Some(Self::Activity),
+            // One page per subject: `tasks` is what this client did, `audit` is
+            // what the tailnet was told. The old `activity` name meant both and
+            // so described neither.
+            "tasks" => Some(Self::Tasks),
+            "audit" => Some(Self::Audit),
             "settings" => Some(Self::Settings),
             "services" => Some(Self::Services),
             "diagnostics" => Some(Self::Diagnostics),
@@ -746,6 +752,10 @@ pub enum CopyField {
     UserId,
     UserName,
     UserLogin,
+    TaskId,
+    TaskResult,
+    TaskCommand,
+    TaskOutput,
 }
 
 /// The headings the copy menu offers, in the order it shows them.
@@ -790,9 +800,14 @@ impl CopyField {
             | Self::Tags
             | Self::UserId
             | Self::UserName
-            | Self::UserLogin => CopyGroup::Identity,
+            | Self::UserLogin
+            | Self::TaskId => CopyGroup::Identity,
             Self::Addresses | Self::PublicKey | Self::Endpoint => CopyGroup::Network,
-            Self::DiagnosticSummary | Self::Metrics => CopyGroup::Diagnostics,
+            Self::DiagnosticSummary
+            | Self::Metrics
+            | Self::TaskResult
+            | Self::TaskCommand
+            | Self::TaskOutput => CopyGroup::Diagnostics,
         }
     }
 
@@ -815,6 +830,10 @@ impl CopyField {
             Self::UserId => "id",
             Self::UserName => "name",
             Self::UserLogin => "login",
+            Self::TaskId => "id",
+            Self::TaskResult => "result",
+            Self::TaskCommand => "command",
+            Self::TaskOutput => "output",
         }
     }
 }
@@ -1008,6 +1027,18 @@ pub struct Views {
     pub services: ServiceViewState,
     pub diagnostics: DiagnosticsViewState,
     pub users: UserViewState,
+    pub tasks: TaskViewState,
+}
+
+/// What `:tasks` remembers between frames. The selection itself lives in the
+/// task store, beside the history it indexes into.
+#[derive(Debug, Clone, Default)]
+pub struct TaskViewState {
+    /// Whether the side inspector shares the pane with the table. Off by
+    /// default, the way devices and users are: the table is what the route is
+    /// for, and a task's output is long enough to want the full width when you
+    /// do ask for it.
+    pub inspector: bool,
 }
 
 /// What `:users` remembers between frames. The selection itself lives in
@@ -1238,6 +1269,7 @@ impl App {
                 services: ServiceViewState::default(),
                 diagnostics: DiagnosticsViewState::default(),
                 users: UserViewState::default(),
+                tasks: TaskViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
             admin,
@@ -2054,8 +2086,12 @@ impl App {
     /// the footer, and contextual help all read it, so they cannot disagree.
     pub fn action_context(&self) -> ActionContext {
         match self.current_route() {
-            Route::Activity => ActionContext::Activity,
-            Route::Devices | Route::Services if matches!(self.focus, Focus::Inspector) => {
+            // Audit is the one route that is still a body of text rather than a
+            // collection, so it keeps a context of its own.
+            Route::Audit => ActionContext::Audit,
+            Route::Devices | Route::Services | Route::Tasks
+                if matches!(self.focus, Focus::Inspector) =>
+            {
                 ActionContext::Detail
             }
             Route::Devices
@@ -2063,6 +2099,7 @@ impl App {
             | Route::Routes
             | Route::Credentials
             | Route::Services
+            | Route::Tasks
             // Metrics is a long text body, so the movement keys scroll it.
             | Route::Diagnostics => ActionContext::Collection,
             _ => ActionContext::Root,
@@ -2070,21 +2107,21 @@ impl App {
     }
 
     fn focus_mouse_region(&mut self, column: u16, row: u16) {
-        if self.current_route() == Route::Activity {
+        if self.current_route() == Route::Audit {
             self.focus = Focus::Collection;
-            let Some(collection) = self.activity_task_area() else {
+            let Some(collection) = self.audit_event_area() else {
                 return;
             };
             if !contains_point(collection, column, row) {
                 return;
             }
-            let first_row = collection.y.saturating_add(1);
-            let row_count = usize::from(collection.height.saturating_sub(2));
+            let first_row = collection.y.saturating_add(2);
+            let row_count = usize::from(collection.height.saturating_sub(3));
             if row >= first_row && usize::from(row.saturating_sub(first_row)) < row_count {
-                self.tasks.select_filtered_position(
-                    &self.task_filter,
-                    usize::from(row.saturating_sub(first_row)),
-                );
+                let position = usize::from(row.saturating_sub(first_row));
+                if position < self.audit_event_count() {
+                    self.admin_activity_selected = position;
+                }
             }
             return;
         }
@@ -2101,7 +2138,7 @@ impl App {
             if frame.minimum {
                 return;
             }
-            if self.current_route() == Route::Services
+            if matches!(self.current_route(), Route::Services | Route::Tasks)
                 && frame
                     .inspector
                     .is_some_and(|inspector| contains_point(inspector, column, row))
@@ -2123,7 +2160,8 @@ impl App {
             }
             let first_row = match self.current_route() {
                 Route::Users | Route::Credentials => area.y.saturating_add(1),
-                Route::Routes => area.y.saturating_add(2),
+                // A border and a heading row sit above the first task.
+                Route::Routes | Route::Tasks => area.y.saturating_add(2),
                 Route::Services => area.y.saturating_add(3),
                 _ => return,
             };
@@ -2157,6 +2195,19 @@ impl App {
                 }
                 Route::Services if usize::from(position) < self.service_row_count() => {
                     self.views.services.selected = usize::from(position);
+                }
+                // The table shows a window over the history, so the row under
+                // the pointer is an offset from wherever that window starts.
+                Route::Tasks => {
+                    let count = self.filtered_task_count();
+                    let visible = usize::from(area.height.saturating_sub(3)).max(1);
+                    let start =
+                        crate::ui::views::tasks::window_start(self.task_cursor(), count, visible);
+                    let index = start.saturating_add(usize::from(position));
+                    if index < count {
+                        self.tasks
+                            .select_filtered_position(&self.task_filter, index);
+                    }
                 }
                 _ => {}
             }
@@ -2213,14 +2264,14 @@ impl App {
                 .device_collection_area(frame)
                 .is_some_and(|area| contains_point(area, column, row));
         }
-        if self.current_route() == Route::Activity {
+        if self.current_route() == Route::Audit {
             return self
-                .activity_task_area()
+                .audit_event_area()
                 .is_some_and(|area| contains_point(area, column, row));
         }
         if !matches!(
             self.current_route(),
-            Route::Users | Route::Routes | Route::Credentials | Route::Services
+            Route::Users | Route::Routes | Route::Credentials | Route::Services | Route::Tasks
         ) {
             return false;
         }
@@ -2247,7 +2298,9 @@ impl App {
         contains_point(area, column, row)
     }
 
-    fn activity_task_area(&self) -> Option<ratatui::layout::Rect> {
+    /// The audit route keeps the old split: events on the left, the streams and
+    /// webhooks it cannot table on the right.
+    fn audit_event_area(&self) -> Option<ratatui::layout::Rect> {
         let frame = crate::ui::layout::compute(
             ratatui::layout::Rect {
                 x: 0,
@@ -2423,7 +2476,7 @@ impl App {
                 _ => None,
             };
             if let Some(restoration) = restoration {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
                     self.task_filter = restoration.task_filter;
                     self.tasks.selected = restoration.task_selection;
                 } else if self.current_route() == Route::Services {
@@ -2630,7 +2683,7 @@ impl App {
         // While `Tab` walks the tray the offered set stays anchored, so the row the
         // user is cycling through does not move underneath them.
         let sections = (!anchored).then(|| self.filter_suggestions(&input, cursor));
-        if self.current_route() == Route::Activity {
+        if self.current_route() == Route::Tasks {
             self.task_filter = input;
             self.tasks.select_filtered_first(&self.task_filter);
             if let InteractionMode::FilterLine(state) = &mut self.interaction {
@@ -2688,7 +2741,7 @@ impl App {
     /// The filter vocabulary of the route the shell is currently showing.
     pub fn filter_schema(&self) -> FilterSchema {
         match self.current_route() {
-            Route::Activity => filter::activity_schema(),
+            Route::Tasks => filter::tasks_schema(),
             Route::Services => match self.views.services.section {
                 ServiceSection::Serve => filter::service_schema(),
                 // The other sections are short lists of names; a query language
@@ -3233,7 +3286,7 @@ impl App {
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
-        if self.current_route() == Route::Activity {
+        if self.current_route() == Route::Tasks {
             self.task_filter = input.trim().to_owned();
             self.tasks.select_filtered_first(&self.task_filter);
             self.interaction = InteractionMode::Normal;
@@ -3313,7 +3366,7 @@ impl App {
             } else {
                 FilterExpression::empty()
             },
-            task_filter: if route == Route::Activity {
+            task_filter: if route == Route::Tasks {
                 self.task_filter.clone()
             } else {
                 String::new()
@@ -3345,7 +3398,7 @@ impl App {
             self.views.services.selected = 0;
             self.views.services.scroll = 0;
         }
-        if frame.route == Route::Activity {
+        if frame.route == Route::Tasks {
             self.task_filter = frame.task_filter.clone();
             self.tasks.select_filtered_first(&self.task_filter);
         }
@@ -3382,18 +3435,11 @@ impl App {
             );
             return Vec::new();
         }
-        let activity_selection_required = matches!(
-            action_id,
-            ActionId::ActivityOpenActor | ActionId::ActivityOpenTarget
-        );
         if matches!(spec.selection_rule, action::SelectionRule::One)
             && ((self.current_route() == Route::Devices && self.selected_device().is_none())
-                || (self.current_route() == Route::Activity
-                    && if activity_selection_required {
-                        self.selected_admin_activity().is_none()
-                    } else {
-                        self.tasks.selected.is_none()
-                    })
+                || (self.current_route() == Route::Tasks && self.tasks.selected.is_none())
+                || (self.current_route() == Route::Audit
+                    && self.selected_admin_activity().is_none())
                 || (self.current_route() == Route::Users && self.selected_admin_user().is_none())
                 || (self.current_route() == Route::Routes && self.selected_admin_route().is_none()))
         {
@@ -3414,7 +3460,7 @@ impl App {
                 Vec::new()
             }
             ActionId::ViewFilter => {
-                if self.filter_schema().is_empty() && self.current_route() != Route::Activity {
+                if self.filter_schema().is_empty() && self.current_route() != Route::Tasks {
                     let subject = if self.current_route() == Route::Services {
                         self.views.services.section.label()
                     } else {
@@ -3424,7 +3470,7 @@ impl App {
                     return Vec::new();
                 }
                 let input = match self.current_route() {
-                    Route::Activity => self.task_filter.clone(),
+                    Route::Tasks => self.task_filter.clone(),
                     Route::Services => self.views.services.filter_draft.clone(),
                     _ => self.views.devices.filter_draft.clone(),
                 };
@@ -3460,7 +3506,7 @@ impl App {
                 Vec::new()
             }
             ActionId::ViewTasks => {
-                self.navigate(Route::Activity);
+                self.navigate(Route::Tasks);
                 Vec::new()
             }
             ActionId::ViewHistoryBack => {
@@ -3585,8 +3631,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionMoveUp => {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, -1);
+                } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(-1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-1);
@@ -3604,8 +3651,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionMoveDown => {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, 1);
+                } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(1);
@@ -3623,8 +3671,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionFirst => {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
                     self.tasks.select_filtered_first(&self.task_filter);
+                } else if self.current_route() == Route::Audit {
                     self.admin_activity_selected = 0;
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = 0;
@@ -3641,14 +3690,10 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionLast => {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
                     self.tasks.select_filtered_last(&self.task_filter);
-                    self.admin_activity_selected = self
-                        .admin
-                        .activity
-                        .snapshot
-                        .as_ref()
-                        .map_or(0, |snapshot| snapshot.events.len().saturating_sub(1));
+                } else if self.current_route() == Route::Audit {
+                    self.admin_activity_selected = self.audit_event_count().saturating_sub(1);
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = self.service_row_count().saturating_sub(1);
                     self.views.services.scroll = self.views.services.selected;
@@ -3677,8 +3722,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionPageUp => {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, -5);
+                } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(-5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-5);
@@ -3696,8 +3742,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionPageDown => {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, 5);
+                } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(5);
@@ -3719,9 +3766,16 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionOpen => {
-                if self.current_route() == Route::Activity {
+                if self.current_route() == Route::Tasks {
+                    // A batch mutation is a table of its own, so it keeps the
+                    // full-screen overlay. Everything else opens in the pane
+                    // the route already has.
                     if let Some(task_id) = self.tasks.selected {
-                        self.overlays.push(Overlay::TaskInspector(task_id));
+                        if self.admin_batch_results.contains_key(&task_id) {
+                            self.overlays.push(Overlay::TaskInspector(task_id));
+                        } else {
+                            self.focus = Focus::Inspector;
+                        }
                     }
                 } else if self.current_route() == Route::Users {
                     // Enter replaces the table with the detail view; there is
@@ -3768,6 +3822,10 @@ impl App {
                     Route::Users => {
                         self.views.users.inspector = !self.views.users.inspector;
                         self.views.users.inspector
+                    }
+                    Route::Tasks => {
+                        self.views.tasks.inspector = !self.views.tasks.inspector;
+                        self.views.tasks.inspector
                     }
                     _ => return Vec::new(),
                 };
@@ -8678,7 +8736,10 @@ impl App {
             ],
             Route::Access => vec![AdminRefreshResource::Policy],
             Route::Credentials => vec![AdminRefreshResource::Credentials],
-            Route::Activity => vec![
+            // Task history is this client's own record: there is no server to
+            // ask for it, so `r` has nothing to fetch.
+            Route::Tasks => Vec::new(),
+            Route::Audit => vec![
                 AdminRefreshResource::Activity,
                 AdminRefreshResource::Webhooks,
                 AdminRefreshResource::LogStreamConfiguration(
@@ -8742,13 +8803,13 @@ impl App {
             Route::Credentials => {
                 self.start_admin_resource_refresh(vec![AdminRefreshResource::Credentials])
             }
-            Route::Activity => {
-                self.start_admin_resource_refresh(vec![AdminRefreshResource::Activity])
-            }
+            Route::Audit => self.start_admin_resource_refresh(vec![AdminRefreshResource::Activity]),
             Route::Settings => self.start_admin_current_view_refresh(),
-            Route::Overview | Route::Local | Route::Services | Route::Diagnostics => {
-                self.start_admin_current_view_refresh()
-            }
+            Route::Overview
+            | Route::Local
+            | Route::Services
+            | Route::Diagnostics
+            | Route::Tasks => self.start_admin_current_view_refresh(),
         }
     }
 
@@ -10319,6 +10380,21 @@ impl App {
                 Vec::new()
             };
         }
+        if self.current_route() == Route::Tasks {
+            // The row is already readable; what anyone pastes into a bug report
+            // is the command that ran and what it printed.
+            let Some(task) = self.focused_task() else {
+                return Vec::new();
+            };
+            let mut fields = vec![CopyField::TaskId, CopyField::TaskResult];
+            if !task.redacted_argv.is_empty() {
+                fields.push(CopyField::TaskCommand);
+            }
+            if !task.detail.is_empty() {
+                fields.push(CopyField::TaskOutput);
+            }
+            return fields;
+        }
         if self.current_route() == Route::Users {
             // The row is three facts and two of them are words already on
             // screen; the ones worth pasting are the identifiers.
@@ -10422,7 +10498,7 @@ impl App {
                 ActionId::AccessExplorerAsk,
                 ActionId::AccessExplorerOpenRule,
             ]),
-            Route::Activity => actions.extend([
+            Route::Audit => actions.extend([
                 ActionId::ActivityFlowsSelectWindow,
                 ActionId::ActivityFlowsAggregate,
                 ActionId::ActivityFlowsOpenDevice,
@@ -10451,6 +10527,7 @@ impl App {
             | Route::Dns
             | Route::Credentials
             | Route::Local
+            | Route::Tasks
             | Route::Services => {}
         }
         actions
@@ -13002,11 +13079,15 @@ impl App {
     }
 
     fn move_admin_activity_selection(&mut self, offset: isize) {
-        let length = self.admin.activity.snapshot.as_ref().map_or(0, |snapshot| {
-            snapshot.filtered_events(&self.audit_filters).len()
-        });
+        let length = self.audit_event_count();
         self.admin_activity_selected =
             move_bounded_index(self.admin_activity_selected, length, offset);
+    }
+
+    pub fn audit_event_count(&self) -> usize {
+        self.admin.activity.snapshot.as_ref().map_or(0, |snapshot| {
+            snapshot.filtered_events(&self.audit_filters).len()
+        })
     }
 
     fn selected_admin_activity(&self) -> Option<&crate::domain::activity::AuditEvent> {
@@ -13400,6 +13481,24 @@ impl App {
             };
             return self.copy_text(value);
         }
+        if matches!(
+            field,
+            CopyField::TaskId
+                | CopyField::TaskResult
+                | CopyField::TaskCommand
+                | CopyField::TaskOutput
+        ) {
+            let Some(task) = self.focused_task() else {
+                return Vec::new();
+            };
+            let value = match field {
+                CopyField::TaskResult => task.summary.clone(),
+                CopyField::TaskCommand => task.redacted_argv.join(" "),
+                CopyField::TaskOutput => task.detail.clone(),
+                _ => task.id.to_string(),
+            };
+            return self.copy_text(value);
+        }
         if field == CopyField::DnsName {
             let Some(value) = self.selected_dns_name() else {
                 return Vec::new();
@@ -13441,7 +13540,11 @@ impl App {
             | CopyField::ServiceBackend
             | CopyField::UserId
             | CopyField::UserName
-            | CopyField::UserLogin => "not returned".to_owned(),
+            | CopyField::UserLogin
+            | CopyField::TaskId
+            | CopyField::TaskResult
+            | CopyField::TaskCommand
+            | CopyField::TaskOutput => "not returned".to_owned(),
         };
         self.copy_text(value)
     }
@@ -13510,6 +13613,7 @@ impl App {
         match self.current_route() {
             Route::Devices => self.views.devices.inspector,
             Route::Users => self.views.users.inspector,
+            Route::Tasks => self.views.tasks.inspector,
             _ => true,
         }
     }
@@ -13568,6 +13672,23 @@ impl App {
 
     pub fn focused_task(&self) -> Option<&crate::task::Task> {
         self.tasks.selected.and_then(|id| self.tasks.get(id))
+    }
+
+    pub fn filtered_task_count(&self) -> usize {
+        self.tasks.filtered(&self.task_filter).count()
+    }
+
+    /// Where the selection sits in the filtered history. The table and the
+    /// mouse both size their window from this, so a click lands on the row the
+    /// pointer is over rather than on the one the list happens to start with.
+    pub fn task_cursor(&self) -> usize {
+        let Some(selected) = self.tasks.selected else {
+            return 0;
+        };
+        self.tasks
+            .filtered(&self.task_filter)
+            .position(|task| task.id == selected)
+            .unwrap_or(0)
     }
 }
 
@@ -14597,7 +14718,7 @@ fn mock_services_snapshot() -> LocalServicesSnapshot {
     snapshot
 }
 
-fn navigation_catalog() -> [(Route, &'static str, &'static str); 12] {
+fn navigation_catalog() -> [(Route, &'static str, &'static str); 13] {
     [
         (Route::Devices, "devices", "machines & status"),
         (Route::Local, "local", "this machine"),
@@ -14612,7 +14733,8 @@ fn navigation_catalog() -> [(Route, &'static str, &'static str); 12] {
         (Route::Dns, "dns", "name resolution"),
         (Route::Access, "access", "policies"),
         (Route::Credentials, "credentials", "keys & tokens"),
-        (Route::Activity, "activity", "tasks & audit"),
+        (Route::Tasks, "tasks", "what this client did"),
+        (Route::Audit, "audit", "tailnet log & streams"),
         (Route::Overview, "overview", "fleet summary"),
         (Route::Settings, "settings", "configuration"),
     ]
@@ -14891,6 +15013,10 @@ pub const fn copy_field_key(field: CopyField) -> char {
         CopyField::UserId => 'i',
         CopyField::UserName => 'n',
         CopyField::UserLogin => 'l',
+        CopyField::TaskId => 'i',
+        CopyField::TaskResult => 'r',
+        CopyField::TaskCommand => 'c',
+        CopyField::TaskOutput => 'o',
     }
 }
 

@@ -202,7 +202,7 @@ fn navigation_palette_is_canonical_and_fuzzy() {
         assert!(matches!(
             &app.interaction,
             InteractionMode::CommandLine(state)
-                if state.candidates.len() == 12
+                if state.candidates.len() == 13
                     && state.candidates.first().map(|candidate| candidate.route)
                         == Some(Route::Devices)
         ));
@@ -222,11 +222,11 @@ fn navigation_palette_is_canonical_and_fuzzy() {
             &app.interaction,
             InteractionMode::CommandLine(state)
                 if state.candidates.first().map(|candidate| candidate.route)
-                    == Some(Route::Activity)
+                    == Some(Route::Audit)
         ));
 
         press(&mut app, KeyCode::Enter);
-        assert_eq!(app.current_route(), Route::Activity);
+        assert_eq!(app.current_route(), Route::Audit);
     }
 }
 

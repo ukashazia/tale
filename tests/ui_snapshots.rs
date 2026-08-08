@@ -535,7 +535,7 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
         None => return,
     };
     activity.resolved_config.ui.mouse = true;
-    activity.set_route(Route::Activity);
+    activity.set_route(Route::Tasks);
     let first = activity
         .tasks
         .create(ActionId::MockSuccess, "first task", 1, false);
@@ -543,11 +543,12 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
         .tasks
         .create(ActionId::MockFailure, "second task", 1, false);
     activity.tasks.selected = Some(first);
-    // One header row at 80x24, then the border, then the rows.
+    // The app header, then the panel border, then the table's own heading row,
+    // and only then the first task.
     let _ = activity.update(Event::Input(InputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 2,
-        row: 3,
+        row: 4,
         modifiers: KeyModifiers::NONE,
     })));
     assert_eq!(activity.tasks.selected, Some(second));

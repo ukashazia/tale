@@ -110,8 +110,22 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 type ShellLines = (Vec<Line<'static>>, Option<(u16, u16)>);
 
+/// The tallest the route grid gets: the longest section, plus its heading, in
+/// each of the two bands, plus the blank between them. The palette reserves it
+/// whether or not the current search fills it, so the prompt does not walk up
+/// and down the screen as the user types.
+pub const NAVIGATION_GRID_HEIGHT: usize = 10;
+
+/// What the palette occupies: the grid, a title and a blank above it, and a
+/// blank, the prompt, and the hint row below. Derived rather than written twice,
+/// because the two numbers drifting apart is what moves the caret off the
+/// prompt.
+pub const fn navigation_height() -> u16 {
+    NAVIGATION_GRID_HEIGHT as u16 + 5
+}
+
 fn navigation_lines(app: &App, state: &crate::app::CommandLineState, area: Rect) -> ShellLines {
-    const GRID_HEIGHT: usize = 9;
+    const GRID_HEIGHT: usize = NAVIGATION_GRID_HEIGHT;
     let sections = navigation_sections(&state.candidates);
     let columns = layout::navigation_columns(area.width).min(sections.len().max(1));
     let separator_width = columns.saturating_sub(1).saturating_mul(2);
@@ -184,7 +198,7 @@ impl NavigationSectionKind {
             Route::Overview | Route::Devices | Route::Users => Self::Fleet,
             Route::Local | Route::Services | Route::Diagnostics => Self::Local,
             Route::Routes | Route::Dns | Route::Access => Self::Network,
-            Route::Credentials | Route::Activity | Route::Settings => Self::Operations,
+            Route::Credentials | Route::Tasks | Route::Audit | Route::Settings => Self::Operations,
         }
     }
 

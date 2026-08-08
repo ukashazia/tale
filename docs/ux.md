@@ -18,12 +18,13 @@ Canonical routes:
 | `access` | policy source and tests |
 | `services` | local and tailnet services |
 | `credentials` | supported credentials |
-| `activity` | tasks and audit/network logs |
+| `tasks` | what this client did: one row per background run |
+| `audit` | what the tailnet was told: configuration log, streams, webhooks |
 | `settings` | Tale and supported tailnet settings |
 
 The empty palette groups every route into a breathable adaptive grid with `Fleet`,
 `Local`, `Network`, and `Operations` headings. Typing fuzzy-matches route names and
-their concise descriptions; `dvcs` finds `devices` and `audit` finds `activity`.
+their concise descriptions; `dvcs` finds `devices` and `tsks` finds `tasks`.
 Aliases, saved views, filters, and shell syntax are not part of navigation. Filtering
 is a separate `/` interaction.
 

@@ -5,7 +5,7 @@ use ratatui::widgets::{Clear, Paragraph};
 use crate::app::{App, Overlay};
 use crate::ui::components::{batch_result, confirm, form};
 use crate::ui::theme::StyleRole;
-use crate::ui::views::{audit, policy_editor, secret_result};
+use crate::ui::views::{audit_investigation, policy_editor, secret_result};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
     let screen = frame.area();
@@ -80,7 +80,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         Overlay::HandoffInput(state) => form::render_handoff(frame, app, area, state),
         Overlay::PolicyEditor => policy_editor::render(frame, app, area),
         Overlay::SecretResult => secret_result::render(frame, app, area),
-        Overlay::AuditInvestigation => audit::render(frame, app, area),
+        Overlay::AuditInvestigation => audit_investigation::render(frame, app, area),
     }
 }
 

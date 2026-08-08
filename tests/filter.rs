@@ -207,7 +207,7 @@ fn route_schemas_declare_every_parseable_field_with_guidance() {
     }
 
     // Suggestions are route-scoped: Activity has no device vocabulary at all.
-    let activity = filter::activity_schema();
+    let activity = filter::tasks_schema();
     assert!(activity.is_empty());
     assert!(activity.field("owner").is_none());
     assert!(!activity.free_text.is_empty());

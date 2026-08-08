@@ -118,7 +118,7 @@ src/
       inspector.rs
       interaction_shell.rs
       form.rs
-      task_view.rs
+      grid.rs
       confirm.rs
     views/
       overview.rs
@@ -130,7 +130,8 @@ src/
       access.rs
       services.rs
       credentials.rs
-      activity.rs
+      tasks.rs
+      audit.rs
       settings.rs
 ```
 
