@@ -277,7 +277,7 @@ impl ViewRegistry {
             ["id", "time", "action", "actor", "target", "state", "source"],
             standard_operators(),
         );
-        for route in ["overview", "local", "settings", "services"] {
+        for route in ["overview", "local", "services"] {
             registry.register_route(
                 route,
                 ["id", "name", "state", "source", "severity", "protocol"],

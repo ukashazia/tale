@@ -180,7 +180,6 @@ impl Route {
             // so described neither.
             "tasks" => Some(Self::Tasks),
             "audit" => Some(Self::Audit),
-            "settings" => Some(Self::Settings),
             "services" => Some(Self::Services),
             "diagnostics" => Some(Self::Diagnostics),
             _ => None,
@@ -16140,7 +16139,7 @@ fn mock_services_snapshot() -> LocalServicesSnapshot {
     snapshot
 }
 
-fn navigation_catalog() -> [(Route, &'static str, &'static str); 14] {
+fn navigation_catalog() -> [(Route, &'static str, &'static str); 13] {
     [
         (Route::Devices, "devices", "machines & status"),
         (Route::Local, "local", "this machine"),
@@ -16159,7 +16158,6 @@ fn navigation_catalog() -> [(Route, &'static str, &'static str); 14] {
         (Route::Tasks, "tasks", "what this client did"),
         (Route::Audit, "audit", "tailnet log & streams"),
         (Route::Overview, "overview", "fleet summary"),
-        (Route::Settings, "settings", "configuration"),
     ]
 }
 

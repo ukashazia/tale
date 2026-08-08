@@ -191,6 +191,9 @@ fn navigation_palette_is_canonical_and_fuzzy() {
     assert_eq!(Route::parse("devices"), Some(Route::Devices));
     assert_eq!(Route::parse("dev"), None);
     assert_eq!(Route::parse("home"), None);
+    // The settings page is read-only and everything it can do lives elsewhere,
+    // so nothing in the interface navigates to it.
+    assert_eq!(Route::parse("settings"), None);
 
     let app = mock_app();
     assert!(app.is_some());
@@ -200,7 +203,7 @@ fn navigation_palette_is_canonical_and_fuzzy() {
         assert!(matches!(
             &app.interaction,
             InteractionMode::CommandLine(state)
-                if state.candidates.len() == 14
+                if state.candidates.len() == 13
                     && state.candidates.first().map(|candidate| candidate.route)
                         == Some(Route::Devices)
         ));
@@ -225,6 +228,13 @@ fn navigation_palette_is_canonical_and_fuzzy() {
 
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current_route(), Route::Audit);
+
+        press(&mut app, KeyCode::Char(':'));
+        let _ = app.update(Event::Input(InputEvent::Paste("settings".to_owned())));
+        assert!(matches!(
+            &app.interaction,
+            InteractionMode::CommandLine(state) if state.candidates.is_empty()
+        ));
     }
 }
 
