@@ -10,6 +10,7 @@ use tale::app::{
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{SortDirection, SortField, SortSpec};
+use tale::domain::health::{Finding, ObservedFact, Severity};
 use tale::domain::service::{
     Backend, Exposure, FunnelStatus, Listener, PathMount, Port, ProxyProtocol, ServeStatus,
     ServiceActionRequest, ServiceFailure, ServiceFailureKind, ServiceMapping, ServiceTaskData,
@@ -85,6 +86,42 @@ fn bootstrap_and_source_updates_are_typed_and_deterministic() {
         assert!(app.views.devices.selected_id.is_some());
         assert_eq!(app.devices_resource.health.label(), "healthy");
     }
+}
+
+#[test]
+fn overview_selection_moves_by_finding_id_and_opens_its_detail() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.health_findings = ["first", "second"]
+        .into_iter()
+        .map(|id| Finding {
+            id: id.to_owned(),
+            rule_id: format!("{id}-rule"),
+            severity: Severity::Info,
+            title: format!("{id} finding"),
+            observed_facts: vec![ObservedFact::new("id", id)],
+            observed_at: MOCK_NOW,
+            affected_resource_ids: vec![id.to_owned()],
+            truncated_affected_resource_count: 0,
+            source_ids: Vec::new(),
+            explanation: format!("{id} explanation"),
+            suggested_action_ids: Vec::new(),
+            derived: true,
+        })
+        .collect();
+    app.set_route(Route::Overview);
+    assert_eq!(
+        app.selected_overview_finding()
+            .map(|finding| finding.id.as_str()),
+        Some("first")
+    );
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.views.overview.selected_id.as_deref(), Some("second"));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.focus, Focus::Inspector);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Collection);
 }
 
 #[test]

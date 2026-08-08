@@ -1323,10 +1323,13 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         // Sorting offers device fields, so it is offered where those fields
         // are. Tasks are already in the order they happened, which is the only
         // order a history reads well in.
-        ActionId::CollectionSort => !matches!(route, Route::Diagnostics | Route::Tasks),
+        ActionId::CollectionSort => {
+            !matches!(route, Route::Overview | Route::Diagnostics | Route::Tasks)
+        }
         // Diagnostics is one scrolling body: nothing to open into, no rows to
         // filter, no columns to order by.
-        ActionId::CollectionOpen | ActionId::ViewFilter => !matches!(route, Route::Diagnostics),
+        ActionId::CollectionOpen => !matches!(route, Route::Diagnostics),
+        ActionId::ViewFilter => !matches!(route, Route::Overview | Route::Diagnostics),
         _ => true,
     }
 }

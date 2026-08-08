@@ -1,5 +1,6 @@
 use std::fs;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use tale::app::{App, Route};
@@ -13,6 +14,7 @@ use tale::domain::log_stream::{
 };
 use tale::domain::policy::PolicySnapshot;
 use tale::domain::webhook::{DestinationType, SubscriptionSet, WebhookEndpoint};
+use tale::event::{Event, InputEvent};
 use tale::paths::{PathEnvironment, Platform};
 
 /// Each caller gets its own directory. Tests run in parallel, and two of them
@@ -91,6 +93,13 @@ fn render_lines(app: &App, width: u16, height: u16) -> Option<Vec<String>> {
         lines.push(line);
     }
     Some(lines)
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        code,
+        KeyModifiers::NONE,
+    ))));
 }
 
 #[test]
@@ -238,7 +247,7 @@ fn phase_eight_sections_render_derived_and_authoritative_states() {
         source: PolicySource::CurrentRemote,
     });
     for (route, expected) in [
-        (Route::Overview, "Health"),
+        (Route::Overview, "needs attention"),
         (Route::Audit, "Flow Logs"),
         (Route::Audit, "Log streams"),
         (Route::Audit, "Webhooks"),
@@ -254,6 +263,125 @@ fn phase_eight_sections_render_derived_and_authoritative_states() {
             );
         }
     }
+}
+
+#[test]
+fn overview_is_a_responsive_operational_inbox_with_selected_evidence() {
+    let Some(mut app) = admin_app("overview-inbox") else {
+        return;
+    };
+    let Ok(dto) = serde_json::from_str::<tale::admin::dto::DevicesResponse>(include_str!(
+        "fixtures/admin/devices.json"
+    )) else {
+        return;
+    };
+    let Ok(devices) = tale::admin::devices::decode_devices(dto.devices, app.now) else {
+        return;
+    };
+    let Some(device) = devices.first() else {
+        return;
+    };
+    let device_id = device.stable_id.clone();
+    let device_name = device.display_name().to_owned();
+    app.admin.devices.snapshot = Some(devices);
+    app.refresh_device_view();
+    let expired_at = app.now.saturating_sub(86_400);
+    app.health_findings = vec![
+        Finding {
+            id: "first-finding".to_owned(),
+            rule_id: "device-key-expired".to_owned(),
+            severity: Severity::Critical,
+            title: "Device key is expired".to_owned(),
+            observed_facts: vec![ObservedFact::from_source(
+                "expires_at",
+                expired_at.to_string(),
+                "devices",
+                app.now,
+            )],
+            observed_at: app.now,
+            affected_resource_ids: vec![device_id],
+            truncated_affected_resource_count: 0,
+            source_ids: vec!["devices".to_owned()],
+            explanation: "The authoritative device observation is expired.".to_owned(),
+            suggested_action_ids: Vec::new(),
+            derived: true,
+        },
+        Finding {
+            id: "second-finding".to_owned(),
+            rule_id: "user-approval-pending".to_owned(),
+            severity: Severity::Warning,
+            title: "User approval is pending".to_owned(),
+            observed_facts: vec![ObservedFact::from_source(
+                "approval",
+                "second-evidence",
+                "users",
+                1_785_751_200,
+            )],
+            observed_at: 1_785_751_200,
+            affected_resource_ids: vec!["user-second".to_owned()],
+            truncated_affected_resource_count: 0,
+            source_ids: vec!["users".to_owned()],
+            explanation: "The authoritative user observation is pending approval.".to_owned(),
+            suggested_action_ids: vec!["admin.user.approve".to_owned()],
+            derived: true,
+        },
+    ];
+    app.views.overview.selected_id = Some("second-finding".to_owned());
+    app.set_route(Route::Overview);
+    app.views.overview.selected_id = Some("second-finding".to_owned());
+
+    let Some(wide) = render_lines(&app, 160, 45) else {
+        return;
+    };
+    let wide = wide.join("\n");
+    for wanted in [
+        "local",
+        "admin",
+        "needs attention · 2",
+        "1 critical",
+        "1 warning",
+        &device_name,
+        "expired 1d ago",
+        "Observed facts",
+        "second-evidence",
+    ] {
+        assert!(wide.contains(wanted), "wide overview is missing {wanted}");
+    }
+
+    let Some(collection) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    let collection = collection.join("\n");
+    assert!(collection.contains("Device key is expired"));
+    assert!(collection.contains("User approval is pending"));
+    assert!(!collection.contains("Observed facts"));
+
+    app.focus = tale::app::Focus::Inspector;
+    let Some(detail) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    let detail = detail.join("\n");
+    assert!(detail.contains("Observed facts"));
+    assert!(detail.contains("second-evidence"));
+    assert!(!detail.contains("first-evidence"));
+
+    app.focus = tale::app::Focus::Collection;
+    press(&mut app, KeyCode::Char('a'));
+    press(&mut app, KeyCode::Char('h'));
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(app.current_route(), Route::Users);
+
+    app.set_route(Route::Overview);
+    app.views.overview.selected_id = Some("first-finding".to_owned());
+    press(&mut app, KeyCode::Char('a'));
+    press(&mut app, KeyCode::Char('h'));
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(app.current_route(), Route::Devices);
+    assert_eq!(
+        app.selected_device()
+            .map(|device| device.display_name.as_str()),
+        Some(device_name.as_str())
+    );
 }
 
 /// The old settings page mixed two unrelated things. How the managed tailnet is

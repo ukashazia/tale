@@ -1181,12 +1181,21 @@ struct DeviceVisibleCache {
 
 #[derive(Debug, Clone)]
 pub struct Views {
+    pub overview: OverviewViewState,
     pub devices: DeviceViewState,
     pub services: ServiceViewState,
     pub diagnostics: DiagnosticsViewState,
     pub users: UserViewState,
     pub tasks: TaskViewState,
     pub profiles: ProfileViewState,
+}
+
+/// What `:overview` remembers between refreshes. Findings are derived again
+/// whenever their authoritative snapshots change, so an ID is the only stable
+/// cursor: an index would silently move to a different problem after a refresh.
+#[derive(Debug, Clone, Default)]
+pub struct OverviewViewState {
+    pub selected_id: Option<String>,
 }
 
 /// What `:profiles` remembers between frames. The list is short and derived from
@@ -1563,6 +1572,7 @@ impl App {
             focus: Focus::Collection,
             overlays: Vec::new(),
             views: Views {
+                overview: OverviewViewState::default(),
                 devices: DeviceViewState::default(),
                 services: ServiceViewState::default(),
                 diagnostics: DiagnosticsViewState::default(),
@@ -1717,6 +1727,7 @@ impl App {
         if self.admin.profile.is_none() {
             self.health.clear();
             self.health_findings.clear();
+            self.views.overview.selected_id = None;
             return Vec::new();
         }
         let snapshot = crate::health::snapshot_from_admin(
@@ -2409,12 +2420,13 @@ impl App {
             // Audit is the one route that is still a body of text rather than a
             // collection, so it keeps a context of its own.
             Route::Audit => ActionContext::Audit,
-            Route::Devices | Route::Services | Route::Tasks | Route::Profiles
+            Route::Overview | Route::Devices | Route::Services | Route::Tasks | Route::Profiles
                 if matches!(self.focus, Focus::Inspector) =>
             {
                 ActionContext::Detail
             }
-            Route::Devices
+            Route::Overview
+            | Route::Devices
             | Route::Users
             | Route::Routes
             | Route::Credentials
@@ -2428,6 +2440,10 @@ impl App {
     }
 
     fn focus_mouse_region(&mut self, column: u16, row: u16) {
+        if self.current_route() == Route::Overview {
+            self.focus_overview_mouse_region(column, row);
+            return;
+        }
         if self.current_route() == Route::Audit {
             self.focus = Focus::Collection;
             let Some(collection) = self.audit_event_area() else {
@@ -2577,6 +2593,11 @@ impl App {
     }
 
     fn mouse_in_scrollable_collection(&self, column: u16, row: u16) -> bool {
+        if self.current_route() == Route::Overview {
+            return self
+                .overview_collection_area()
+                .is_some_and(|area| contains_point(area, column, row));
+        }
         if self.current_route() == Route::Devices {
             let frame = crate::ui::layout::compute(
                 ratatui::layout::Rect {
@@ -2628,6 +2649,74 @@ impl App {
                 height: frame.content.height,
             });
         contains_point(area, column, row)
+    }
+
+    fn focus_overview_mouse_region(&mut self, column: u16, row: u16) {
+        let Some(collection) = self.overview_collection_area() else {
+            return;
+        };
+        if collection.width < self.terminal_width
+            && row >= collection.y
+            && column >= collection.x.saturating_add(collection.width)
+        {
+            self.focus = Focus::Inspector;
+            return;
+        }
+        self.focus = Focus::Collection;
+        if !contains_point(collection, column, row) {
+            return;
+        }
+        let first_row = collection.y.saturating_add(2);
+        if row < first_row {
+            return;
+        }
+        let viewport = usize::from(collection.height.saturating_sub(3)).max(1);
+        let selected = self
+            .selected_overview_finding()
+            .and_then(|selected| {
+                self.health_findings
+                    .iter()
+                    .position(|finding| finding.id == selected.id)
+            })
+            .map_or(0, |position| position);
+        let start = selected
+            .saturating_add(1)
+            .saturating_sub(viewport)
+            .min(self.health_findings.len().saturating_sub(1));
+        let position = start.saturating_add(usize::from(row.saturating_sub(first_row)));
+        if position < self.health_findings.len() {
+            self.select_overview_position(position);
+        }
+    }
+
+    fn overview_collection_area(&self) -> Option<ratatui::layout::Rect> {
+        if self.focus == Focus::Inspector {
+            return None;
+        }
+        let frame = crate::ui::layout::compute(
+            ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: self.terminal_width,
+                height: self.terminal_height,
+            },
+            self,
+        );
+        if frame.minimum {
+            return None;
+        }
+        let source_height = if frame.content.width >= 110 { 5 } else { 6 }
+            .min(frame.content.height.saturating_sub(3));
+        let mut collection = ratatui::layout::Rect {
+            x: frame.content.x,
+            y: frame.content.y.saturating_add(source_height),
+            width: frame.content.width,
+            height: frame.content.height.saturating_sub(source_height),
+        };
+        if frame.content.width >= 110 {
+            collection.width = collection.width.saturating_mul(60) / 100;
+        }
+        Some(collection)
     }
 
     /// The audit route keeps the old split: events on the left, the streams and
@@ -3621,14 +3710,20 @@ impl App {
 
     fn current_view_frame(&self) -> ViewFrame {
         let route = self.current_route();
-        let selection = if route == Route::Devices {
-            self.views
+        let selection = match route {
+            Route::Overview => self
+                .views
+                .overview
+                .selected_id
+                .clone()
+                .map(ResourceIdentity::Opaque),
+            Route::Devices => self
+                .views
                 .devices
                 .selected_id
                 .clone()
-                .map(ResourceIdentity::Device)
-        } else {
-            None
+                .map(ResourceIdentity::Device),
+            _ => None,
         };
         let section = (route == Route::Services).then_some(self.views.services.section);
         ViewFrame {
@@ -3659,6 +3754,13 @@ impl App {
 
     fn restore_view_frame(&mut self, frame: &ViewFrame) {
         self.focus = frame.focus;
+        if frame.route == Route::Overview {
+            self.views.overview.selected_id = match &frame.selection {
+                Some(ResourceIdentity::Opaque(id)) => Some(id.clone()),
+                _ => None,
+            };
+            self.reconcile_overview_selection();
+        }
         if frame.route == Route::Devices {
             self.views.devices.filter_draft = frame.filter_text.clone();
             self.views.devices.applied_filter = frame.filter.clone();
@@ -3920,7 +4022,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionMoveUp => {
-                if self.current_route() == Route::Tasks {
+                if self.current_route() == Route::Overview {
+                    self.move_overview_selection(-1);
+                } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, -1);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(-1);
@@ -3942,7 +4046,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionMoveDown => {
-                if self.current_route() == Route::Tasks {
+                if self.current_route() == Route::Overview {
+                    self.move_overview_selection(1);
+                } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, 1);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(1);
@@ -3964,7 +4070,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionFirst => {
-                if self.current_route() == Route::Tasks {
+                if self.current_route() == Route::Overview {
+                    self.select_overview_position(0);
+                } else if self.current_route() == Route::Tasks {
                     self.tasks.select_filtered_first(&self.task_filter);
                 } else if self.current_route() == Route::Audit {
                     self.admin_activity_selected = 0;
@@ -3985,7 +4093,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionLast => {
-                if self.current_route() == Route::Tasks {
+                if self.current_route() == Route::Overview {
+                    self.select_overview_position(usize::MAX);
+                } else if self.current_route() == Route::Tasks {
                     self.tasks.select_filtered_last(&self.task_filter);
                 } else if self.current_route() == Route::Audit {
                     self.admin_activity_selected = self.audit_event_count().saturating_sub(1);
@@ -4019,7 +4129,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionPageUp => {
-                if self.current_route() == Route::Tasks {
+                if self.current_route() == Route::Overview {
+                    self.move_overview_selection(-5);
+                } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, -5);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(-5);
@@ -4041,7 +4153,9 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionPageDown => {
-                if self.current_route() == Route::Tasks {
+                if self.current_route() == Route::Overview {
+                    self.move_overview_selection(5);
+                } else if self.current_route() == Route::Tasks {
                     self.tasks.select_next_filtered(&self.task_filter, 5);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(5);
@@ -4067,7 +4181,11 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionOpen => {
-                if self.current_route() == Route::Tasks {
+                if self.current_route() == Route::Overview {
+                    if self.selected_overview_finding().is_some() {
+                        self.focus = Focus::Inspector;
+                    }
+                } else if self.current_route() == Route::Tasks {
                     // A batch mutation is a table of its own, so it keeps the
                     // full-screen overlay. Everything else opens in the pane
                     // the route already has.
@@ -4613,6 +4731,14 @@ impl App {
         if self.admin.profile.is_none() {
             return false;
         }
+        if action_id == ActionId::OverviewHealthOpenResource {
+            return self.selected_overview_finding().is_some();
+        }
+        if action_id == ActionId::OverviewHealthRunSuggestedAction {
+            return self
+                .selected_overview_finding()
+                .is_some_and(|finding| !finding.suggested_action_ids.is_empty());
+        }
         let scope = match action_id {
             ActionId::ActivityFlowsSelectWindow
             | ActionId::ActivityFlowsAggregate
@@ -4665,6 +4791,18 @@ impl App {
     pub fn action_unavailable_reason(&self, action_id: ActionId) -> Option<String> {
         if self.action_is_available(action_id) {
             return None;
+        }
+        if action_id == ActionId::OverviewHealthOpenResource
+            && self.selected_overview_finding().is_none()
+        {
+            return Some("no derived health finding is selected".to_owned());
+        }
+        if action_id == ActionId::OverviewHealthRunSuggestedAction
+            && self
+                .selected_overview_finding()
+                .is_some_and(|finding| finding.suggested_action_ids.is_empty())
+        {
+            return Some("the selected finding has no suggested action".to_owned());
         }
         if self.source_mode != SourceMode::Local
             && matches!(
@@ -5675,35 +5813,12 @@ impl App {
     }
 
     fn dispatch_health_action(&mut self, action_id: ActionId) -> Vec<Effect> {
-        let Some(finding) = self.health_findings.first() else {
+        let Some(finding) = self.selected_overview_finding().cloned() else {
             self.runtime_error = Some("no derived health finding is available".to_owned());
             return Vec::new();
         };
         if action_id == ActionId::OverviewHealthOpenResource {
-            self.runtime_error = Some(format!(
-                "{} · observed facts: {} · source: {}",
-                finding.title,
-                finding
-                    .observed_facts
-                    .iter()
-                    .map(|fact| format!("{}={}", fact.label, fact.value))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if finding.source_ids.is_empty() {
-                    "not returned".to_owned()
-                } else {
-                    finding.source_ids.join(", ")
-                }
-            ));
-            match finding.rule_id.as_str() {
-                "device-key-expired" | "device-key-expiring" | "device-approval-pending" => {
-                    self.navigate(Route::Devices);
-                }
-                "user-approval-pending" => self.navigate(Route::Users),
-                "route-overlap-review" => self.navigate(Route::Routes),
-                _ => {}
-            }
-            return Vec::new();
+            return self.open_health_finding_resource(&finding);
         }
         let Some(suggested) = finding.suggested_action_ids.first() else {
             self.runtime_error = Some(
@@ -5729,6 +5844,95 @@ impl App {
             return Vec::new();
         }
         self.dispatch_action(action)
+    }
+
+    fn open_health_finding_resource(&mut self, finding: &Finding) -> Vec<Effect> {
+        let Some(affected_id) = finding.affected_resource_ids.first().cloned() else {
+            self.runtime_error = Some("the selected finding names no affected resource".to_owned());
+            return Vec::new();
+        };
+        match finding.rule_id.as_str() {
+            "device-key-expired"
+            | "device-key-expiring"
+            | "device-approval-pending"
+            | "posture-observation-missing"
+            | "relay-heavy-local-peer" => {
+                let node_id = self
+                    .admin
+                    .devices
+                    .snapshot
+                    .as_ref()
+                    .and_then(|devices| {
+                        devices
+                            .iter()
+                            .find(|device| device.stable_id == affected_id)
+                    })
+                    .and_then(AdminDevice::exact_node_id);
+                let selected = self
+                    .devices_resource
+                    .snapshot
+                    .iter()
+                    .find(|device| {
+                        device.id.0 == affected_id
+                            || node_id.is_some_and(|node_id| device.id.0 == node_id)
+                    })
+                    .map(|device| device.id.clone());
+                let Some(selected) = selected else {
+                    self.runtime_error = Some(
+                        "the affected device is no longer in the current device snapshot"
+                            .to_owned(),
+                    );
+                    return Vec::new();
+                };
+                self.views.devices.filter_draft.clear();
+                self.views.devices.applied_filter = FilterExpression::empty();
+                self.navigate(Route::Devices);
+                self.views.devices.selected_id = Some(selected);
+                self.reconcile_selection(None);
+                self.focus = Focus::Inspector;
+                return self
+                    .start_admin_device_enrichment(Some(affected_id))
+                    .into_iter()
+                    .collect();
+            }
+            "user-approval-pending" => {
+                let selected = self
+                    .admin
+                    .users
+                    .snapshot
+                    .as_ref()
+                    .and_then(|users| users.iter().position(|user| user.id == affected_id));
+                self.navigate(Route::Users);
+                if let Some(selected) = selected {
+                    self.admin_user_selected = selected;
+                    self.focus = Focus::Inspector;
+                } else {
+                    self.runtime_error =
+                        Some("the affected user is no longer in the current snapshot".to_owned());
+                }
+            }
+            "route-overlap-review" => {
+                let selected = self.admin.route_observations().iter().position(|route| {
+                    route
+                        .advertised
+                        .iter()
+                        .any(|cidr| format!("{}:{cidr}", route.device_id) == affected_id)
+                });
+                self.navigate(Route::Routes);
+                if let Some(selected) = selected {
+                    self.admin_route_selected = selected;
+                } else {
+                    self.runtime_error =
+                        Some("the affected route is no longer in the current snapshot".to_owned());
+                }
+            }
+            _ => {
+                self.runtime_error = Some(
+                    "the selected finding has evidence but no resource route to open".to_owned(),
+                );
+            }
+        }
+        Vec::new()
     }
 
     fn open_phase_eight_local_action(&mut self, action_id: ActionId) -> Vec<Effect> {
@@ -9889,6 +10093,7 @@ impl App {
         self.health_evaluation_generation = self.health_evaluation_generation.saturating_add(1);
         self.health.clear();
         self.health_findings.clear();
+        self.views.overview.selected_id = None;
         self.cancel_flow_aggregation();
         self.flow_aggregation_generation = self.flow_aggregation_generation.saturating_add(1);
         self.flow_snapshot = None;
@@ -10859,6 +11064,7 @@ impl App {
                 if generation == self.health_evaluation_generation && self.admin.profile.is_some() {
                     self.health.replace_evaluated(snapshot, findings.clone());
                     self.health_findings = findings;
+                    self.reconcile_overview_selection();
                 }
             }
             AdminEvent::HealthEvaluationFailed { generation, detail } => {
@@ -15077,6 +15283,64 @@ impl App {
             .snapshot
             .iter()
             .find(|device| &device.id == id)
+    }
+
+    pub fn selected_overview_finding(&self) -> Option<&Finding> {
+        let selected = self.views.overview.selected_id.as_deref();
+        selected
+            .and_then(|id| self.health_findings.iter().find(|finding| finding.id == id))
+            .or_else(|| self.health_findings.first())
+    }
+
+    fn move_overview_selection(&mut self, offset: isize) {
+        if self.health_findings.is_empty() {
+            self.views.overview.selected_id = None;
+            return;
+        }
+        let current = self
+            .views
+            .overview
+            .selected_id
+            .as_deref()
+            .and_then(|id| {
+                self.health_findings
+                    .iter()
+                    .position(|finding| finding.id == id)
+            })
+            .map_or(0, |position| position);
+        let next = move_bounded_index(current, self.health_findings.len(), offset);
+        self.views.overview.selected_id = self
+            .health_findings
+            .get(next)
+            .map(|finding| finding.id.clone());
+    }
+
+    fn select_overview_position(&mut self, position: usize) {
+        let index = if position == usize::MAX {
+            self.health_findings.len().saturating_sub(1)
+        } else {
+            position.min(self.health_findings.len().saturating_sub(1))
+        };
+        self.views.overview.selected_id = self
+            .health_findings
+            .get(index)
+            .map(|finding| finding.id.clone());
+    }
+
+    fn reconcile_overview_selection(&mut self) {
+        if self
+            .views
+            .overview
+            .selected_id
+            .as_deref()
+            .is_some_and(|id| self.health_findings.iter().any(|finding| finding.id == id))
+        {
+            return;
+        }
+        self.views.overview.selected_id = self
+            .health_findings
+            .first()
+            .map(|finding| finding.id.clone());
     }
 
     pub fn selected_local_device(&self) -> Option<&LocalDevice> {
