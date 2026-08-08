@@ -4579,8 +4579,8 @@ impl App {
             | ActionId::SavedViewDelete
             | ActionId::SavedViewApply
             | ActionId::CollectionExport
-            | ActionId::AccessExplorerAsk
             | ActionId::AccessExplorerOpenRule => self.open_phase_eight_local_action(action_id),
+            ActionId::AccessExplorerAsk => self.open_access_explorer_form(),
         }
     }
 
@@ -6002,7 +6002,6 @@ impl App {
             ActionId::SavedViewRename => "name=;new=;".to_owned(),
             ActionId::SavedViewDelete | ActionId::SavedViewApply => "name=".to_owned(),
             ActionId::CollectionExport => "format=json;path=;collection=devices".to_owned(),
-            ActionId::AccessExplorerAsk => "source=;destination=;port=;policy=current".to_owned(),
             ActionId::AccessExplorerOpenRule => {
                 if let Some(result) = self.access_explorer_result.as_ref() {
                     self.runtime_error = Some(format!(
@@ -6026,6 +6025,47 @@ impl App {
             .push(Overlay::OperatorForm(OperatorFormState::new(
                 action_id, input, None,
             )));
+        Vec::new()
+    }
+
+    /// The explorer asks the server one question, so the form asks for the two
+    /// ends of it and which policy to ask against.
+    fn open_access_explorer_form(&mut self) -> Vec<Effect> {
+        self.push_form(
+            ActionId::AccessExplorerAsk,
+            "Ask whether one device can reach another",
+            Vec::new(),
+            vec![
+                FormField::text(
+                    "source",
+                    "From",
+                    "The device, user, or tag the connection starts at",
+                    "user:someone@example.com",
+                    String::new(),
+                ),
+                FormField::text(
+                    "destination",
+                    "To",
+                    "The device, address, or tag the connection is made to",
+                    "100.64.0.1",
+                    String::new(),
+                ),
+                FormField::text(
+                    "port",
+                    "Port",
+                    "A port number or protocol name; empty asks about any port",
+                    "any",
+                    String::new(),
+                ),
+                FormField::options(
+                    "policy",
+                    "Policy",
+                    "Whether the question is asked of the live policy or the candidate",
+                    &["current", "candidate"],
+                    "current",
+                ),
+            ],
+        );
         Vec::new()
     }
 
@@ -6329,12 +6369,27 @@ impl App {
         let selector = self
             .selected_admin_user()
             .map_or_else(|| "autogroup:members".to_owned(), |user| user.id.clone());
-        self.overlays
-            .push(Overlay::OperatorForm(OperatorFormState::new(
-                ActionId::AdminPolicyPreview,
-                format!("type=user;previewFor={selector}"),
-                None,
-            )));
+        self.push_form(
+            ActionId::AdminPolicyPreview,
+            "Preview the policy for one selector",
+            Vec::new(),
+            vec![
+                FormField::options(
+                    "type",
+                    "Selector",
+                    "Whether the preview is asked for a user or an address and port",
+                    &["user", "ipport"],
+                    "user",
+                ),
+                FormField::text(
+                    "for",
+                    "Preview for",
+                    "The user selector, or address:port, the server previews access for",
+                    "autogroup:members",
+                    selector,
+                ),
+            ],
+        );
         Vec::new()
     }
 
@@ -6992,72 +7047,128 @@ impl App {
     }
 
     fn open_audit_filter(&mut self, action_id: ActionId) -> Vec<Effect> {
-        let input = match action_id {
-            ActionId::AuditFilterTime => format!(
-                "start={};end={}",
-                self.audit_filters
-                    .start
-                    .map_or(String::new(), format_audit_timestamp),
-                self.audit_filters
-                    .end
-                    .map_or(String::new(), format_audit_timestamp)
+        let filters = &self.audit_filters;
+        let (title, fields) = match action_id {
+            ActionId::AuditFilterTime => (
+                "Limit the audit log to a time range",
+                vec![
+                    FormField::text(
+                        "start",
+                        "From",
+                        "Inclusive UTC start, as 2026-08-03T00:00:00Z; empty removes the bound",
+                        "any time",
+                        filters.start.map_or(String::new(), format_audit_timestamp),
+                    ),
+                    FormField::text(
+                        "end",
+                        "To",
+                        "Inclusive UTC end, as 2026-08-04T00:00:00Z; empty removes the bound",
+                        "any time",
+                        filters.end.map_or(String::new(), format_audit_timestamp),
+                    ),
+                ],
             ),
-            ActionId::AuditFilterActor => format!(
-                "id={};display={}",
-                self.audit_filters.actor_id.as_deref().unwrap_or(""),
-                self.audit_filters.actor_display.as_deref().unwrap_or("")
+            ActionId::AuditFilterActor => (
+                "Limit the audit log to one actor",
+                vec![
+                    FormField::text(
+                        "id",
+                        "Actor id",
+                        "The exact user or principal id recorded on the entry",
+                        "any actor",
+                        filters.actor_id.clone().unwrap_or_default(),
+                    ),
+                    FormField::text(
+                        "display",
+                        "Shown as",
+                        "The exact display value the entry resolved to",
+                        "any name",
+                        filters.actor_display.clone().unwrap_or_default(),
+                    ),
+                ],
             ),
-            ActionId::AuditFilterAction => format!(
-                "action={}",
-                self.audit_filters.action.as_deref().unwrap_or("")
+            ActionId::AuditFilterAction => (
+                "Limit the audit log to one action",
+                vec![FormField::text(
+                    "action",
+                    "Action",
+                    "The exact action value, such as device.view",
+                    "any action",
+                    filters.action.clone().unwrap_or_default(),
+                )],
             ),
-            ActionId::AuditFilterTarget => format!(
-                "type={};id={};text={}",
-                self.audit_filters.target_type.as_deref().unwrap_or(""),
-                self.audit_filters.target_id.as_deref().unwrap_or(""),
-                self.audit_filters.text.as_deref().unwrap_or("")
+            ActionId::AuditFilterTarget => (
+                "Limit the audit log to one target",
+                vec![
+                    FormField::options(
+                        "type",
+                        "Kind",
+                        "What sort of thing the entry acted on",
+                        AUDIT_TARGET_KINDS,
+                        filters
+                            .target_type
+                            .clone()
+                            .unwrap_or_else(|| ANY.to_owned()),
+                    ),
+                    FormField::text(
+                        "id",
+                        "Target id",
+                        "The exact stable id the entry recorded",
+                        "any id",
+                        filters.target_id.clone().unwrap_or_default(),
+                    ),
+                    FormField::text(
+                        "text",
+                        "Summary contains",
+                        "Matches entries whose summary contains this text",
+                        "anything",
+                        filters.text.clone().unwrap_or_default(),
+                    ),
+                ],
             ),
-            _ => String::new(),
+            _ => return Vec::new(),
         };
-        self.overlays
-            .push(Overlay::OperatorForm(OperatorFormState::new(
-                action_id, input, None,
-            )));
+        self.push_form(action_id, title, Vec::new(), fields);
         Vec::new()
     }
 
-    fn accept_audit_filter(&mut self, state: OperatorFormState) -> Vec<Effect> {
-        let parsed = parse_audit_filter(state.action_id, &state.input);
-        match parsed {
-            Ok(filters) => {
-                match state.action_id {
-                    ActionId::AuditFilterTime => {
-                        self.audit_filters.start = filters.start;
-                        self.audit_filters.end = filters.end;
-                    }
-                    ActionId::AuditFilterActor => {
-                        self.audit_filters.actor_id = filters.actor_id;
-                        self.audit_filters.actor_display = filters.actor_display;
-                    }
-                    ActionId::AuditFilterAction => self.audit_filters.action = filters.action,
-                    ActionId::AuditFilterTarget => {
-                        self.audit_filters.target_type = filters.target_type;
-                        self.audit_filters.target_id = filters.target_id;
-                        self.audit_filters.text = filters.text;
-                    }
-                    _ => {}
+    fn accept_audit_filter(&mut self, state: &FormState) -> Vec<Effect> {
+        match state.action_id {
+            ActionId::AuditFilterTime => {
+                let start = match audit_time(state.value("start")) {
+                    Ok(value) => value,
+                    Err(error) => return self.set_form_error(error),
+                };
+                let end = match audit_time(state.value("end")) {
+                    Ok(value) => value,
+                    Err(error) => return self.set_form_error(error),
+                };
+                if start.zip(end).is_some_and(|(start, end)| start > end) {
+                    return self.set_form_error("the start must not be after the end");
                 }
-                self.admin_activity_selected = 0;
-                self.overlays.pop();
-                self.open_audit_investigation()
+                self.audit_filters.start = start;
+                self.audit_filters.end = end;
             }
-            Err(error) => {
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error);
-                }
-                Vec::new()
+            ActionId::AuditFilterActor => {
+                self.audit_filters.actor_id = audit_text(state.value("id"));
+                self.audit_filters.actor_display = audit_text(state.value("display"));
             }
+            ActionId::AuditFilterAction => {
+                self.audit_filters.action = audit_text(state.value("action"));
+            }
+            ActionId::AuditFilterTarget => {
+                self.audit_filters.target_type = match state.value("type") {
+                    ANY => None,
+                    value => Some(value.to_owned()),
+                };
+                self.audit_filters.target_id = audit_text(state.value("id"));
+                self.audit_filters.text = audit_text(state.value("text"));
+            }
+            _ => return Vec::new(),
         }
+        self.admin_activity_selected = 0;
+        self.overlays.pop();
+        self.open_audit_investigation()
     }
 
     fn copy_secret_result(&mut self) -> Vec<Effect> {
@@ -7423,29 +7534,6 @@ impl App {
     }
 
     fn accept_operator_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
-        if matches!(
-            state.action_id,
-            ActionId::AuditFilterTime
-                | ActionId::AuditFilterActor
-                | ActionId::AuditFilterAction
-                | ActionId::AuditFilterTarget
-        ) {
-            return self.accept_audit_filter(state);
-        }
-        if state.action_id == ActionId::AdminPolicyPreview {
-            return match parse_policy_preview_request(&state.input) {
-                Ok((selector_type, selector)) => {
-                    self.overlays.pop();
-                    self.start_policy_preview(selector_type, selector)
-                }
-                Err(error) => {
-                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                        current.error = Some(error);
-                    }
-                    Vec::new()
-                }
-            };
-        }
         if state.action_id == ActionId::AdminCredentialAuthKeyCreate {
             return match parse_auth_key_request(&state.input) {
                 Ok(request) => {
@@ -7506,9 +7594,6 @@ impl App {
                 | ActionId::CollectionExport
         ) {
             return self.accept_phase_eight_local_form(state);
-        }
-        if state.action_id == ActionId::AccessExplorerAsk {
-            return self.accept_access_explorer_form(state);
         }
         if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
             current.error = Some("this form is not a local operator form".to_owned());
@@ -7653,8 +7738,8 @@ impl App {
         }
     }
 
-    fn accept_access_explorer_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
-        let result = parse_access_question(&state.input).and_then(|question| {
+    fn accept_access_explorer_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let result = access_question_from_form(state).and_then(|question| {
             let policy = match question.policy_source {
                 PolicySource::CurrentRemote => self
                     .admin
@@ -7693,13 +7778,25 @@ impl App {
                 self.overlays.pop();
                 vec![effect]
             }
-            Err(error) => {
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error);
-                }
-                Vec::new()
-            }
+            Err(error) => self.set_form_error(error),
         }
+    }
+
+    /// The preview asks the server about one selector, so the form asks for
+    /// the kind and the value and nothing else.
+    fn accept_policy_preview_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let selector = state.value("for").trim();
+        if selector.is_empty() || selector.len() > 256 || selector.chars().any(char::is_control) {
+            return self.set_form_error("the selector must be non-empty, bounded, and textual");
+        }
+        let selector_type = if state.value("type") == "ipport" {
+            PolicySelectorType::IpPort
+        } else {
+            PolicySelectorType::User
+        };
+        let selector = selector.to_owned();
+        self.overlays.pop();
+        self.start_policy_preview(selector_type, selector)
     }
 
     fn accept_admin_form(&mut self, state: &FormState) -> Vec<Effect> {
@@ -11993,6 +12090,12 @@ impl App {
             ActionId::LocalRoutesEditAdvertisements => {
                 return self.accept_advertisement_form(&state);
             }
+            ActionId::AdminPolicyPreview => return self.accept_policy_preview_form(&state),
+            ActionId::AccessExplorerAsk => return self.accept_access_explorer_form(&state),
+            ActionId::AuditFilterTime
+            | ActionId::AuditFilterActor
+            | ActionId::AuditFilterAction
+            | ActionId::AuditFilterTarget => return self.accept_audit_filter(&state),
             action_id if is_admin_mutation_action(action_id) => {
                 return self.accept_admin_form(&state);
             }
@@ -15248,21 +15351,27 @@ fn parse_optional_flow_u64(
         .transpose()
 }
 
-fn parse_access_question(input: &str) -> Result<AccessQuestion, String> {
-    let fields = parse_operational_fields(input)?;
-    ensure_operational_fields(&fields, &["source", "destination", "port", "policy"])?;
-    let policy_source = match fields.get("policy").map_or("current", String::as_str) {
-        "current" => PolicySource::CurrentRemote,
-        "candidate" => PolicySource::ActiveCandidate,
-        value => return Err(format!("policy must be current or candidate, not {value}")),
-    };
+fn access_question_from_form(state: &FormState) -> Result<AccessQuestion, String> {
+    let source_selector = state.value("source").trim().to_owned();
+    if source_selector.is_empty() {
+        return Err("the question needs a source".to_owned());
+    }
+    let destination_selector = state.value("destination").trim().to_owned();
+    if destination_selector.is_empty() {
+        return Err("the question needs a destination".to_owned());
+    }
+    let port = state.value("port").trim();
     Ok(AccessQuestion {
-        source_selector: required_operational_field(&fields, "source")?,
-        destination_selector: required_operational_field(&fields, "destination")?,
-        protocol_or_port: optional_operational_field(&fields, "port"),
+        source_selector,
+        destination_selector,
+        protocol_or_port: (!port.is_empty()).then(|| port.to_owned()),
         ssh_user: None,
         application_capability: None,
-        policy_source,
+        policy_source: if state.value("policy") == "candidate" {
+            PolicySource::ActiveCandidate
+        } else {
+            PolicySource::CurrentRemote
+        },
     })
 }
 
@@ -16798,43 +16907,6 @@ fn parse_auth_key_request(
     Ok(request)
 }
 
-fn parse_policy_preview_request(input: &str) -> Result<(PolicySelectorType, String), String> {
-    let mut selector_type = None;
-    let mut selector = None;
-    let mut seen = BTreeSet::new();
-    for part in input.split(';') {
-        let (key, value) = part.split_once('=').ok_or_else(|| {
-            "policy preview fields use key=value separated by semicolons".to_owned()
-        })?;
-        if !seen.insert(key) {
-            return Err(format!("policy preview field repeated: {key}"));
-        }
-        match key {
-            "type" => {
-                selector_type = Some(match value {
-                    "user" => PolicySelectorType::User,
-                    "ipport" => PolicySelectorType::IpPort,
-                    _ => return Err("policy preview type must be user or ipport".to_owned()),
-                });
-            }
-            "previewFor" => {
-                if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
-                    return Err(
-                        "policy preview previewFor must be non-empty, bounded, and textual"
-                            .to_owned(),
-                    );
-                }
-                selector = Some(value.to_owned());
-            }
-            _ => return Err(format!("unknown policy preview field: {key}")),
-        }
-    }
-    let selector_type =
-        selector_type.ok_or_else(|| "policy preview type is required".to_owned())?;
-    let selector = selector.ok_or_else(|| "policy preview previewFor is required".to_owned())?;
-    Ok((selector_type, selector))
-}
-
 fn parse_auth_key_bool(value: &str, field: &str) -> Result<bool, String> {
     match value {
         "true" => Ok(true),
@@ -16843,66 +16915,30 @@ fn parse_auth_key_bool(value: &str, field: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_audit_filter(action_id: ActionId, input: &str) -> Result<AuditFilters, String> {
-    let mut fields = BTreeMap::new();
-    for part in input.split(';') {
-        let (key, value) = part
-            .split_once('=')
-            .ok_or_else(|| "audit filters use key=value separated by semicolons".to_owned())?;
-        if fields.insert(key, value).is_some() {
-            return Err(format!("audit filter field repeated: {key}"));
-        }
-    }
-    let expected = match action_id {
-        ActionId::AuditFilterTime => &["start", "end"][..],
-        ActionId::AuditFilterActor => &["id", "display"][..],
-        ActionId::AuditFilterAction => &["action"][..],
-        ActionId::AuditFilterTarget => &["type", "id", "text"][..],
-        _ => return Err("this is not an audit filter form".to_owned()),
-    };
-    if fields.keys().any(|key| !expected.contains(key)) {
-        return Err("audit filter contains an unsupported field".to_owned());
-    }
-    let mut filters = AuditFilters::default();
-    match action_id {
-        ActionId::AuditFilterTime => {
-            filters.start = parse_optional_audit_time(fields.get("start").copied())?;
-            filters.end = parse_optional_audit_time(fields.get("end").copied())?;
-            if filters
-                .start
-                .zip(filters.end)
-                .is_some_and(|(start, end)| start > end)
-            {
-                return Err("audit start must not be after audit end".to_owned());
-            }
-        }
-        ActionId::AuditFilterActor => {
-            filters.actor_id = optional_audit_text(fields.get("id").copied());
-            filters.actor_display = optional_audit_text(fields.get("display").copied());
-        }
-        ActionId::AuditFilterAction => {
-            filters.action = optional_audit_text(fields.get("action").copied());
-        }
-        ActionId::AuditFilterTarget => {
-            filters.target_type = optional_audit_text(fields.get("type").copied());
-            filters.target_id = optional_audit_text(fields.get("id").copied());
-            filters.text = optional_audit_text(fields.get("text").copied());
-        }
-        _ => {}
-    }
-    Ok(filters)
+/// The value a filter field holds when it is not narrowing anything.
+const ANY: &str = "any";
+
+/// The target kinds an audit entry can name, offered rather than spelled out.
+const AUDIT_TARGET_KINDS: &[&str] = &[
+    ANY,
+    "device",
+    "user",
+    "route",
+    "dns",
+    "credential",
+    "policy",
+];
+
+fn audit_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
-fn optional_audit_text(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned)
-}
-
-fn parse_optional_audit_time(value: Option<&str>) -> Result<Option<Timestamp>, String> {
-    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+fn audit_time(value: &str) -> Result<Option<Timestamp>, String> {
+    let value = value.trim();
+    if value.is_empty() {
         return Ok(None);
-    };
+    }
     let parsed = time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .map_err(|_| "audit times must be RFC3339 UTC values".to_owned())?;
     u64::try_from(parsed.unix_timestamp())
