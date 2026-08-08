@@ -4508,20 +4508,7 @@ impl App {
             ActionId::AuditOpenPolicyDiff => self.open_audit_investigation(),
             ActionId::BatchReviewOutcomes => self.open_selected_batch_result(),
             ActionId::BatchRetrySelected => self.retry_selected_batch(),
-            ActionId::ActivityFlowsSelectWindow => {
-                let now =
-                    time::OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(self.now as i64);
-                let window = crate::domain::flow::FlowWindow::previous_hour(now);
-                let input = window.query_values().map_or_else(
-                    |_| String::new(),
-                    |(start, end)| format!("start={start};end={end}"),
-                );
-                self.overlays
-                    .push(Overlay::OperatorForm(OperatorFormState::new(
-                        action_id, input, None,
-                    )));
-                Vec::new()
-            }
+            ActionId::ActivityFlowsSelectWindow => self.open_flow_window_form(),
             ActionId::ActivityFlowsAggregate => {
                 if let Some(snapshot) = self.flow_snapshot.as_ref() {
                     if !snapshot.complete {
@@ -5990,18 +5977,7 @@ impl App {
     }
 
     fn open_phase_eight_local_action(&mut self, action_id: ActionId) -> Vec<Effect> {
-        let input = match action_id {
-            ActionId::SavedViewCreate => {
-                "name=;route=devices;columns=id,name;filter=;sort=id:ascending;wide=false"
-                    .to_owned()
-            }
-            ActionId::SavedViewReplace => {
-                "name=;route=devices;columns=id,name;filter=;sort=id:ascending;wide=false"
-                    .to_owned()
-            }
-            ActionId::SavedViewRename => "name=;new=;".to_owned(),
-            ActionId::SavedViewDelete | ActionId::SavedViewApply => "name=".to_owned(),
-            ActionId::CollectionExport => "format=json;path=;collection=devices".to_owned(),
+        match action_id {
             ActionId::AccessExplorerOpenRule => {
                 if let Some(result) = self.access_explorer_result.as_ref() {
                     self.runtime_error = Some(format!(
@@ -6017,15 +5993,280 @@ impl App {
                     self.runtime_error =
                         Some("no authoritative Access Explorer result is available".to_owned());
                 }
-                return Vec::new();
+                Vec::new()
             }
-            _ => String::new(),
+            ActionId::SavedViewCreate | ActionId::SavedViewReplace => {
+                self.open_saved_view_form(action_id)
+            }
+            ActionId::SavedViewRename => {
+                let names = self.saved_view_names();
+                let current = names.first().cloned().unwrap_or_default();
+                self.push_form(
+                    action_id,
+                    "Rename a saved view",
+                    Vec::new(),
+                    vec![
+                        FormField::choice(
+                            "name",
+                            "View",
+                            "Which saved view is renamed",
+                            names.into_iter().map(FormChoice::plain),
+                            current,
+                        ),
+                        FormField::text(
+                            "new",
+                            "New name",
+                            "What the view is called from now on",
+                            "new name",
+                            String::new(),
+                        ),
+                    ],
+                );
+                Vec::new()
+            }
+            ActionId::SavedViewDelete | ActionId::SavedViewApply => {
+                let names = self.saved_view_names();
+                let current = names.first().cloned().unwrap_or_default();
+                let (title, help) = if action_id == ActionId::SavedViewDelete {
+                    ("Delete a saved view", "The saved view to remove")
+                } else {
+                    ("Open a saved view", "The saved view to switch to")
+                };
+                self.push_form(
+                    action_id,
+                    title,
+                    Vec::new(),
+                    vec![FormField::choice(
+                        "name",
+                        "View",
+                        help,
+                        names.into_iter().map(FormChoice::plain),
+                        current,
+                    )],
+                );
+                Vec::new()
+            }
+            ActionId::CollectionExport => {
+                self.push_form(
+                    action_id,
+                    "Export a collection to a file",
+                    Vec::new(),
+                    vec![
+                        FormField::options(
+                            "collection",
+                            "Collection",
+                            "Which set of records is written out",
+                            EXPORT_COLLECTIONS,
+                            "devices",
+                        ),
+                        FormField::options(
+                            "format",
+                            "Format",
+                            "How the records are written",
+                            &["json", "csv"],
+                            "json",
+                        ),
+                        FormField::text(
+                            "path",
+                            "Path",
+                            "Where the file is written; an existing file is replaced",
+                            "/path/to/export.json",
+                            String::new(),
+                        ),
+                    ],
+                );
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn saved_view_names(&self) -> Vec<String> {
+        self.saved_views
+            .as_ref()
+            .map(|state| state.names())
+            .unwrap_or_default()
+    }
+
+    /// A saved view keeps the shape of a screen, so the form asks for the name
+    /// and shows the rest as the values it will store.
+    fn open_saved_view_form(&mut self, action_id: ActionId) -> Vec<Effect> {
+        let route = self.current_route().label();
+        let title = if action_id == ActionId::SavedViewCreate {
+            "Save this view"
+        } else {
+            "Replace a saved view"
         };
-        self.overlays
-            .push(Overlay::OperatorForm(OperatorFormState::new(
-                action_id, input, None,
-            )));
+        self.push_form(
+            action_id,
+            title,
+            vec![("route", route.to_owned())],
+            vec![
+                FormField::text(
+                    "name",
+                    "Name",
+                    "What this view is called in the saved view list",
+                    "view name",
+                    String::new(),
+                ),
+                FormField::list(
+                    "columns",
+                    "Columns",
+                    "The columns the view shows, in the order shown",
+                    "the route default",
+                    Vec::<String>::new(),
+                ),
+                FormField::toggle(
+                    "wide",
+                    "Wide columns",
+                    "Give each column its full width rather than fitting the screen",
+                    false,
+                ),
+                FormField::text(
+                    "filter",
+                    "Filter",
+                    "Clauses as field|operator|value, joined by ||; empty saves no filter",
+                    "no filter",
+                    String::new(),
+                ),
+                FormField::list(
+                    "sort",
+                    "Sort",
+                    "Terms as field:ascending or field:descending, in priority order",
+                    "the route default",
+                    Vec::<String>::new(),
+                ),
+            ],
+        );
         Vec::new()
+    }
+
+    /// The window comes first and the rest narrows it, so each filter is its
+    /// own field holding the value the current view is already using.
+    fn open_flow_window_form(&mut self) -> Vec<Effect> {
+        let now = time::OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(self.now as i64);
+        let window = crate::domain::flow::FlowWindow::previous_hour(now);
+        let (start, end) = window
+            .query_values()
+            .unwrap_or_else(|_| (String::new(), String::new()));
+        let filter = self.flow_filter.clone();
+        self.push_form(
+            ActionId::ActivityFlowsSelectWindow,
+            "Choose which flows to read",
+            Vec::new(),
+            vec![
+                FormField::text(
+                    "start",
+                    "From",
+                    "Inclusive UTC start; the window is at most 24 hours and within retention",
+                    "RFC3339 UTC",
+                    start,
+                ),
+                FormField::text(
+                    "end",
+                    "To",
+                    "Inclusive UTC end; the window is at most 24 hours and within retention",
+                    "RFC3339 UTC",
+                    end,
+                ),
+                FormField::text(
+                    "reporting",
+                    "Reported by",
+                    "Only flows the named device reported",
+                    "any device",
+                    filter.reporting_node_id.unwrap_or_default(),
+                ),
+                FormField::text(
+                    "source",
+                    "From device",
+                    "Only flows that started at this device",
+                    "any device",
+                    filter.source_node_id.unwrap_or_default(),
+                ),
+                FormField::text(
+                    "destination",
+                    "To device",
+                    "Only flows that ended at this device",
+                    "any device",
+                    filter.destination_node_id.unwrap_or_default(),
+                ),
+                FormField::text(
+                    "source-address",
+                    "From address",
+                    "Only flows that started at this address",
+                    "any address",
+                    filter.source_address.unwrap_or_default(),
+                ),
+                FormField::text(
+                    "destination-address",
+                    "To address",
+                    "Only flows that ended at this address",
+                    "any address",
+                    filter.destination_address.unwrap_or_default(),
+                ),
+                FormField::text(
+                    "protocol",
+                    "Protocol",
+                    "Only flows carried over this protocol",
+                    "any protocol",
+                    filter.protocol.unwrap_or_default(),
+                ),
+                FormField::options(
+                    "class",
+                    "Traffic",
+                    "Which sort of traffic the flow carried",
+                    TRAFFIC_CLASSES,
+                    filter
+                        .traffic_class
+                        .map_or_else(|| ANY.to_owned(), |class| class.label().to_owned()),
+                ),
+                FormField::text(
+                    "source-port",
+                    "From port",
+                    "Only flows that started at this port",
+                    "any port",
+                    filter
+                        .source_port
+                        .map_or_else(String::new, |value| value.to_string()),
+                ),
+                FormField::text(
+                    "destination-port",
+                    "To port",
+                    "Only flows that ended at this port",
+                    "any port",
+                    filter
+                        .destination_port
+                        .map_or_else(String::new, |value| value.to_string()),
+                ),
+                FormField::text(
+                    "min-bytes",
+                    "At least",
+                    "Only flows that carried at least this many bytes",
+                    "any size",
+                    filter
+                        .minimum_bytes
+                        .map_or_else(String::new, |value| value.to_string()),
+                ),
+            ],
+        );
+        Vec::new()
+    }
+
+    fn accept_flow_window_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let (window, mut filter) = match flow_window_from_form(state, self.now) {
+            Ok(value) => value,
+            Err(error) => return self.set_form_error(error),
+        };
+        if let Err(error) = self.resolve_flow_filter_labels(&mut filter) {
+            return self.set_form_error(error);
+        }
+        self.overlays.pop();
+        self.cancel_flow_aggregation();
+        self.flow_aggregation_generation = self.flow_aggregation_generation.saturating_add(1);
+        self.flow_filter = filter;
+        self.flow_snapshot = None;
+        self.flow_generation.begin();
+        self.start_admin_resource_refresh(vec![AdminRefreshResource::FlowLogs(window)])
     }
 
     /// The explorer asks the server one question, so the form asks for the two
@@ -7548,33 +7789,6 @@ impl App {
                 }
             };
         }
-        if state.action_id == ActionId::ActivityFlowsSelectWindow {
-            return match parse_flow_window_form(&state.input, self.now) {
-                Ok((window, filter)) => {
-                    let mut filter = filter;
-                    if let Err(error) = self.resolve_flow_filter_labels(&mut filter) {
-                        if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                            current.error = Some(error);
-                        }
-                        return Vec::new();
-                    }
-                    self.overlays.pop();
-                    self.cancel_flow_aggregation();
-                    self.flow_aggregation_generation =
-                        self.flow_aggregation_generation.saturating_add(1);
-                    self.flow_filter = filter;
-                    self.flow_snapshot = None;
-                    self.flow_generation.begin();
-                    self.start_admin_resource_refresh(vec![AdminRefreshResource::FlowLogs(window)])
-                }
-                Err(error) => {
-                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                        current.error = Some(error);
-                    }
-                    Vec::new()
-                }
-            };
-        }
         if matches!(
             state.action_id,
             ActionId::AdminWebhookCreate
@@ -7583,17 +7797,6 @@ impl App {
                 | ActionId::AdminNetworkLogsSettings
         ) {
             return self.accept_phase_eight_form(state);
-        }
-        if matches!(
-            state.action_id,
-            ActionId::SavedViewCreate
-                | ActionId::SavedViewReplace
-                | ActionId::SavedViewRename
-                | ActionId::SavedViewDelete
-                | ActionId::SavedViewApply
-                | ActionId::CollectionExport
-        ) {
-            return self.accept_phase_eight_local_form(state);
         }
         if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
             current.error = Some("this form is not a local operator form".to_owned());
@@ -7698,10 +7901,10 @@ impl App {
         }
     }
 
-    fn accept_phase_eight_local_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+    fn accept_phase_eight_local_form(&mut self, state: &FormState) -> Vec<Effect> {
         let result = match state.action_id {
             ActionId::SavedViewCreate | ActionId::SavedViewReplace => {
-                parse_saved_view_form(&state.input).map(|view| {
+                saved_view_from_form(state).map(|view| {
                     if state.action_id == ActionId::SavedViewCreate {
                         OperationalMutation::SavedView(SavedViewMutation::Create(view))
                     } else {
@@ -7713,15 +7916,22 @@ impl App {
                 })
             }
             ActionId::SavedViewRename => {
-                parse_rename_form(&state.input).map(|(name, replacement)| {
-                    OperationalMutation::SavedView(SavedViewMutation::Rename { name, replacement })
+                let name = required_form_value(state, "name", "a view to rename");
+                let replacement = required_form_value(state, "new", "a new name");
+                name.and_then(|name| {
+                    replacement.map(|replacement| {
+                        OperationalMutation::SavedView(SavedViewMutation::Rename {
+                            name,
+                            replacement,
+                        })
+                    })
                 })
             }
-            ActionId::SavedViewDelete => parse_name_form(&state.input)
+            ActionId::SavedViewDelete => required_form_value(state, "name", "a view to delete")
                 .map(|name| OperationalMutation::SavedView(SavedViewMutation::Delete { name })),
-            ActionId::SavedViewApply => parse_name_form(&state.input)
+            ActionId::SavedViewApply => required_form_value(state, "name", "a view to open")
                 .map(|name| OperationalMutation::SavedView(SavedViewMutation::Apply { name })),
-            ActionId::CollectionExport => parse_export_form(&state.input),
+            ActionId::CollectionExport => export_from_form(state),
             _ => Err("this is not a local Phase 8 form".to_owned()),
         };
         match result {
@@ -7729,12 +7939,7 @@ impl App {
                 self.overlays.pop();
                 self.open_operational_confirmation(state.action_id, mutation)
             }
-            Err(error) => {
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error);
-                }
-                Vec::new()
-            }
+            Err(error) => self.set_form_error(error),
         }
     }
 
@@ -12090,6 +12295,15 @@ impl App {
             ActionId::LocalRoutesEditAdvertisements => {
                 return self.accept_advertisement_form(&state);
             }
+            ActionId::SavedViewCreate
+            | ActionId::SavedViewReplace
+            | ActionId::SavedViewRename
+            | ActionId::SavedViewDelete
+            | ActionId::SavedViewApply
+            | ActionId::CollectionExport => {
+                return self.accept_phase_eight_local_form(&state);
+            }
+            ActionId::ActivityFlowsSelectWindow => return self.accept_flow_window_form(&state),
             ActionId::AdminPolicyPreview => return self.accept_policy_preview_form(&state),
             ActionId::AccessExplorerAsk => return self.accept_access_explorer_form(&state),
             ActionId::AuditFilterTime
@@ -15259,96 +15473,63 @@ fn parse_network_log_setting(input: &str) -> Result<OperationalMutation, String>
     Ok(OperationalMutation::NetworkLogSetting { enabled })
 }
 
-fn parse_flow_window_form(input: &str, now: Timestamp) -> Result<(FlowWindow, FlowFilter), String> {
-    let fields = parse_operational_fields(input)?;
-    let allowed = [
-        "start",
-        "end",
-        "reporting",
-        "reporting-name",
-        "source",
-        "source-name",
-        "destination",
-        "destination-name",
-        "protocol",
-        "source-address",
-        "destination-address",
-        "class",
-        "source-port",
-        "destination-port",
-        "min-bytes",
-    ];
-    if fields
-        .keys()
-        .any(|field| !allowed.contains(&field.as_str()))
-    {
-        return Err("flow form contains an unsupported field".to_owned());
-    }
+/// The traffic classes a flow can be narrowed to, offered rather than typed.
+const TRAFFIC_CLASSES: &[&str] = &[ANY, "virtual", "subnet", "exit", "physical"];
+
+fn flow_window_from_form(
+    state: &FormState,
+    now: Timestamp,
+) -> Result<(FlowWindow, FlowFilter), String> {
     let now = i64::try_from(now)
         .ok()
         .and_then(|value| time::OffsetDateTime::from_unix_timestamp(value).ok())
         .ok_or_else(|| "flow clock is outside the supported timestamp range".to_owned())?;
-    let start = required_operational_field(&fields, "start")?;
-    let end = required_operational_field(&fields, "end")?;
-    let window = FlowWindow::from_rfc3339(&start, &end, now).map_err(|error| error.to_string())?;
-    let traffic_class = fields
-        .get("class")
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| match value.as_str() {
-            "virtual" => Ok(crate::domain::flow::TrafficClass::Virtual),
-            "subnet" => Ok(crate::domain::flow::TrafficClass::Subnet),
-            "exit" => Ok(crate::domain::flow::TrafficClass::Exit),
-            "physical" => Ok(crate::domain::flow::TrafficClass::Physical),
-            _ => Err("flow traffic class must be virtual, subnet, exit, or physical".to_owned()),
-        })
-        .transpose()?;
+    let window = FlowWindow::from_rfc3339(state.value("start"), state.value("end"), now)
+        .map_err(|error| error.to_string())?;
+    let traffic_class = match state.value("class") {
+        "virtual" => Some(crate::domain::flow::TrafficClass::Virtual),
+        "subnet" => Some(crate::domain::flow::TrafficClass::Subnet),
+        "exit" => Some(crate::domain::flow::TrafficClass::Exit),
+        "physical" => Some(crate::domain::flow::TrafficClass::Physical),
+        _ => None,
+    };
     let filter = FlowFilter {
-        reporting_node_id: optional_operational_field(&fields, "reporting"),
-        reporting_node_label: optional_operational_field(&fields, "reporting-name"),
-        source_node_id: optional_operational_field(&fields, "source"),
-        source_node_label: optional_operational_field(&fields, "source-name"),
-        destination_node_id: optional_operational_field(&fields, "destination"),
-        destination_node_label: optional_operational_field(&fields, "destination-name"),
-        protocol: optional_operational_field(&fields, "protocol"),
-        source_address: optional_operational_field(&fields, "source-address"),
-        destination_address: optional_operational_field(&fields, "destination-address"),
+        reporting_node_id: optional_form_text(state, "reporting"),
+        reporting_node_label: None,
+        source_node_id: optional_form_text(state, "source"),
+        source_node_label: None,
+        destination_node_id: optional_form_text(state, "destination"),
+        destination_node_label: None,
+        protocol: optional_form_text(state, "protocol"),
+        source_address: optional_form_text(state, "source-address"),
+        destination_address: optional_form_text(state, "destination-address"),
         traffic_class,
-        source_port: parse_optional_flow_port(&fields, "source-port")?,
-        destination_port: parse_optional_flow_port(&fields, "destination-port")?,
-        minimum_bytes: parse_optional_flow_u64(&fields, "min-bytes")?,
+        source_port: optional_form_number(state, "source-port", "port")?,
+        destination_port: optional_form_number(state, "destination-port", "port")?,
+        minimum_bytes: optional_form_number(state, "min-bytes", "byte count")?,
     };
     filter.validate().map_err(|error| error.to_string())?;
     Ok((window, filter))
 }
 
-fn parse_optional_flow_port(
-    fields: &BTreeMap<String, String>,
-    name: &str,
-) -> Result<Option<u16>, String> {
-    fields
-        .get(name)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            value
-                .parse::<u16>()
-                .map_err(|_| format!("{name} must be an integer port"))
-        })
-        .transpose()
+fn optional_form_text(state: &FormState, key: &str) -> Option<String> {
+    let value = state.value(key).trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
-fn parse_optional_flow_u64(
-    fields: &BTreeMap<String, String>,
-    name: &str,
-) -> Result<Option<u64>, String> {
-    fields
-        .get(name)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            value
-                .parse::<u64>()
-                .map_err(|_| format!("{name} must be a non-negative integer"))
-        })
-        .transpose()
+fn optional_form_number<T: std::str::FromStr>(
+    state: &FormState,
+    key: &str,
+    what: &str,
+) -> Result<Option<T>, String> {
+    let value = state.value(key).trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value
+        .parse::<T>()
+        .map(Some)
+        .map_err(|_| format!("{value} is not a {what}"))
 }
 
 fn access_question_from_form(state: &FormState) -> Result<AccessQuestion, String> {
@@ -15375,45 +15556,64 @@ fn access_question_from_form(state: &FormState) -> Result<AccessQuestion, String
     })
 }
 
-fn parse_saved_view_form(input: &str) -> Result<SavedView, String> {
-    let fields = parse_operational_fields(input)?;
-    ensure_operational_fields(
-        &fields,
-        &["name", "route", "wide", "columns", "filter", "sort"],
-    )?;
-    let name = required_operational_field(&fields, "name")?;
-    let route = required_operational_field(&fields, "route")?;
-    let wide_columns = fields
-        .get("wide")
-        .map_or(Ok(false), |value| match value.as_str() {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            _ => Err("wide must be true or false".to_owned()),
-        })?;
-    let filters = match fields.get("filter") {
-        Some(value) => value
-            .split("||")
-            .filter(|value| !value.trim().is_empty())
-            .map(parse_saved_filter)
-            .collect::<Result<Vec<_>, _>>()?,
-        None => Vec::new(),
-    };
-    let sort = match fields.get("sort") {
-        Some(value) => value
-            .split(',')
-            .filter(|value| !value.trim().is_empty())
-            .map(parse_saved_sort)
-            .collect::<Result<Vec<_>, _>>()?,
-        None => Vec::new(),
-    };
+/// A field that has to be answered, reported by what it is for rather than by
+/// the name of the key behind it.
+fn required_form_value(state: &FormState, key: &str, what: &str) -> Result<String, String> {
+    let value = state.value(key).trim();
+    if value.is_empty() {
+        Err(format!("choose {what}"))
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+fn saved_view_from_form(state: &FormState) -> Result<SavedView, String> {
+    let name = required_form_value(state, "name", "a name for this view")?;
+    let route = state
+        .subject
+        .iter()
+        .find(|(label, _)| *label == "route")
+        .map(|(_, value)| value.clone())
+        .ok_or_else(|| "the view has no route to save".to_owned())?;
+    let filter = state.value("filter").trim();
+    let filters = filter
+        .split("||")
+        .filter(|value| !value.trim().is_empty())
+        .map(parse_saved_filter)
+        .collect::<Result<Vec<_>, _>>()?;
+    let sort = state
+        .entries("sort")
+        .iter()
+        .map(String::as_str)
+        .map(parse_saved_sort)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(SavedView {
         name,
         route,
-        wide_columns,
-        columns: csv_field(&fields, "columns"),
+        wide_columns: state.is_yes("wide"),
+        columns: state.entries("columns"),
         filters,
         sort,
     })
+}
+
+fn export_from_form(state: &FormState) -> Result<OperationalMutation, String> {
+    let collection = match state.value("collection") {
+        "devices" => crate::domain::export::ExportCollection::Devices,
+        "users" => crate::domain::export::ExportCollection::Users,
+        "routes" => crate::domain::export::ExportCollection::Routes,
+        "dns" => crate::domain::export::ExportCollection::Dns,
+        "credentials_metadata" => crate::domain::export::ExportCollection::CredentialMetadata,
+        "audit" => crate::domain::export::ExportCollection::Audit,
+        "health_findings" => crate::domain::export::ExportCollection::HealthFindings,
+        "flow_logs" => crate::domain::export::ExportCollection::FlowLogs,
+        value => return Err(format!("unsupported export collection {value}")),
+    };
+    Ok(OperationalMutation::Export(ExportRequest {
+        collection,
+        format: state.value("format").to_owned(),
+        path: PathBuf::from(required_form_value(state, "path", "where to write the file")?),
+    }))
 }
 
 fn parse_saved_filter(value: &str) -> Result<FilterClause, String> {
@@ -15484,47 +15684,6 @@ fn parse_saved_sort(value: &str) -> Result<SortTerm, String> {
             SavedSortDirection::Ascending
         },
     })
-}
-
-fn parse_name_form(input: &str) -> Result<String, String> {
-    let fields = parse_operational_fields(input)?;
-    ensure_operational_fields(&fields, &["name"])?;
-    required_operational_field(&fields, "name")
-}
-
-fn parse_rename_form(input: &str) -> Result<(String, String), String> {
-    let fields = parse_operational_fields(input)?;
-    ensure_operational_fields(&fields, &["name", "new"])?;
-    Ok((
-        required_operational_field(&fields, "name")?,
-        required_operational_field(&fields, "new")?,
-    ))
-}
-
-fn parse_export_form(input: &str) -> Result<OperationalMutation, String> {
-    let fields = parse_operational_fields(input)?;
-    ensure_operational_fields(&fields, &["format", "path", "collection"])?;
-    let format = required_operational_field(&fields, "format")?.to_ascii_lowercase();
-    if format != "json" && format != "csv" {
-        return Err("export format must be json or csv".to_owned());
-    }
-    let collection = match required_operational_field(&fields, "collection")?.as_str() {
-        "devices" => crate::domain::export::ExportCollection::Devices,
-        "users" => crate::domain::export::ExportCollection::Users,
-        "routes" => crate::domain::export::ExportCollection::Routes,
-        "dns" => crate::domain::export::ExportCollection::Dns,
-        "credentials_metadata" => crate::domain::export::ExportCollection::CredentialMetadata,
-        "audit" => crate::domain::export::ExportCollection::Audit,
-        "health_findings" => crate::domain::export::ExportCollection::HealthFindings,
-        "flow_logs" => crate::domain::export::ExportCollection::FlowLogs,
-        value => return Err(format!("unsupported export collection {value}")),
-    };
-    let path = PathBuf::from(required_operational_field(&fields, "path")?);
-    Ok(OperationalMutation::Export(ExportRequest {
-        collection,
-        format,
-        path,
-    }))
 }
 
 fn saved_filter_to_term(filter: &FilterClause) -> Result<FilterTerm, String> {
@@ -16917,6 +17076,18 @@ fn parse_auth_key_bool(value: &str, field: &str) -> Result<bool, String> {
 
 /// The value a filter field holds when it is not narrowing anything.
 const ANY: &str = "any";
+
+/// The collections an export can be asked for, offered rather than spelled out.
+const EXPORT_COLLECTIONS: &[&str] = &[
+    "devices",
+    "users",
+    "routes",
+    "dns",
+    "credentials_metadata",
+    "audit",
+    "health_findings",
+    "flow_logs",
+];
 
 /// The target kinds an audit entry can name, offered rather than spelled out.
 const AUDIT_TARGET_KINDS: &[&str] = &[
