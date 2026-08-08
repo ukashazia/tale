@@ -504,13 +504,18 @@ impl Default for SortSpec {
     }
 }
 
-pub fn compare_devices(left: &Device, right: &Device, sort: SortSpec) -> Ordering {
-    compare_devices_by_specs(left, right, &[sort])
+pub fn compare_devices(left: &Device, right: &Device, sort: SortSpec, now: Timestamp) -> Ordering {
+    compare_devices_by_specs(left, right, &[sort], now)
 }
 
-pub fn compare_devices_by_specs(left: &Device, right: &Device, sorts: &[SortSpec]) -> Ordering {
+pub fn compare_devices_by_specs(
+    left: &Device,
+    right: &Device,
+    sorts: &[SortSpec],
+    now: Timestamp,
+) -> Ordering {
     for sort in sorts {
-        let primary = compare_device_field(left, right, sort.field);
+        let primary = compare_device_field(left, right, sort.field, now);
         let directed = match sort.direction {
             SortDirection::Ascending => primary,
             SortDirection::Descending => primary.reverse(),
@@ -522,7 +527,12 @@ pub fn compare_devices_by_specs(left: &Device, right: &Device, sorts: &[SortSpec
     left.id.cmp(&right.id)
 }
 
-fn compare_device_field(left: &Device, right: &Device, field: SortField) -> Ordering {
+fn compare_device_field(
+    left: &Device,
+    right: &Device,
+    field: SortField,
+    now: Timestamp,
+) -> Ordering {
     match field {
         SortField::Name => left
             .display_name
@@ -535,7 +545,7 @@ fn compare_device_field(left: &Device, right: &Device, field: SortField) -> Orde
         ),
         SortField::Os => left.os.label().cmp(right.os.label()),
         SortField::Path => left.path.label().cmp(right.path.label()),
-        SortField::LastSeen => compare_optional(left.last_seen, right.last_seen),
+        SortField::LastSeen => compare_optional(left.age_at(now), right.age_at(now)),
         SortField::Rx => compare_optional(left.rx_bytes, right.rx_bytes),
         SortField::Tx => compare_optional(left.tx_bytes, right.tx_bytes),
         SortField::DeviceId => left.id.cmp(&right.id),

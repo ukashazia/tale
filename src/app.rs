@@ -1471,7 +1471,6 @@ pub struct App {
     pub system_policy: Vec<SystemPolicyEntry>,
     pub system_policy_failure: Option<LocalFailure>,
     pub local_diagnostics: BTreeMap<TaskId, DiagnosticState>,
-    pub local_self_id: Option<DeviceId>,
     pub tasks: TaskStore,
     pub notifications: Vec<Notification>,
     pub resolved_config: ResolvedConfig,
@@ -1636,7 +1635,6 @@ impl App {
             system_policy: Vec::new(),
             system_policy_failure: None,
             local_diagnostics: BTreeMap::new(),
-            local_self_id: None,
             tasks: TaskStore::new(),
             notifications: Vec::new(),
             resolved_config: config,
@@ -13697,7 +13695,6 @@ impl App {
                     self.local_daemon_state = LocalDaemonState::Live;
                 }
                 self.local_state = snapshot.backend_state.clone();
-                self.apply_local_snapshot(&snapshot);
                 self.services_snapshot.command_version = Some(snapshot.client_version.clone());
                 self.services_snapshot.certificate_domains.succeed(
                     self.services_snapshot.generation,
@@ -14323,16 +14320,10 @@ impl App {
         };
     }
 
-    fn apply_local_snapshot(&mut self, snapshot: &LocalSnapshot) {
-        self.local_self_id = Some(snapshot.self_node.id.clone());
-        self.refresh_device_view();
-    }
-
     fn apply_fresh_snapshot(&mut self, snapshot: LocalSnapshot) {
         let generation = self.local_resource.generation.saturating_add(1);
         self.local_resource.generation = generation;
         self.local_state = snapshot.backend_state.clone();
-        self.apply_local_snapshot(&snapshot);
         let _ = self.local_resource.succeed(generation, snapshot);
         self.refresh_device_view();
     }
@@ -14343,7 +14334,6 @@ impl App {
         self.local_resource.generation = self.local_resource.generation.saturating_add(1);
         self.views.devices.selected_id = None;
         self.views.devices.scroll = 0;
-        self.local_self_id = None;
         self.local_capabilities = LocalCapabilities::default();
         self.services_snapshot = LocalServicesSnapshot::new();
         self.alpha_local_features = false;
@@ -14483,10 +14473,9 @@ impl App {
             let left_device = devices.get(*left);
             let right_device = devices.get(*right);
             match (left_device, right_device) {
-                (Some(left), Some(right)) if self.source_mode == SourceMode::Local => {
-                    self.compare_local_devices(left, right)
+                (Some(left), Some(right)) => {
+                    compare_devices_by_specs(left, right, &sort_terms, self.now)
                 }
-                (Some(left), Some(right)) => compare_devices_by_specs(left, right, &sort_terms),
                 _ => left.cmp(right),
             }
         });
@@ -14507,36 +14496,6 @@ impl App {
         })
     }
 
-    fn compare_local_devices(&self, left: &Device, right: &Device) -> std::cmp::Ordering {
-        let sort_terms = self.device_sort_terms();
-        if sort_terms.len() == 1 && sort_terms[0] == SortSpec::default() {
-            let left_self = self.local_self_id.as_ref().is_some_and(|id| id == &left.id);
-            let right_self = self
-                .local_self_id
-                .as_ref()
-                .is_some_and(|id| id == &right.id);
-            return right_self
-                .cmp(&left_self)
-                .then_with(|| {
-                    right
-                        .liveness
-                        .eq(&crate::domain::device::Liveness::Online)
-                        .cmp(&left.liveness.eq(&crate::domain::device::Liveness::Online))
-                })
-                .then_with(|| {
-                    self.local_active(&right.id)
-                        .cmp(&self.local_active(&left.id))
-                })
-                .then_with(|| {
-                    left.display_name
-                        .to_lowercase()
-                        .cmp(&right.display_name.to_lowercase())
-                })
-                .then_with(|| left.id.cmp(&right.id));
-        }
-        compare_devices_by_specs(left, right, &sort_terms)
-    }
-
     fn device_sort_terms(&self) -> Vec<SortSpec> {
         if self.views.devices.sort_terms.is_empty()
             || self.views.devices.sort_terms.first() != Some(&self.views.devices.sort)
@@ -14545,19 +14504,6 @@ impl App {
         } else {
             self.views.devices.sort_terms.clone()
         }
-    }
-
-    fn local_active(&self, id: &DeviceId) -> bool {
-        self.selected_local_by_id(id)
-            .is_some_and(|device| device.active)
-    }
-
-    fn selected_local_by_id(&self, id: &DeviceId) -> Option<&LocalDevice> {
-        let snapshot = self.local_resource.snapshot.as_ref()?;
-        if &snapshot.self_node.id == id {
-            return Some(&snapshot.self_node);
-        }
-        snapshot.peers.iter().find(|device| &device.id == id)
     }
 
     fn move_selection(&mut self, offset: isize) {

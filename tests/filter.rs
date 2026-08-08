@@ -134,11 +134,11 @@ fn stable_sort_has_id_tie_breaking_and_missing_values_follow_direction() {
         direction: SortDirection::Ascending,
     };
     assert_eq!(
-        compare_devices(&devices[0], &devices[1], asc),
+        compare_devices(&devices[0], &devices[1], asc, mock::MOCK_NOW),
         Ordering::Greater
     );
     assert_eq!(
-        compare_devices(&devices[1], &devices[0], asc),
+        compare_devices(&devices[1], &devices[0], asc, mock::MOCK_NOW),
         Ordering::Less
     );
 
@@ -147,8 +147,43 @@ fn stable_sort_has_id_tie_breaking_and_missing_values_follow_direction() {
         direction: SortDirection::Descending,
     };
     assert_eq!(
-        compare_devices(&devices[0], &devices[1], desc),
+        compare_devices(&devices[0], &devices[1], desc, mock::MOCK_NOW),
         Ordering::Greater
+    );
+}
+
+#[test]
+fn last_seen_sort_orders_elapsed_age_in_the_requested_direction() {
+    let now = mock::MOCK_NOW;
+    let mut devices = mock::devices().into_iter().take(3).collect::<Vec<_>>();
+    for (device, age) in devices.iter_mut().zip([1, 60, 3_600]) {
+        device.last_seen = Some(now.saturating_sub(age));
+    }
+
+    let ascending = SortSpec {
+        field: SortField::LastSeen,
+        direction: SortDirection::Ascending,
+    };
+    devices.sort_by(|left, right| compare_devices(left, right, ascending, now));
+    assert_eq!(
+        devices
+            .iter()
+            .filter_map(|device| device.age_at(now))
+            .collect::<Vec<_>>(),
+        vec![1, 60, 3_600]
+    );
+
+    let descending = SortSpec {
+        field: SortField::LastSeen,
+        direction: SortDirection::Descending,
+    };
+    devices.sort_by(|left, right| compare_devices(left, right, descending, now));
+    assert_eq!(
+        devices
+            .iter()
+            .filter_map(|device| device.age_at(now))
+            .collect::<Vec<_>>(),
+        vec![3_600, 60, 1]
     );
 }
 

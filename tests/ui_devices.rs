@@ -65,13 +65,22 @@ fn local_devices_render_wide_fields_and_support_phase_two_filters() {
         }
         app.views.devices.applied_filter = filter::FilterExpression::empty();
         assert_eq!(app.visible_indices().len(), 4);
-        assert_eq!(
-            app.visible_indices()
-                .first()
-                .and_then(|index| app.devices_resource.snapshot.get(*index))
-                .map(|device| device.display_name.as_str()),
-            Some("observer")
-        );
+        for (device, age) in app
+            .devices_resource
+            .snapshot
+            .iter_mut()
+            .zip([1, 60, 3_600, 86_400])
+        {
+            device.last_seen = Some(app.now.saturating_sub(age));
+        }
+        app.devices_resource.generation = app.devices_resource.generation.saturating_add(1);
+        let ages = app
+            .visible_indices()
+            .iter()
+            .filter_map(|index| app.devices_resource.snapshot.get(*index))
+            .filter_map(|device| device.age_at(app.now))
+            .collect::<Vec<_>>();
+        assert_eq!(ages, vec![86_400, 3_600, 60, 1]);
         app.views.devices.sort = SortSpec {
             field: SortField::Rx,
             direction: SortDirection::Descending,
