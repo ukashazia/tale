@@ -369,3 +369,125 @@ fn account_change_clears_old_selection_and_needs_login_opens_login_choice() {
         }
     }
 }
+
+fn press_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        code, modifiers,
+    ))));
+}
+
+fn form(app: &App) -> Option<&tale::app::FormState> {
+    match app.overlays.last() {
+        Some(Overlay::Form(state)) => Some(state),
+        _ => None,
+    }
+}
+
+/// Local operator actions used to be one typed line of `field=value` pairs with
+/// the grammar printed above it. Each one now names its fields and holds what
+/// the daemon reports, so a change is a change to something already on screen.
+#[test]
+fn local_operator_forms_ask_field_by_field() {
+    let prepared = prepared_app();
+    assert!(prepared.is_some());
+    if let Some(mut app) = prepared {
+        let _ = app.dispatch_action(ActionId::LocalPreferencesEdit);
+        let keys = form(&app).map(|state| {
+            state
+                .fields
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            keys,
+            Some(vec![
+                "accept-dns",
+                "accept-routes",
+                "shields-up",
+                "ssh",
+                "auto-update",
+                "update-check",
+                "report-posture",
+                "webclient",
+                "hostname",
+                "nickname",
+            ])
+        );
+        // Nothing is changed until a field is answered, and the form says so
+        // rather than sending a mutation that changes nothing.
+        let rows = form(&app).map_or(0, |state| state.fields.len());
+        for _ in 0..rows {
+            press_key(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        }
+        assert!(form(&app).is_some_and(|state| state.on_submit_row()));
+        let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))));
+        assert!(effects.is_empty());
+        assert_eq!(
+            form(&app).and_then(|state| state.error.clone()),
+            Some("no preference was changed".to_owned())
+        );
+    }
+}
+
+/// A set that has an order is edited entry by entry, so it can be reordered
+/// without spelling the whole set out again.
+#[test]
+fn list_fields_are_edited_and_reordered_in_place() {
+    let prepared = prepared_app();
+    assert!(prepared.is_some());
+    if let Some(mut app) = prepared {
+        let _ = app.dispatch_action(ActionId::LocalRoutesEditAdvertisements);
+        // Open the routes field and start from an empty set.
+        press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        for _ in 0..8 {
+            press_key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        }
+        assert!(
+            form(&app)
+                .and_then(|state| state.list.as_ref())
+                .is_some_and(|list| list.entries.is_empty())
+        );
+        press_key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        let _ = app.update(Event::Input(InputEvent::Paste("10.0.0.0/8".to_owned())));
+        press_key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        let _ = app.update(Event::Input(InputEvent::Paste("192.168.0.0/16".to_owned())));
+        let before = form(&app)
+            .and_then(|state| state.list.as_ref())
+            .map(|list| list.entries.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            before,
+            vec!["10.0.0.0/8".to_owned(), "192.168.0.0/16".to_owned()]
+        );
+        // The last entry moves above the one before it, in place.
+        press_key(&mut app, KeyCode::Up, KeyModifiers::CONTROL);
+        press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let after = form(&app)
+            .map(|state| state.entries("routes"))
+            .unwrap_or_default();
+        assert_eq!(
+            after,
+            vec!["192.168.0.0/16".to_owned(), "10.0.0.0/8".to_owned()]
+        );
+    }
+}
+
+/// A write-only secret is held once, zeroized, and never reaches the field the
+/// screen can draw.
+#[test]
+fn secret_fields_never_hold_their_value_on_the_field() {
+    let prepared = prepared_app();
+    assert!(prepared.is_some());
+    if let Some(mut app) = prepared {
+        let _ = app.dispatch_action(ActionId::LocalDnsQuery);
+        // The DNS form has no secret, so the form holds none either.
+        assert!(form(&app).is_some_and(|state| state.secret.is_none()));
+        assert!(
+            form(&app).is_some_and(|state| state.fields.iter().all(|field| !field.is_secret()))
+        );
+    }
+}

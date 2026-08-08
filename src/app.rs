@@ -445,150 +445,6 @@ struct AdminBatchInFlight {
     pending_requests: Vec<AdminMutationRequest>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OperatorFormState {
-    pub action_id: ActionId,
-    pub input: String,
-    pub error: Option<String>,
-    pub ordered_items: Option<Vec<String>>,
-    pub ordered_selected: usize,
-    pub ordered_editor: String,
-    pub ordered_prefix: Option<String>,
-    pub secret_input: Option<SecretInput>,
-    pub secret_editing: bool,
-}
-
-impl OperatorFormState {
-    pub fn new(action_id: ActionId, input: String, error: Option<String>) -> Self {
-        Self {
-            action_id,
-            input,
-            error,
-            ordered_items: None,
-            ordered_selected: 0,
-            ordered_editor: String::new(),
-            ordered_prefix: None,
-            secret_input: None,
-            secret_editing: false,
-        }
-    }
-
-    pub fn ordered(
-        action_id: ActionId,
-        items: Vec<String>,
-        prefix: Option<String>,
-        error: Option<String>,
-    ) -> Self {
-        let editor = items.first().cloned().unwrap_or_default();
-        let input = format_ordered_input(prefix.as_deref(), &items);
-        Self {
-            action_id,
-            input,
-            error,
-            ordered_items: Some(items),
-            ordered_selected: 0,
-            ordered_editor: editor,
-            ordered_prefix: prefix,
-            secret_input: None,
-            secret_editing: false,
-        }
-    }
-
-    fn sync_ordered_input(&mut self) {
-        let Some(items) = self.ordered_items.as_mut() else {
-            return;
-        };
-        if items.is_empty() {
-            if !self.ordered_editor.is_empty() {
-                items.push(self.ordered_editor.clone());
-                self.ordered_selected = 0;
-            }
-        } else if let Some(item) = items.get_mut(self.ordered_selected) {
-            *item = self.ordered_editor.clone();
-        }
-        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
-    }
-
-    fn select_ordered(&mut self, offset: isize) {
-        self.sync_ordered_input();
-        let Some(items) = self.ordered_items.as_ref() else {
-            return;
-        };
-        if items.is_empty() {
-            return;
-        }
-        self.ordered_selected = move_bounded_index(self.ordered_selected, items.len(), offset);
-        self.ordered_editor = items
-            .get(self.ordered_selected)
-            .cloned()
-            .unwrap_or_default();
-    }
-
-    fn move_ordered_item(&mut self, offset: isize) {
-        self.sync_ordered_input();
-        let Some(items) = self.ordered_items.as_mut() else {
-            return;
-        };
-        if items.is_empty() {
-            return;
-        }
-        let target = if offset.is_negative() {
-            self.ordered_selected.saturating_sub(offset.unsigned_abs())
-        } else {
-            self.ordered_selected.saturating_add(offset as usize)
-        };
-        if target >= items.len() || target == self.ordered_selected {
-            return;
-        }
-        items.swap(self.ordered_selected, target);
-        self.ordered_selected = target;
-        self.ordered_editor = items
-            .get(self.ordered_selected)
-            .cloned()
-            .unwrap_or_default();
-        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
-    }
-
-    fn insert_ordered_item(&mut self) {
-        self.sync_ordered_input();
-        let Some(items) = self.ordered_items.as_mut() else {
-            return;
-        };
-        let position = self.ordered_selected.saturating_add(1).min(items.len());
-        items.insert(position, String::new());
-        self.ordered_selected = position;
-        self.ordered_editor.clear();
-        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
-    }
-
-    fn remove_ordered_item(&mut self) {
-        self.sync_ordered_input();
-        let Some(items) = self.ordered_items.as_mut() else {
-            return;
-        };
-        if items.is_empty() {
-            return;
-        }
-        items.remove(self.ordered_selected.min(items.len().saturating_sub(1)));
-        self.ordered_selected = self.ordered_selected.min(items.len().saturating_sub(1));
-        self.ordered_editor = items
-            .get(self.ordered_selected)
-            .cloned()
-            .unwrap_or_default();
-        self.input = format_ordered_input(self.ordered_prefix.as_deref(), items);
-    }
-
-    fn append_ordered_text(&mut self, text: &str) {
-        if self.ordered_items.is_none() {
-            self.input.push_str(text);
-            return;
-        }
-        self.ordered_editor.push_str(text);
-        self.error = None;
-        self.sync_ordered_input();
-    }
-}
-
 /// One option of a `Choice` field. The value is what the action reads; the
 /// label is what the user picks between, so an opaque identifier can still be
 /// chosen by the name the rest of the screen calls it.
@@ -629,6 +485,9 @@ pub enum FieldKind {
     /// An ordered set of values, edited one entry at a time inside the form.
     /// The field value is the entries joined by commas.
     List { hint: &'static str },
+    /// A write-only secret. The typed characters never reach the field value;
+    /// they are held once, zeroized, on the form itself.
+    Secret,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -698,6 +557,17 @@ impl FormField {
         )
     }
 
+    pub fn secret(key: &'static str, label: &'static str, help: &'static str) -> Self {
+        Self {
+            key,
+            label,
+            help,
+            kind: FieldKind::Secret,
+            value: String::new(),
+            locked: None,
+        }
+    }
+
     pub fn toggle(key: &'static str, label: &'static str, help: &'static str, value: bool) -> Self {
         Self {
             key,
@@ -764,7 +634,7 @@ impl FormField {
                 options.iter().map(|option| option.value.as_str()).collect()
             }
             FieldKind::Toggle => vec!["no", "yes"],
-            FieldKind::Text { .. } | FieldKind::List { .. } => return,
+            FieldKind::Text { .. } | FieldKind::List { .. } | FieldKind::Secret => return,
         };
         let Some(length) = std::num::NonZeroUsize::new(options.len()) else {
             return;
@@ -788,6 +658,10 @@ impl FormField {
 
     const fn is_list(&self) -> bool {
         matches!(self.kind, FieldKind::List { .. })
+    }
+
+    pub const fn is_secret(&self) -> bool {
+        matches!(self.kind, FieldKind::Secret)
     }
 }
 
@@ -904,6 +778,8 @@ pub struct FormState {
     pub draft: Option<String>,
     /// The open list field's entries, while one is open.
     pub list: Option<ListEditor>,
+    /// The write-only secret a `Secret` field has been given, if any.
+    pub secret: Option<SecretInput>,
     pub error: Option<String>,
 }
 
@@ -938,6 +814,19 @@ impl FormState {
         };
         self.draft = Some(field.value.clone());
         self.list = field.is_list().then(|| ListEditor::new(field));
+        if field.is_secret() {
+            // A secret is written once: opening the field starts it over rather
+            // than editing something the form cannot show.
+            self.secret = Some(SecretInput::new());
+        }
+    }
+
+    /// How many characters the secret holds, so it can be shown as its length
+    /// without ever showing its value.
+    pub fn secret_length(&self) -> usize {
+        self.secret
+            .as_ref()
+            .map_or(0, |secret| secret.as_str().chars().count())
     }
 
     fn commit_edit(&mut self) {
@@ -1125,7 +1014,6 @@ pub enum Overlay {
     QuitConfirmation,
     TaskInspector(TaskId),
     Confirmation(Box<ConfirmationState>),
-    OperatorForm(OperatorFormState),
     Form(FormState),
     PolicyEditor,
     SecretResult,
@@ -2813,16 +2701,6 @@ impl App {
             return Vec::new();
         };
         match overlay {
-            Overlay::OperatorForm(state) => {
-                if state.secret_editing {
-                    if let Some(secret) = state.secret_input.as_mut() {
-                        secret.push_str(text);
-                    }
-                } else {
-                    state.append_ordered_text(text);
-                }
-                state.error = None;
-            }
             Overlay::Form(state) => {
                 state.error = None;
                 if !state.is_editing() {
@@ -2830,6 +2708,10 @@ impl App {
                 }
                 if let Some(list) = state.list.as_mut() {
                     list.edit(|entry| entry.push_str(text));
+                } else if state.selected_field().is_some_and(FormField::is_secret) {
+                    if let Some(secret) = state.secret.as_mut() {
+                        secret.push_str(text);
+                    }
                 } else if let Some(field) = state.selected_field_mut()
                     && field.is_text()
                 {
@@ -3423,7 +3305,9 @@ impl App {
                             (KeyCode::Esc, _) => state.abandon_edit(),
                             (KeyCode::Up, modifiers) if modifiers.is_empty() => list.select(-1),
                             (KeyCode::Down, modifiers) if modifiers.is_empty() => list.select(1),
-                            (KeyCode::Up, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                            (KeyCode::Up, modifiers)
+                                if modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 list.move_entry(-1);
                             }
                             (KeyCode::Down, modifiers)
@@ -3453,7 +3337,12 @@ impl App {
                         return Some(Vec::new());
                     }
                     match key.code {
-                        KeyCode::Enter => state.commit_edit(),
+                        KeyCode::Enter => {
+                            state.commit_edit();
+                            state.error = None;
+                            self.refresh_form_fields();
+                            return Some(Vec::new());
+                        }
                         KeyCode::Esc => state.abandon_edit(),
                         KeyCode::Left => {
                             if let Some(field) = state.selected_field_mut() {
@@ -3466,14 +3355,22 @@ impl App {
                             }
                         }
                         KeyCode::Backspace => {
-                            if let Some(field) = state.selected_field_mut()
+                            if state.selected_field().is_some_and(FormField::is_secret) {
+                                if let Some(secret) = state.secret.as_mut() {
+                                    secret.pop();
+                                }
+                            } else if let Some(field) = state.selected_field_mut()
                                 && field.is_text()
                             {
                                 let _ = field.value.pop();
                             }
                         }
                         KeyCode::Char(character) if is_typed_text(key) => {
-                            if let Some(field) = state.selected_field_mut() {
+                            if state.selected_field().is_some_and(FormField::is_secret) {
+                                if let Some(secret) = state.secret.as_mut() {
+                                    secret.push(character);
+                                }
+                            } else if let Some(field) = state.selected_field_mut() {
                                 if field.is_text() {
                                     field.value.push(character);
                                 } else if character == ' ' {
@@ -3509,84 +3406,6 @@ impl App {
                     _ => return None,
                 }
                 state.error = None;
-                Some(Vec::new())
-            }
-            Overlay::OperatorForm(state) => {
-                if key.code == KeyCode::Char('s')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                    && state.secret_input.is_some()
-                {
-                    state.secret_editing = !state.secret_editing;
-                    state.error = None;
-                    return Some(Vec::new());
-                }
-                if state.ordered_items.is_some() {
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Up, modifiers) if modifiers.is_empty() => {
-                            state.select_ordered(-1);
-                            return Some(Vec::new());
-                        }
-                        (KeyCode::Down, modifiers) if modifiers.is_empty() => {
-                            state.select_ordered(1);
-                            return Some(Vec::new());
-                        }
-                        (KeyCode::Up, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                            state.move_ordered_item(-1);
-                            return Some(Vec::new());
-                        }
-                        (KeyCode::Down, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                            state.move_ordered_item(1);
-                            return Some(Vec::new());
-                        }
-                        (KeyCode::Char('i'), modifiers)
-                            if modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
-                            state.insert_ordered_item();
-                            return Some(Vec::new());
-                        }
-                        (KeyCode::Char('x'), modifiers)
-                            if modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
-                            state.remove_ordered_item();
-                            return Some(Vec::new());
-                        }
-                        _ => {}
-                    }
-                }
-                match key.code {
-                    KeyCode::Char(character) if is_typed_text(key) => {
-                        if state.secret_editing {
-                            if let Some(secret) = state.secret_input.as_mut() {
-                                secret.push(character);
-                            }
-                        } else if state.ordered_items.is_some() {
-                            state.ordered_editor.push(character);
-                            state.sync_ordered_input();
-                        } else {
-                            state.input.push(character);
-                        }
-                        state.error = None;
-                    }
-                    KeyCode::Backspace => {
-                        if state.secret_editing {
-                            if let Some(secret) = state.secret_input.as_mut() {
-                                secret.pop();
-                            }
-                        } else if state.ordered_items.is_some() {
-                            let _ = state.ordered_editor.pop();
-                            state.sync_ordered_input();
-                        } else {
-                            let _ = state.input.pop();
-                        }
-                        state.error = None;
-                    }
-                    KeyCode::Enter => {
-                        state.sync_ordered_input();
-                        let state = state.clone();
-                        return Some(self.accept_operator_form(state));
-                    }
-                    _ => return None,
-                }
                 Some(Vec::new())
             }
             Overlay::Confirmation(state) => {
@@ -3630,10 +3449,6 @@ impl App {
             }
             Overlay::TaskInspector(task_id) => {
                 self.overlays.push(Overlay::TaskInspector(task_id));
-                Vec::new()
-            }
-            Overlay::OperatorForm(state) => {
-                self.overlays.push(Overlay::OperatorForm(state));
                 Vec::new()
             }
             Overlay::Form(state) => {
@@ -4495,7 +4310,7 @@ impl App {
             ActionId::AdminPolicyDiff => self.diff_policy_candidate(),
             ActionId::AdminPolicyApply => self.open_policy_apply_confirmation(),
             ActionId::AdminPolicyWorkflowClose => self.open_policy_close_confirmation(),
-            ActionId::AdminCredentialAuthKeyCreate => self.open_auth_key_confirmation(),
+            ActionId::AdminCredentialAuthKeyCreate => self.open_auth_key_form(),
             ActionId::SecretResultCopy => self.copy_secret_result(),
             ActionId::SecretResultClose => self.close_secret_result(),
             ActionId::AdminCredentialRevoke => self.open_credential_revoke_confirmation(),
@@ -5425,18 +5240,11 @@ impl App {
 
     fn open_admin_form(&mut self, action_id: ActionId) -> Vec<Effect> {
         match action_id {
-            ActionId::AdminWebhookCreate
-            | ActionId::AdminWebhookEdit
-            | ActionId::AdminLogStreamReplace
-            | ActionId::AdminNetworkLogsSettings => {
-                let input = self.phase_eight_form_input(action_id);
-                let mut state = OperatorFormState::new(action_id, input, None);
-                if action_id == ActionId::AdminLogStreamReplace {
-                    state.secret_input = Some(SecretInput::new());
-                }
-                self.overlays.push(Overlay::OperatorForm(state));
-                Vec::new()
+            ActionId::AdminWebhookCreate | ActionId::AdminWebhookEdit => {
+                self.open_webhook_form(action_id)
             }
+            ActionId::AdminLogStreamReplace => self.open_log_stream_form(),
+            ActionId::AdminNetworkLogsSettings => self.open_network_log_form(),
             _ => {
                 let Some(shape) = self.admin_form_shape(action_id) else {
                     self.runtime_error = Some("this action has no admin form".to_owned());
@@ -5448,52 +5256,9 @@ impl App {
         }
     }
 
-    fn phase_eight_form_input(&self, action_id: ActionId) -> String {
-        match action_id {
-            ActionId::AdminWebhookEdit => {
-                self.webhooks.first().map_or_else(String::new, |webhook| {
-                    format!(
-                        "categories={};events={}",
-                        webhook.subscriptions.wire_categories().join(","),
-                        webhook.subscriptions.wire_events().join(",")
-                    )
-                })
-            }
-            ActionId::AdminLogStreamReplace => self
-                .log_stream_configurations
-                .get(&LogType::Network)
-                .or_else(|| self.log_stream_configurations.get(&LogType::Configuration))
-                .map_or_else(
-                    || "type=network;destination=;url=;secret=replace".to_owned(),
-                    |configuration| {
-                        format!(
-                            "type={};destination={};url={};secret=replace",
-                            configuration.log_type.wire_value(),
-                            configuration.destination.kind,
-                            configuration.destination.identity
-                        )
-                    },
-                ),
-            ActionId::AdminNetworkLogsSettings => self
-                .admin
-                .settings
-                .snapshot
-                .as_ref()
-                .and_then(|settings| settings.network_flow_logging_on)
-                .map_or_else(
-                    || "on".to_owned(),
-                    |value| if value { "on" } else { "off" }.to_owned(),
-                ),
-            _ => String::new(),
-        }
-    }
-
     /// Every admin form states the resource it acts on and then asks only for
     /// the values that change, each one seeded with what the tailnet reports.
-    fn admin_form_shape(
-        &self,
-        action_id: ActionId,
-    ) -> Option<FormShape> {
+    fn admin_form_shape(&self, action_id: ActionId) -> Option<FormShape> {
         match action_id {
             ActionId::AdminDeviceRename => {
                 let device = self.selected_admin_device();
@@ -5695,7 +5460,10 @@ impl App {
                     .and_then(|user| user.role.clone())
                     .unwrap_or_else(|| "member".to_owned());
                 let subject = user.map_or_else(Vec::new, |user| {
-                    vec![("user", user.login_name.clone().unwrap_or_else(|| user.id.clone()))]
+                    vec![(
+                        "user",
+                        user.login_name.clone().unwrap_or_else(|| user.id.clone()),
+                    )]
                 });
                 Some(FormShape::new(
                     "Change a user role",
@@ -5732,21 +5500,23 @@ impl App {
             selected: 0,
             draft: None,
             list: None,
+            secret: None,
             error: Some(error),
         }));
     }
 
     fn admin_device_subject(&self) -> Vec<(&'static str, String)> {
-        self.selected_admin_device().map_or_else(Vec::new, |device| {
-            vec![(
-                "device",
-                device
-                    .name
-                    .clone()
-                    .or_else(|| device.hostname.clone())
-                    .unwrap_or_else(|| device.stable_id.clone()),
-            )]
-        })
+        self.selected_admin_device()
+            .map_or_else(Vec::new, |device| {
+                vec![(
+                    "device",
+                    device
+                        .name
+                        .clone()
+                        .or_else(|| device.hostname.clone())
+                        .unwrap_or_else(|| device.stable_id.clone()),
+                )]
+            })
     }
 
     fn selected_split_dns_entry(&self) -> (String, Vec<String>) {
@@ -5757,12 +5527,7 @@ impl App {
             .and_then(|value| value.entries.first())
             .map_or_else(
                 || (String::new(), Vec::new()),
-                |(domain, resolvers)| {
-                    (
-                        domain.clone(),
-                        resolvers.clone().unwrap_or_default(),
-                    )
-                },
+                |(domain, resolvers)| (domain.clone(), resolvers.clone().unwrap_or_default()),
             )
     }
 
@@ -6079,6 +5844,197 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// A form whose later questions depend on an earlier answer rebuilds them
+    /// when that answer changes, so it never asks for a field the choice made
+    /// meaningless.
+    fn refresh_form_fields(&mut self) {
+        let Some(Overlay::Form(state)) = self.overlays.last_mut() else {
+            return;
+        };
+        if state.action_id != ActionId::AdminLogStreamReplace {
+            return;
+        }
+        let destination = state.value("destination").to_owned();
+        let kept = state
+            .fields
+            .iter()
+            .map(|field| (field.key, field.value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        state.fields = log_stream_fields(&destination, &kept);
+        state.selected = state.selected.min(state.fields.len());
+    }
+
+    fn open_log_stream_form(&mut self) -> Vec<Effect> {
+        let configuration = self
+            .log_stream_configurations
+            .get(&LogType::Network)
+            .or_else(|| self.log_stream_configurations.get(&LogType::Configuration));
+        let (log_type, destination, url) = configuration.map_or_else(
+            || ("network".to_owned(), "splunk".to_owned(), String::new()),
+            |configuration| {
+                (
+                    configuration.log_type.wire_value().to_owned(),
+                    configuration.destination.kind.clone(),
+                    configuration.destination.identity.clone(),
+                )
+            },
+        );
+        let seed = BTreeMap::from([
+            ("type", log_type),
+            ("destination", destination.clone()),
+            ("url", url),
+        ]);
+        self.push_form(
+            ActionId::AdminLogStreamReplace,
+            "Replace a log stream",
+            Vec::new(),
+            log_stream_fields(&destination, &seed),
+        );
+        Vec::new()
+    }
+
+    fn open_webhook_form(&mut self, action_id: ActionId) -> Vec<Effect> {
+        if action_id == ActionId::AdminWebhookEdit {
+            let Some(webhook) = self.selected_webhook() else {
+                self.runtime_error = Some("no observed webhook is available".to_owned());
+                return Vec::new();
+            };
+            let subject = vec![("endpoint", webhook.endpoint_url.clone())];
+            let categories = webhook.subscriptions.wire_categories();
+            let events = webhook.subscriptions.wire_events();
+            self.push_form(
+                action_id,
+                "Edit what a webhook is told about",
+                subject,
+                vec![
+                    FormField::list(
+                        "categories",
+                        "Categories",
+                        "Whole categories this endpoint is subscribed to",
+                        "none",
+                        categories,
+                    ),
+                    FormField::list(
+                        "events",
+                        "Events",
+                        "Individual events on top of the categories; unknown ones are kept",
+                        "none",
+                        events,
+                    ),
+                ],
+            );
+            return Vec::new();
+        }
+        self.push_form(
+            action_id,
+            "Add a webhook endpoint",
+            Vec::new(),
+            vec![
+                FormField::text(
+                    "url",
+                    "Endpoint",
+                    "Where the tailnet posts each notification",
+                    "https://host.example/path",
+                    String::new(),
+                ),
+                FormField::options(
+                    "provider",
+                    "Provider",
+                    "How the payload is shaped for the receiving service",
+                    WEBHOOK_PROVIDERS,
+                    "none",
+                ),
+                FormField::list(
+                    "categories",
+                    "Categories",
+                    "Whole categories this endpoint is subscribed to",
+                    "none",
+                    Vec::<String>::new(),
+                ),
+                FormField::list(
+                    "events",
+                    "Events",
+                    "Individual events on top of the categories",
+                    "none",
+                    Vec::<String>::new(),
+                ),
+            ],
+        );
+        Vec::new()
+    }
+
+    fn open_network_log_form(&mut self) -> Vec<Effect> {
+        let enabled = self
+            .admin
+            .settings
+            .snapshot
+            .as_ref()
+            .and_then(|settings| settings.network_flow_logging_on)
+            .unwrap_or(true);
+        self.push_form(
+            ActionId::AdminNetworkLogsSettings,
+            "Configure network flow logging",
+            Vec::new(),
+            vec![FormField::toggle(
+                "enabled",
+                "Flow logging",
+                "Whether devices record and report their network flows",
+                enabled,
+            )],
+        );
+        Vec::new()
+    }
+
+    fn open_auth_key_form(&mut self) -> Vec<Effect> {
+        self.push_form(
+            ActionId::AdminCredentialAuthKeyCreate,
+            "Create an auth key",
+            Vec::new(),
+            vec![
+                FormField::text(
+                    "description",
+                    "Description",
+                    "What this key is for, shown in the credential list",
+                    "tale-generated",
+                    "tale-generated",
+                ),
+                FormField::text(
+                    "expiry",
+                    "Valid for",
+                    "Whole days before the key stops working",
+                    "days",
+                    "7",
+                ),
+                FormField::toggle(
+                    "reusable",
+                    "Reusable",
+                    "Let the key register more than one device",
+                    false,
+                ),
+                FormField::toggle(
+                    "ephemeral",
+                    "Ephemeral",
+                    "Remove devices registered with this key when they go offline",
+                    true,
+                ),
+                FormField::toggle(
+                    "preauthorized",
+                    "Pre-approved",
+                    "Devices registered with this key need no separate approval",
+                    false,
+                ),
+                FormField::list(
+                    "tags",
+                    "Tags",
+                    "The tags every device registered with this key receives",
+                    "no tags",
+                    Vec::<String>::new(),
+                ),
+            ],
+        );
+        Vec::new()
     }
 
     fn saved_view_names(&self) -> Vec<String> {
@@ -7009,17 +6965,6 @@ impl App {
         }
     }
 
-    fn open_auth_key_confirmation(&mut self) -> Vec<Effect> {
-        self.overlays
-            .push(Overlay::OperatorForm(OperatorFormState::new(
-                ActionId::AdminCredentialAuthKeyCreate,
-                "description=tale-generated;expiry=7d;reusable=false;ephemeral=true;preauthorized=false;tags="
-                    .to_owned(),
-                None,
-            )));
-        Vec::new()
-    }
-
     fn open_auth_key_form_with_request(
         &mut self,
         request: crate::admin::key_mutations::AuthKeyCreateRequest,
@@ -7548,11 +7493,7 @@ impl App {
             handoff::nc_command(&executable.path, host, state.value("port").trim())
         } else {
             let user = state.value("user").trim();
-            handoff::ssh_command(
-                &executable.path,
-                (!user.is_empty()).then_some(user),
-                host,
-            )
+            handoff::ssh_command(&executable.path, (!user.is_empty()).then_some(user), host)
         };
         match command {
             Ok(command) => {
@@ -7774,44 +7715,14 @@ impl App {
         }
     }
 
-    fn accept_operator_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
-        if state.action_id == ActionId::AdminCredentialAuthKeyCreate {
-            return match parse_auth_key_request(&state.input) {
-                Ok(request) => {
-                    self.overlays.pop();
-                    self.open_auth_key_form_with_request(request)
-                }
-                Err(error) => {
-                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                        current.error = Some(error);
-                    }
-                    Vec::new()
-                }
-            };
-        }
-        if matches!(
-            state.action_id,
-            ActionId::AdminWebhookCreate
-                | ActionId::AdminWebhookEdit
-                | ActionId::AdminLogStreamReplace
-                | ActionId::AdminNetworkLogsSettings
-        ) {
-            return self.accept_phase_eight_form(state);
-        }
-        if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-            current.error = Some("this form is not a local operator form".to_owned());
-        }
-        Vec::new()
-    }
-
-    fn accept_phase_eight_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
+    fn accept_phase_eight_form(&mut self, state: &FormState) -> Vec<Effect> {
         let result = match state.action_id {
-            ActionId::AdminWebhookCreate => parse_webhook_create(&state.input),
-            ActionId::AdminWebhookEdit => self.parse_webhook_edit(&state.input),
-            ActionId::AdminLogStreamReplace => {
-                parse_log_stream_draft(&state.input, state.secret_input.as_ref())
-            }
-            ActionId::AdminNetworkLogsSettings => parse_network_log_setting(&state.input),
+            ActionId::AdminWebhookCreate => webhook_create_from_form(state),
+            ActionId::AdminWebhookEdit => self.webhook_edit_from_form(state),
+            ActionId::AdminLogStreamReplace => log_stream_from_form(state),
+            ActionId::AdminNetworkLogsSettings => Ok(OperationalMutation::NetworkLogSetting {
+                enabled: state.is_yes("enabled"),
+            }),
             _ => Err("this is not a Phase 8 operational form".to_owned()),
         };
         match result {
@@ -7819,26 +7730,43 @@ impl App {
                 self.overlays.pop();
                 self.open_operational_confirmation(state.action_id, mutation)
             }
-            Err(error) => {
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error);
-                }
-                Vec::new()
-            }
+            Err(error) => self.set_form_error(error),
         }
     }
 
-    fn parse_webhook_edit(&self, input: &str) -> Result<OperationalMutation, String> {
+    fn accept_auth_key_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let days = match state.value("expiry").trim().parse::<u64>() {
+            Ok(days) => days,
+            Err(_) => {
+                return self.set_form_error("the key must be valid for a whole number of days");
+            }
+        };
+        let Some(expiry_seconds) = days.checked_mul(24 * 60 * 60) else {
+            return self.set_form_error("that many days is too long");
+        };
+        let description = state.value("description").trim();
+        let request = crate::admin::key_mutations::AuthKeyCreateRequest {
+            description: (!description.is_empty()).then(|| description.to_owned()),
+            expiry_seconds,
+            reusable: state.is_yes("reusable"),
+            ephemeral: state.is_yes("ephemeral"),
+            preauthorized: state.is_yes("preauthorized"),
+            tags: state.entries("tags"),
+        };
+        if let Err(error) = request.validate() {
+            return self.set_form_error(error.to_string());
+        }
+        self.overlays.pop();
+        self.open_auth_key_form_with_request(request)
+    }
+
+    fn webhook_edit_from_form(&self, state: &FormState) -> Result<OperationalMutation, String> {
         let endpoint = self
             .selected_webhook()
             .ok_or_else(|| "no observed webhook is available".to_owned())?;
-        let fields = parse_operational_fields(input)?;
-        ensure_operational_fields(&fields, &["categories", "events"])?;
-        let categories = csv_field(&fields, "categories");
-        let events = csv_field(&fields, "events");
         let after = endpoint
             .subscriptions
-            .edit_known(categories, events)
+            .edit_known(state.entries("categories"), state.entries("events"))
             .map_err(|error| error.to_string())?;
         Ok(OperationalMutation::Webhook(
             WebhookMutation::EditSubscriptions {
@@ -7903,8 +7831,8 @@ impl App {
 
     fn accept_phase_eight_local_form(&mut self, state: &FormState) -> Vec<Effect> {
         let result = match state.action_id {
-            ActionId::SavedViewCreate | ActionId::SavedViewReplace => {
-                saved_view_from_form(state).map(|view| {
+            ActionId::SavedViewCreate | ActionId::SavedViewReplace => saved_view_from_form(state)
+                .map(|view| {
                     if state.action_id == ActionId::SavedViewCreate {
                         OperationalMutation::SavedView(SavedViewMutation::Create(view))
                     } else {
@@ -7913,8 +7841,7 @@ impl App {
                             view,
                         })
                     }
-                })
-            }
+                }),
             ActionId::SavedViewRename => {
                 let name = required_form_value(state, "name", "a view to rename");
                 let replacement = required_form_value(state, "new", "a new name");
@@ -8075,11 +8002,7 @@ impl App {
         effects
     }
 
-    fn accept_admin_batch_form(
-        &mut self,
-        state: &FormState,
-        change: AdminChange,
-    ) -> Vec<Effect> {
+    fn accept_admin_batch_form(&mut self, state: &FormState, change: AdminChange) -> Vec<Effect> {
         let AdminChange::DeviceRoutes { routes } = change else {
             return self.set_form_error("this batch action only supports route approvals");
         };
@@ -10743,7 +10666,11 @@ impl App {
                             "fresh preflight for {} failed: {error}",
                             request.action_id.as_str()
                         ));
-                        self.reopen_admin_form(request.action_id, &request.change, error.to_string());
+                        self.reopen_admin_form(
+                            request.action_id,
+                            &request.change,
+                            error.to_string(),
+                        );
                         return Vec::new();
                     }
                 };
@@ -12270,6 +12197,7 @@ impl App {
             selected: 0,
             draft: None,
             list: None,
+            secret: None,
             error: None,
         }));
     }
@@ -12304,6 +12232,13 @@ impl App {
                 return self.accept_phase_eight_local_form(&state);
             }
             ActionId::ActivityFlowsSelectWindow => return self.accept_flow_window_form(&state),
+            ActionId::AdminCredentialAuthKeyCreate => return self.accept_auth_key_form(&state),
+            ActionId::AdminWebhookCreate
+            | ActionId::AdminWebhookEdit
+            | ActionId::AdminLogStreamReplace
+            | ActionId::AdminNetworkLogsSettings => {
+                return self.accept_phase_eight_form(&state);
+            }
             ActionId::AdminPolicyPreview => return self.accept_policy_preview_form(&state),
             ActionId::AccessExplorerAsk => return self.accept_access_explorer_form(&state),
             ActionId::AuditFilterTime
@@ -15185,7 +15120,6 @@ impl App {
             Overlay::QuitConfirmation => "quit",
             Overlay::TaskInspector(_) => "task",
             Overlay::Confirmation(_) => "confirm local action",
-            Overlay::OperatorForm(_) => "local operator form",
             Overlay::Form(_) => "form",
             Overlay::PolicyEditor => "policy workflow",
             Overlay::SecretResult => "secret result",
@@ -15271,210 +15205,217 @@ fn apply_system_policy_editability(
     }
 }
 
-fn parse_operational_fields(input: &str) -> Result<BTreeMap<String, String>, String> {
-    let mut fields = BTreeMap::new();
-    for part in input
-        .split(';')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let (name, value) = part
-            .split_once('=')
-            .ok_or_else(|| format!("operational field must be name=value: {part}"))?;
-        let name = name.trim();
-        if name.is_empty()
-            || fields
-                .insert(name.to_owned(), value.trim().to_owned())
-                .is_some()
-        {
-            return Err(format!("duplicate or empty operational field: {name}"));
-        }
-    }
-    Ok(fields)
-}
-
-fn required_operational_field(
-    fields: &BTreeMap<String, String>,
-    name: &str,
-) -> Result<String, String> {
-    let value = fields
-        .get(name)
-        .cloned()
-        .ok_or_else(|| format!("operational field {name} is required"))?;
-    if value.trim().is_empty() {
-        return Err(format!("operational field {name} is required"));
-    }
-    Ok(value)
-}
-
-fn csv_field(fields: &BTreeMap<String, String>, name: &str) -> Vec<String> {
-    fields.get(name).map_or_else(Vec::new, |value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect()
-    })
-}
-
-fn parse_webhook_create(input: &str) -> Result<OperationalMutation, String> {
-    let fields = parse_operational_fields(input)?;
-    ensure_operational_fields(&fields, &["url", "provider", "categories", "events"])?;
-    let endpoint_url = required_operational_field(&fields, "url")?;
-    let provider = required_operational_field(&fields, "provider")?;
-    let subscriptions = SubscriptionSet::from_wire(
-        csv_field(&fields, "categories"),
-        csv_field(&fields, "events"),
-    )
-    .map_err(|error| error.to_string())?;
+fn webhook_create_from_form(state: &FormState) -> Result<OperationalMutation, String> {
+    let endpoint_url = required_form_value(state, "url", "where notifications are posted")?;
+    let subscriptions =
+        SubscriptionSet::from_wire(state.entries("categories"), state.entries("events"))
+            .map_err(|error| error.to_string())?;
     let draft = WebhookDraft {
         endpoint_url,
-        destination_type: DestinationType::from_wire(&provider),
+        destination_type: DestinationType::from_wire(state.value("provider")),
         subscriptions,
     };
     draft.validate().map_err(|error| error.to_string())?;
     Ok(OperationalMutation::Webhook(WebhookMutation::Create(draft)))
 }
 
-fn parse_log_stream_draft(
-    input: &str,
-    secret_input: Option<&SecretInput>,
-) -> Result<OperationalMutation, String> {
-    let fields = parse_operational_fields(input)?;
-    ensure_operational_fields(
-        &fields,
-        &[
-            "type",
-            "destination",
-            "url",
-            "user",
-            "period",
-            "compression",
-            "secret",
-            "s3-bucket",
-            "s3-region",
-            "s3-prefix",
-            "s3-auth",
-            "s3-access-key",
-            "s3-role",
-            "gcs-bucket",
-            "gcs-prefix",
-            "gcs-scopes",
-        ],
-    )?;
-    let log_type = match required_operational_field(&fields, "type")?.as_str() {
-        "configuration" => LogType::Configuration,
-        "network" => LogType::Network,
-        value => return Err(format!("unsupported log-stream type {value}")),
+/// A replacement always carries a fresh write-only secret, so the form reads
+/// the one it was given and never puts it anywhere the screen can reach.
+fn log_stream_from_form(state: &FormState) -> Result<OperationalMutation, String> {
+    let log_type = if state.value("type") == "configuration" {
+        LogType::Configuration
+    } else {
+        LogType::Network
     };
-    let destination_type = required_operational_field(&fields, "destination")?.to_ascii_lowercase();
+    let destination_type = state.value("destination").to_owned();
     if !crate::admin::log_streaming::is_supported_destination(&destination_type) {
         return Err(format!(
             "destination {destination_type} is unavailable in Tale because its documented fields are not adopted"
         ));
     }
-    let url = fields.get("url").cloned().unwrap_or_else(String::new);
-    let secret_action = match fields.get("secret").map(String::as_str) {
-        Some("replace") => SecretAction::Replace,
-        Some(value) => return Err(format!("secret must be replace, not {value}")),
-        None => {
-            return Err(
-                "log-stream replacement requires secret=replace and a write-only secret in Ctrl+S input"
-                    .to_owned(),
-            );
-        }
-    };
-    let token = if secret_action == SecretAction::Replace {
-        let value = secret_input
-            .filter(|secret| !secret.is_empty())
-            .ok_or_else(|| {
-                "secret=replace requires a write-only secret in Ctrl+S input".to_owned()
-            })?;
-        Some(Arc::new(crate::domain::secret_result::SecretBuffer::new(
-            value.as_str(),
-        )))
-    } else {
-        None
-    };
-    let upload_period_minutes = fields
-        .get("period")
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            value
-                .parse::<u64>()
-                .map_err(|_| "period must be an integer number of minutes".to_owned())
-        })
-        .transpose()?;
-    let gcs_scopes = csv_field(&fields, "gcs-scopes");
-    let gcs_credentials = if destination_type == "gcs" {
-        token.clone()
-    } else {
-        None
-    };
-    let token = if destination_type == "gcs" {
-        None
-    } else {
-        token
-    };
+    let secret = state
+        .secret
+        .as_ref()
+        .filter(|secret| !secret.is_empty())
+        .ok_or_else(|| "replacing a log stream requires a new secret".to_owned())?;
+    let token = Some(Arc::new(crate::domain::secret_result::SecretBuffer::new(
+        secret.as_str(),
+    )));
+    let is_gcs = destination_type == "gcs";
     Ok(OperationalMutation::LogStreamReplace(
         LogStreamMutationDraft {
             log_type,
             destination_type,
-            url,
-            user: optional_operational_field(&fields, "user"),
-            upload_period_minutes,
-            compression_format: optional_operational_field(&fields, "compression"),
-            token,
-            s3_bucket: optional_operational_field(&fields, "s3-bucket"),
-            s3_region: optional_operational_field(&fields, "s3-region"),
-            s3_key_prefix: optional_operational_field(&fields, "s3-prefix"),
-            s3_authentication_type: optional_operational_field(&fields, "s3-auth"),
-            s3_access_key_id: optional_operational_field(&fields, "s3-access-key"),
-            s3_role_arn: optional_operational_field(&fields, "s3-role"),
-            gcs_bucket: optional_operational_field(&fields, "gcs-bucket"),
-            gcs_key_prefix: optional_operational_field(&fields, "gcs-prefix"),
-            gcs_scopes,
-            gcs_credentials,
-            secret_action,
+            url: state.value("url").to_owned(),
+            user: optional_form_text(state, "user"),
+            upload_period_minutes: optional_form_number(state, "period", "number of minutes")?,
+            compression_format: optional_form_text(state, "compression"),
+            token: if is_gcs { None } else { token.clone() },
+            s3_bucket: optional_form_text(state, "s3-bucket"),
+            s3_region: optional_form_text(state, "s3-region"),
+            s3_key_prefix: optional_form_text(state, "s3-prefix"),
+            s3_authentication_type: optional_form_text(state, "s3-auth"),
+            s3_access_key_id: optional_form_text(state, "s3-access-key"),
+            s3_role_arn: optional_form_text(state, "s3-role"),
+            gcs_bucket: optional_form_text(state, "gcs-bucket"),
+            gcs_key_prefix: optional_form_text(state, "gcs-prefix"),
+            gcs_scopes: state.entries("gcs-scopes"),
+            gcs_credentials: if is_gcs { token } else { None },
+            secret_action: SecretAction::Replace,
         },
     ))
 }
 
-fn optional_operational_field(fields: &BTreeMap<String, String>, name: &str) -> Option<String> {
-    fields
-        .get(name)
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-}
+/// The payload shapes a webhook endpoint can be sent, offered rather than typed.
+const WEBHOOK_PROVIDERS: &[&str] = &["none", "slack", "discord", "googlechat", "mattermost"];
 
-fn ensure_operational_fields(
-    fields: &BTreeMap<String, String>,
-    allowed: &[&str],
-) -> Result<(), String> {
-    if let Some(field) = fields
-        .keys()
-        .find(|field| !allowed.contains(&field.as_str()))
-    {
-        return Err(format!(
-            "operational field {field} is not supported by this typed form"
-        ));
-    }
-    Ok(())
-}
-
-fn parse_network_log_setting(input: &str) -> Result<OperationalMutation, String> {
-    let value = input.trim().to_ascii_lowercase();
-    let enabled = match value.as_str() {
-        "on" => true,
-        "off" => false,
-        _ => return Err("network-log setting must be on or off".to_owned()),
-    };
-    Ok(OperationalMutation::NetworkLogSetting { enabled })
-}
+/// The destinations Tale can replace a log stream with. Azure, private and
+/// Vector destinations are absent because their fields are not adopted here.
+const LOG_STREAM_DESTINATIONS: &[&str] = &[
+    "splunk", "elastic", "panther", "cribl", "datadog", "axiom", "s3", "gcs",
+];
 
 /// The traffic classes a flow can be narrowed to, offered rather than typed.
 const TRAFFIC_CLASSES: &[&str] = &[ANY, "virtual", "subnet", "exit", "physical"];
+
+/// A log stream asks for what its destination needs and nothing else, so the
+/// field list is built from the destination rather than shown all at once.
+fn log_stream_fields(destination: &str, seed: &BTreeMap<&str, String>) -> Vec<FormField> {
+    let seeded = |key: &str| seed.get(key).cloned().unwrap_or_default();
+    let mut fields = vec![
+        FormField::options(
+            "type",
+            "Logs",
+            "Which log the stream carries",
+            &["network", "configuration"],
+            if seeded("type") == "configuration" {
+                "configuration"
+            } else {
+                "network"
+            },
+        ),
+        FormField::options(
+            "destination",
+            "Destination",
+            "Where the logs are sent; this decides what else is asked for",
+            LOG_STREAM_DESTINATIONS,
+            if LOG_STREAM_DESTINATIONS.contains(&destination) {
+                destination.to_owned()
+            } else {
+                "splunk".to_owned()
+            },
+        ),
+    ];
+    match destination {
+        "s3" => fields.extend([
+            FormField::text(
+                "s3-bucket",
+                "Bucket",
+                "The S3 bucket the logs are written to",
+                "bucket name",
+                seeded("s3-bucket"),
+            ),
+            FormField::text(
+                "s3-region",
+                "Region",
+                "The region the bucket lives in",
+                "us-east-1",
+                seeded("s3-region"),
+            ),
+            FormField::text(
+                "s3-prefix",
+                "Key prefix",
+                "The prefix every written object shares",
+                "none",
+                seeded("s3-prefix"),
+            ),
+            FormField::text(
+                "s3-auth",
+                "Authentication",
+                "How the bucket is authenticated to",
+                "accesskey or rolearn",
+                seeded("s3-auth"),
+            ),
+            FormField::text(
+                "s3-access-key",
+                "Access key",
+                "The access key id, when authenticating with a key",
+                "none",
+                seeded("s3-access-key"),
+            ),
+            FormField::text(
+                "s3-role",
+                "Role",
+                "The role ARN, when authenticating with a role",
+                "none",
+                seeded("s3-role"),
+            ),
+        ]),
+        "gcs" => fields.extend([
+            FormField::text(
+                "gcs-bucket",
+                "Bucket",
+                "The Cloud Storage bucket the logs are written to",
+                "bucket name",
+                seeded("gcs-bucket"),
+            ),
+            FormField::text(
+                "gcs-prefix",
+                "Key prefix",
+                "The prefix every written object shares",
+                "none",
+                seeded("gcs-prefix"),
+            ),
+            FormField::list(
+                "gcs-scopes",
+                "Scopes",
+                "The OAuth scopes the credential is used with",
+                "none",
+                seeded("gcs-scopes")
+                    .split(',')
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            ),
+        ]),
+        _ => fields.push(FormField::text(
+            "url",
+            "Endpoint",
+            "Where the logs are posted",
+            "https://host.example/path",
+            seeded("url"),
+        )),
+    }
+    fields.extend([
+        FormField::text(
+            "user",
+            "Username",
+            "The username the destination expects, when it needs one",
+            "none",
+            seeded("user"),
+        ),
+        FormField::text(
+            "period",
+            "Upload every",
+            "Whole minutes between uploads; empty leaves it to the destination",
+            "minutes",
+            seeded("period"),
+        ),
+        FormField::text(
+            "compression",
+            "Compression",
+            "The compression format the destination expects, when it needs one",
+            "none",
+            seeded("compression"),
+        ),
+        FormField::secret(
+            "secret",
+            "Secret",
+            "The write-only token or credential; replacing a stream always sets it",
+        ),
+    ]);
+    fields
+}
 
 fn flow_window_from_form(
     state: &FormState,
@@ -15612,7 +15553,11 @@ fn export_from_form(state: &FormState) -> Result<OperationalMutation, String> {
     Ok(OperationalMutation::Export(ExportRequest {
         collection,
         format: state.value("format").to_owned(),
-        path: PathBuf::from(required_form_value(state, "path", "where to write the file")?),
+        path: PathBuf::from(required_form_value(
+            state,
+            "path",
+            "where to write the file",
+        )?),
     }))
 }
 
@@ -17000,80 +16945,6 @@ fn is_admin_user_action(action_id: ActionId) -> bool {
     )
 }
 
-fn parse_auth_key_request(
-    input: &str,
-) -> Result<crate::admin::key_mutations::AuthKeyCreateRequest, String> {
-    let mut seen = BTreeSet::new();
-    let mut description = None;
-    let mut expiry_seconds = None;
-    let mut reusable = None;
-    let mut ephemeral = None;
-    let mut preauthorized = None;
-    let mut tags = None;
-    for part in input.split(';') {
-        let (key, value) = part
-            .split_once('=')
-            .ok_or_else(|| "auth-key fields use key=value separated by semicolons".to_owned())?;
-        if !seen.insert(key) {
-            return Err(format!("auth-key field repeated: {key}"));
-        }
-        match key {
-            "description" => {
-                description = (!value.is_empty()).then_some(value.to_owned());
-            }
-            "expiry" => {
-                let days_text = value.strip_suffix('d').ok_or_else(|| {
-                    "expiry must use a whole number of days, such as 7d".to_owned()
-                })?;
-                let days = days_text
-                    .parse::<u64>()
-                    .map_err(|_| "expiry must use a whole number of days, such as 7d".to_owned())?;
-                expiry_seconds = days.checked_mul(24 * 60 * 60);
-                if expiry_seconds.is_none() {
-                    return Err("expiry is too large".to_owned());
-                }
-            }
-            "reusable" => reusable = Some(parse_auth_key_bool(value, key)?),
-            "ephemeral" => ephemeral = Some(parse_auth_key_bool(value, key)?),
-            "preauthorized" | "preapproved" => {
-                preauthorized = Some(parse_auth_key_bool(value, key)?);
-            }
-            "tags" => {
-                tags = Some(if value.is_empty() {
-                    Vec::new()
-                } else {
-                    value.split(',').map(str::to_owned).collect()
-                });
-            }
-            _ => return Err(format!("unknown auth-key field: {key}")),
-        }
-    }
-    let expiry_seconds = expiry_seconds.ok_or_else(|| "auth-key expiry is required".to_owned())?;
-    let reusable = reusable.ok_or_else(|| "auth-key reusable is required".to_owned())?;
-    let ephemeral = ephemeral.ok_or_else(|| "auth-key ephemeral is required".to_owned())?;
-    let preauthorized =
-        preauthorized.ok_or_else(|| "auth-key preauthorized is required".to_owned())?;
-    let tags = tags.ok_or_else(|| "auth-key tags are required".to_owned())?;
-    let request = crate::admin::key_mutations::AuthKeyCreateRequest {
-        description,
-        expiry_seconds,
-        reusable,
-        ephemeral,
-        preauthorized,
-        tags,
-    };
-    request.validate().map_err(|error| error.to_string())?;
-    Ok(request)
-}
-
-fn parse_auth_key_bool(value: &str, field: &str) -> Result<bool, String> {
-    match value {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(format!("auth-key {field} must be true or false")),
-    }
-}
-
 /// The value a filter field holds when it is not narrowing anything.
 const ANY: &str = "any";
 
@@ -17128,8 +16999,6 @@ fn format_audit_timestamp(value: Timestamp) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
-/// The change an admin form describes, read from its fields and validated by
-/// the same rules the runtime applies before anything is sent.
 fn admin_change_from_form(state: &FormState) -> Result<AdminChange, String> {
     match state.action_id {
         ActionId::AdminDeviceRename => Ok(AdminChange::DeviceRename {
@@ -17217,14 +17086,6 @@ fn admin_change_value(change: &AdminChange, key: &str) -> Option<String> {
         }
         (AdminChange::UserRole { role }, "role") => Some(role.clone()),
         _ => None,
-    }
-}
-
-fn format_ordered_input(prefix: Option<&str>, values: &[String]) -> String {
-    let values = values.join(",");
-    match prefix {
-        Some(prefix) => format!("{prefix}{values}"),
-        None => values,
     }
 }
 
@@ -17574,11 +17435,10 @@ fn preference_choice(
     help: &'static str,
     preference: &crate::domain::preference::ObservedPreference<bool>,
 ) -> FormField {
-    let current = preference
-        .value
-        .map_or_else(|| "not reported".to_owned(), |value| {
-            if value { "yes" } else { "no" }.to_owned()
-        });
+    let current = preference.value.map_or_else(
+        || "not reported".to_owned(),
+        |value| if value { "yes" } else { "no" }.to_owned(),
+    );
     let field = FormField::choice(
         key,
         label,
@@ -17614,7 +17474,6 @@ fn lock_unless_editable(
         field.locked(format!("{} here", editability.label()))
     }
 }
-
 
 fn boolean_text(value: Option<bool>) -> &'static str {
     match value {

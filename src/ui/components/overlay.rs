@@ -53,7 +53,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
             );
         }
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
-        Overlay::OperatorForm(state) => form::render_operator(frame, app, area, state),
         Overlay::Form(state) => form::render(frame, app, area, state),
         Overlay::PolicyEditor => policy_editor::render(frame, app, area),
         Overlay::SecretResult => secret_result::render(frame, app, area),
@@ -77,8 +76,11 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
         | Overlay::PolicyEditor
         | Overlay::SecretResult
         | Overlay::AuditInvestigation => area,
-        Overlay::OperatorForm(_) | Overlay::Form(_) => {
-            let height = area.height.saturating_mul(2) / 5;
+        // A form is as tall as the questions it asks, so no field is asked for
+        // off the bottom of the screen. It never grows past the screen itself.
+        Overlay::Form(state) => {
+            let rows = u16::try_from(form_rows(state)).unwrap_or(u16::MAX);
+            let height = rows.max(area.height.saturating_mul(2) / 5).min(area.height);
             Rect {
                 x: area.x,
                 y: area.y.saturating_add(area.height.saturating_sub(height)),
@@ -87,4 +89,25 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
             }
         }
     }
+}
+
+/// How many rows the form needs: its subject, its fields, any open list, the
+/// submit row, the help line, an error, and the key hints, inside a border.
+fn form_rows(state: &crate::app::FormState) -> usize {
+    let subject = if state.subject.is_empty() {
+        0
+    } else {
+        state.subject.len().saturating_add(1)
+    };
+    let list = state
+        .list
+        .as_ref()
+        .map_or(0, |list| list.entries.len().max(1));
+    let error = usize::from(state.error.is_some());
+    subject
+        .saturating_add(state.fields.len())
+        .saturating_add(list)
+        .saturating_add(error)
+        // blank, Continue, blank, help, blank, hints, and two border rows
+        .saturating_add(8)
 }
