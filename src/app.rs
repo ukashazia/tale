@@ -413,20 +413,6 @@ pub enum InteractionMode {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum DiagnosticInputKind {
-    DnsQuery,
-    Whois,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct DiagnosticInputState {
-    pub kind: DiagnosticInputKind,
-    pub input: String,
-    pub secondary: String,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ConfirmationState {
     pub action_id: ActionId,
     pub mutation: Option<LocalMutation>,
@@ -772,20 +758,6 @@ pub struct AppearanceState {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum HandoffInputKind {
-    Ssh,
-    Nc,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct HandoffInputState {
-    pub kind: HandoffInputKind,
-    pub host: String,
-    pub input: String,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CopyField {
     DeviceId,
     DisplayName,
@@ -910,11 +882,9 @@ impl CopyField {
 pub enum Overlay {
     QuitConfirmation,
     TaskInspector(TaskId),
-    DiagnosticInput(DiagnosticInputState),
     Confirmation(Box<ConfirmationState>),
     OperatorForm(OperatorFormState),
     Form(FormState),
-    HandoffInput(HandoffInputState),
     PolicyEditor,
     SecretResult,
     AuditInvestigation,
@@ -2601,7 +2571,6 @@ impl App {
             return Vec::new();
         };
         match overlay {
-            Overlay::DiagnosticInput(state) => state.input.push_str(text),
             Overlay::OperatorForm(state) => {
                 if state.secret_editing {
                     if let Some(secret) = state.secret_input.as_mut() {
@@ -2620,10 +2589,6 @@ impl App {
                 {
                     field.value.push_str(text);
                 }
-            }
-            Overlay::HandoffInput(state) => {
-                state.input.push_str(text);
-                state.error = None;
             }
             Overlay::Confirmation(state) => {
                 state.input.push_str(text);
@@ -3257,25 +3222,6 @@ impl App {
                 state.error = None;
                 Some(Vec::new())
             }
-            Overlay::DiagnosticInput(state) => {
-                match key.code {
-                    KeyCode::Char(character) if is_typed_text(key) => {
-                        state.input.push(character);
-                        state.error = None;
-                    }
-                    KeyCode::Backspace => {
-                        let _ = state.input.pop();
-                        state.error = None;
-                    }
-                    KeyCode::Enter => {
-                        let input = state.input.clone();
-                        let kind = state.kind.clone();
-                        return Some(self.accept_diagnostic_input(kind, &input));
-                    }
-                    _ => return None,
-                }
-                Some(Vec::new())
-            }
             Overlay::OperatorForm(state) => {
                 if key.code == KeyCode::Char('s')
                     && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -3354,24 +3300,6 @@ impl App {
                 }
                 Some(Vec::new())
             }
-            Overlay::HandoffInput(state) => {
-                match key.code {
-                    KeyCode::Char(character) if is_typed_text(key) => {
-                        state.input.push(character);
-                        state.error = None;
-                    }
-                    KeyCode::Backspace => {
-                        let _ = state.input.pop();
-                        state.error = None;
-                    }
-                    KeyCode::Enter => {
-                        let state = state.clone();
-                        return Some(self.accept_handoff_input(state));
-                    }
-                    _ => return None,
-                }
-                Some(Vec::new())
-            }
             Overlay::Confirmation(state) => {
                 match key.code {
                     KeyCode::Char(character) if is_typed_text(key) => {
@@ -3415,20 +3343,12 @@ impl App {
                 self.overlays.push(Overlay::TaskInspector(task_id));
                 Vec::new()
             }
-            Overlay::DiagnosticInput(state) => {
-                self.overlays.push(Overlay::DiagnosticInput(state));
-                Vec::new()
-            }
             Overlay::OperatorForm(state) => {
                 self.overlays.push(Overlay::OperatorForm(state));
                 Vec::new()
             }
             Overlay::Form(state) => {
                 self.overlays.push(Overlay::Form(state));
-                Vec::new()
-            }
-            Overlay::HandoffInput(state) => {
-                self.overlays.push(Overlay::HandoffInput(state));
                 Vec::new()
             }
             Overlay::Confirmation(mut state) => {
@@ -4200,17 +4120,8 @@ impl App {
                 self.start_local_diagnostic(DiagnosticRequest::Netcheck { live: true })
             }
             ActionId::LocalDnsStatus => self.start_local_diagnostic(DiagnosticRequest::DnsStatus),
-            ActionId::LocalDnsQuery => {
-                self.overlays
-                    .push(Overlay::DiagnosticInput(DiagnosticInputState {
-                        kind: DiagnosticInputKind::DnsQuery,
-                        input: String::new(),
-                        secondary: "A".to_owned(),
-                        error: None,
-                    }));
-                Vec::new()
-            }
-            ActionId::LocalWhois => self.open_whois_input(),
+            ActionId::LocalDnsQuery => self.open_dns_query_form(),
+            ActionId::LocalWhois => self.open_whois_form(),
             ActionId::DiagnosticCopy => {
                 let value = self.diagnostic_summary();
                 self.copy_text(value)
@@ -4232,8 +4143,8 @@ impl App {
             ActionId::LocalAccountLogin => self.open_login_confirmation(),
             ActionId::LocalAccountLogout => self.open_logout_confirmation(),
             ActionId::LocalAccountRemove => self.open_account_picker(ActionId::LocalAccountRemove),
-            ActionId::LocalSshOpen => self.open_handoff_input(HandoffInputKind::Ssh),
-            ActionId::LocalNcOpen => self.open_handoff_input(HandoffInputKind::Nc),
+            ActionId::LocalSshOpen => self.open_handoff_form(ActionId::LocalSshOpen),
+            ActionId::LocalNcOpen => self.open_handoff_form(ActionId::LocalNcOpen),
             ActionId::LocalSyspolicyReload => {
                 self.open_mutation_confirmation(LocalMutation::SyspolicyReload)
             }
@@ -6409,7 +6320,9 @@ impl App {
         Vec::new()
     }
 
-    fn open_handoff_input(&mut self, kind: HandoffInputKind) -> Vec<Effect> {
+    /// The handoff forms name the host they act on rather than asking for it:
+    /// the form is modal, so the selected row is still the row underneath it.
+    fn open_handoff_form(&mut self, action_id: ActionId) -> Vec<Effect> {
         let Some(host) = self
             .selected_local_device()
             .and_then(LocalDevice::preferred_target)
@@ -6418,16 +6331,84 @@ impl App {
             self.runtime_error = Some("selected device has no DNS name or Tailscale IP".to_owned());
             return Vec::new();
         };
-        self.overlays.push(Overlay::HandoffInput(HandoffInputState {
-            kind,
-            host,
-            input: match kind {
-                HandoffInputKind::Ssh => String::new(),
-                HandoffInputKind::Nc => "443".to_owned(),
-            },
-            error: None,
-        }));
+        let (title, field) = if action_id == ActionId::LocalNcOpen {
+            (
+                "Open a netcat session",
+                FormField::text(
+                    "port",
+                    "Port",
+                    "TCP port 1-65535 on the selected host",
+                    "443",
+                    "443",
+                ),
+            )
+        } else {
+            (
+                "Open an SSH session",
+                FormField::text(
+                    "user",
+                    "Username",
+                    "Leave empty to let the client pick the remote username",
+                    "remote default",
+                    String::new(),
+                ),
+            )
+        };
+        self.push_form(action_id, title, vec![("host", host)], vec![field]);
         Vec::new()
+    }
+
+    fn accept_handoff_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let Some(executable) = self.local_executable.as_ref() else {
+            self.runtime_error = Some(self.missing_executable_reason());
+            return Vec::new();
+        };
+        let Some(host) = self
+            .selected_local_device()
+            .and_then(LocalDevice::preferred_target)
+        else {
+            return self.set_form_error("selected device has no DNS name or Tailscale IP");
+        };
+        let command = if state.action_id == ActionId::LocalNcOpen {
+            handoff::nc_command(&executable.path, host, state.value("port").trim())
+        } else {
+            let user = state.value("user").trim();
+            handoff::ssh_command(
+                &executable.path,
+                (!user.is_empty()).then_some(user),
+                host,
+            )
+        };
+        match command {
+            Ok(command) => {
+                let command = local_handoff_command(command, executable.socket_path.as_deref());
+                let redacted_argv = redacted_argv(&command.args());
+                self.overlays.pop();
+                self.overlays
+                    .push(Overlay::Confirmation(Box::new(ConfirmationState {
+                        action_id: state.action_id,
+                        mutation: None,
+                        admin_mutation: None,
+                        admin_batch: None,
+                        service_request: None,
+                        operational_mutation: None,
+                        handoff: Some(command),
+                        prompt: "Pause Tale and open the selected interactive terminal session."
+                            .to_owned(),
+                        required_phrase: None,
+                        input: String::new(),
+                        lose_ssh_checked: false,
+                        preview_lines: vec![
+                        "the child receives only the selected host and supplied port or username"
+                            .to_owned(),
+                    ],
+                        redacted_argv,
+                        error: None,
+                    })));
+                Vec::new()
+            }
+            Err(error) => self.set_form_error(error.to_string()),
+        }
     }
 
     fn open_mutation_confirmation(&mut self, mutation: LocalMutation) -> Vec<Effect> {
@@ -7488,65 +7469,6 @@ impl App {
             selection,
             allow_lan_access,
         })
-    }
-
-    fn accept_handoff_input(&mut self, state: HandoffInputState) -> Vec<Effect> {
-        let Some(executable) = self.local_executable.as_ref() else {
-            self.runtime_error = Some(self.missing_executable_reason());
-            return Vec::new();
-        };
-        let command = match state.kind {
-            HandoffInputKind::Ssh => handoff::ssh_command(
-                &executable.path,
-                if state.input.is_empty() {
-                    None
-                } else {
-                    Some(state.input.as_str())
-                },
-                &state.host,
-            ),
-            HandoffInputKind::Nc => {
-                handoff::nc_command(&executable.path, &state.host, &state.input)
-            }
-        };
-        match command {
-            Ok(command) => {
-                let command = local_handoff_command(command, executable.socket_path.as_deref());
-                let redacted_argv = redacted_argv(&command.args());
-                self.overlays.pop();
-                self.overlays
-                    .push(Overlay::Confirmation(Box::new(ConfirmationState {
-                        action_id: match state.kind {
-                            HandoffInputKind::Ssh => ActionId::LocalSshOpen,
-                            HandoffInputKind::Nc => ActionId::LocalNcOpen,
-                        },
-                        mutation: None,
-                        admin_mutation: None,
-                        admin_batch: None,
-                        service_request: None,
-                        operational_mutation: None,
-                        handoff: Some(command),
-                        prompt: "Pause Tale and open the selected interactive terminal session."
-                            .to_owned(),
-                        required_phrase: None,
-                        input: String::new(),
-                        lose_ssh_checked: false,
-                        preview_lines: vec![
-                        "the child receives only the selected host and supplied port or username"
-                            .to_owned(),
-                    ],
-                        redacted_argv,
-                        error: None,
-                    })));
-                Vec::new()
-            }
-            Err(error) => {
-                if let Some(Overlay::HandoffInput(current)) = self.overlays.last_mut() {
-                    current.error = Some(error.to_string());
-                }
-                Vec::new()
-            }
-        }
     }
 
     fn accept_admin_batch_confirmation(
@@ -11098,7 +11020,7 @@ impl App {
             }
             ActionId::ServicesServeCreate | ActionId::ServicesFunnelCreate => {
                 let public = action_id == ActionId::ServicesFunnelCreate;
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     if public {
                         "New public mapping"
@@ -11126,7 +11048,7 @@ impl App {
                     self.runtime_error = Some("select a mapping to edit".to_owned());
                     return Vec::new();
                 };
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     "Edit mapping",
                     vec![
@@ -11177,7 +11099,7 @@ impl App {
                     });
                     return Vec::new();
                 }
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     "Send files",
                     vec![("to", target.display_name.clone())],
@@ -11192,7 +11114,7 @@ impl App {
                 Vec::new()
             }
             ActionId::DevicesTaildropReceive => {
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     "Receive files",
                     Vec::new(),
@@ -11222,7 +11144,7 @@ impl App {
                 Vec::new()
             }
             ActionId::ServicesDriveShare => {
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     "Share a folder",
                     Vec::new(),
@@ -11250,7 +11172,7 @@ impl App {
                     self.runtime_error = Some("select a share to rename".to_owned());
                     return Vec::new();
                 };
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     "Rename share",
                     vec![("current name", share.name.clone())],
@@ -11285,7 +11207,7 @@ impl App {
                     self.runtime_error = Some("select a domain".to_owned());
                     return Vec::new();
                 };
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     "Get a certificate",
                     vec![("domain", domain)],
@@ -11319,7 +11241,7 @@ impl App {
                 self.start_service_request(ServiceActionRequest::Metrics)
             }
             ActionId::ServicesBugReportCreate => {
-                self.push_service_form(
+                self.push_form(
                     action_id,
                     "Create a bug report",
                     Vec::new(),
@@ -11345,7 +11267,7 @@ impl App {
         }
     }
 
-    fn push_service_form(
+    fn push_form(
         &mut self,
         action_id: ActionId,
         title: &'static str,
@@ -11363,7 +11285,24 @@ impl App {
         }));
     }
 
+    /// Reports why a form cannot be submitted on the form itself, so the user
+    /// answers the question where they were asked it.
+    fn set_form_error(&mut self, error: impl Into<String>) -> Vec<Effect> {
+        if let Some(Overlay::Form(current)) = self.overlays.last_mut() {
+            current.error = Some(error.into());
+        }
+        Vec::new()
+    }
+
     fn accept_form(&mut self, state: FormState) -> Vec<Effect> {
+        match state.action_id {
+            ActionId::LocalSshOpen | ActionId::LocalNcOpen => {
+                return self.accept_handoff_form(&state);
+            }
+            ActionId::LocalDnsQuery => return self.accept_dns_query_form(&state),
+            ActionId::LocalWhois => return self.accept_whois_form(&state),
+            _ => {}
+        }
         match self.parse_service_form(&state) {
             Ok(request) => {
                 self.overlays.pop();
@@ -12218,83 +12157,98 @@ impl App {
         }
     }
 
-    fn open_whois_input(&mut self) -> Vec<Effect> {
-        let seed = match self
+    fn open_dns_query_form(&mut self) -> Vec<Effect> {
+        self.push_form(
+            ActionId::LocalDnsQuery,
+            "Query the tailnet resolver",
+            Vec::new(),
+            vec![
+                FormField::text(
+                    "name",
+                    "Name",
+                    "The DNS name to resolve through the local daemon",
+                    "host.example.com",
+                    String::new(),
+                ),
+                FormField::choice(
+                    "type",
+                    "Record",
+                    "Which record the resolver is asked for",
+                    diagnostics::DnsRecordType::LABELS,
+                    "A",
+                ),
+            ],
+        );
+        Vec::new()
+    }
+
+    fn open_whois_form(&mut self) -> Vec<Effect> {
+        let seed = self
             .selected_local_device()
             .and_then(|device| device.tailscale_ips.first())
-        {
-            Some(value) => value.clone(),
-            None => String::new(),
+            .cloned()
+            .unwrap_or_default();
+        self.push_form(
+            ActionId::LocalWhois,
+            "Identify a tailnet address",
+            Vec::new(),
+            vec![
+                FormField::text(
+                    "target",
+                    "Address",
+                    "A Tailscale IP, optionally with a port",
+                    "100.64.0.1 or 100.64.0.1:443",
+                    seed,
+                ),
+                FormField::choice(
+                    "protocol",
+                    "Protocol",
+                    "Narrows the lookup to one transport; any leaves it unset",
+                    &["any", "tcp", "udp"],
+                    "any",
+                ),
+            ],
+        );
+        Vec::new()
+    }
+
+    fn accept_dns_query_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let name = state.value("name").trim();
+        if name.is_empty() {
+            return self.set_form_error("enter a DNS name");
+        }
+        match diagnostics::validate_dns_query(name, state.value("type")) {
+            Ok(record_type) => {
+                self.overlays.pop();
+                self.start_local_diagnostic(DiagnosticRequest::DnsQuery {
+                    name: name.to_owned(),
+                    record_type,
+                })
+            }
+            Err(error) => self.set_form_error(error),
+        }
+    }
+
+    fn accept_whois_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let target = state.value("target").trim();
+        if target.is_empty() {
+            return self.set_form_error("enter an IP address or IP:port");
+        }
+        let protocol = match state.value("protocol") {
+            "tcp" => Some(diagnostics::WhoisProtocol::Tcp),
+            "udp" => Some(diagnostics::WhoisProtocol::Udp),
+            _ => None,
         };
-        self.overlays
-            .push(Overlay::DiagnosticInput(DiagnosticInputState {
-                kind: DiagnosticInputKind::Whois,
-                input: seed,
-                secondary: String::new(),
-                error: None,
-            }));
-        Vec::new()
-    }
-
-    fn accept_diagnostic_input(&mut self, kind: DiagnosticInputKind, input: &str) -> Vec<Effect> {
-        match kind {
-            DiagnosticInputKind::DnsQuery => {
-                let mut parts = input.split_ascii_whitespace();
-                let Some(name) = parts.next() else {
-                    return self.set_diagnostic_input_error("enter a DNS name");
-                };
-                let record_type = parts.next().map_or("A", |value| value);
-                if parts.next().is_some() {
-                    return self
-                        .set_diagnostic_input_error("enter a DNS name and optional record type");
-                }
-                match diagnostics::validate_dns_query(name, record_type) {
-                    Ok(record_type) => {
-                        self.overlays.pop();
-                        self.start_local_diagnostic(DiagnosticRequest::DnsQuery {
-                            name: name.to_owned(),
-                            record_type,
-                        })
-                    }
-                    Err(error) => self.set_diagnostic_input_error(&error),
-                }
+        match diagnostics::validate_whois_target(target) {
+            Ok(_) => {
+                self.overlays.pop();
+                self.start_local_diagnostic(DiagnosticRequest::Whois {
+                    target: target.to_owned(),
+                    protocol,
+                })
             }
-            DiagnosticInputKind::Whois => {
-                let mut parts = input.split_ascii_whitespace();
-                let Some(target) = parts.next() else {
-                    return self.set_diagnostic_input_error("enter an IP address or IP:port");
-                };
-                let protocol = match parts.next() {
-                    None => None,
-                    Some("tcp") => Some(diagnostics::WhoisProtocol::Tcp),
-                    Some("udp") => Some(diagnostics::WhoisProtocol::Udp),
-                    Some(_) => {
-                        return self.set_diagnostic_input_error("protocol must be tcp or udp");
-                    }
-                };
-                if parts.next().is_some() {
-                    return self
-                        .set_diagnostic_input_error("enter an IP address and optional protocol");
-                }
-                match diagnostics::validate_whois_target(target) {
-                    Ok(_) => {
-                        self.overlays.pop();
-                        self.start_local_diagnostic(DiagnosticRequest::Whois {
-                            target: target.to_owned(),
-                            protocol,
-                        })
-                    }
-                    Err(error) => self.set_diagnostic_input_error(&error),
-                }
-            }
+            Err(error) => self.set_form_error(error),
         }
-    }
-
-    fn set_diagnostic_input_error(&mut self, error: &str) -> Vec<Effect> {
-        if let Some(Overlay::DiagnosticInput(state)) = self.overlays.last_mut() {
-            state.error = Some(error.to_owned());
-        }
-        Vec::new()
     }
 
     fn diagnostic_summary(&self) -> String {
@@ -14218,11 +14172,9 @@ impl App {
         self.overlays.last().map(|overlay| match overlay {
             Overlay::QuitConfirmation => "quit",
             Overlay::TaskInspector(_) => "task",
-            Overlay::DiagnosticInput(_) => "diagnostic input",
             Overlay::Confirmation(_) => "confirm local action",
             Overlay::OperatorForm(_) => "local operator form",
-            Overlay::Form(_) => "local service form",
-            Overlay::HandoffInput(_) => "terminal handoff",
+            Overlay::Form(_) => "form",
             Overlay::PolicyEditor => "policy workflow",
             Overlay::SecretResult => "secret result",
             Overlay::AuditInvestigation => "audit investigation",

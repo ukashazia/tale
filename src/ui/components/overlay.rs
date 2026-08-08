@@ -52,32 +52,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 area,
             );
         }
-        Overlay::DiagnosticInput(state) => {
-            let label = match &state.kind {
-                crate::app::DiagnosticInputKind::DnsQuery => "DNS name and optional type",
-                crate::app::DiagnosticInputKind::Whois => {
-                    "IP address or IP:port and optional tcp/udp"
-                }
-            };
-            let error = state
-                .error
-                .as_deref()
-                .map_or(String::new(), |value| format!("\nerror: {value}"));
-            frame.render_widget(
-                Paragraph::new(format!("{label}\n> {}{}", state.input, error))
-                    .style(app.theme.style(StyleRole::SurfaceRaised))
-                    .block(
-                        ratatui::widgets::Block::default()
-                            .borders(ratatui::widgets::Borders::ALL)
-                            .title("diagnostic input"),
-                    ),
-                area,
-            );
-        }
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
         Overlay::OperatorForm(state) => form::render_operator(frame, app, area, state),
         Overlay::Form(state) => form::render(frame, app, area, state),
-        Overlay::HandoffInput(state) => form::render_handoff(frame, app, area, state),
         Overlay::PolicyEditor => policy_editor::render(frame, app, area),
         Overlay::SecretResult => secret_result::render(frame, app, area),
         Overlay::AuditInvestigation => audit_investigation::render(frame, app, area),
@@ -100,10 +77,7 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
         | Overlay::PolicyEditor
         | Overlay::SecretResult
         | Overlay::AuditInvestigation => area,
-        Overlay::DiagnosticInput(_)
-        | Overlay::OperatorForm(_)
-        | Overlay::Form(_)
-        | Overlay::HandoffInput(_) => {
+        Overlay::OperatorForm(_) | Overlay::Form(_) => {
             let height = area.height.saturating_mul(2) / 5;
             Rect {
                 x: area.x,

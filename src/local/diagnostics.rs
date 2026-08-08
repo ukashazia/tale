@@ -28,6 +28,10 @@ pub enum DnsRecordType {
 }
 
 impl DnsRecordType {
+    /// Every record type a query may ask for, in the order a form offers them.
+    pub const LABELS: &'static [&'static str] =
+        &["A", "AAAA", "CNAME", "MX", "NS", "PTR", "SRV", "TXT"];
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::A => "A",

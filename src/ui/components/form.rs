@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, FieldKind, FormState, HandoffInputState, OperatorFormState};
+use crate::app::{App, FieldKind, FormState, OperatorFormState};
 use crate::ui::{text, theme};
 
 pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &OperatorFormState) {
@@ -205,31 +205,6 @@ fn preference_status<T: std::fmt::Display>(
             .map_or_else(|| "not returned".to_owned(), ToString::to_string),
         preference.editability.label()
     )
-}
-
-pub fn render_handoff(frame: &mut Frame<'_>, app: &App, area: Rect, state: &HandoffInputState) {
-    let label = match state.kind {
-        crate::app::HandoffInputKind::Ssh => "optional SSH username",
-        crate::app::HandoffInputKind::Nc => "netcat port 1-65535",
-    };
-    let error = state
-        .error
-        .as_deref()
-        .map_or(String::new(), |value| format!("\nerror: {value}"));
-    frame.render_widget(
-        Paragraph::new(format!(
-            "host: {}\n{}\n> {}{}\nEnter previews   Esc cancels",
-            state.host, label, state.input, error
-        ))
-        .style(app.theme.style(theme::StyleRole::SurfaceRaised))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(app.theme.style(theme::StyleRole::BorderFocused))
-                .title("terminal handoff"),
-        ),
-        area,
-    );
 }
 
 /// A field-by-field form. Every row states what it wants in words, the selected
