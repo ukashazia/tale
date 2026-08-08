@@ -30,8 +30,7 @@ use std::io::Write;
 use clap::CommandFactory;
 
 use crate::admin::auth::{
-    AccessTokenRecord, CredentialRecord, CredentialStore, FileCredentialStore, OAuthClientRecord,
-    SecretValue,
+    AccessTokenRecord, CredentialBackend, CredentialRecord, OAuthClientRecord, SecretValue,
 };
 use crate::cli::{AuthAddArgs, AuthCommand, Cli, Command, ConfigCommand};
 use crate::config::{EnvironmentValues, ResolvedConfig};
@@ -234,6 +233,14 @@ fn auth_add(args: AuthAddArgs, checked: &ResolvedConfig) -> Result<(), TaleError
             || profile_name.clone(),
             |profile| profile.credential.clone(),
         ),
+        // An existing profile keeps whichever backend it already names, so re-running
+        // `auth add` to rotate a secret never silently relocates it.
+        credential_backend: existing.as_ref().map_or_else(
+            || CredentialBackend::File {
+                path: checked.paths.credentials_file.clone(),
+            },
+            |profile| profile.credential_backend.clone(),
+        ),
     };
     let runtime = auth_runtime()?;
     runtime
@@ -245,7 +252,7 @@ fn auth_add(args: AuthAddArgs, checked: &ResolvedConfig) -> Result<(), TaleError
         .map_err(|error| {
             TaleError::Application(format!("credential validation failed: {error}"))
         })?;
-    let store = FileCredentialStore::new(checked.paths.credentials_file.clone());
+    let store = tailnet_profile.credential_backend.open();
     let previous = store.get(&tailnet_profile.credential).map_err(|error| {
         TaleError::Application(format!("credential could not be read: {error}"))
     })?;
@@ -283,15 +290,17 @@ fn auth_status(
         .profiles
         .get(&profile_name)
         .ok_or_else(|| TaleError::InvalidArguments("profile does not exist".to_owned()))?;
-    let store: std::sync::Arc<dyn CredentialStore> = std::sync::Arc::new(
-        FileCredentialStore::new(checked.paths.credentials_file.clone()),
-    );
+    let store = profile.credential_backend.open();
     let status = crate::admin::auth::TokenManager::new(store.clone())
         .credential_status(&profile.credential)
         .map_err(|error| TaleError::Application(format!("credential status failed: {error}")))?;
     println!("profile: {profile_name}");
     println!("tailnet: {}", profile.tailnet);
-    println!("store: {}", checked.paths.credentials_file.display());
+    println!(
+        "backend: {} ({})",
+        profile.credential_backend.label(),
+        profile.credential_backend.location().display()
+    );
     match status {
         None => println!("credential: missing"),
         Some(status) => {
@@ -325,7 +334,7 @@ fn auth_remove(profile_name: String, checked: &ResolvedConfig) -> Result<(), Tal
         .profiles
         .get(&profile_name)
         .ok_or_else(|| TaleError::InvalidArguments("profile does not exist".to_owned()))?;
-    let store = FileCredentialStore::new(checked.paths.credentials_file.clone());
+    let store = profile.credential_backend.open();
     let removed = store.delete(&profile.credential).map_err(|error| {
         TaleError::Application(format!("credential removal failed: {error}"))
     })?;

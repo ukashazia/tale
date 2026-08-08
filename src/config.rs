@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::cli::{Cli, Command, ConfigCommand};
 use crate::paths::{self, PathEnvironment, PathError, Paths};
+use crate::secrets::CredentialBackend;
 use thiserror::Error;
 
 use crate::ui::theme::{ColorCapability, ThemeId};
@@ -206,6 +207,9 @@ pub struct ProfileConfig {
     pub tailnet: String,
     pub read_only: bool,
     pub credential: String,
+    /// Which store holds this profile's credential, and where. Stated per profile so the
+    /// configuration is self-describing rather than depending on a process-wide default.
+    pub credential_backend: CredentialBackend,
 }
 
 #[derive(Debug, Clone)]
@@ -532,6 +536,18 @@ pub fn write_profile_atomic(
         "credential".to_owned(),
         toml::Value::String(profile.credential.clone()),
     );
+    profile_table.insert(
+        "credential_backend".to_owned(),
+        toml::Value::String(profile.credential_backend.label().to_owned()),
+    );
+    match &profile.credential_backend {
+        CredentialBackend::File { path } => {
+            profile_table.insert(
+                "credential_file".to_owned(),
+                toml::Value::String(path.display().to_string()),
+            );
+        }
+    }
     profiles.insert(profile_name.to_owned(), toml::Value::Table(profile_table));
     if !root.contains_key("default_profile") {
         root.insert(
@@ -768,17 +784,51 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
             expected: "a TOML table",
         })?;
         let prefix = format!("profiles.{name}");
-        check_unknown(profile, &prefix, &["tailnet", "read_only", "credential"])?;
+        check_unknown(
+            profile,
+            &prefix,
+            &[
+                "tailnet",
+                "read_only",
+                "credential",
+                "credential_backend",
+                "credential_file",
+            ],
+        )?;
         let tailnet = required_string(profile, "tailnet", &format!("{prefix}.tailnet"))?;
         let credential = required_string(profile, "credential", &format!("{prefix}.credential"))?;
         let read_only = optional_bool(profile, "read_only", &format!("{prefix}.read_only"))?
             .is_none_or(|value| value);
+        let backend_name = required_string(
+            profile,
+            "credential_backend",
+            &format!("{prefix}.credential_backend"),
+        )?;
+        let credential_backend = match backend_name.as_str() {
+            "file" => {
+                let path = required_string(
+                    profile,
+                    "credential_file",
+                    &format!("{prefix}.credential_file"),
+                )?;
+                CredentialBackend::File {
+                    path: PathBuf::from(path),
+                }
+            }
+            _ => {
+                return Err(ConfigError::InvalidField {
+                    field: format!("{prefix}.credential_backend"),
+                    expected: "a supported credential backend: file",
+                });
+            }
+        };
         profiles.insert(
             name.clone(),
             ProfileConfig {
                 tailnet,
                 read_only,
                 credential,
+                credential_backend,
             },
         );
     }

@@ -268,7 +268,7 @@ fn default_profile_is_validated_and_activated_for_phase_five() {
     let file = root.join("config.toml");
     let write = fs::write(
         &file,
-        "default_profile = \"ops\"\n[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\n",
+        "default_profile = \"ops\"\n[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
     );
     assert!(write.is_ok());
 
@@ -303,6 +303,64 @@ fn default_profile_is_validated_and_activated_for_phase_five() {
             assert!(resolved.profile.is_none());
             assert!(resolved.profiles.contains_key("ops"));
         }
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The backend and its location are required, with no default and no fallback: a profile
+/// that does not say where its secret lives is a configuration error, not an assumption.
+#[test]
+fn a_profile_must_declare_its_credential_backend_and_location() {
+    let root = std::env::temp_dir().join(format!("tale-backend-{}", std::process::id()));
+    let _ = fs::create_dir_all(&root);
+
+    for (contents, expectation) in [
+        (
+            "[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\n",
+            "a missing backend must be rejected",
+        ),
+        (
+            "[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\ncredential_backend = \"file\"\n",
+            "the file backend must name its file",
+        ),
+        (
+            "[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\n\
+             credential_backend = \"keyring\"\ncredential_file = \"c.toml\"\n",
+            "an unknown backend must be rejected rather than ignored",
+        ),
+    ] {
+        let file = root.join("config.toml");
+        assert!(fs::write(&file, contents).is_ok());
+        let resolved = config::resolve(
+            &cli(Some(file)),
+            &environment(),
+            &path_environment(Platform::Unix, &root),
+        );
+        assert!(resolved.is_err(), "{expectation}");
+    }
+
+    let file = root.join("config.toml");
+    assert!(
+        fs::write(
+            &file,
+            "[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\n\
+             credential_backend = \"file\"\ncredential_file = \"/tmp/tale-fixture.toml\"\n",
+        )
+        .is_ok()
+    );
+    let resolved = config::resolve(
+        &cli(Some(file)),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(resolved.is_ok());
+    if let Ok(resolved) = resolved {
+        let backend = &resolved.profiles["ops"].credential_backend;
+        assert_eq!(backend.label(), "file");
+        assert_eq!(
+            backend.location(),
+            std::path::Path::new("/tmp/tale-fixture.toml")
+        );
     }
     let _ = fs::remove_dir_all(root);
 }

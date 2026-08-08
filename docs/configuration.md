@@ -125,15 +125,19 @@ max_tasks = 200
 tailnet = "-"
 read_only = false
 credential = "ops"
+credential_backend = "file"
+credential_file = "/home/user/.config/tale/credentials.toml"
 
 [profiles.audit]
 tailnet = "example.com"
 read_only = true
 credential = "audit"
+credential_backend = "file"
+credential_file = "/home/user/.config/tale/credentials.toml"
 ```
 
-All fields are optional except `tailnet` and `credential` inside a declared
-profile. Unknown fields are errors so misspellings cannot silently weaken a
+All fields are optional except `tailnet`, `credential`, `credential_backend`, and
+the location that backend requires, inside a declared profile. Unknown fields are errors so misspellings cannot silently weaken a
 setting.
 
 `ui.theme` accepts exactly `tailscale-dark` (default), `tailscale-light`, or
@@ -215,6 +219,8 @@ configuration.
 | `tailnet` | string | required | a Tailnet ID or `-`; not a display label |
 | `read_only` | bool | `true` | profile write lock |
 | `credential` | string | required | credential-store record name, not secret material |
+| `credential_backend` | string | required | which store holds the secret; `file` is the only supported value |
+| `credential_file` | path/string | required for `file` | the file holding this profile's secret |
 
 Profile names use ASCII letters, digits, `_`, and `-`, are case-sensitive, and
 must be unique. The configuration never contains OAuth client secrets, API
@@ -244,15 +250,22 @@ can audit the requested access. Tale refuses a literal token in `config.toml`.
 
 ### Which credential is used
 
-A credential is read from exactly one place: the record in `credentials.toml`
-named by the selected profile's `credential` field. There is no environment
-variable and no fallback. `credential` names a record; it never holds secret
-material. It defaults to the profile name, so it only becomes interesting once a
+A credential is read from exactly one place: the record named by the selected
+profile's `credential` field, in the store named by that profile's
+`credential_backend`. There is no environment variable and no fallback.
+
+Each profile states its own backend and location, so a configuration says where
+its secrets live rather than leaving it implied. Two profiles may use different
+files. `credential` names a record within that store and never holds secret
+material; it defaults to the profile name, so it only becomes interesting once a
 single credential backs several profiles.
 
-Storage sits behind a backend interface, so a future release can add another
-backend without changing the record type, the configuration, or these commands.
-Only the file backend exists today.
+`file` is the only backend today. Storage sits behind an interface, so another
+can be added without changing the record type or these commands, and existing
+profiles keep working because they already say which backend they use.
+
+`auth add` records the backend when it creates a profile and leaves it alone
+afterwards, so rotating a secret never relocates it.
 
 A configuration that selects no profile is not an error. Tale starts, local
 views work, and the admin views stay inactive until a profile is selected.

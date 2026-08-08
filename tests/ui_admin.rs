@@ -21,7 +21,7 @@ fn admin_app() -> Option<App> {
     let config_path = root.join("config.toml");
     let write = fs::write(
         &config_path,
-        "default_profile = \"audit\"\n[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\n",
+        "default_profile = \"audit\"\n[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
     );
     if write.is_err() {
         return None;

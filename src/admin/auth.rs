@@ -15,8 +15,8 @@ use super::client::{AdminClient, AdminError};
 // Secret material and its storage live in `crate::secrets`; they are re-exported here so
 // callers keep a single import for "the credential a profile authenticates with".
 pub use crate::secrets::{
-    AccessTokenRecord, CredentialKind, CredentialRecord, CredentialStore, FileCredentialStore,
-    MemoryCredentialStore, OAuthClientRecord, SecretValue, SecretsError,
+    AccessTokenRecord, CredentialBackend, CredentialKind, CredentialRecord, CredentialStore,
+    FileCredentialStore, MemoryCredentialStore, OAuthClientRecord, SecretValue, SecretsError,
 };
 
 const REFRESH_LEAD: Duration = Duration::from_secs(300);

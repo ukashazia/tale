@@ -14,7 +14,9 @@ use tokio::task::JoinSet;
 
 use crate::action::ActionId;
 use crate::admin;
-use crate::admin::auth::{CredentialStore, FileCredentialStore, TokenManager};
+use crate::admin::auth::{
+    CredentialBackend, CredentialStore, MemoryCredentialStore, TokenManager,
+};
 use crate::admin::client::{AdminClient, AdminError};
 use crate::admin::key_mutations::decode_created_auth_key;
 use crate::admin::mutation::{
@@ -235,9 +237,14 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     let mut local_services_refresh_cancellation: Option<Cancellation> = None;
     let mut admin_refresh_cancellation: Option<Cancellation> = None;
     let mut admin_token_managers: BTreeMap<String, Arc<TokenManager>> = BTreeMap::new();
-    let credential_store: Arc<dyn CredentialStore> = Arc::new(FileCredentialStore::new(
-        app.resolved_config.paths.credentials_file.clone(),
-    ));
+    // Each profile names its own backend, so the store cannot be a single process-wide
+    // value; it is resolved per profile and cached alongside that profile's manager.
+    let credential_backends: BTreeMap<String, CredentialBackend> = app
+        .resolved_config
+        .profiles
+        .iter()
+        .map(|(name, profile)| (name.clone(), profile.credential_backend.clone()))
+        .collect();
     let mut mutation_cancellations: HashMap<u64, Cancellation> = HashMap::new();
     let local_read_serializers = ReadSerializers::new();
     let handoff_input_gate = Arc::new(AtomicBool::new(true));
@@ -264,7 +271,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             local_services_refresh_cancellation: &mut local_services_refresh_cancellation,
             admin_refresh_cancellation: &mut admin_refresh_cancellation,
             admin_token_managers: &mut admin_token_managers,
-            credential_store: &credential_store,
+            credential_backends: &credential_backends,
             mutation_cancellations: &mut mutation_cancellations,
             local_read_serializers: &local_read_serializers,
             terminal,
@@ -367,9 +374,9 @@ struct DispatchContext<'a, T: TerminalDriver> {
     local_services_refresh_cancellation: &'a mut Option<Cancellation>,
     admin_refresh_cancellation: &'a mut Option<Cancellation>,
     admin_token_managers: &'a mut BTreeMap<String, Arc<TokenManager>>,
-    /// One store for the whole process. The backend is chosen once, at startup, so
-    /// effects never need to know which one is in use.
-    credential_store: &'a Arc<dyn CredentialStore>,
+    /// Each profile's declared backend, so an effect resolves the right store from the
+    /// profile it already carries.
+    credential_backends: &'a BTreeMap<String, CredentialBackend>,
     mutation_cancellations: &'a mut HashMap<u64, Cancellation>,
     local_read_serializers: &'a ReadSerializers,
     terminal: &'a mut T,
@@ -386,7 +393,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
     let local_services_refresh_cancellation = &mut *context.local_services_refresh_cancellation;
     let admin_refresh_cancellation = &mut *context.admin_refresh_cancellation;
     let admin_token_managers = &mut *context.admin_token_managers;
-    let credential_store = context.credential_store;
+    let credential_backends = context.credential_backends;
     let mutation_cancellations = &mut *context.mutation_cancellations;
     let local_read_serializers = context.local_read_serializers;
     let terminal = &mut *context.terminal;
@@ -536,7 +543,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             }
             let queue = queue.clone();
             let token_manager =
-                token_manager_for(admin_token_managers, &profile, credential_store);
+                token_manager_for(admin_token_managers, &profile, credential_backends);
             let cancellation = Cancellation::new();
             *admin_refresh_cancellation = Some(cancellation.clone());
             let context = AdminTaskContext {
@@ -578,7 +585,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 previous.cancel();
             }
             let token_manager =
-                token_manager_for(admin_token_managers, &profile, credential_store);
+                token_manager_for(admin_token_managers, &profile, credential_backends);
             let cancellation = Cancellation::new();
             *admin_refresh_cancellation = Some(cancellation.clone());
             let context = AdminTaskContext {
@@ -611,7 +618,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
         } => {
             let queue = queue.clone();
             let token_manager =
-                token_manager_for(admin_token_managers, &profile, credential_store);
+                token_manager_for(admin_token_managers, &profile, credential_backends);
             let cancellation = admin_refresh_cancellation
                 .as_ref()
                 .filter(|value| !value.is_cancelled())
@@ -636,7 +643,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let token_manager =
-                token_manager_for(admin_token_managers, &request.profile, credential_store);
+                token_manager_for(admin_token_managers, &request.profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_admin_preflight(queue, token_manager, request, tailnet, credential, timeout)
@@ -651,7 +658,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let token_manager =
-                token_manager_for(admin_token_managers, &request.profile, credential_store);
+                token_manager_for(admin_token_managers, &request.profile, credential_backends);
             let queue = queue.clone();
             let cancellation = Cancellation::new();
             mutation_cancellations.insert(request.mutation_id, cancellation.clone());
@@ -679,7 +686,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let token_manager =
-                token_manager_for(admin_token_managers, &profile, credential_store);
+                token_manager_for(admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_operational_mutation(
@@ -704,7 +711,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let token_manager =
-                token_manager_for(admin_token_managers, &profile, credential_store);
+                token_manager_for(admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_access_explorer(
@@ -766,7 +773,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let token_manager =
-                token_manager_for(&mut *admin_token_managers, &profile, credential_store);
+                token_manager_for(&mut *admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_policy_remote_fetch(
@@ -842,7 +849,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             path,
         } => {
             let token_manager =
-                token_manager_for(&mut *admin_token_managers, &profile, credential_store);
+                token_manager_for(&mut *admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_policy_validate(
@@ -871,7 +878,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             selector,
         } => {
             let token_manager =
-                token_manager_for(&mut *admin_token_managers, &profile, credential_store);
+                token_manager_for(&mut *admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_policy_preview(
@@ -902,7 +909,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             expected_candidate_hash,
         } => {
             let token_manager =
-                token_manager_for(&mut *admin_token_managers, &profile, credential_store);
+                token_manager_for(&mut *admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_policy_apply(
@@ -931,7 +938,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             request,
         } => {
             let token_manager =
-                token_manager_for(&mut *admin_token_managers, &profile, credential_store);
+                token_manager_for(&mut *admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_auth_key_create(AuthKeyTaskContext {
@@ -955,7 +962,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let token_manager =
-                token_manager_for(&mut *admin_token_managers, &profile, credential_store);
+                token_manager_for(&mut *admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_credential_detail(
@@ -978,7 +985,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             timeout,
         } => {
             let token_manager =
-                token_manager_for(&mut *admin_token_managers, &profile, credential_store);
+                token_manager_for(&mut *admin_token_managers, &profile, credential_backends);
             let queue = queue.clone();
             tasks.spawn(async move {
                 run_credential_revoke(
@@ -995,7 +1002,9 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
         }
         Effect::StartProfileCredentialRemove { profile, reference } => {
             let queue = queue.clone();
-            let store = Arc::clone(credential_store);
+            let store = credential_backends
+                .get(&profile)
+                .map_or_else(|| Arc::new(MemoryCredentialStore::default()) as _, CredentialBackend::open);
             tasks.spawn(async move {
                 let result = store.delete(&reference).map_err(|error| error.to_string());
                 queue
@@ -1531,12 +1540,17 @@ struct AdminTaskContext {
 fn token_manager_for(
     managers: &mut BTreeMap<String, Arc<TokenManager>>,
     profile: &str,
-    store: &Arc<dyn CredentialStore>,
+    backends: &BTreeMap<String, CredentialBackend>,
 ) -> Arc<TokenManager> {
     if let Some(manager) = managers.get(profile) {
         return Arc::clone(manager);
     }
-    let manager = Arc::new(TokenManager::new(Arc::clone(store)));
+    // A profile with no declared backend has no credential either, so an empty store is
+    // the accurate answer: reads report a missing credential rather than failing oddly.
+    let store: Arc<dyn CredentialStore> = backends
+        .get(profile)
+        .map_or_else(|| Arc::new(MemoryCredentialStore::default()) as _, CredentialBackend::open);
+    let manager = Arc::new(TokenManager::new(store));
     managers.insert(profile.to_owned(), Arc::clone(&manager));
     manager
 }

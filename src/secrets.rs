@@ -10,6 +10,7 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -100,6 +101,36 @@ impl CredentialRecord {
         match self {
             Self::OAuthClient(record) => record.requested_scopes.clone(),
             Self::AccessToken(_) => Vec::new(),
+        }
+    }
+}
+
+/// Which backend holds a profile's credential, and whatever that backend needs to find
+/// it. Recorded per profile so a configuration states where its secret lives rather than
+/// leaving it implied by the build, and so a second backend can be added without
+/// reinterpreting existing profiles.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CredentialBackend {
+    File { path: PathBuf },
+}
+
+impl CredentialBackend {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::File { .. } => "file",
+        }
+    }
+
+    /// The backend's location as it appears in configuration.
+    pub fn location(&self) -> &Path {
+        match self {
+            Self::File { path } => path,
+        }
+    }
+
+    pub fn open(&self) -> Arc<dyn CredentialStore> {
+        match self {
+            Self::File { path } => Arc::new(FileCredentialStore::new(path.clone())),
         }
     }
 }

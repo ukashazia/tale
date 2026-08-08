@@ -56,7 +56,7 @@ fn local_app(with_admin_profile: bool) -> Option<App> {
     if with_admin_profile
         && std::fs::write(
             &config_path,
-            "default_profile = \"audit\"\n[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\n",
+            "default_profile = \"audit\"\n[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
         )
         .is_err()
     {
