@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::action::{self, ActionContext, ActionId, Capability};
 use crate::admin::client::AdminError;
 use crate::admin::mutation::{
-    AdminBatchConfirmation, AdminMutationRequest, AdminSnapshotFields, batch_target, parse_change,
+    AdminBatchConfirmation, AdminMutationRequest, AdminSnapshotFields, batch_target,
 };
 use crate::admin::{
     self, AdminRefreshResource, AdminResource, AdminResourceResult, AdminResourceState,
@@ -865,6 +865,27 @@ impl ListEditor {
         }
         if let Some(entry) = self.entries.get_mut(self.selected) {
             change(entry);
+        }
+    }
+}
+
+/// What a form is made of, before it becomes an overlay.
+pub struct FormShape {
+    pub title: &'static str,
+    pub subject: Vec<(&'static str, String)>,
+    pub fields: Vec<FormField>,
+}
+
+impl FormShape {
+    pub fn new(
+        title: &'static str,
+        subject: Vec<(&'static str, String)>,
+        fields: Vec<FormField>,
+    ) -> Self {
+        Self {
+            title,
+            subject,
+            fields,
         }
     }
 }
@@ -5416,75 +5437,32 @@ impl App {
     }
 
     fn open_admin_form(&mut self, action_id: ActionId) -> Vec<Effect> {
-        let input = match action_id {
-            ActionId::AdminDeviceRename => self
-                .selected_admin_device()
-                .and_then(|device| device.name.clone().or_else(|| device.hostname.clone()))
-                .unwrap_or_default(),
-            ActionId::AdminDeviceTagsReplace => self
-                .selected_admin_device()
-                .map_or_else(String::new, |device| device.tags.join(",")),
-            ActionId::AdminDeviceKeyExpiryConfigure => self
-                .selected_admin_device()
-                .and_then(|device| device.key_expiry_disabled)
-                .map_or_else(
-                    || "on".to_owned(),
-                    |value| if value { "on" } else { "off" }.to_owned(),
-                ),
-            ActionId::AdminRoutesReplaceApprovals => self
-                .selected_admin_route()
-                .or_else(|| {
-                    self.admin
-                        .route_observations()
-                        .into_iter()
-                        .find(|route| route.complete)
-                })
-                .map_or_else(String::new, |route| route.enabled.join(",")),
-            ActionId::AdminDnsPreferencesEdit => self
-                .admin
-                .dns_preferences
-                .snapshot
-                .as_ref()
-                .and_then(|value| value.magic_dns)
-                .map_or_else(
-                    || "off".to_owned(),
-                    |value| if value { "on" } else { "off" }.to_owned(),
-                ),
-            ActionId::AdminDnsNameserversReplace => self
-                .admin
-                .nameservers
-                .snapshot
-                .as_ref()
-                .map_or_else(String::new, |value| value.values.join(",")),
-            ActionId::AdminDnsSearchPathsReplace => self
-                .admin
-                .search_paths
-                .snapshot
-                .as_ref()
-                .map_or_else(String::new, |value| value.values.join(",")),
-            ActionId::AdminDnsSplitEdit | ActionId::AdminDnsSplitRemove => self
-                .admin
-                .split_dns
-                .snapshot
-                .as_ref()
-                .and_then(|value| value.entries.first())
-                .map_or_else(String::new, |(domain, resolvers)| {
-                    if action_id == ActionId::AdminDnsSplitRemove {
-                        domain.clone()
-                    } else {
-                        format!(
-                            "{domain}={}",
-                            resolvers
-                                .as_ref()
-                                .map_or_else(String::new, |values| values.join(","))
-                        )
-                    }
-                }),
-            ActionId::AdminUserRoleChange => self
-                .selected_admin_user()
-                .and_then(|user| user.role.clone())
-                .unwrap_or_else(|| "member".to_owned()),
-            ActionId::AdminWebhookCreate => String::new(),
+        match action_id {
+            ActionId::AdminWebhookCreate
+            | ActionId::AdminWebhookEdit
+            | ActionId::AdminLogStreamReplace
+            | ActionId::AdminNetworkLogsSettings => {
+                let input = self.phase_eight_form_input(action_id);
+                let mut state = OperatorFormState::new(action_id, input, None);
+                if action_id == ActionId::AdminLogStreamReplace {
+                    state.secret_input = Some(SecretInput::new());
+                }
+                self.overlays.push(Overlay::OperatorForm(state));
+                Vec::new()
+            }
+            _ => {
+                let Some(shape) = self.admin_form_shape(action_id) else {
+                    self.runtime_error = Some("this action has no admin form".to_owned());
+                    return Vec::new();
+                };
+                self.push_form(action_id, shape.title, shape.subject, shape.fields);
+                Vec::new()
+            }
+        }
+    }
+
+    fn phase_eight_form_input(&self, action_id: ActionId) -> String {
+        match action_id {
             ActionId::AdminWebhookEdit => {
                 self.webhooks.first().map_or_else(String::new, |webhook| {
                     format!(
@@ -5520,13 +5498,285 @@ impl App {
                     |value| if value { "on" } else { "off" }.to_owned(),
                 ),
             _ => String::new(),
-        };
-        let mut state = admin_operator_form_state(action_id, input, None);
-        if action_id == ActionId::AdminLogStreamReplace {
-            state.secret_input = Some(SecretInput::new());
         }
-        self.overlays.push(Overlay::OperatorForm(state));
-        Vec::new()
+    }
+
+    /// Every admin form states the resource it acts on and then asks only for
+    /// the values that change, each one seeded with what the tailnet reports.
+    fn admin_form_shape(
+        &self,
+        action_id: ActionId,
+    ) -> Option<FormShape> {
+        match action_id {
+            ActionId::AdminDeviceRename => {
+                let device = self.selected_admin_device();
+                let current = device
+                    .and_then(|device| device.name.clone().or_else(|| device.hostname.clone()))
+                    .unwrap_or_default();
+                Some(FormShape::new(
+                    "Rename a device",
+                    self.admin_device_subject(),
+                    vec![FormField::text(
+                        "name",
+                        "Machine name",
+                        "The name this device is known by across the tailnet",
+                        "machine name",
+                        current,
+                    )],
+                ))
+            }
+            ActionId::AdminDeviceTagsReplace => {
+                let tags = self
+                    .selected_admin_device()
+                    .map(|device| device.tags.clone())
+                    .unwrap_or_default();
+                Some(FormShape::new(
+                    "Replace device tags",
+                    self.admin_device_subject(),
+                    vec![FormField::list(
+                        "tags",
+                        "Tags",
+                        "The complete tag set for this device; an empty list clears them",
+                        "no tags",
+                        tags,
+                    )],
+                ))
+            }
+            ActionId::AdminDeviceKeyExpiryConfigure => {
+                let disabled = self
+                    .selected_admin_device()
+                    .and_then(|device| device.key_expiry_disabled)
+                    .unwrap_or(false);
+                Some(FormShape::new(
+                    "Configure key expiry",
+                    self.admin_device_subject(),
+                    vec![FormField::toggle(
+                        "expiry",
+                        "Key expires",
+                        "Turning this off keeps the device key valid indefinitely",
+                        !disabled,
+                    )],
+                ))
+            }
+            ActionId::AdminRoutesReplaceApprovals => {
+                let route = self.selected_admin_route().or_else(|| {
+                    self.admin
+                        .route_observations()
+                        .into_iter()
+                        .find(|route| route.complete)
+                });
+                let (subject, enabled) = route.map_or_else(
+                    || (Vec::new(), Vec::new()),
+                    |route| {
+                        (
+                            vec![("advertiser", route.device_id.clone())],
+                            route.enabled.clone(),
+                        )
+                    },
+                );
+                Some(FormShape::new(
+                    "Replace approved routes",
+                    subject,
+                    vec![FormField::list(
+                        "routes",
+                        "Approved",
+                        "The complete set of approved CIDRs; an empty list approves none",
+                        "none approved",
+                        enabled,
+                    )],
+                ))
+            }
+            ActionId::AdminDnsPreferencesEdit => {
+                let magic_dns = self
+                    .admin
+                    .dns_preferences
+                    .snapshot
+                    .as_ref()
+                    .and_then(|value| value.magic_dns)
+                    .unwrap_or(false);
+                Some(FormShape::new(
+                    "Edit tailnet DNS preferences",
+                    Vec::new(),
+                    vec![FormField::toggle(
+                        "magic-dns",
+                        "MagicDNS",
+                        "Resolve tailnet names automatically on every device",
+                        magic_dns,
+                    )],
+                ))
+            }
+            ActionId::AdminDnsNameserversReplace => {
+                let values = self
+                    .admin
+                    .nameservers
+                    .snapshot
+                    .as_ref()
+                    .map(|value| value.values.clone())
+                    .unwrap_or_default();
+                Some(FormShape::new(
+                    "Replace tailnet nameservers",
+                    Vec::new(),
+                    vec![FormField::list(
+                        "nameservers",
+                        "Nameservers",
+                        "The complete resolver list, asked in the order shown",
+                        "none",
+                        values,
+                    )],
+                ))
+            }
+            ActionId::AdminDnsSearchPathsReplace => {
+                let values = self
+                    .admin
+                    .search_paths
+                    .snapshot
+                    .as_ref()
+                    .map(|value| value.values.clone())
+                    .unwrap_or_default();
+                Some(FormShape::new(
+                    "Replace DNS search paths",
+                    Vec::new(),
+                    vec![FormField::list(
+                        "search-paths",
+                        "Search paths",
+                        "The complete suffix list, tried in the order shown",
+                        "none",
+                        values,
+                    )],
+                ))
+            }
+            ActionId::AdminDnsSplitCreate => Some(FormShape::new(
+                "Add a split-DNS mapping",
+                Vec::new(),
+                vec![
+                    FormField::text(
+                        "domain",
+                        "Suffix",
+                        "The domain whose queries go to their own resolvers",
+                        "corp.example.com",
+                        String::new(),
+                    ),
+                    FormField::list(
+                        "resolvers",
+                        "Resolvers",
+                        "The resolvers for this suffix, asked in the order shown",
+                        "none",
+                        Vec::<String>::new(),
+                    ),
+                ],
+            )),
+            ActionId::AdminDnsSplitEdit => {
+                let (domain, resolvers) = self.selected_split_dns_entry();
+                Some(FormShape::new(
+                    "Edit a split-DNS mapping",
+                    Vec::new(),
+                    vec![
+                        FormField::text(
+                            "domain",
+                            "Suffix",
+                            "The domain whose queries go to their own resolvers",
+                            "corp.example.com",
+                            domain,
+                        ),
+                        FormField::list(
+                            "resolvers",
+                            "Resolvers",
+                            "The resolvers for this suffix, asked in the order shown",
+                            "none",
+                            resolvers,
+                        ),
+                    ],
+                ))
+            }
+            ActionId::AdminDnsSplitRemove => {
+                let (domain, _) = self.selected_split_dns_entry();
+                Some(FormShape::new(
+                    "Remove a split-DNS mapping",
+                    Vec::new(),
+                    vec![FormField::text(
+                        "domain",
+                        "Suffix",
+                        "The mapping to remove; its queries return to the default resolvers",
+                        "corp.example.com",
+                        domain,
+                    )],
+                ))
+            }
+            ActionId::AdminUserRoleChange => {
+                let user = self.selected_admin_user();
+                let current = user
+                    .and_then(|user| user.role.clone())
+                    .unwrap_or_else(|| "member".to_owned());
+                let subject = user.map_or_else(Vec::new, |user| {
+                    vec![("user", user.login_name.clone().unwrap_or_else(|| user.id.clone()))]
+                });
+                Some(FormShape::new(
+                    "Change a user role",
+                    subject,
+                    vec![FormField::options(
+                        "role",
+                        "Role",
+                        "What this user is allowed to do across the tailnet",
+                        crate::admin::user_mutations::DOCUMENTED_ROLES,
+                        current,
+                    )],
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Reopens an admin form still holding what the user asked for, so a
+    /// preflight conflict is answered rather than retyped.
+    fn reopen_admin_form(&mut self, action_id: ActionId, change: &AdminChange, error: String) {
+        let Some(mut shape) = self.admin_form_shape(action_id) else {
+            return;
+        };
+        for field in &mut shape.fields {
+            if let Some(value) = admin_change_value(change, field.key) {
+                field.value = value;
+            }
+        }
+        self.overlays.push(Overlay::Form(FormState {
+            action_id,
+            title: shape.title,
+            subject: shape.subject,
+            fields: shape.fields,
+            selected: 0,
+            draft: None,
+            list: None,
+            error: Some(error),
+        }));
+    }
+
+    fn admin_device_subject(&self) -> Vec<(&'static str, String)> {
+        self.selected_admin_device().map_or_else(Vec::new, |device| {
+            vec![(
+                "device",
+                device
+                    .name
+                    .clone()
+                    .or_else(|| device.hostname.clone())
+                    .unwrap_or_else(|| device.stable_id.clone()),
+            )]
+        })
+    }
+
+    fn selected_split_dns_entry(&self) -> (String, Vec<String>) {
+        self.admin
+            .split_dns
+            .snapshot
+            .as_ref()
+            .and_then(|value| value.entries.first())
+            .map_or_else(
+                || (String::new(), Vec::new()),
+                |(domain, resolvers)| {
+                    (
+                        domain.clone(),
+                        resolvers.clone().unwrap_or_default(),
+                    )
+                },
+            )
     }
 
     fn selected_webhook(&self) -> Option<&WebhookEndpoint> {
@@ -7260,9 +7510,6 @@ impl App {
         if state.action_id == ActionId::AccessExplorerAsk {
             return self.accept_access_explorer_form(state);
         }
-        if is_admin_mutation_action(state.action_id) {
-            return self.accept_admin_form(state);
-        }
         if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
             current.error = Some("this form is not a local operator form".to_owned());
         }
@@ -7455,15 +7702,10 @@ impl App {
         }
     }
 
-    fn accept_admin_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
-        let change = match parse_change(state.action_id, &state.input) {
+    fn accept_admin_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let change = match admin_change_from_form(state) {
             Ok(change) => change,
-            Err(error) => {
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error);
-                }
-                return Vec::new();
-            }
+            Err(error) => return self.set_form_error(error),
         };
         if let AdminChange::DnsSplitMapping {
             domain,
@@ -7488,20 +7730,14 @@ impl App {
                 } else {
                     "split-DNS remove requires an existing suffix"
                 };
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error.to_owned());
-                }
-                return Vec::new();
+                return self.set_form_error(error);
             }
         }
         if !self.admin_mutation_available(state.action_id) {
             let reason = self
                 .action_unavailable_reason(state.action_id)
                 .unwrap_or_else(|| "admin mutation is unavailable".to_owned());
-            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                current.error = Some(reason);
-            }
-            return Vec::new();
+            return self.set_form_error(reason);
         }
         if state.action_id == ActionId::AdminRoutesReplaceApprovals {
             return self.accept_admin_batch_form(state, change);
@@ -7511,12 +7747,7 @@ impl App {
         };
         let (target_id, base_snapshot) = match self.admin_base_snapshot(&change) {
             Ok(value) => value,
-            Err(error) => {
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error);
-                }
-                return Vec::new();
-            }
+            Err(error) => return self.set_form_error(error),
         };
         let mutation_id = self.next_mutation_id;
         self.next_mutation_id = self.next_mutation_id.saturating_add(1);
@@ -7535,12 +7766,8 @@ impl App {
         }
         let effects = self.start_admin_preflight(request);
         if effects.is_empty() {
-            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                current.error = Some(
-                    "a conflicting admin mutation or read is running; preview again".to_owned(),
-                );
-            }
-            return Vec::new();
+            return self
+                .set_form_error("a conflicting admin mutation or read is running; preview again");
         }
         self.overlays.pop();
         effects
@@ -7548,32 +7775,20 @@ impl App {
 
     fn accept_admin_batch_form(
         &mut self,
-        state: OperatorFormState,
+        state: &FormState,
         change: AdminChange,
     ) -> Vec<Effect> {
         let AdminChange::DeviceRoutes { routes } = change else {
-            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                current.error = Some("this batch action only supports route approvals".to_owned());
-            }
-            return Vec::new();
+            return self.set_form_error("this batch action only supports route approvals");
         };
         let Some(profile) = self.admin.profile.clone() else {
-            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                current.error = Some("an authenticated admin profile is required".to_owned());
-            }
-            return Vec::new();
+            return self.set_form_error("an authenticated admin profile is required");
         };
         if !self.resolved_config.profiles.contains_key(&profile) {
-            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                current.error = Some("admin profile configuration is unavailable".to_owned());
-            }
-            return Vec::new();
+            return self.set_form_error("admin profile configuration is unavailable");
         }
         if self.admin.tailnet.is_none() {
-            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                current.error = Some("admin tailnet is not selected".to_owned());
-            }
-            return Vec::new();
+            return self.set_form_error("admin tailnet is not selected");
         }
         let observations = self
             .admin
@@ -7582,10 +7797,7 @@ impl App {
             .filter(|route| route.complete)
             .collect::<Vec<_>>();
         if observations.is_empty() {
-            if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                current.error = Some("no complete route advertisers are available".to_owned());
-            }
-            return Vec::new();
+            return self.set_form_error("no complete route advertisers are available");
         }
         let parent_id = self.next_mutation_id;
         self.next_mutation_id = self.next_mutation_id.saturating_add(1);
@@ -7600,13 +7812,10 @@ impl App {
             ) {
                 Ok(value) => value,
                 Err(error) => {
-                    if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                        current.error = Some(format!(
-                            "{} cannot receive the same replacement: {error}",
-                            observation.device_id
-                        ));
-                    }
-                    return Vec::new();
+                    return self.set_form_error(format!(
+                        "{} cannot receive the same replacement: {error}",
+                        observation.device_id
+                    ));
                 }
             };
             let mutation_id = self.next_mutation_id;
@@ -7629,13 +7838,9 @@ impl App {
                 for previous in requests.values() {
                     self.release_admin_preflight_lock(previous.mutation_id);
                 }
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(
-                        "a route advertiser is already being read or changed; preview again"
-                            .to_owned(),
-                    );
-                }
-                return Vec::new();
+                return self.set_form_error(
+                    "a route advertiser is already being read or changed; preview again",
+                );
             }
             effects.extend(preflight_effects);
             requests.insert(mutation_id, request);
@@ -10236,12 +10441,7 @@ impl App {
                             "fresh preflight for {} failed: {error}",
                             request.action_id.as_str()
                         ));
-                        self.overlays
-                            .push(Overlay::OperatorForm(admin_operator_form_state(
-                                request.action_id,
-                                admin_change_input(&request.change),
-                                Some(error.to_string()),
-                            )));
+                        self.reopen_admin_form(request.action_id, &request.change, error.to_string());
                         return Vec::new();
                     }
                 };
@@ -10263,12 +10463,7 @@ impl App {
                         .join("\n");
                     let _ = transition(&mut request.state, AdminMutationState::ConflictDetected);
                     self.runtime_error = Some(format!("admin preflight conflict:\n{detail}"));
-                    self.overlays
-                        .push(Overlay::OperatorForm(admin_operator_form_state(
-                            request.action_id,
-                            admin_change_input(&request.change),
-                            Some(detail),
-                        )));
+                    self.reopen_admin_form(request.action_id, &request.change, detail);
                     return Vec::new();
                 }
                 let preflight = crate::domain::admin_mutation::AdminPreflight {
@@ -10563,12 +10758,7 @@ impl App {
                     "batch preflight for {} failed: {error}",
                     request.target_id
                 ));
-                self.overlays
-                    .push(Overlay::OperatorForm(admin_operator_form_state(
-                        pending.action_id,
-                        admin_change_input(&request.change),
-                        Some(error.to_string()),
-                    )));
+                self.reopen_admin_form(pending.action_id, &request.change, error.to_string());
                 return Vec::new();
             }
         };
@@ -10594,12 +10784,7 @@ impl App {
                 "batch preflight conflict for {}:\n{detail}",
                 request.target_id
             ));
-            self.overlays
-                .push(Overlay::OperatorForm(admin_operator_form_state(
-                    pending.action_id,
-                    admin_change_input(&request.change),
-                    Some(detail),
-                )));
+            self.reopen_admin_form(pending.action_id, &request.change, detail);
             return Vec::new();
         }
         let preflight = crate::domain::admin_mutation::AdminPreflight {
@@ -11807,6 +11992,9 @@ impl App {
             ActionId::LocalExitNodeSelect => return self.accept_exit_node_form(&state),
             ActionId::LocalRoutesEditAdvertisements => {
                 return self.accept_advertisement_form(&state);
+            }
+            action_id if is_admin_mutation_action(action_id) => {
+                return self.accept_admin_form(&state);
             }
             _ => {}
         }
@@ -16733,73 +16921,95 @@ fn format_audit_timestamp(value: Timestamp) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
-fn admin_change_input(change: &AdminChange) -> String {
-    match change {
-        AdminChange::DeviceRename { name } => name.clone(),
-        AdminChange::DeviceTags { tags } => tags.join(","),
-        AdminChange::DeviceApproval { .. }
-        | AdminChange::DeviceExpireNow
-        | AdminChange::DeviceDelete
-        | AdminChange::UserApproval
-        | AdminChange::UserSuspend
-        | AdminChange::UserRestore
-        | AdminChange::UserDelete => String::new(),
-        AdminChange::DeviceKeyExpiry { disabled } => {
-            if *disabled { "on" } else { "off" }.to_owned()
+/// The change an admin form describes, read from its fields and validated by
+/// the same rules the runtime applies before anything is sent.
+fn admin_change_from_form(state: &FormState) -> Result<AdminChange, String> {
+    match state.action_id {
+        ActionId::AdminDeviceRename => Ok(AdminChange::DeviceRename {
+            name: crate::admin::device_mutations::validate_machine_name(state.value("name"))?,
+        }),
+        ActionId::AdminDeviceTagsReplace => Ok(AdminChange::DeviceTags {
+            tags: crate::admin::device_mutations::canonical_tags(&state.entries("tags"))?,
+        }),
+        ActionId::AdminDeviceApprove => Ok(AdminChange::DeviceApproval { authorized: true }),
+        ActionId::AdminDeviceRevokeApproval => {
+            Ok(AdminChange::DeviceApproval { authorized: false })
         }
-        AdminChange::DeviceRoutes { routes } => routes.join(","),
-        AdminChange::DnsNameservers { values } => values.join(","),
-        AdminChange::DnsPreferences { magic_dns } => {
-            if *magic_dns { "on" } else { "off" }.to_owned()
+        ActionId::AdminDeviceKeyExpiryConfigure => Ok(AdminChange::DeviceKeyExpiry {
+            disabled: !state.is_yes("expiry"),
+        }),
+        ActionId::AdminDeviceKeyExpireNow => Ok(AdminChange::DeviceExpireNow),
+        ActionId::AdminDeviceDelete => Ok(AdminChange::DeviceDelete),
+        ActionId::AdminRoutesReplaceApprovals => Ok(AdminChange::DeviceRoutes {
+            routes: crate::admin::route_mutations::canonical_enabled_routes(
+                &state.entries("routes"),
+            )?,
+        }),
+        ActionId::AdminDnsPreferencesEdit => Ok(AdminChange::DnsPreferences {
+            magic_dns: state.is_yes("magic-dns"),
+        }),
+        ActionId::AdminDnsNameserversReplace => Ok(AdminChange::DnsNameservers {
+            values: crate::admin::dns_mutations::canonical_resolvers(
+                &state.entries("nameservers"),
+                "nameserver",
+            )?,
+        }),
+        ActionId::AdminDnsSearchPathsReplace => Ok(AdminChange::DnsSearchPaths {
+            values: crate::admin::dns_mutations::canonical_ordered_values(
+                &state.entries("search-paths"),
+                "search path",
+            )?,
+        }),
+        ActionId::AdminDnsSplitCreate | ActionId::AdminDnsSplitEdit => {
+            let resolvers = state.entries("resolvers");
+            if resolvers.is_empty() {
+                return Err("a split-DNS mapping needs at least one resolver".to_owned());
+            }
+            Ok(AdminChange::DnsSplitMapping {
+                domain: crate::admin::dns_mutations::validate_domain(state.value("domain"))?,
+                resolvers: Some(crate::admin::dns_mutations::canonical_resolvers(
+                    &resolvers,
+                    "split-DNS resolver",
+                )?),
+                create: state.action_id == ActionId::AdminDnsSplitCreate,
+            })
         }
-        AdminChange::DnsSearchPaths { values } => values.join(","),
-        AdminChange::DnsSplitMapping {
-            domain, resolvers, ..
-        } => resolvers.as_ref().map_or_else(
-            || domain.clone(),
-            |values| format!("{domain}={}", values.join(",")),
-        ),
-        AdminChange::UserRole { role } => role.clone(),
+        ActionId::AdminDnsSplitRemove => Ok(AdminChange::DnsSplitMapping {
+            domain: crate::admin::dns_mutations::validate_domain(state.value("domain"))?,
+            resolvers: None,
+            create: false,
+        }),
+        ActionId::AdminUserApprove => Ok(AdminChange::UserApproval),
+        ActionId::AdminUserRoleChange => Ok(AdminChange::UserRole {
+            role: crate::admin::user_mutations::validate_role(state.value("role").trim())?,
+        }),
+        ActionId::AdminUserSuspend => Ok(AdminChange::UserSuspend),
+        ActionId::AdminUserRestore => Ok(AdminChange::UserRestore),
+        ActionId::AdminUserDelete => Ok(AdminChange::UserDelete),
+        _ => Err("this form is not an admin mutation form".to_owned()),
     }
 }
 
-fn admin_operator_form_state(
-    action_id: ActionId,
-    input: String,
-    error: Option<String>,
-) -> OperatorFormState {
-    match action_id {
-        ActionId::AdminDnsNameserversReplace | ActionId::AdminDnsSearchPathsReplace => {
-            OperatorFormState::ordered(
-                action_id,
-                input
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-                    .collect(),
-                None,
-                error,
-            )
+/// What a change asked of one form field, so a reopened form still shows it.
+fn admin_change_value(change: &AdminChange, key: &str) -> Option<String> {
+    match (change, key) {
+        (AdminChange::DeviceRename { name }, "name") => Some(name.clone()),
+        (AdminChange::DeviceTags { tags }, "tags") => Some(tags.join(",")),
+        (AdminChange::DeviceKeyExpiry { disabled }, "expiry") => {
+            Some(if *disabled { "no" } else { "yes" }.to_owned())
         }
-        ActionId::AdminDnsSplitCreate | ActionId::AdminDnsSplitEdit => {
-            let (prefix, values) = input.split_once('=').map_or_else(
-                || (None, Vec::new()),
-                |(domain, values)| {
-                    (
-                        Some(format!("{domain}=")),
-                        values
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                            .map(str::to_owned)
-                            .collect(),
-                    )
-                },
-            );
-            OperatorFormState::ordered(action_id, values, prefix, error)
+        (AdminChange::DeviceRoutes { routes }, "routes") => Some(routes.join(",")),
+        (AdminChange::DnsPreferences { magic_dns }, "magic-dns") => {
+            Some(if *magic_dns { "yes" } else { "no" }.to_owned())
         }
-        _ => OperatorFormState::new(action_id, input, error),
+        (AdminChange::DnsNameservers { values }, "nameservers")
+        | (AdminChange::DnsSearchPaths { values }, "search-paths") => Some(values.join(",")),
+        (AdminChange::DnsSplitMapping { domain, .. }, "domain") => Some(domain.clone()),
+        (AdminChange::DnsSplitMapping { resolvers, .. }, "resolvers") => {
+            resolvers.as_ref().map(|values| values.join(","))
+        }
+        (AdminChange::UserRole { role }, "role") => Some(role.clone()),
+        _ => None,
     }
 }
 
