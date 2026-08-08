@@ -58,7 +58,8 @@ Environment variables do not map generically onto TOML keys.
 tale [--profile NAME] [--read-only] [--no-local] [--view ROUTE]
      [--config PATH] [--tailscale-path PATH] [--tailscale-socket PATH] [--mock]
 
-tale auth add PROFILE
+tale auth add PROFILE [--tailnet ID] [--kind oauth-client|access-token]
+                      [--secret-stdin] [--client-id ID] [--scopes SCOPES]
 tale auth remove PROFILE
 tale auth status [PROFILE]
 tale config path
@@ -73,8 +74,13 @@ tale doctor [--config PATH] [--mock] [--output PATH]
   HTTP, and keyring access. It is incompatible with `--profile` and
   `TALE_ACCESS_TOKEN`, visibly labels the session `mock`, and is never persisted.
 - `--view` accepts only canonical routes and documented aliases.
+- `auth add` prompts for whatever it is not given. `--secret-stdin` reads the
+  secret from standard input instead, which is the only form that works without a
+  controlling terminal; in that form every other value must arrive as a flag,
+  because no prompt can be answered.
 - `auth remove` removes Tale's stored credential reference; it does not revoke
-  the credential at Tailscale.
+  the credential at Tailscale. Removing the last profile leaves the file without
+  `default_profile`, which no longer selects anything.
 - `doctor` performs non-mutating local, keyring, API, terminal, and config checks
   and redacts its output. `--output` writes the allowlisted Tale 1.0 support
   bundle to an explicit path and never uploads it.
@@ -213,15 +219,44 @@ tokens, auth keys, or credential-store payloads.
 
 ## Credential records
 
-`tale auth add PROFILE` prompts for one of:
+`tale auth add PROFILE` records one of:
 
 - `oauth_client`: client ID, client secret, and requested scopes;
 - `access_token`: a pre-generated API access token.
+
+Each value is prompted for unless it is supplied as a flag. `--secret-stdin`
+takes the secret from standard input — the access token, or the client secret
+for `oauth_client` — so the command works in a script, a container, or CI. This
+is the only writer to the credential store, and it is the only way back once
+`auth remove` has emptied a configuration.
+
+```sh
+printf '%s' "$TOKEN" |
+  tale auth add ops --tailnet TAILNET_ID --kind access-token --secret-stdin
+```
 
 The credential record stores its kind and secret fields in the OS keyring under
 service `tale` and the configured credential name. OAuth scopes are not secret
 and are also returned by `auth status` so the user can audit the requested
 access. Tale refuses a literal token in TOML.
+
+### Which credential is used
+
+A credential is read from exactly two places, highest precedence first:
+
+1. `TALE_ACCESS_TOKEN`, when set. It applies to the whole process, is never
+   persisted, and the keyring is not consulted at all — on platforms whose
+   keyring raises a modal unlock prompt, this is the way to avoid it.
+2. the OS keyring record named by the profile's `credential` field.
+
+`credential` names a keyring record; it never holds secret material. It defaults
+to the profile name, so it only becomes interesting once two profiles share a
+tailnet or a single credential backs several profiles.
+
+A token with no profile to apply to is an error, because there is no tailnet to
+address. The two ways that happens are reported separately: a configuration that
+declares no profiles at all, and one that declares profiles but names no
+`default_profile` and was given no `--profile`.
 
 Recommended profiles:
 
