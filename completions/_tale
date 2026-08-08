@@ -58,10 +58,15 @@ _arguments "${_arguments_options[@]}" : \
         case $line[1] in
             (add)
 _arguments "${_arguments_options[@]}" : \
+'--tailnet=[]:ID:_default' \
+'--kind=[]:KIND:(oauth-client access-token)' \
+'--client-id=[]:ID:_default' \
+'--scopes=[]:SCOPES:_default' \
 '--config=[]:PATH:_files' \
 '--view=[]:ROUTE:_default' \
 '--tailscale-path=[]:PATH:_files' \
 '--tailscale-socket=[]:PATH:_files' \
+'--secret-stdin[Read the secret from standard input instead of prompting. Selects the access token, or the client secret when the kind is \`oauth_client\`]' \
 '--read-only[]' \
 '--no-local[]' \
 '-h[Print help]' \
@@ -181,7 +186,7 @@ _tale_commands() {
 (( $+functions[_tale__subcmd__auth_commands] )) ||
 _tale__subcmd__auth_commands() {
     local commands; commands=(
-'add:' \
+'add:\`auth add\` is the only writer to the credential store, so it has to be usable without a terminal\: the prompts cannot be reached from a script, a container, or a CI job, and they are the sole recovery path once a profile has been removed' \
 'remove:' \
 'status:' \
     )

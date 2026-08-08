@@ -134,3 +134,138 @@ fn invalid_route_and_mock_profile_have_exit_code_two() {
         }
     }
 }
+
+/// `auth add` is the only writer to the credential store and the sole recovery path
+/// after `auth remove` empties a config, so it has to work without a controlling
+/// terminal. `rpassword` reads `/dev/tty` directly, which a pipe cannot satisfy.
+#[test]
+fn auth_add_accepts_a_secret_without_a_controlling_terminal() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let directory = tempfile::tempdir();
+    assert!(directory.is_ok());
+    let Ok(directory) = directory else { return };
+
+    let child = Command::new(env!("CARGO_BIN_EXE_tale"))
+        .env("XDG_CONFIG_HOME", directory.path())
+        .args([
+            "auth",
+            "add",
+            "scripted",
+            "--tailnet",
+            "TLFIXTURE",
+            "--kind",
+            "access-token",
+            "--secret-stdin",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    assert!(child.is_ok());
+    let Ok(mut child) = child else { return };
+    if let Some(mut stdin) = child.stdin.take() {
+        assert!(stdin.write_all(b"").is_ok());
+    }
+    let output = child.wait_with_output();
+    assert!(output.is_ok());
+    if let Ok(output) = output {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // An empty pipe must be reported as an empty secret. Reaching this message
+        // proves stdin was the source; the old prompt-only path failed earlier with
+        // "credential input was cancelled" because it could not open a tty at all.
+        assert!(
+            stderr.contains("access token cannot be empty"),
+            "unexpected failure: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn scripted_auth_add_reports_the_missing_flag_instead_of_blocking_on_a_prompt() {
+    use std::process::Stdio;
+
+    let directory = tempfile::tempdir();
+    assert!(directory.is_ok());
+    let Ok(directory) = directory else { return };
+
+    for (arguments, expected) in [
+        (vec!["auth", "add", "p", "--secret-stdin"], "--tailnet"),
+        (
+            vec!["auth", "add", "p", "--tailnet", "T", "--secret-stdin"],
+            "--kind",
+        ),
+        (
+            vec![
+                "auth",
+                "add",
+                "p",
+                "--tailnet",
+                "T",
+                "--kind",
+                "oauth-client",
+                "--secret-stdin",
+            ],
+            "--client-id",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tale"))
+            .env("XDG_CONFIG_HOME", directory.path())
+            .args(&arguments)
+            .stdin(Stdio::null())
+            .output();
+        assert!(output.is_ok());
+        if let Ok(output) = output {
+            assert_eq!(output.status.code(), Some(2), "arguments: {arguments:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(expected),
+                "arguments: {arguments:?}: {stderr}"
+            );
+        }
+    }
+}
+
+/// The old message blamed TALE_ACCESS_TOKEN for both of these, which sent the reader
+/// after the environment variable when the real gap was in the configuration file.
+#[test]
+fn a_token_without_a_profile_names_the_axis_that_is_actually_missing() {
+    let directory = tempfile::tempdir();
+    assert!(directory.is_ok());
+    let Ok(directory) = directory else { return };
+    let config_dir = directory.path().join("tale");
+    assert!(fs::create_dir_all(&config_dir).is_ok());
+    let config_file = config_dir.join("config.toml");
+
+    let empty = Command::new(env!("CARGO_BIN_EXE_tale"))
+        .env("XDG_CONFIG_HOME", directory.path())
+        .env("TALE_ACCESS_TOKEN", "fictional-token")
+        .args(["config", "check"])
+        .output();
+    assert!(empty.is_ok());
+    if let Ok(empty) = empty {
+        let stderr = String::from_utf8_lossy(&empty.stderr);
+        assert!(stderr.contains("no profiles are configured"), "{stderr}");
+    }
+
+    assert!(
+        fs::write(
+            &config_file,
+            "[profiles.alpha]\ntailnet=\"T\"\ncredential=\"c\"\n\
+             [profiles.beta]\ntailnet=\"T\"\ncredential=\"c\"\n",
+        )
+        .is_ok()
+    );
+    let unselected = Command::new(env!("CARGO_BIN_EXE_tale"))
+        .env("XDG_CONFIG_HOME", directory.path())
+        .env("TALE_ACCESS_TOKEN", "fictional-token")
+        .args(["config", "check"])
+        .output();
+    assert!(unselected.is_ok());
+    if let Ok(unselected) = unselected {
+        let stderr = String::from_utf8_lossy(&unselected.stderr);
+        assert!(stderr.contains("no profile is selected"), "{stderr}");
+        assert!(stderr.contains("alpha, beta"), "{stderr}");
+    }
+}

@@ -44,13 +44,19 @@ complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subc
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "add"
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "add" -d '`auth add` is the only writer to the credential store, so it has to be usable without a terminal: the prompts cannot be reached from a script, a container, or a CI job, and they are the sole recovery path once a profile has been removed'
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "remove"
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "status"
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailnet -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l kind -r -f -a "oauth-client\t''
+access-token\t''"
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l client-id -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l scopes -r
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l view -r
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-path -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-socket -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l secret-stdin -d 'Read the secret from standard input instead of prompting. Selects the access token, or the client secret when the kind is `oauth_client`'
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l read-only
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l no-local
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -s h -l help -d 'Print help'

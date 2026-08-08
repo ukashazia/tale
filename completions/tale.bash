@@ -115,12 +115,28 @@ _tale() {
             return 0
             ;;
         tale__subcmd__auth__subcmd__add)
-            opts="-h --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
+            opts="-h --tailnet --kind --secret-stdin --client-id --scopes --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --tailnet)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --kind)
+                    COMPREPLY=($(compgen -W "oauth-client access-token" -- "${cur}"))
+                    return 0
+                    ;;
+                --client-id)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --scopes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --config)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0

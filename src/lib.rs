@@ -149,8 +149,7 @@ fn auth_add(args: AuthAddArgs, checked: &ResolvedConfig) -> Result<(), TaleError
             Some(profile) => profile.tailnet.clone(),
             None if scripted => {
                 return Err(TaleError::InvalidArguments(
-                    "--tailnet is required when the secret is read from standard input"
-                        .to_owned(),
+                    "--tailnet is required when the secret is read from standard input".to_owned(),
                 ));
             }
             None => prompt_line("tailnet ID (or -): ")?,
@@ -418,7 +417,7 @@ fn prompt_secret(prompt: &str) -> Result<String, TaleError> {
 /// no controlling terminal. Reading standard input covers those callers.
 fn read_secret(prompt: &str, from_stdin: bool) -> Result<String, TaleError> {
     if !from_stdin {
-        return Ok(prompt_secret(prompt)?);
+        return prompt_secret(prompt);
     }
     let mut value = String::new();
     io::Read::read_to_string(&mut io::stdin(), &mut value)

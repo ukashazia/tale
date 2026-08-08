@@ -621,8 +621,8 @@ impl CredentialStore for CountingCredentialStore {
 }
 
 #[tokio::test]
-async fn credential_status_reuses_the_record_the_token_read_already_decoded()
--> Result<(), String> {
+async fn credential_status_reuses_the_record_the_token_read_already_decoded() -> Result<(), String>
+{
     let store = Arc::new(CountingCredentialStore::default());
     let record = CredentialRecord::AccessToken(AccessTokenRecord {
         version: 1,
@@ -638,7 +638,11 @@ async fn credential_status_reuses_the_record_the_token_read_already_decoded()
         .access_token("fixture", "fixture")
         .await
         .map_err(|error| error.to_string())?;
-    assert_eq!(store.reads(), 1, "the token read is the only unavoidable one");
+    assert_eq!(
+        store.reads(),
+        1,
+        "the token read is the only unavoidable one"
+    );
 
     for _ in 0..5 {
         let status = manager
@@ -674,7 +678,10 @@ async fn credential_status_still_reads_when_nothing_is_cached() -> Result<(), St
         .credential_status("fixture")
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "status was missing".to_owned())?;
-    assert_eq!(status.requested_scopes, vec!["devices:core:read".to_owned()]);
+    assert_eq!(
+        status.requested_scopes,
+        vec!["devices:core:read".to_owned()]
+    );
     assert_eq!(store.reads(), 1);
 
     manager.clear_all().await;
