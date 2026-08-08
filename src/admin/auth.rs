@@ -23,8 +23,24 @@ const REFRESH_LEAD: Duration = Duration::from_secs(300);
 
 #[derive(Error, Debug)]
 pub enum AuthError {
-    #[error("credential is not available")]
+    #[error("no credential is stored for this profile")]
     Unauthenticated,
+    #[error("the credential was rejected by the Tailscale API")]
+    Rejected,
+    #[error("the tailnet was not found; check the tailnet ID")]
+    TailnetNotFound,
+    #[error("this tailnet's plan does not permit the read used to validate a credential")]
+    PlanRestricted,
+    #[error("the Tailscale API rate limit was reached; retry shortly")]
+    RateLimited,
+    #[error("the Tailscale API failed while validating the credential")]
+    ServerFailure,
+    #[error("the Tailscale API rejected the validation request as invalid")]
+    ApiRejected,
+    #[error("the Tailscale API response could not be decoded")]
+    MalformedResponse,
+    #[error("the requested scopes include no read that can validate them")]
+    NoValidationProbe,
     #[error("the OAuth client was rejected")]
     InvalidClient,
     #[error("the requested OAuth scope was denied")]
@@ -45,7 +61,7 @@ pub enum AuthError {
     Cancelled,
     #[error("authentication configuration is invalid")]
     Configuration,
-    #[error("the requested scope has no verified Phase 5 validation read")]
+    #[error("the Tailscale API does not support the capability used for validation")]
     Unsupported,
     #[error("OAuth scopes must be narrow read scopes")]
     InvalidScopes,
@@ -442,7 +458,7 @@ async fn probe_record(
             } else if has_scope(&record.requested_scopes, "logs:configuration:read") {
                 Probe::Audit
             } else {
-                return Err(AuthError::Unsupported);
+                return Err(AuthError::NoValidationProbe);
             }
         }
         Some(CredentialRecord::AccessToken(_)) | None => Probe::Devices,
@@ -535,23 +551,29 @@ fn utc_seconds_ago(timestamp: u64, seconds: u64) -> Result<String, AuthError> {
         .map_err(|_| AuthError::ClockAnomaly)
 }
 
+/// The admin client already distinguishes these; collapsing them here would throw away
+/// the only signal that tells a user whether to fix the tailnet, the credential, or
+/// nothing at all and retry.
 fn map_admin_error(error: AdminError) -> AuthError {
     match error {
-        AdminError::Unauthenticated => AuthError::Unauthenticated,
+        AdminError::Unauthenticated => AuthError::Rejected,
         AdminError::TimedOut { .. } => AuthError::TimedOut,
         AdminError::Cancelled { .. } => AuthError::Cancelled,
         AdminError::Transport { .. } => AuthError::Transport,
         AdminError::Forbidden { .. } => AuthError::ScopeDenied,
-        AdminError::PlanRestricted { .. } => AuthError::Unsupported,
-        AdminError::DecodeFailed { .. }
-        | AdminError::BodyTooLarge { .. }
-        | AdminError::UnexpectedStatus { .. }
-        | AdminError::NotFound { .. }
-        | AdminError::ValidationFailed { .. }
-        | AdminError::Conflict { .. }
-        | AdminError::RateLimited { .. }
-        | AdminError::ServerFailure { .. }
-        | AdminError::Unsupported { .. } => AuthError::Unsupported,
+        AdminError::PlanRestricted { .. } => AuthError::PlanRestricted,
+        AdminError::NotFound { .. } => AuthError::TailnetNotFound,
+        AdminError::RateLimited { .. } => AuthError::RateLimited,
+        AdminError::ServerFailure { .. } | AdminError::UnexpectedStatus { .. } => {
+            AuthError::ServerFailure
+        }
+        AdminError::ValidationFailed { .. } | AdminError::Conflict { .. } => {
+            AuthError::ApiRejected
+        }
+        AdminError::DecodeFailed { .. } | AdminError::BodyTooLarge { .. } => {
+            AuthError::MalformedResponse
+        }
+        AdminError::Unsupported { .. } => AuthError::Unsupported,
     }
 }
 
@@ -580,4 +602,89 @@ struct OAuthErrorBody {
 struct OAuthResponse {
     access_token: SecretValue,
     expires_in: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthError, map_admin_error};
+    use crate::admin::client::AdminError;
+
+    /// Every one of these used to render as "the requested scope has no verified Phase 5
+    /// validation read", which named neither the cause nor anything the reader could act on.
+    #[test]
+    fn each_api_failure_keeps_a_distinct_actionable_message() {
+        let operation = || "read devices".to_owned();
+        let detail = || "fictional detail".to_owned();
+        let cases = [
+            (
+                AdminError::NotFound {
+                    operation: operation(),
+                    detail: detail(),
+                },
+                "tailnet was not found",
+            ),
+            (
+                AdminError::PlanRestricted {
+                    operation: operation(),
+                    detail: detail(),
+                },
+                "plan does not permit",
+            ),
+            (
+                AdminError::RateLimited {
+                    operation: operation(),
+                    retry_after_seconds: None,
+                    detail: detail(),
+                },
+                "rate limit",
+            ),
+            (
+                AdminError::ServerFailure {
+                    operation: operation(),
+                    detail: detail(),
+                },
+                "failed while validating",
+            ),
+            (
+                AdminError::ValidationFailed {
+                    operation: operation(),
+                    detail: detail(),
+                },
+                "rejected the validation request",
+            ),
+            (
+                AdminError::DecodeFailed {
+                    operation: operation(),
+                    detail: detail(),
+                },
+                "could not be decoded",
+            ),
+            (AdminError::Unauthenticated, "rejected by the Tailscale API"),
+        ];
+
+        let mut seen: Vec<String> = Vec::new();
+        for (admin, expected) in cases {
+            let message = map_admin_error(admin).to_string();
+            assert!(
+                message.contains(expected),
+                "expected {expected:?} in {message:?}"
+            );
+            assert!(
+                !seen.contains(&message),
+                "two causes collapsed onto {message:?}"
+            );
+            seen.push(message);
+        }
+    }
+
+    /// A stored-but-absent credential and one the API refused are different problems and
+    /// must not share a message.
+    #[test]
+    fn a_missing_credential_reads_differently_from_a_refused_one() {
+        assert_ne!(
+            AuthError::Unauthenticated.to_string(),
+            AuthError::Rejected.to_string()
+        );
+        assert!(AuthError::Unauthenticated.to_string().contains("no credential is stored"));
+    }
 }

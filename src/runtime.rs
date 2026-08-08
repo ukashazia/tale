@@ -3227,15 +3227,27 @@ async fn run_admin_resource_refresh(
         .await;
 }
 
+/// Carries the reason back into the admin surface. Reporting every authentication
+/// failure as "authentication required" sends the reader to the credential when the
+/// problem is just as often the tailnet, the plan, or a rate limit.
 fn admin_refresh_error(error: crate::admin::auth::AuthError, operation: &str) -> AdminError {
+    use crate::admin::auth::AuthError;
+
+    let operation = operation.to_owned();
+    let detail = error.to_string();
     match error {
-        crate::admin::auth::AuthError::Cancelled => AdminError::Cancelled {
-            operation: operation.to_owned(),
+        AuthError::Cancelled => AdminError::Cancelled { operation },
+        AuthError::TimedOut => AdminError::TimedOut { operation },
+        AuthError::TailnetNotFound => AdminError::NotFound { operation, detail },
+        AuthError::PlanRestricted => AdminError::PlanRestricted { operation, detail },
+        AuthError::RateLimited => AdminError::RateLimited {
+            operation,
+            retry_after_seconds: None,
+            detail,
         },
-        crate::admin::auth::AuthError::TimedOut => AdminError::TimedOut {
-            operation: operation.to_owned(),
-        },
-        crate::admin::auth::AuthError::Unauthenticated => AdminError::Unauthenticated,
+        AuthError::ServerFailure => AdminError::ServerFailure { operation, detail },
+        AuthError::ScopeDenied => AdminError::Forbidden { operation, detail },
+        AuthError::Transport => AdminError::Transport { operation, detail },
         _ => AdminError::Unauthenticated,
     }
 }
