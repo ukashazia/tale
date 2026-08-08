@@ -250,6 +250,7 @@ fn enter_opens_a_scrollable_full_device_record_without_moving_selection() {
     })));
     app.set_route(Route::Devices);
     app.views.devices.selected_id = Some(DeviceId::new("nodekey:direct"));
+    app.set_terminal_size(80, 24);
 
     let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -267,6 +268,7 @@ fn enter_opens_a_scrollable_full_device_record_without_moving_selection() {
         "node public key",
         "full domain",
         "build.tail.example.ts.net",
+        "/ search",
     ] {
         assert!(top.contains(wanted), "device details are missing {wanted}");
     }
@@ -290,13 +292,98 @@ fn enter_opens_a_scrollable_full_device_record_without_moving_selection() {
         );
     }
 
-    let previous_scroll = app.views.devices.detail_scroll;
+    // A taller resize reduces the maximum offset immediately. The old state
+    // kept the now-invisible extra offset and made `k` pay it back first.
+    app.set_terminal_size(160, 45);
+    press(&mut app, 'G');
+    let bottom_scroll = app.views.devices.detail_scroll;
+    for _ in 0..100 {
+        press(&mut app, 'j');
+    }
+    for _ in 0..20 {
+        let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        ))));
+    }
+    assert_eq!(app.views.devices.detail_scroll, bottom_scroll);
+
     press(&mut app, 'k');
     assert_eq!(app.views.devices.selected_id, selected);
     assert_eq!(
         app.views.devices.detail_scroll,
-        previous_scroll.saturating_sub(1)
+        bottom_scroll.saturating_sub(1)
     );
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    ))));
+    assert_eq!(
+        app.views.devices.detail_scroll,
+        bottom_scroll.saturating_sub(6)
+    );
+}
+
+#[test]
+fn slash_searches_inside_device_details_and_n_walks_matches() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    let Ok(snapshot) = decode_status(STATUS, "1.98.9".to_owned(), None, 1_754_000_000) else {
+        return;
+    };
+    app.local_resource.generation = 1;
+    let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+        generation: 1,
+        snapshot: Box::new(snapshot),
+    })));
+    app.set_route(Route::Devices);
+    app.views.devices.selected_id = Some(DeviceId::new("nodekey:direct"));
+    app.set_terminal_size(80, 24);
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+
+    press(&mut app, '/');
+    assert!(matches!(
+        app.interaction,
+        tale::app::InteractionMode::FilterLine(tale::app::FilterLineState {
+            purpose: tale::app::FilterLinePurpose::DeviceDetailSearch { .. },
+            ..
+        })
+    ));
+    let _ = app.update(Event::Input(InputEvent::Paste("local daemon".to_owned())));
+    assert_eq!(app.views.devices.detail_search, "local daemon");
+    let first_match = app.views.devices.detail_search_match;
+    assert!(first_match.is_some());
+    let Some(prompt) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(
+        prompt
+            .iter()
+            .any(|line| line.contains("Search device details"))
+    );
+
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+    assert!(matches!(
+        app.interaction,
+        tale::app::InteractionMode::Normal
+    ));
+    app.set_terminal_size(160, 45);
+    let Some(detail) = render_lines(&app, 160, 45) else {
+        return;
+    };
+    assert!(detail.iter().any(|line| line.contains("match 1/")));
+
+    press(&mut app, 'n');
+    assert_ne!(app.views.devices.detail_search_match, first_match);
+    press(&mut app, 'N');
+    assert_eq!(app.views.devices.detail_search_match, first_match);
 }
 
 /// The bar names what landed on the clipboard, not what it was called. A field

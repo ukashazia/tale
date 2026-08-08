@@ -330,6 +330,17 @@ pub struct FilterLineState {
     pub selected_completion: Option<usize>,
     pub error: Option<FilterErrorReport>,
     pub restoration: FilterRestoration,
+    pub purpose: FilterLinePurpose,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum FilterLinePurpose {
+    Collection,
+    DeviceDetailSearch {
+        scroll: usize,
+        query: String,
+        match_line: Option<usize>,
+    },
 }
 
 impl FilterLineState {
@@ -1135,6 +1146,8 @@ pub struct DeviceViewState {
     /// First visible line in the full-screen device detail opened by Enter.
     /// The side inspector always stays at its summary's first line.
     pub detail_scroll: usize,
+    pub detail_search: String,
+    pub detail_search_match: Option<usize>,
     pub filter_draft: String,
     pub applied_filter: FilterExpression,
     pub sort: SortSpec,
@@ -1154,6 +1167,8 @@ impl Default for DeviceViewState {
             selected_id: None,
             scroll: 0,
             detail_scroll: 0,
+            detail_search: String::new(),
+            detail_search_match: None,
             filter_draft: String::new(),
             applied_filter: FilterExpression::empty(),
             sort: SortSpec::default(),
@@ -2242,8 +2257,7 @@ impl App {
         }
         match input {
             InputEvent::Resize { width, height } => {
-                self.terminal_width = width;
-                self.terminal_height = height;
+                self.set_terminal_size(width, height);
                 Vec::new()
             }
             InputEvent::Mouse(mouse) => self.handle_mouse(mouse),
@@ -2570,7 +2584,7 @@ impl App {
         if let Some(inspector) = frame.inspector
             && contains_point(inspector, column, row)
         {
-            self.views.devices.detail_scroll = 0;
+            self.reset_device_detail_state();
             self.focus = Focus::Inspector;
             return;
         }
@@ -2774,8 +2788,15 @@ impl App {
                 return Vec::new();
             }
             InteractionMode::FilterLine(state) => {
+                let detail_search =
+                    matches!(state.purpose, FilterLinePurpose::DeviceDetailSearch { .. });
                 insert_text(&mut state.editor, text);
-                return self.update_live_filter();
+                return if detail_search {
+                    self.update_device_detail_search_preview();
+                    Vec::new()
+                } else {
+                    self.update_live_filter()
+                };
             }
             _ => {}
         }
@@ -2888,6 +2909,25 @@ impl App {
 
     fn handle_filter_line_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.code == KeyCode::Esc {
+            let detail_restoration = match &self.interaction {
+                InteractionMode::FilterLine(FilterLineState {
+                    purpose:
+                        FilterLinePurpose::DeviceDetailSearch {
+                            scroll,
+                            query,
+                            match_line,
+                        },
+                    ..
+                }) => Some((*scroll, query.clone(), *match_line)),
+                _ => None,
+            };
+            if let Some((scroll, query, match_line)) = detail_restoration {
+                self.views.devices.detail_scroll = scroll;
+                self.views.devices.detail_search = query;
+                self.views.devices.detail_search_match = match_line;
+                self.interaction = InteractionMode::Normal;
+                return Vec::new();
+            }
             let restoration = match &self.interaction {
                 InteractionMode::FilterLine(state) => Some(state.restoration.clone()),
                 _ => None,
@@ -2916,6 +2956,23 @@ impl App {
             return Vec::new();
         }
         if key.code == KeyCode::Enter {
+            if matches!(
+                self.interaction,
+                InteractionMode::FilterLine(FilterLineState {
+                    purpose: FilterLinePurpose::DeviceDetailSearch { .. },
+                    ..
+                })
+            ) {
+                let valid = matches!(
+                    &self.interaction,
+                    InteractionMode::FilterLine(state) if state.error.is_none()
+                );
+                if valid {
+                    self.interaction = InteractionMode::Normal;
+                    self.clamp_device_detail_scroll();
+                }
+                return Vec::new();
+            }
             let (input, valid) = match &self.interaction {
                 InteractionMode::FilterLine(state) => {
                     (state.editor.input.clone(), state.error.is_none())
@@ -2939,6 +2996,16 @@ impl App {
         if edited {
             if let InteractionMode::FilterLine(state) = &mut self.interaction {
                 state.selected_completion = None;
+            }
+            if matches!(
+                self.interaction,
+                InteractionMode::FilterLine(FilterLineState {
+                    purpose: FilterLinePurpose::DeviceDetailSearch { .. },
+                    ..
+                })
+            ) {
+                self.update_device_detail_search_preview();
+                return Vec::new();
             }
             return self.update_live_filter();
         }
@@ -3887,7 +3954,43 @@ impl App {
                     selected_completion: None,
                     error: None,
                     restoration,
+                    purpose: FilterLinePurpose::Collection,
                 });
+                Vec::new()
+            }
+            ActionId::DeviceDetailSearch => {
+                let input = self.views.devices.detail_search.clone();
+                let restoration = FilterRestoration {
+                    input: self.views.devices.filter_draft.clone(),
+                    expression: self.views.devices.applied_filter.clone(),
+                    selection: self.views.devices.selected_id.clone(),
+                    scroll: self.views.devices.scroll,
+                    task_filter: self.task_filter.clone(),
+                    task_selection: self.tasks.selected,
+                    profile_selection: self.views.profiles.selected,
+                };
+                let generation = self.advance_completion_generation();
+                self.interaction = InteractionMode::FilterLine(FilterLineState {
+                    editor: LineEditorState::new(input),
+                    generation,
+                    sections: Vec::new(),
+                    selected_completion: None,
+                    error: None,
+                    restoration,
+                    purpose: FilterLinePurpose::DeviceDetailSearch {
+                        scroll: self.views.devices.detail_scroll,
+                        query: self.views.devices.detail_search.clone(),
+                        match_line: self.views.devices.detail_search_match,
+                    },
+                });
+                Vec::new()
+            }
+            ActionId::DeviceDetailNextMatch => {
+                self.move_device_detail_search_match(false);
+                Vec::new()
+            }
+            ActionId::DeviceDetailPreviousMatch => {
+                self.move_device_detail_search_match(true);
                 Vec::new()
             }
             ActionId::ViewRefresh => self.start_refresh(false),
@@ -4226,7 +4329,7 @@ impl App {
                 {
                     let selected_id = self.selected_device().map(|device| device.id.0.clone());
                     if self.current_route() == Route::Devices {
-                        self.views.devices.detail_scroll = 0;
+                        self.reset_device_detail_state();
                     }
                     self.focus = Focus::Inspector;
                     if let Some(effect) = self.start_admin_device_enrichment(selected_id) {
@@ -5907,7 +6010,7 @@ impl App {
                 self.navigate(Route::Devices);
                 self.views.devices.selected_id = Some(selected);
                 self.reconcile_selection(None);
-                self.views.devices.detail_scroll = 0;
+                self.reset_device_detail_state();
                 self.focus = Focus::Inspector;
                 return self
                     .start_admin_device_enrichment(Some(affected_id))
@@ -14601,8 +14704,12 @@ impl App {
 
     fn move_device_detail_scroll(&mut self, offset: isize) {
         let length = self.device_detail_max_scroll().saturating_add(1);
-        self.views.devices.detail_scroll =
-            move_bounded_index(self.views.devices.detail_scroll, length, offset);
+        let current = self
+            .views
+            .devices
+            .detail_scroll
+            .min(length.saturating_sub(1));
+        self.views.devices.detail_scroll = move_bounded_index(current, length, offset);
     }
 
     fn device_detail_max_scroll(&self) -> usize {
@@ -14615,9 +14722,78 @@ impl App {
             },
             self,
         );
-        let visible_lines = usize::from(frame.content.height.saturating_sub(2));
-        crate::ui::components::inspector::device_detail_line_count(self)
-            .saturating_sub(visible_lines)
+        crate::ui::components::inspector::device_detail_max_scroll(self, frame.content.height)
+    }
+
+    fn clamp_device_detail_scroll(&mut self) {
+        if self.current_route() != Route::Devices || self.focus != Focus::Inspector {
+            return;
+        }
+        self.views.devices.detail_scroll = self
+            .views
+            .devices
+            .detail_scroll
+            .min(self.device_detail_max_scroll());
+    }
+
+    fn reset_device_detail_state(&mut self) {
+        self.views.devices.detail_scroll = 0;
+        self.views.devices.detail_search.clear();
+        self.views.devices.detail_search_match = None;
+    }
+
+    fn update_device_detail_search_preview(&mut self) {
+        let (input, initial_scroll) = match &self.interaction {
+            InteractionMode::FilterLine(FilterLineState {
+                editor,
+                purpose: FilterLinePurpose::DeviceDetailSearch { scroll, .. },
+                ..
+            }) => (editor.input.trim().to_owned(), *scroll),
+            _ => return,
+        };
+        self.views.devices.detail_search = input;
+        let matches = crate::ui::components::inspector::device_detail_search_matches(
+            self,
+            &self.views.devices.detail_search,
+        );
+        if self.views.devices.detail_search.is_empty() {
+            self.views.devices.detail_search_match = None;
+            self.views.devices.detail_scroll = initial_scroll.min(self.device_detail_max_scroll());
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.error = None;
+            }
+            return;
+        }
+        let matched = matches
+            .iter()
+            .copied()
+            .find(|line| *line >= initial_scroll)
+            .or_else(|| matches.first().copied());
+        self.views.devices.detail_search_match = matched;
+        if let Some(line) = matched {
+            self.views.devices.detail_scroll = line.min(self.device_detail_max_scroll());
+        }
+        if let InteractionMode::FilterLine(state) = &mut self.interaction {
+            state.error = matched.is_none().then(|| FilterErrorReport {
+                message: "No matches in this device record".to_owned(),
+                expected: "plain text".to_owned(),
+            });
+        }
+    }
+
+    fn move_device_detail_search_match(&mut self, backwards: bool) {
+        let matches = crate::ui::components::inspector::device_detail_search_matches(
+            self,
+            &self.views.devices.detail_search,
+        );
+        let Some(next) =
+            next_search_match(&matches, self.views.devices.detail_search_match, backwards)
+        else {
+            self.runtime_error = Some("search device details with / first".to_owned());
+            return;
+        };
+        self.views.devices.detail_search_match = Some(next);
+        self.views.devices.detail_scroll = next.min(self.device_detail_max_scroll());
     }
 
     fn move_admin_route_selection(&mut self, offset: isize) {
@@ -14791,7 +14967,7 @@ impl App {
                         .map(|device| device.stable_id.clone());
                     self.views.devices.selected_id = device_id.map(DeviceId::new);
                     self.navigate(Route::Devices);
-                    self.views.devices.detail_scroll = 0;
+                    self.reset_device_detail_state();
                     self.focus = Focus::Inspector;
                     return self
                         .views
@@ -14862,7 +15038,7 @@ impl App {
         self.views.devices.filter_draft.clear();
         self.views.devices.applied_filter = FilterExpression::empty();
         self.navigate(Route::Devices);
-        self.views.devices.detail_scroll = 0;
+        self.reset_device_detail_state();
         self.focus = Focus::Inspector;
         let selected = self
             .views
@@ -15366,6 +15542,15 @@ impl App {
 
     pub fn clear_render_invalidated(&mut self) {
         self.render_invalidated = false;
+    }
+
+    pub fn set_terminal_size(&mut self, width: u16, height: u16) {
+        if self.terminal_width == width && self.terminal_height == height {
+            return;
+        }
+        self.terminal_width = width;
+        self.terminal_height = height;
+        self.clamp_device_detail_scroll();
     }
 
     pub const fn render_invalidated(&self) -> bool {
@@ -17970,6 +18155,25 @@ fn move_bounded_index(current: usize, length: usize, offset: isize) -> usize {
             .saturating_add(offset as usize)
             .min(length.saturating_sub(1))
     }
+}
+
+fn next_search_match(matches: &[usize], current: Option<usize>, backwards: bool) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    let current_position =
+        current.and_then(|current| matches.iter().position(|candidate| *candidate == current));
+    let position = if backwards {
+        current_position.map_or(matches.len().saturating_sub(1), |position| {
+            match position.checked_sub(1) {
+                Some(position) => position,
+                None => matches.len().saturating_sub(1),
+            }
+        })
+    } else {
+        current_position.map_or(0, |position| position.saturating_add(1) % matches.len())
+    };
+    matches.get(position).copied()
 }
 
 fn probe_rank(value: Option<u16>) -> (u8, u16) {

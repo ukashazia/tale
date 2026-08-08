@@ -51,7 +51,7 @@ struct FakeDriver {
 }
 
 impl TerminalDriver for FakeDriver {
-    fn draw(&mut self, _app: &App) -> Result<(), TaleError> {
+    fn draw(&mut self, _app: &mut App) -> Result<(), TaleError> {
         self.draws = self.draws.saturating_add(1);
         if self.fail_draw {
             Err(TaleError::Terminal("fictional render failure".to_owned()))

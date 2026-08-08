@@ -88,7 +88,7 @@ struct AuthKeyTaskContext {
 }
 
 pub trait TerminalDriver {
-    fn draw(&mut self, app: &App) -> Result<(), TaleError>;
+    fn draw(&mut self, app: &mut App) -> Result<(), TaleError>;
     fn restore(&mut self) -> Result<(), TaleError>;
 
     fn suspend_for_handoff(&mut self) -> Result<(), TaleError> {
@@ -192,7 +192,12 @@ impl StopFlag {
 }
 
 impl TerminalDriver for RealTerminal {
-    fn draw(&mut self, app: &App) -> Result<(), TaleError> {
+    fn draw(&mut self, app: &mut App) -> Result<(), TaleError> {
+        let area = self
+            .terminal
+            .size()
+            .map_err(|error| TaleError::Terminal(error.to_string()))?;
+        app.set_terminal_size(area.width, area.height);
         self.terminal
             .draw(|frame| ui::render(frame, app))
             .map(|_| ())

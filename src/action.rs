@@ -7,6 +7,9 @@ pub enum ActionId {
     AppQuit,
     ViewCommandLine,
     ViewFilter,
+    DeviceDetailSearch,
+    DeviceDetailNextMatch,
+    DeviceDetailPreviousMatch,
     ViewRefresh,
     ViewRefreshAll,
     ViewHelp,
@@ -162,6 +165,9 @@ impl ActionId {
             Self::AppQuit => "app.quit",
             Self::ViewCommandLine => "view.command_line",
             Self::ViewFilter => "view.filter",
+            Self::DeviceDetailSearch => "device_detail.search",
+            Self::DeviceDetailNextMatch => "device_detail.next_match",
+            Self::DeviceDetailPreviousMatch => "device_detail.previous_match",
             Self::ViewRefresh => "view.refresh",
             Self::ViewRefreshAll => "view.refresh_all",
             Self::ViewHelp => "view.help",
@@ -627,6 +633,8 @@ const NO_BINDING: &[Binding] = &[];
 const BIND_Q: &[Binding] = &[Binding::Char('q')];
 const BIND_COLON: &[Binding] = &[Binding::Char(':')];
 const BIND_SLASH: &[Binding] = &[Binding::Char('/')];
+const BIND_NEXT_MATCH: &[Binding] = &[Binding::Char('n')];
+const BIND_PREVIOUS_MATCH: &[Binding] = &[Binding::Char('N')];
 const BIND_R: &[Binding] = &[Binding::Char('r')];
 const BIND_BIG_R: &[Binding] = &[Binding::Char('R')];
 const BIND_HELP: &[Binding] = &[Binding::Char('?')];
@@ -679,6 +687,36 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             contexts: &[ActionContext::Collection],
             selection_rule: SelectionRule::None,
             default_bindings: BIND_SLASH,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::DeviceDetailSearch,
+            label: "Search",
+            description: "Search within the open device details",
+            contexts: &[ActionContext::Detail],
+            selection_rule: SelectionRule::One,
+            default_bindings: BIND_SLASH,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::DeviceDetailNextMatch,
+            label: "Next match",
+            description: "Jump to the next device-detail search match",
+            contexts: &[ActionContext::Detail],
+            selection_rule: SelectionRule::One,
+            default_bindings: BIND_NEXT_MATCH,
+            capability: Capability::Available,
+            risk: Risk::Observe,
+        },
+        ActionSpec {
+            id: ActionId::DeviceDetailPreviousMatch,
+            label: "Previous match",
+            description: "Jump to the previous device-detail search match",
+            contexts: &[ActionContext::Detail],
+            selection_rule: SelectionRule::One,
+            default_bindings: BIND_PREVIOUS_MATCH,
             capability: Capability::Available,
             risk: Risk::Observe,
         },
@@ -1310,6 +1348,9 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
             matches!(route, Route::Services)
         }
         ActionId::CollectionWideColumns => matches!(route, Route::Devices),
+        ActionId::DeviceDetailSearch
+        | ActionId::DeviceDetailNextMatch
+        | ActionId::DeviceDetailPreviousMatch => matches!(route, Route::Devices),
         // Every route here keeps a table with a row worth describing, and each
         // starts with the pane closed.
         ActionId::CollectionInspect => {
@@ -1344,6 +1385,9 @@ const fn footer_priority(id: ActionId) -> u8 {
         ActionId::CollectionBack => 3,
         ActionId::TaskCancel => 3,
         ActionId::ViewFilter => 4,
+        ActionId::DeviceDetailSearch => 4,
+        ActionId::DeviceDetailNextMatch => 5,
+        ActionId::DeviceDetailPreviousMatch => 6,
         ActionId::CollectionSort => 5,
         ActionId::CollectionWideColumns => 6,
         ActionId::CollectionInspect => 6,
@@ -1369,6 +1413,9 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
         ActionId::AppQuit => Some("quit"),
         ActionId::ViewCommandLine => Some("command"),
         ActionId::ViewFilter => Some("filter"),
+        ActionId::DeviceDetailSearch => Some("search"),
+        ActionId::DeviceDetailNextMatch => Some("next"),
+        ActionId::DeviceDetailPreviousMatch => Some("previous"),
         ActionId::ViewRefresh => Some("refresh"),
         ActionId::ViewRefreshAll => Some("refresh-all"),
         ActionId::ViewHelp => Some("help"),

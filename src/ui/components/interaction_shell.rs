@@ -5,7 +5,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::action::{self, ActionContext, ActionId};
 use crate::app::{
-    App, CopyField, FilterLineState, FilterSuggestion, FilterSuggestionKind,
+    App, CopyField, FilterLinePurpose, FilterLineState, FilterSuggestion, FilterSuggestionKind,
     FilterSuggestionSection, InteractionMode, Route, TransientKind, TransientMenuState,
 };
 use crate::domain::filter;
@@ -36,7 +36,9 @@ pub fn render_minimum(frame: &mut Frame<'_>, app: &App, area: Rect) {
             state.error.as_deref(),
             area.width,
         )),
-        InteractionMode::FilterLine(state) => Some(filter_prompt_line(app, state, area.width)),
+        InteractionMode::FilterLine(state) => {
+            Some(active_filter_prompt_line(app, state, area.width))
+        }
         InteractionMode::Transient(_) | InteractionMode::HelpSheet => {
             Some((Line::from("Esc cancel"), None))
         }
@@ -453,6 +455,15 @@ const FILTER_CONTENT_RESERVE: usize = 6;
 /// The tray reserves room for the whole catalogue, so the prompt and the rows
 /// behind it never shift while suggestions narrow down.
 pub fn filter_menu_height(app: &App, width: u16, available: u16) -> u16 {
+    if matches!(
+        app.interaction,
+        InteractionMode::FilterLine(FilterLineState {
+            purpose: FilterLinePurpose::DeviceDetailSearch { .. },
+            ..
+        })
+    ) {
+        return 3.min(available);
+    }
     let budget = usize::from(available)
         .saturating_sub(FILTER_CONTENT_RESERVE)
         .max(FILTER_CHROME.saturating_add(1));
@@ -468,6 +479,9 @@ fn rendered_columns(app: &App, area: Rect) -> usize {
 }
 
 fn filter_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
+    if matches!(state.purpose, FilterLinePurpose::DeviceDetailSearch { .. }) {
+        return detail_search_lines(app, state, area);
+    }
     let content_budget = usize::from(area.height).saturating_sub(FILTER_CHROME);
     let mut content = filter_content(app, state, area);
     let overflow = content.len().saturating_sub(content_budget);
@@ -491,6 +505,74 @@ fn filter_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
     lines.push(prompt);
     lines.push(filter_status(app, state, area.width));
     (lines, caret.map(|column| (column, caret_row)))
+}
+
+fn detail_search_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
+    let key = app.theme.style(theme::StyleRole::KeyHint);
+    let label = app.theme.style(theme::StyleRole::TextMuted);
+    let header = Line::from(vec![
+        Span::styled(
+            "Search device details",
+            app.theme.style(theme::StyleRole::Focus),
+        ),
+        Span::raw("   "),
+        Span::styled("plain text · case-insensitive", label),
+        Span::raw("   "),
+        Span::styled("Esc", key),
+        Span::styled(" restore", label),
+    ]);
+    let (prompt, caret) = detail_search_prompt_line(app, state, area.width);
+    let status = if state.error.is_some() {
+        Line::from(Span::styled(
+            "No matches in this device record",
+            app.theme.style(theme::StyleRole::StateDanger),
+        ))
+    } else {
+        let matches = crate::ui::components::inspector::device_detail_search_matches(
+            app,
+            &state.editor.input,
+        );
+        Line::from(vec![
+            Span::styled("Enter", key),
+            Span::styled(" keep", label),
+            Span::raw("   "),
+            Span::styled(format!("{} matches", matches.len()), label),
+            Span::raw("   "),
+            Span::styled("n/N", key),
+            Span::styled(" next/previous after Enter", label),
+        ])
+    };
+    (
+        vec![header, prompt, status],
+        caret.map(|column| (column, 1)),
+    )
+}
+
+fn active_filter_prompt_line(
+    app: &App,
+    state: &FilterLineState,
+    width: u16,
+) -> (Line<'static>, Option<u16>) {
+    if matches!(state.purpose, FilterLinePurpose::DeviceDetailSearch { .. }) {
+        detail_search_prompt_line(app, state, width)
+    } else {
+        filter_prompt_line(app, state, width)
+    }
+}
+
+fn detail_search_prompt_line(
+    app: &App,
+    state: &FilterLineState,
+    width: u16,
+) -> (Line<'static>, Option<u16>) {
+    prompt_line(
+        app,
+        '/',
+        &state.editor.input,
+        state.editor.cursor,
+        None,
+        width,
+    )
 }
 
 fn filter_header(app: &App, width: u16) -> Line<'static> {
@@ -1666,6 +1748,9 @@ fn help_group(id: ActionId) -> Option<HelpGroup> {
         }
         ActionId::ViewCommandLine
         | ActionId::ViewFilter
+        | ActionId::DeviceDetailSearch
+        | ActionId::DeviceDetailNextMatch
+        | ActionId::DeviceDetailPreviousMatch
         | ActionId::ResourceActions
         | ActionId::ResourceCopy => Some(HelpGroup::SearchAndCommands),
         ActionId::ViewRefresh

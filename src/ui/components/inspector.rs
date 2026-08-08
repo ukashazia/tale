@@ -34,25 +34,64 @@ pub fn device_detail_line_count(app: &App) -> usize {
     full_detail_lines(app, usize::MAX).len()
 }
 
+pub fn device_detail_max_scroll(app: &App, area_height: u16) -> usize {
+    let visible = usize::from(area_height.saturating_sub(2)).max(1);
+    device_detail_line_count(app).saturating_sub(visible)
+}
+
+pub fn device_detail_search_matches(app: &App, query: &str) -> Vec<usize> {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    full_detail_lines(app, usize::MAX)
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            line_text(line)
+                .to_ascii_lowercase()
+                .contains(&query)
+                .then_some(index)
+        })
+        .collect()
+}
+
 fn render_full_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let lines = full_detail_lines(app, usize::from(area.width.saturating_sub(4)));
+    let mut lines = full_detail_lines(app, usize::from(area.width.saturating_sub(4)));
     if lines.is_empty() {
         panel::render(frame, app, area, "device details", "No device selected");
         return;
     }
     let visible = usize::from(area.height.saturating_sub(2)).max(1);
-    let max_scroll = lines.len().saturating_sub(visible);
+    let max_scroll = device_detail_max_scroll(app, area.height);
     let scroll = app.views.devices.detail_scroll.min(max_scroll);
     let end = scroll.saturating_add(visible).min(lines.len());
+    let matches = style_search_matches(app, &mut lines);
     let source = match app.source_mode {
         SourceMode::Mock => "mock",
         _ => app.device_view_source().label(),
     };
-    let title = if max_scroll == 0 {
-        format!("device details · {source}")
+    let position = app.views.devices.detail_search_match.and_then(|line| {
+        matches
+            .iter()
+            .position(|candidate| *candidate == line)
+            .map(|position| position.saturating_add(1))
+    });
+    let search = if app.views.devices.detail_search.is_empty() {
+        String::new()
     } else {
         format!(
-            "device details · {source} · {}-{} of {}",
+            " · match {}/{} · /{}",
+            position.map_or(0, |value| value),
+            matches.len(),
+            app.views.devices.detail_search
+        )
+    };
+    let title = if max_scroll == 0 {
+        format!("device details · {source}{search}")
+    } else {
+        format!(
+            "device details · {source} · {}-{} of {}{search}",
             scroll.saturating_add(1),
             end,
             lines.len()
@@ -60,6 +99,33 @@ fn render_full_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     let scroll = u16::try_from(scroll).map_or(u16::MAX, |value| value);
     panel::render_focusable_scrolled(frame, app, area, &title, lines, scroll);
+}
+
+fn style_search_matches(app: &App, lines: &mut [Line<'static>]) -> Vec<usize> {
+    let matches = device_detail_search_matches(app, &app.views.devices.detail_search);
+    for index in &matches {
+        let Some(line) = lines.get_mut(*index) else {
+            continue;
+        };
+        let role = if app.views.devices.detail_search_match == Some(*index) {
+            theme::StyleRole::Selection
+        } else {
+            theme::StyleRole::CompletionMatch
+        };
+        let style = app.theme.style(role);
+        line.style = line.style.patch(style);
+        for span in &mut line.spans {
+            span.style = span.style.patch(style);
+        }
+    }
+    matches
+}
+
+fn line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 fn full_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
