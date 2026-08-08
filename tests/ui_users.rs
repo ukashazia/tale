@@ -290,7 +290,6 @@ fn build_app() -> Option<App> {
     let environment = EnvironmentValues {
         config_file: None,
         profile: None,
-        access_token_present: false,
         tailscale_path: None,
         tailscale_socket: None,
         no_color: true,

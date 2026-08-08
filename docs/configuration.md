@@ -19,6 +19,11 @@ The default configuration path is:
   `$HOME/.config/tale/config.toml` when `XDG_CONFIG_HOME` is unset;
 - Windows: `%APPDATA%\tale\config.toml`.
 
+Credentials live beside it in `credentials.toml`, in the same directory and never
+in `config.toml` itself, so the configuration stays shareable. `--config` moves
+both together. The credential file is created mode `0600` inside a `0700`
+directory and is refused rather than read if it is later widened.
+
 State and logs use:
 
 - Unix: `$XDG_STATE_HOME/tale`, falling back to `$HOME/.local/state/tale`;
@@ -46,7 +51,6 @@ Environment variables do not map generically onto TOML keys.
 | --- | --- |
 | `TALE_CONFIG_FILE` | use an explicit config path |
 | `TALE_PROFILE` | select an admin profile for this run |
-| `TALE_ACCESS_TOKEN` | ephemeral access token for the selected profile; never persisted |
 | `TALE_TAILSCALE_PATH` | override the local executable for this run |
 | `TALE_TAILSCALE_SOCKET` | override the local daemon socket or named pipe for this run |
 | `NO_COLOR` | force color mode `none` |
@@ -71,17 +75,17 @@ tale doctor [--config PATH] [--mock] [--output PATH]
 - `--no-local` skips local-client detection and is useful on an admin workstation
   without Tailscale installed.
 - `--mock` selects deterministic fictional providers and prevents local process,
-  HTTP, and keyring access. It is incompatible with `--profile` and
-  `TALE_ACCESS_TOKEN`, visibly labels the session `mock`, and is never persisted.
+  HTTP, and credential-store access. It is incompatible with `--profile`, visibly
+  labels the session `mock`, and is never persisted.
 - `--view` accepts only canonical routes and documented aliases.
 - `auth add` prompts for whatever it is not given. `--secret-stdin` reads the
   secret from standard input instead, which is the only form that works without a
   controlling terminal; in that form every other value must arrive as a flag,
   because no prompt can be answered.
-- `auth remove` removes Tale's stored credential reference; it does not revoke
-  the credential at Tailscale. Removing the last profile leaves the file without
+- `auth remove` removes the stored credential; it does not revoke the credential
+  at Tailscale. Removing the last profile leaves the file without
   `default_profile`, which no longer selects anything.
-- `doctor` performs non-mutating local, keyring, API, terminal, and config checks
+- `doctor` performs non-mutating local, credential-store, API, terminal, and config checks
   and redacts its output. `--output` writes the allowlisted Tale 1.0 support
   bundle to an explicit path and never uploads it.
 
@@ -211,7 +215,7 @@ configuration.
 | --- | --- | --- | --- |
 | `tailnet` | string | required | a Tailnet ID or `-`; not a display label |
 | `read_only` | bool | `true` | profile write lock |
-| `credential` | string | required | keyring record name, not secret material |
+| `credential` | string | required | credential-store record name, not secret material |
 
 Profile names use ASCII letters, digits, `_`, and `-`, are case-sensitive, and
 must be unique. The configuration never contains OAuth client secrets, API
@@ -235,28 +239,24 @@ printf '%s' "$TOKEN" |
   tale auth add ops --tailnet TAILNET_ID --kind access-token --secret-stdin
 ```
 
-The credential record stores its kind and secret fields in the OS keyring under
-service `tale` and the configured credential name. OAuth scopes are not secret
-and are also returned by `auth status` so the user can audit the requested
-access. Tale refuses a literal token in TOML.
+The record is written to `credentials.toml` under its configured credential name.
+OAuth scopes are not secret and are also returned by `auth status` so the user
+can audit the requested access. Tale refuses a literal token in `config.toml`.
 
 ### Which credential is used
 
-A credential is read from exactly two places, highest precedence first:
+A credential is read from exactly one place: the record in `credentials.toml`
+named by the selected profile's `credential` field. There is no environment
+variable and no fallback. `credential` names a record; it never holds secret
+material. It defaults to the profile name, so it only becomes interesting once a
+single credential backs several profiles.
 
-1. `TALE_ACCESS_TOKEN`, when set. It applies to the whole process, is never
-   persisted, and the keyring is not consulted at all — on platforms whose
-   keyring raises a modal unlock prompt, this is the way to avoid it.
-2. the OS keyring record named by the profile's `credential` field.
+Storage sits behind a backend interface, so a future release can add another
+backend without changing the record type, the configuration, or these commands.
+Only the file backend exists today.
 
-`credential` names a keyring record; it never holds secret material. It defaults
-to the profile name, so it only becomes interesting once two profiles share a
-tailnet or a single credential backs several profiles.
-
-A token with no profile to apply to is an error, because there is no tailnet to
-address. The two ways that happens are reported separately: a configuration that
-declares no profiles at all, and one that declares profiles but names no
-`default_profile` and was given no `--profile`.
+A configuration that selects no profile is not an error. Tale starts, local
+views work, and the admin views stay inactive until a profile is selected.
 
 Recommended profiles:
 
@@ -274,9 +274,12 @@ missing scope, it names the scope and remains disabled.
 - Write TOML through a same-directory temporary file, flush it, then atomically
   replace the target.
 - Never rewrite the config merely because defaults were applied.
-- `auth add` validates credentials before committing config/keyring changes.
-- `auth remove` asks whether to remove only the referenced keyring entry or also
-  the profile block; neither action revokes a remote credential.
+- `auth add` validates a credential against the API before writing it, so a
+  rejected credential leaves both files untouched.
+- Credentials are written through a same-directory temporary file created `0600`,
+  so the secret is never briefly visible at a wider mode.
+- `auth remove` asks whether to remove only the stored credential or also the
+  profile block; neither action revokes a remote credential.
 - Tale never edits shell startup files.
 
 ## Logs and privacy

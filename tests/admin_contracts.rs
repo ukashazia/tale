@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tale::admin::auth::{
     AccessTokenRecord, CredentialRecord, CredentialStore, MemoryCredentialStore, SecretValue,
-    TokenManager, encode_record,
+    TokenManager,
 };
 use tale::admin::client::{AdminClient, AdminError};
 use tale::admin::key_mutations::AuthKeyCreateRequest;
@@ -76,11 +76,10 @@ async fn client_with_token_timeout(
         version: 1,
         access_token: SecretValue::new("canary-token-for-tests"),
     });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
     store
-        .set("fixture", &encoded)
+        .set("fixture", &record)
         .map_err(|error| error.to_string())?;
-    let manager = TokenManager::new(store, None);
+    let manager = TokenManager::new(store);
     let token = manager
         .access_token("fixture", "fixture")
         .await
@@ -390,15 +389,14 @@ async fn oauth_exchange_is_form_encoded_and_refreshes_are_coalesced() -> Result<
         client_secret: SecretValue::new("fictional-client-secret"),
         requested_scopes: vec!["devices:core:read".to_owned(), "users:read".to_owned()],
     });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
     store
-        .set("oauth", &encoded)
+        .set("oauth", &record)
         .map_err(|error| error.to_string())?;
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())?;
-    let manager = TokenManager::with_client(store, None, http, token_url);
+    let manager = TokenManager::with_client(store, http, token_url);
     let (left, right) = tokio::join!(
         manager.access_token("fictional", "oauth"),
         manager.access_token("fictional", "oauth")
@@ -606,16 +604,20 @@ impl CredentialStore for CountingCredentialStore {
     fn get(
         &self,
         reference: &str,
-    ) -> Result<Option<zeroize::Zeroizing<String>>, tale::admin::auth::AuthError> {
+    ) -> Result<Option<CredentialRecord>, tale::secrets::SecretsError> {
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.get(reference)
     }
 
-    fn set(&self, reference: &str, value: &str) -> Result<(), tale::admin::auth::AuthError> {
-        self.inner.set(reference, value)
+    fn set(
+        &self,
+        reference: &str,
+        record: &CredentialRecord,
+    ) -> Result<(), tale::secrets::SecretsError> {
+        self.inner.set(reference, record)
     }
 
-    fn delete(&self, reference: &str) -> Result<bool, tale::admin::auth::AuthError> {
+    fn delete(&self, reference: &str) -> Result<bool, tale::secrets::SecretsError> {
         self.inner.delete(reference)
     }
 }
@@ -628,12 +630,11 @@ async fn credential_status_reuses_the_record_the_token_read_already_decoded() ->
         version: 1,
         access_token: SecretValue::new("canary-token-for-tests"),
     });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
     store
-        .set("fixture", &encoded)
+        .set("fixture", &record)
         .map_err(|error| error.to_string())?;
 
-    let manager = TokenManager::new(store.clone(), None);
+    let manager = TokenManager::new(store.clone());
     manager
         .access_token("fixture", "fixture")
         .await
@@ -668,12 +669,11 @@ async fn credential_status_still_reads_when_nothing_is_cached() -> Result<(), St
         client_secret: SecretValue::new("fictional-secret"),
         requested_scopes: vec!["devices:core:read".to_owned()],
     });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
     store
-        .set("fixture", &encoded)
+        .set("fixture", &record)
         .map_err(|error| error.to_string())?;
 
-    let manager = TokenManager::new(store.clone(), None);
+    let manager = TokenManager::new(store.clone());
     let status = manager
         .credential_status("fixture")
         .map_err(|error| error.to_string())?
@@ -692,35 +692,3 @@ async fn credential_status_still_reads_when_nothing_is_cached() -> Result<(), St
     Ok(())
 }
 
-#[tokio::test]
-async fn an_environment_token_override_never_touches_the_keyring() -> Result<(), String> {
-    let store = Arc::new(CountingCredentialStore::default());
-    let record = CredentialRecord::AccessToken(AccessTokenRecord {
-        version: 1,
-        access_token: SecretValue::new("keyring-token-that-must-stay-unread"),
-    });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
-    store
-        .set("fixture", &encoded)
-        .map_err(|error| error.to_string())?;
-
-    let manager = TokenManager::new(store.clone(), Some("override-token".to_owned()));
-    for _ in 0..3 {
-        manager
-            .access_token("fixture", "fixture")
-            .await
-            .map_err(|error| error.to_string())?;
-        let status = manager
-            .credential_status("fixture")
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "status was missing".to_owned())?;
-        assert_eq!(status.kind.label(), "access_token");
-        assert!(status.requested_scopes.is_empty());
-    }
-    assert_eq!(
-        store.reads(),
-        0,
-        "TALE_ACCESS_TOKEN is the documented way to run without an unlock prompt"
-    );
-    Ok(())
-}

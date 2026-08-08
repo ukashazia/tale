@@ -12,7 +12,6 @@ use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
 use sha2::{Digest, Sha256};
 
 use crate::action::{self, ActionContext, ActionId, Capability};
-use crate::admin::auth::SecretValue;
 use crate::admin::client::AdminError;
 use crate::admin::mutation::{
     AdminBatchConfirmation, AdminMutationRequest, AdminSnapshotFields, batch_target, parse_change,
@@ -1136,7 +1135,6 @@ pub struct App {
     pending_auth_key_request: Option<crate::admin::key_mutations::AuthKeyCreateRequest>,
     pending_auth_key_result: Option<u64>,
     pending_credential_revoke: Option<String>,
-    admin_environment_token: Option<Arc<SecretValue>>,
     pub admin_user_selected: usize,
     pub admin_route_selected: usize,
     pub admin_credential_selected: usize,
@@ -1250,9 +1248,6 @@ impl App {
             profile_read_only || config.read_only,
             Vec::new(),
         );
-        let admin_environment_token = std::env::var("TALE_ACCESS_TOKEN")
-            .ok()
-            .map(|value| Arc::new(SecretValue::new(value)));
         let saved_views_load = crate::saved_views::SavedViewsState::load(&config.paths.state_dir);
         let (saved_views, saved_views_error) = match saved_views_load {
             Ok(value) => (Some(value), None),
@@ -1297,7 +1292,6 @@ impl App {
             pending_auth_key_request: None,
             pending_auth_key_result: None,
             pending_credential_revoke: None,
-            admin_environment_token,
             admin_user_selected: 0,
             admin_route_selected: 0,
             admin_credential_selected: 0,
@@ -5104,7 +5098,6 @@ impl App {
             request,
             tailnet,
             credential: profile_config.credential.clone(),
-            environment_token: self.admin_environment_token.clone(),
             timeout: self.resolved_config.admin.request_timeout,
         }]
     }
@@ -5182,7 +5175,6 @@ impl App {
             profile,
             tailnet,
             credential,
-            environment_token: self.admin_environment_token.clone(),
             timeout: self.resolved_config.admin.request_timeout,
         }]
     }
@@ -5200,7 +5192,6 @@ impl App {
             profile,
             tailnet,
             credential,
-            environment_token: self.admin_environment_token.clone(),
             timeout: self.resolved_config.admin.request_timeout,
         }]
     }
@@ -5293,7 +5284,6 @@ impl App {
             profile,
             tailnet,
             credential,
-            environment_token: self.admin_environment_token.clone(),
             timeout: self.resolved_config.admin.request_timeout,
             path,
         }]
@@ -5340,7 +5330,6 @@ impl App {
             profile,
             tailnet,
             credential,
-            environment_token: self.admin_environment_token.clone(),
             timeout: self.resolved_config.admin.request_timeout,
             path,
             selector_type,
@@ -5811,7 +5800,6 @@ impl App {
             profile,
             tailnet,
             credential: credential_reference,
-            environment_token: self.admin_environment_token.clone(),
             timeout: self.resolved_config.admin.request_timeout,
         }]
     }
@@ -6614,7 +6602,6 @@ impl App {
                 profile,
                 tailnet,
                 credential,
-                environment_token: self.admin_environment_token.clone(),
                 timeout: self.resolved_config.admin.request_timeout,
             })
         });
@@ -7369,7 +7356,6 @@ impl App {
                 request,
                 tailnet: tailnet.clone(),
                 credential: profile_config.credential.clone(),
-                environment_token: self.admin_environment_token.clone(),
                 timeout: self.resolved_config.admin.request_timeout,
             });
         }
@@ -7602,7 +7588,6 @@ impl App {
                 profile,
                 tailnet,
                 credential,
-                environment_token: self.admin_environment_token.clone(),
                 timeout: self.resolved_config.admin.request_timeout,
                 path,
                 expected_base_hash: base_hash,
@@ -7640,7 +7625,6 @@ impl App {
                 profile,
                 tailnet,
                 credential,
-                environment_token: self.admin_environment_token.clone(),
                 timeout: self.resolved_config.admin.request_timeout,
                 request,
             }];
@@ -7699,7 +7683,6 @@ impl App {
                 profile,
                 tailnet,
                 credential,
-                environment_token: self.admin_environment_token.clone(),
                 timeout: self.resolved_config.admin.request_timeout,
             }];
         }
@@ -7802,7 +7785,6 @@ impl App {
                 request,
                 tailnet,
                 credential: profile_config.credential.clone(),
-                environment_token: self.admin_environment_token.clone(),
                 timeout: self.resolved_config.admin.request_timeout,
             }];
         }
@@ -7950,7 +7932,6 @@ impl App {
             profile,
             tailnet,
             credential: profile_config.credential.clone(),
-            environment_token: self.admin_environment_token.clone(),
             timeout: self.resolved_config.admin.request_timeout,
         }]
     }
@@ -8605,7 +8586,6 @@ impl App {
                 (Some(profile.tailnet.clone()), profile.read_only)
             });
         self.resolved_config.profile = profile.clone();
-        self.admin_environment_token = None;
         let restored = profile
             .as_ref()
             .and_then(|name| self.admin_profile_snapshots.remove(name));
@@ -8683,7 +8663,6 @@ impl App {
             profile,
             tailnet,
             credential: profile_config.credential.clone(),
-            environment_token: self.admin_environment_token.clone(),
             generation,
             timeout: self.resolved_config.admin.request_timeout,
             audit_window_days: self.admin_audit_window_days,
@@ -8861,7 +8840,6 @@ impl App {
             profile,
             tailnet,
             credential: profile_config.credential.clone(),
-            environment_token: self.admin_environment_token.clone(),
             generation,
             timeout: self.resolved_config.admin.request_timeout,
             audit_window_days: self.admin_audit_window_days,
@@ -8902,7 +8880,6 @@ impl App {
         Some(Effect::StartAdminDeviceEnrichment {
             profile,
             credential: profile_config.credential.clone(),
-            environment_token: self.admin_environment_token.clone(),
             generation: self.admin_generation,
             device_id: stable_id,
             timeout: self.resolved_config.admin.request_timeout,
@@ -9928,7 +9905,6 @@ impl App {
                 request: next,
                 tailnet,
                 credential: profile_config.credential.clone(),
-                environment_token: self.admin_environment_token.clone(),
                 timeout: self.resolved_config.admin.request_timeout,
             });
         }
@@ -11862,7 +11838,6 @@ impl App {
             }
             self.secret_result = None;
             self.overlays.clear();
-            self.admin_environment_token = None;
             self.render_invalidated = true;
         }
         self.tasks

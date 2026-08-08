@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tale::admin::auth::{
     AccessTokenRecord, CredentialRecord, CredentialStore, MemoryCredentialStore, SecretValue,
-    TokenManager, encode_record,
+    TokenManager,
 };
 use tale::admin::client::{AdminClient, AdminError, Endpoint};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,11 +22,10 @@ async fn client_with_token(
         version: 1,
         access_token: SecretValue::new("canary-token-for-tests"),
     });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
     store
-        .set("fixture", &encoded)
+        .set("fixture", &record)
         .map_err(|error| error.to_string())?;
-    let manager = TokenManager::new(store, None);
+    let manager = TokenManager::new(store);
     let token = manager
         .access_token("fixture", "fixture")
         .await
@@ -482,11 +481,10 @@ async fn mutations_never_retry_errors_or_timeouts() -> Result<(), String> {
         version: 1,
         access_token: SecretValue::new("canary-token-for-tests"),
     });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
     store
-        .set("fixture", &encoded)
+        .set("fixture", &record)
         .map_err(|error| error.to_string())?;
-    let manager = TokenManager::new(store, None);
+    let manager = TokenManager::new(store);
     let token = manager
         .access_token("fixture", "fixture")
         .await

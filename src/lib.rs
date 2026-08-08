@@ -16,6 +16,7 @@ pub mod mock;
 pub mod paths;
 pub mod runtime;
 pub mod saved_views;
+pub mod secrets;
 pub mod task;
 pub mod temporary;
 pub mod terminal;
@@ -29,7 +30,7 @@ use std::io::Write;
 use clap::CommandFactory;
 
 use crate::admin::auth::{
-    AccessTokenRecord, CredentialRecord, CredentialStore, OAuthClientRecord, OsCredentialStore,
+    AccessTokenRecord, CredentialRecord, CredentialStore, FileCredentialStore, OAuthClientRecord,
     SecretValue,
 };
 use crate::cli::{AuthAddArgs, AuthCommand, Cli, Command, ConfigCommand};
@@ -66,9 +67,10 @@ pub fn run(mut cli: Cli) -> Result<(), TaleError> {
         }) => {
             let paths = config::resolve_paths_for_cli(&cli, &environment, &path_environment)
                 .map_err(|error| TaleError::InvalidConfiguration(error.to_string()))?;
-            println!("config  {}", paths.config_file.display());
-            println!("state   {}", paths.state_dir.display());
-            println!("cache   {}", paths.cache_dir.display());
+            println!("config       {}", paths.config_file.display());
+            println!("credentials  {}", paths.credentials_file.display());
+            println!("state        {}", paths.state_dir.display());
+            println!("cache        {}", paths.cache_dir.display());
             Ok(())
         }
         Some(Command::Config {
@@ -121,7 +123,6 @@ fn run_auth(
     let mut check_environment = environment.clone();
     if matches!(&command, AuthCommand::Add(_)) {
         check_environment.profile = None;
-        check_environment.access_token_present = false;
     }
     let checked =
         config::resolve(&check_cli, &check_environment, path_environment).map_err(config_error)?;
@@ -248,15 +249,12 @@ fn auth_add(args: AuthAddArgs, checked: &ResolvedConfig) -> Result<(), TaleError
         .map_err(|error| {
             TaleError::Application(format!("credential validation failed: {error}"))
         })?;
-    let encoded = crate::admin::auth::encode_record(&record).map_err(|error| {
-        TaleError::Application(format!("credential could not be stored: {error}"))
-    })?;
-    let store = OsCredentialStore;
+    let store = FileCredentialStore::new(checked.paths.credentials_file.clone());
     let previous = store.get(&tailnet_profile.credential).map_err(|error| {
         TaleError::Application(format!("credential could not be read: {error}"))
     })?;
     store
-        .set(&tailnet_profile.credential, encoded.as_str())
+        .set(&tailnet_profile.credential, &record)
         .map_err(|error| {
             TaleError::Application(format!("credential could not be stored: {error}"))
         })?;
@@ -264,7 +262,7 @@ fn auth_add(args: AuthAddArgs, checked: &ResolvedConfig) -> Result<(), TaleError
         config::write_profile_atomic(&checked.paths.config_file, &profile_name, &tailnet_profile)
     {
         let rollback = match previous {
-            Some(previous) => store.set(&tailnet_profile.credential, previous.as_str()),
+            Some(previous) => store.set(&tailnet_profile.credential, &previous),
             None => store.delete(&tailnet_profile.credential).map(|_| ()),
         };
         if rollback.is_err() {
@@ -291,75 +289,38 @@ fn auth_status(
         .profiles
         .get(&profile_name)
         .ok_or_else(|| TaleError::InvalidArguments("profile does not exist".to_owned()))?;
-    let store: std::sync::Arc<dyn CredentialStore> = std::sync::Arc::new(OsCredentialStore);
-    let environment_token = environment
-        .access_token_present
-        .then(|| std::env::var("TALE_ACCESS_TOKEN").ok())
-        .flatten();
-    let status_result = crate::admin::auth::TokenManager::new(store.clone(), None)
-        .credential_status(&profile.credential);
+    let store: std::sync::Arc<dyn CredentialStore> = std::sync::Arc::new(
+        FileCredentialStore::new(checked.paths.credentials_file.clone()),
+    );
+    let status = crate::admin::auth::TokenManager::new(store.clone())
+        .credential_status(&profile.credential)
+        .map_err(|error| TaleError::Application(format!("credential status failed: {error}")))?;
     println!("profile: {profile_name}");
     println!("tailnet: {}", profile.tailnet);
-    if let Some(environment_token) = environment_token {
-        println!("credential: ephemeral access_token override");
-        match status_result {
-            Ok(Some(status)) => {
-                println!("keyring: available but ignored for this process");
-                println!("keyring credential: {}", status.kind.label());
-                println!(
-                    "scopes: {}",
-                    if status.requested_scopes.is_empty() {
-                        "not recorded".to_owned()
-                    } else {
-                        status.requested_scopes.join(" ")
-                    }
-                );
-            }
-            Ok(None) => println!("keyring: not used for this process"),
-            Err(_) => println!("keyring: unavailable; override remains usable"),
-        }
-        let runtime = auth_runtime()?;
-        let result = runtime.block_on(crate::admin::auth::live_check_with_override(
-            &profile_name,
-            &profile.tailnet,
-            &profile.credential,
-            store,
-            Some(environment_token),
-        ));
-        println!(
-            "live authentication: {}",
-            result.map_or_else(|error| format!("failed ({error})"), |_| "ok".to_owned())
-        );
-    } else {
-        let status = status_result.map_err(|error| {
-            TaleError::Application(format!("credential status failed: {error}"))
-        })?;
-        match status {
-            None => println!("credential: missing"),
-            Some(status) => {
-                println!("credential: {}", status.kind.label());
-                println!("keyring: available");
-                println!(
-                    "scopes: {}",
-                    if status.requested_scopes.is_empty() {
-                        "not recorded".to_owned()
-                    } else {
-                        status.requested_scopes.join(" ")
-                    }
-                );
-                let runtime = auth_runtime()?;
-                let result = runtime.block_on(crate::admin::auth::live_check_with_override(
-                    &profile_name,
-                    &profile.tailnet,
-                    &profile.credential,
-                    store,
-                    environment_token,
-                ));
-                println!(
-                    "live authentication: {}",
-                    result.map_or_else(|error| format!("failed ({error})"), |_| "ok".to_owned())
-                );
-            }
+    println!("store: {}", checked.paths.credentials_file.display());
+    match status {
+        None => println!("credential: missing"),
+        Some(status) => {
+            println!("credential: {}", status.kind.label());
+            println!(
+                "scopes: {}",
+                if status.requested_scopes.is_empty() {
+                    "not recorded".to_owned()
+                } else {
+                    status.requested_scopes.join(" ")
+                }
+            );
+            let runtime = auth_runtime()?;
+            let result = runtime.block_on(crate::admin::auth::live_check(
+                &profile_name,
+                &profile.tailnet,
+                &profile.credential,
+                store,
+            ));
+            println!(
+                "live authentication: {}",
+                result.map_or_else(|error| format!("failed ({error})"), |_| "ok".to_owned())
+            );
         }
     }
     Ok(())
@@ -370,14 +331,14 @@ fn auth_remove(profile_name: String, checked: &ResolvedConfig) -> Result<(), Tal
         .profiles
         .get(&profile_name)
         .ok_or_else(|| TaleError::InvalidArguments("profile does not exist".to_owned()))?;
-    let store = OsCredentialStore;
-    let removed_keyring = store
-        .delete(&profile.credential)
-        .map_err(|error| TaleError::Application(format!("keyring removal failed: {error}")))?;
-    if removed_keyring {
-        println!("removed Tale keyring record {}", profile.credential);
+    let store = FileCredentialStore::new(checked.paths.credentials_file.clone());
+    let removed = store.delete(&profile.credential).map_err(|error| {
+        TaleError::Application(format!("credential removal failed: {error}"))
+    })?;
+    if removed {
+        println!("removed stored credential {}", profile.credential);
     } else {
-        println!("Tale keyring record {} was not present", profile.credential);
+        println!("stored credential {} was not present", profile.credential);
     }
     let answer = prompt_line("also remove the profile configuration? [y/N]: ")?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {

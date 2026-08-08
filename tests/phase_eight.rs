@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tale::admin::auth::{
     AccessTokenRecord, CredentialRecord, CredentialStore, MemoryCredentialStore, SecretValue,
-    TokenManager, encode_record,
+    TokenManager,
 };
 use tale::admin::client::{AdminClient, Endpoint};
 use tale::admin::log_streaming::LogStreamReplacement;
@@ -76,11 +76,10 @@ async fn client_with_token(
         version: 1,
         access_token: SecretValue::new("phase-eight-fixture-token"),
     });
-    let encoded = encode_record(&record).map_err(|error| error.to_string())?;
     store
-        .set("phase-eight", &encoded)
+        .set("phase-eight", &record)
         .map_err(|error| error.to_string())?;
-    let manager = TokenManager::new(store, None);
+    let manager = TokenManager::new(store);
     let token = manager
         .access_token("phase-eight", "phase-eight")
         .await

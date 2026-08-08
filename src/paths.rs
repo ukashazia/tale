@@ -47,6 +47,9 @@ impl PathEnvironment {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Paths {
     pub config_file: PathBuf,
+    /// Secret material, kept beside the configuration but in its own owner-only file so
+    /// the configuration itself stays shareable.
+    pub credentials_file: PathBuf,
     pub state_dir: PathBuf,
     pub cache_dir: PathBuf,
 }
@@ -88,6 +91,10 @@ pub fn resolve_paths(environment: &PathEnvironment) -> Result<Paths, PathError> 
                     &config_root.join("tale/config.toml"),
                     &environment.current_dir,
                 ),
+                credentials_file: lexical_absolute(
+                    &config_root.join("tale/credentials.toml"),
+                    &environment.current_dir,
+                ),
                 state_dir: lexical_absolute(&state_root.join("tale"), &environment.current_dir),
                 cache_dir: lexical_absolute(&cache_root.join("tale"), &environment.current_dir),
             })
@@ -107,6 +114,10 @@ pub fn resolve_paths(environment: &PathEnvironment) -> Result<Paths, PathError> 
                     &appdata.join("tale/config.toml"),
                     &environment.current_dir,
                 ),
+                credentials_file: lexical_absolute(
+                    &appdata.join("tale/credentials.toml"),
+                    &environment.current_dir,
+                ),
                 state_dir: lexical_absolute(&localappdata.join("tale"), &environment.current_dir),
                 cache_dir: lexical_absolute(
                     &localappdata.join("tale/cache"),
@@ -117,8 +128,17 @@ pub fn resolve_paths(environment: &PathEnvironment) -> Result<Paths, PathError> 
     }
 }
 
+/// Relocating the configuration moves the credential file with it, so a `--config` in a
+/// throwaway directory does not silently read or write secrets in the real one.
 pub fn with_config_file(mut paths: Paths, config_file: &Path, current_dir: &Path) -> Paths {
     paths.config_file = lexical_absolute(config_file, current_dir);
+    paths.credentials_file = paths
+        .config_file
+        .parent()
+        .map_or_else(
+            || PathBuf::from("credentials.toml"),
+            |parent| parent.join("credentials.toml"),
+        );
     paths
 }
 

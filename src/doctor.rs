@@ -178,7 +178,7 @@ pub fn build(config: &ResolvedConfig) -> SupportBundle {
             bounded: true,
             excluded: vec![
                 "environment values",
-                "keyring content",
+                "credential store content",
                 "access tokens",
                 "client secrets",
                 "auth-key and webhook secrets",
@@ -414,7 +414,6 @@ mod tests {
         let mut environment = EnvironmentValues::from_process();
         environment.config_file = Some(PathBuf::from("/tmp/tale-doctor-test-config.toml"));
         environment.profile = None;
-        environment.access_token_present = false;
         let paths = PathEnvironment::from_process().map_err(|error| error.to_string())?;
         resolve(&cli, &environment, &paths).map_err(|error| error.to_string())
     }

@@ -4,7 +4,6 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crate::admin::AdminRefreshResource;
-use crate::admin::auth::SecretValue;
 use crate::admin::key_mutations::AuthKeyCreateRequest;
 use crate::admin::mutation::AdminMutationRequest;
 use crate::domain::access_explorer::AccessQuestion;
@@ -38,7 +37,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         generation: u64,
         timeout: Duration,
         audit_window_days: u64,
@@ -47,7 +45,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         generation: u64,
         timeout: Duration,
         audit_window_days: u64,
@@ -56,7 +53,6 @@ pub enum Effect {
     StartAdminDeviceEnrichment {
         profile: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         generation: u64,
         device_id: String,
         timeout: Duration,
@@ -65,7 +61,6 @@ pub enum Effect {
         request: AdminMutationRequest,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     StartAdminMutation {
@@ -73,7 +68,6 @@ pub enum Effect {
         request: AdminMutationRequest,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     StartOperationalMutation {
@@ -82,7 +76,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     StartAccessExplorer {
@@ -91,7 +84,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     StartHealthEvaluation {
@@ -110,7 +102,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     StartPolicyEditor {
@@ -123,7 +114,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
         path: PathBuf,
     },
@@ -132,7 +122,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
         path: PathBuf,
         selector_type: PolicySelectorType,
@@ -143,7 +132,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
         path: PathBuf,
         expected_base_hash: String,
@@ -154,7 +142,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
         request: AuthKeyCreateRequest,
     },
@@ -163,7 +150,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     StartCredentialRevoke {
@@ -171,7 +157,6 @@ pub enum Effect {
         profile: String,
         tailnet: String,
         credential: String,
-        environment_token: Option<Arc<SecretValue>>,
         timeout: Duration,
     },
     StartProfileCredentialRemove {

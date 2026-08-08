@@ -33,7 +33,6 @@ impl ValueSource {
 pub struct EnvironmentValues {
     pub config_file: Option<PathBuf>,
     pub profile: Option<String>,
-    pub access_token_present: bool,
     pub tailscale_path: Option<String>,
     pub tailscale_socket: Option<PathBuf>,
     pub no_color: bool,
@@ -44,7 +43,6 @@ impl EnvironmentValues {
         Self {
             config_file: std::env::var_os("TALE_CONFIG_FILE").map(PathBuf::from),
             profile: std::env::var("TALE_PROFILE").ok(),
-            access_token_present: std::env::var_os("TALE_ACCESS_TOKEN").is_some(),
             tailscale_path: std::env::var("TALE_TAILSCALE_PATH").ok(),
             tailscale_socket: std::env::var_os("TALE_TAILSCALE_SOCKET").map(PathBuf::from),
             no_color: std::env::var_os("NO_COLOR").is_some(),
@@ -243,20 +241,7 @@ pub enum ConfigError {
     WriteFailure,
     #[error("profile does not exist: {0}")]
     UnknownProfile(String),
-    // Both of these are reachable only because TALE_ACCESS_TOKEN is set: without it a
-    // configuration that selects no profile simply starts without admin access. Naming
-    // the variable first keeps the message from reading as "tale requires a profile".
-    #[error(
-        "TALE_ACCESS_TOKEN is set but no profiles are configured in {0}; add one with \
-         `tale auth add <name>`, or unset TALE_ACCESS_TOKEN to start without admin access"
-    )]
-    NoProfilesConfigured(String),
-    #[error(
-        "TALE_ACCESS_TOKEN is set but no profile is selected; set default_profile in \
-         {path}, pass --profile, or unset TALE_ACCESS_TOKEN. Configured profiles: {available}"
-    )]
-    NoProfileSelected { path: String, available: String },
-    #[error("--mock cannot be combined with a profile or TALE_ACCESS_TOKEN")]
+    #[error("--mock cannot be combined with a profile")]
     MockConflict,
     #[error("route name is not available in Phase 1: {0}")]
     UnsupportedRoute(String),
@@ -311,11 +296,7 @@ pub fn resolve(
     environment: &EnvironmentValues,
     path_environment: &PathEnvironment,
 ) -> Result<ResolvedConfig, ConfigError> {
-    if cli.mock
-        && (cli.profile.is_some()
-            || environment.profile.is_some()
-            || environment.access_token_present)
-    {
+    if cli.mock && (cli.profile.is_some() || environment.profile.is_some()) {
         return Err(ConfigError::MockConflict);
     }
     let mut paths = paths::resolve_paths(path_environment).map_err(path_error)?;
@@ -334,25 +315,6 @@ pub fn resolve(
         && !file.profiles.contains_key(profile)
     {
         return Err(ConfigError::UnknownProfile(profile.to_owned()));
-    }
-    // A token with nowhere to point is always a configuration error, but the useful part
-    // is which axis is missing: an empty or absent config file is a different problem
-    // from a file that declares profiles and simply names no default.
-    if environment.access_token_present && selected_profile.is_none() {
-        let path = paths.config_file.display().to_string();
-        return Err(if file.profiles.is_empty() {
-            ConfigError::NoProfilesConfigured(path)
-        } else {
-            ConfigError::NoProfileSelected {
-                path,
-                available: file
-                    .profiles
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            }
-        });
     }
     if cli.mock && selected_profile.is_some() {
         return Err(ConfigError::MockConflict);

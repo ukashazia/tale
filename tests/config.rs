@@ -38,7 +38,6 @@ fn environment() -> EnvironmentValues {
     EnvironmentValues {
         config_file: None,
         profile: None,
-        access_token_present: false,
         tailscale_path: None,
         tailscale_socket: None,
         no_color: false,
@@ -239,7 +238,7 @@ fn every_documented_duration_boundary_is_checked() {
 }
 
 #[test]
-fn mock_conflicts_with_profile_and_access_token_but_is_not_persisted() {
+fn mock_conflicts_with_a_selected_profile_and_is_not_persisted() {
     let root = std::env::temp_dir().join(format!("tale-mock-config-{}", std::process::id()));
     let _ = fs::create_dir_all(&root);
     let mut command = cli(None);
@@ -252,15 +251,14 @@ fn mock_conflicts_with_profile_and_access_token_but_is_not_persisted() {
     );
     assert!(conflict.is_err());
 
-    let mut environment = environment();
-    environment.access_token_present = true;
+    // Without a selected profile the mock session is legitimate and must resolve.
     command.profile = None;
-    let conflict = config::resolve(
+    let mocked = config::resolve(
         &command,
-        &environment,
+        &environment(),
         &path_environment(Platform::Unix, &root),
     );
-    assert!(conflict.is_err());
+    assert!(mocked.is_ok());
     let _ = fs::remove_dir_all(root);
 }
 

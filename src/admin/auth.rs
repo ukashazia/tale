@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::Mutex;
@@ -12,24 +12,14 @@ use zeroize::Zeroizing;
 
 use super::client::{AdminClient, AdminError};
 
-const KEYRING_SERVICE: &str = "tale";
-const RECORD_VERSION: u8 = 1;
+// Secret material and its storage live in `crate::secrets`; they are re-exported here so
+// callers keep a single import for "the credential a profile authenticates with".
+pub use crate::secrets::{
+    AccessTokenRecord, CredentialKind, CredentialRecord, CredentialStore, FileCredentialStore,
+    MemoryCredentialStore, OAuthClientRecord, SecretValue, SecretsError,
+};
+
 const REFRESH_LEAD: Duration = Duration::from_secs(300);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CredentialKind {
-    OAuthClient,
-    AccessToken,
-}
-
-impl CredentialKind {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::OAuthClient => "oauth_client",
-            Self::AccessToken => "access_token",
-        }
-    }
-}
 
 #[derive(Error, Debug)]
 pub enum AuthError {
@@ -43,8 +33,8 @@ pub enum AuthError {
     MalformedToken,
     #[error("the system clock is earlier than the token issue time")]
     ClockAnomaly,
-    #[error("the OS keyring is unavailable")]
-    Keyring,
+    #[error("{0}")]
+    Store(#[from] SecretsError),
     #[error("credential input was cancelled")]
     PromptCancelled,
     #[error("authentication transport failed")]
@@ -61,208 +51,10 @@ pub enum AuthError {
     InvalidScopes,
 }
 
-pub struct SecretValue(Zeroizing<String>);
-
-impl SecretValue {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(Zeroizing::new(value.into()))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl fmt::Debug for SecretValue {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("<redacted>")
-    }
-}
-
-#[derive(Debug)]
-pub struct OAuthClientRecord {
-    pub version: u8,
-    pub client_id: SecretValue,
-    pub client_secret: SecretValue,
-    pub requested_scopes: Vec<String>,
-}
-
-#[derive(Debug)]
-pub struct AccessTokenRecord {
-    pub version: u8,
-    pub access_token: SecretValue,
-}
-
-#[derive(Debug)]
-pub enum CredentialRecord {
-    OAuthClient(OAuthClientRecord),
-    AccessToken(AccessTokenRecord),
-}
-
-impl CredentialRecord {
-    pub fn kind(&self) -> CredentialKind {
-        match self {
-            Self::OAuthClient(_) => CredentialKind::OAuthClient,
-            Self::AccessToken(_) => CredentialKind::AccessToken,
-        }
-    }
-}
-
-pub trait CredentialStore: Send + Sync {
-    fn get(&self, reference: &str) -> Result<Option<Zeroizing<String>>, AuthError>;
-    fn set(&self, reference: &str, value: &str) -> Result<(), AuthError>;
-    fn delete(&self, reference: &str) -> Result<bool, AuthError>;
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct OsCredentialStore;
-
-impl CredentialStore for OsCredentialStore {
-    fn get(&self, reference: &str) -> Result<Option<Zeroizing<String>>, AuthError> {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, reference).map_err(|_| AuthError::Keyring)?;
-        match entry.get_password() {
-            Ok(value) => Ok(Some(Zeroizing::new(value))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(AuthError::Keyring),
-        }
-    }
-
-    fn set(&self, reference: &str, value: &str) -> Result<(), AuthError> {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, reference).map_err(|_| AuthError::Keyring)?;
-        entry.set_password(value).map_err(|_| AuthError::Keyring)
-    }
-
-    fn delete(&self, reference: &str) -> Result<bool, AuthError> {
-        let entry =
-            keyring::Entry::new(KEYRING_SERVICE, reference).map_err(|_| AuthError::Keyring)?;
-        match entry.delete_credential() {
-            Ok(()) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(false),
-            Err(_) => Err(AuthError::Keyring),
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct MemoryCredentialStore {
-    values: std::sync::Mutex<BTreeMap<String, Zeroizing<String>>>,
-}
-
-impl fmt::Debug for MemoryCredentialStore {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("MemoryCredentialStore")
-            .field(
-                "entries",
-                &self.values.lock().map_or(0, |values| values.len()),
-            )
-            .finish()
-    }
-}
-
-impl CredentialStore for MemoryCredentialStore {
-    fn get(&self, reference: &str) -> Result<Option<Zeroizing<String>>, AuthError> {
-        self.values
-            .lock()
-            .map_err(|_| AuthError::Keyring)
-            .map(|values| {
-                values
-                    .get(reference)
-                    .map(|value| Zeroizing::new(value.as_str().to_owned()))
-            })
-    }
-
-    fn set(&self, reference: &str, value: &str) -> Result<(), AuthError> {
-        self.values
-            .lock()
-            .map_err(|_| AuthError::Keyring)
-            .map(|mut values| {
-                values.insert(reference.to_owned(), Zeroizing::new(value.to_owned()));
-            })
-    }
-
-    fn delete(&self, reference: &str) -> Result<bool, AuthError> {
-        self.values
-            .lock()
-            .map_err(|_| AuthError::Keyring)
-            .map(|mut values| values.remove(reference).is_some())
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum StoredRecord {
-    OAuthClient {
-        version: u8,
-        client_id: String,
-        client_secret: String,
-        requested_scopes: Vec<String>,
-    },
-    AccessToken {
-        version: u8,
-        access_token: String,
-    },
-}
-
-pub fn encode_record(record: &CredentialRecord) -> Result<Zeroizing<String>, AuthError> {
-    let stored = match record {
-        CredentialRecord::OAuthClient(record) => StoredRecord::OAuthClient {
-            version: record.version,
-            client_id: record.client_id.as_str().to_owned(),
-            client_secret: record.client_secret.as_str().to_owned(),
-            requested_scopes: record.requested_scopes.clone(),
-        },
-        CredentialRecord::AccessToken(record) => StoredRecord::AccessToken {
-            version: record.version,
-            access_token: record.access_token.as_str().to_owned(),
-        },
-    };
-    serde_json::to_string(&stored)
-        .map(Zeroizing::new)
-        .map_err(|_| AuthError::Configuration)
-}
-
-pub fn decode_record(value: &str) -> Result<CredentialRecord, AuthError> {
-    let stored =
-        serde_json::from_str::<StoredRecord>(value).map_err(|_| AuthError::Configuration)?;
-    match stored {
-        StoredRecord::OAuthClient {
-            version,
-            client_id,
-            client_secret,
-            requested_scopes,
-        } if version == RECORD_VERSION && !client_id.is_empty() && !client_secret.is_empty() => {
-            Ok(CredentialRecord::OAuthClient(OAuthClientRecord {
-                version,
-                client_id: SecretValue::new(client_id),
-                client_secret: SecretValue::new(client_secret),
-                requested_scopes,
-            }))
-        }
-        StoredRecord::AccessToken {
-            version,
-            access_token,
-        } if version == RECORD_VERSION && !access_token.is_empty() => {
-            Ok(CredentialRecord::AccessToken(AccessTokenRecord {
-                version,
-                access_token: SecretValue::new(access_token),
-            }))
-        }
-        _ => Err(AuthError::Configuration),
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CredentialStatus {
     pub kind: CredentialKind,
     pub requested_scopes: Vec<String>,
-    pub keyring_available: bool,
 }
 
 #[derive(Debug)]
@@ -283,11 +75,10 @@ pub struct TokenManager {
     store: Arc<dyn CredentialStore>,
     client: Option<Client>,
     token_url: String,
-    environment_token: Option<Arc<SecretValue>>,
     cache: Mutex<BTreeMap<String, CachedToken>>,
-    /// Credential metadata keyed by keyring reference. Reading the OS keyring is a
-    /// blocking call that can raise a modal unlock prompt, so the kind and scopes are
-    /// remembered from the record `access_token` already decoded rather than fetched again.
+    /// Credential metadata keyed by store reference, remembered from the record
+    /// `access_token` already read so that describing a credential does not cost a
+    /// second trip to the backend.
     statuses: std::sync::Mutex<BTreeMap<String, CredentialStatus>>,
 }
 
@@ -295,10 +86,6 @@ impl fmt::Debug for TokenManager {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TokenManager")
-            .field(
-                "environment_token",
-                &self.environment_token.as_ref().map(|_| "<redacted>"),
-            )
             .field(
                 "cached_profiles",
                 &self.cache.try_lock().ok().map_or(0, |cache| cache.len()),
@@ -308,17 +95,7 @@ impl fmt::Debug for TokenManager {
 }
 
 impl TokenManager {
-    pub fn new(store: Arc<dyn CredentialStore>, environment_token: Option<String>) -> Self {
-        Self::new_with_override(
-            store,
-            environment_token.map(|value| Arc::new(SecretValue::new(value))),
-        )
-    }
-
-    pub(crate) fn new_with_override(
-        store: Arc<dyn CredentialStore>,
-        environment_token: Option<Arc<SecretValue>>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn CredentialStore>) -> Self {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
@@ -328,7 +105,6 @@ impl TokenManager {
             store,
             client,
             token_url: "https://api.tailscale.com/api/v2/oauth/token".to_owned(),
-            environment_token,
             cache: Mutex::new(BTreeMap::new()),
             statuses: std::sync::Mutex::new(BTreeMap::new()),
         }
@@ -336,7 +112,6 @@ impl TokenManager {
 
     pub fn with_client(
         store: Arc<dyn CredentialStore>,
-        environment_token: Option<String>,
         client: Client,
         token_url: impl Into<String>,
     ) -> Self {
@@ -344,7 +119,6 @@ impl TokenManager {
             store,
             client: Some(client),
             token_url: token_url.into(),
-            environment_token: environment_token.map(|value| Arc::new(SecretValue::new(value))),
             cache: Mutex::new(BTreeMap::new()),
             statuses: std::sync::Mutex::new(BTreeMap::new()),
         }
@@ -353,11 +127,7 @@ impl TokenManager {
     fn status_of(record: &CredentialRecord) -> CredentialStatus {
         CredentialStatus {
             kind: record.kind(),
-            requested_scopes: match record {
-                CredentialRecord::OAuthClient(record) => record.requested_scopes.clone(),
-                CredentialRecord::AccessToken(_) => Vec::new(),
-            },
-            keyring_available: true,
+            requested_scopes: record.requested_scopes(),
         }
     }
 
@@ -371,31 +141,14 @@ impl TokenManager {
         &self,
         reference: &str,
     ) -> Result<Option<CredentialStatus>, AuthError> {
-        // An environment override replaces the keyring for the whole process, so
-        // describing the credential in use must not read the keyring: that raises a modal
-        // unlock prompt for a record this process is never going to consult. Callers that
-        // deliberately report on keyring contents alongside an override build the manager
-        // without one.
-        if let Some(environment_token) = self.environment_token.as_ref() {
-            if environment_token.is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(CredentialStatus {
-                kind: CredentialKind::AccessToken,
-                requested_scopes: Vec::new(),
-                keyring_available: false,
-            }));
-        }
         if let Ok(statuses) = self.statuses.lock()
             && let Some(status) = statuses.get(reference)
         {
             return Ok(Some(status.clone()));
         }
-        let value = self.store.get(reference)?;
-        let Some(value) = value else {
+        let Some(record) = self.store.get(reference)? else {
             return Ok(None);
         };
-        let record = decode_record(value.as_str())?;
         self.remember_status(reference, &record);
         Ok(Some(Self::status_of(&record)))
     }
@@ -406,22 +159,14 @@ impl TokenManager {
         reference: &str,
     ) -> Result<AccessToken, AuthError> {
         let mut cache = self.cache.lock().await;
-        if let Some(environment_token) = self.environment_token.as_ref() {
-            if environment_token.is_empty() {
-                return Err(AuthError::Unauthenticated);
-            }
-            return Ok(AccessToken(SecretValue::new(environment_token.as_str())));
-        }
         if let Some(cached) = cache.get(profile)
             && token_is_fresh(cached.expires_at)
         {
             return Ok(AccessToken(SecretValue::new(cached.value.as_str())));
         }
-        let encoded = self.store.get(reference)?;
-        let Some(encoded) = encoded else {
+        let Some(record) = self.store.get(reference)? else {
             return Err(AuthError::Unauthenticated);
         };
-        let record = decode_record(encoded.as_str())?;
         self.remember_status(reference, &record);
         match record {
             CredentialRecord::AccessToken(record) => {
@@ -463,7 +208,7 @@ impl TokenManager {
     }
 
     /// Drops every remembered status. The token cache is keyed by profile and the status
-    /// cache by keyring reference, so a profile-scoped eviction cannot target one entry;
+    /// cache by store reference, so a profile-scoped eviction cannot target one entry;
     /// discarding all of them only costs a re-read.
     fn clear_statuses(&self) {
         if let Ok(mut statuses) = self.statuses.lock() {
@@ -477,9 +222,6 @@ impl TokenManager {
         reference: &str,
         original: &AccessToken,
     ) -> Result<Option<AccessToken>, AuthError> {
-        if self.environment_token.is_some() {
-            return Ok(None);
-        }
         let mut cache = self.cache.lock().await;
         let Some(cached) = cache.get(profile) else {
             return Ok(None);
@@ -490,11 +232,9 @@ impl TokenManager {
         if token_is_fresh(cached.expires_at) {
             return Ok(None);
         }
-        let encoded = self.store.get(reference)?;
-        let Some(encoded) = encoded else {
+        let Some(record) = self.store.get(reference)? else {
             return Err(AuthError::Unauthenticated);
         };
-        let record = decode_record(encoded.as_str())?;
         let CredentialRecord::OAuthClient(record) = record else {
             return Ok(None);
         };
@@ -599,10 +339,9 @@ pub async fn validate_record(
     tailnet: &str,
     record: &CredentialRecord,
 ) -> Result<(), AuthError> {
-    let encoded = encode_record(record)?;
     let store = Arc::new(MemoryCredentialStore::default());
-    store.set("validation", encoded.as_str())?;
-    let manager = TokenManager::new(store, None);
+    store.set("validation", record)?;
+    let manager = TokenManager::new(store);
     let token = manager.access_token(profile, "validation").await?;
     let client = AdminClient::new(Duration::from_secs(15)).map_err(map_admin_error)?;
     probe_record(&client, &token, tailnet, Some(record)).await
@@ -614,39 +353,16 @@ pub async fn live_check(
     reference: &str,
     store: Arc<dyn CredentialStore>,
 ) -> Result<CredentialKind, AuthError> {
-    live_check_with_override(profile, tailnet, reference, store, None).await
-}
-
-pub async fn live_check_with_override(
-    profile: &str,
-    tailnet: &str,
-    reference: &str,
-    store: Arc<dyn CredentialStore>,
-    environment_token: Option<String>,
-) -> Result<CredentialKind, AuthError> {
-    let status = if environment_token.is_some() {
-        None
-    } else {
-        store
-            .get(reference)?
-            .map(|value| decode_record(value.as_str()))
-            .transpose()?
-    };
-    let kind = status
+    let record = store.get(reference)?;
+    let kind = record
         .as_ref()
         .map_or(CredentialKind::AccessToken, CredentialRecord::kind);
-    let uses_keyring = environment_token.is_none();
-    let manager = TokenManager::new(store, environment_token);
+    let manager = TokenManager::new(Arc::clone(&store));
     let token = manager.access_token(profile, reference).await?;
     let client = AdminClient::new(Duration::from_secs(15)).map_err(map_admin_error)?;
-    probe_record(
-        &client,
-        &token,
-        tailnet,
-        uses_keyring.then_some(status.as_ref()).flatten(),
-    )
-    .await
-    .map(|_| kind)
+    probe_record(&client, &token, tailnet, record.as_ref())
+        .await
+        .map(|_| kind)
 }
 
 pub fn validate_requested_scopes(scopes: &[String]) -> Result<(), AuthError> {

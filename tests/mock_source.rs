@@ -130,7 +130,7 @@ fn mock_doctor_reports_no_real_adapters() {
         assert!(stdout.contains("\"source_mode\": \"mock\""));
         assert!(stdout.contains("doctor does not spawn a local process"));
         assert!(stdout.contains("doctor does not contact the Control API"));
-        assert!(stdout.contains("keyring content"));
+        assert!(stdout.contains("credential store content"));
         assert!(!stdout.contains("TALE_ACCESS_TOKEN"));
     }
 }
