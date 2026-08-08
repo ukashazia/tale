@@ -877,17 +877,6 @@ impl FormState {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ServiceSectionPickerState {
-    pub selected: usize,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct AppearanceState {
-    pub original: Theme,
-    pub selected: ThemeId,
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CopyField {
     DeviceId,
