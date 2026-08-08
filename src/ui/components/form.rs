@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, FieldKind, FormState, OperatorFormState};
+use crate::app::{App, FieldKind, FormState, ListEditor, OperatorFormState};
 use crate::ui::{text, theme};
 
 pub fn render_operator(frame: &mut Frame<'_>, app: &App, area: Rect, state: &OperatorFormState) {
@@ -238,9 +238,20 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
     for (index, field) in state.fields.iter().enumerate() {
         let selected = index == state.selected;
         let editing = selected && state.is_editing();
-        let (value, value_role) = match (&field.kind, field.value.as_str()) {
+        let (value, value_role) = match (&field.kind, field.display()) {
             (FieldKind::Text { hint }, "") => ((*hint).to_owned(), theme::StyleRole::TextDisabled),
-            (_, value) => (value.to_owned(), theme::StyleRole::TextPrimary),
+            (FieldKind::List { hint }, "") => ((*hint).to_owned(), theme::StyleRole::TextDisabled),
+            (FieldKind::List { .. }, value) => {
+                (value.replace(',', ", "), theme::StyleRole::TextPrimary)
+            }
+            (_, value) => (
+                value.to_owned(),
+                if field.locked.is_some() {
+                    theme::StyleRole::TextDisabled
+                } else {
+                    theme::StyleRole::TextPrimary
+                },
+            ),
         };
         let mut spans = vec![
             Span::styled(
@@ -266,19 +277,24 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
             ),
         ];
         // A caret only where typing does something: inside an open text field.
-        if editing && matches!(field.kind, FieldKind::Text { .. }) {
+        if editing && field.is_text() {
             spans.push(Span::styled(
                 "\u{2588}",
                 app.theme.style(theme::StyleRole::Focus),
             ));
         }
-        if editing && !matches!(field.kind, FieldKind::Text { .. }) {
+        if editing && matches!(field.kind, FieldKind::Choice { .. } | FieldKind::Toggle) {
             spans.push(Span::styled(
                 "  \u{2039} \u{203a}",
                 app.theme.style(theme::StyleRole::KeyHint),
             ));
         }
         lines.push(Line::from(spans));
+        // An open list shows its entries under the field, so the order the
+        // user is arranging is the order they can see.
+        if editing && let Some(list) = state.list.as_ref() {
+            lines.extend(list_entries(app, list, label_width));
+        }
     }
     lines.push(Line::default());
     lines.push(Line::from(vec![
@@ -296,14 +312,19 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
         ),
     ]));
     lines.push(Line::default());
-    let help = state
-        .fields
-        .get(state.selected)
-        .map_or("Review the change before anything happens", |field| {
-            field.help
-        });
+    // The selected row explains itself, and a row the form cannot answer says
+    // what decides it instead.
+    let help = state.selected_field().map_or_else(
+        || "Review the change before anything happens".to_owned(),
+        |field| {
+            field
+                .locked
+                .as_ref()
+                .map_or_else(|| field.help.to_owned(), |reason| format!("{}: {reason}", field.help))
+        },
+    );
     lines.push(Line::from(Span::styled(
-        help.to_owned(),
+        help,
         app.theme.style(theme::StyleRole::TextMuted),
     )));
     if let Some(error) = state.error.as_deref() {
@@ -327,11 +348,60 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
     );
 }
 
+/// The entries of the open list, one per row, under the field they belong to.
+fn list_entries(app: &App, list: &ListEditor, label_width: usize) -> Vec<Line<'static>> {
+    if list.entries.is_empty() {
+        return vec![Line::from(Span::styled(
+            format!("{}(empty)", " ".repeat(label_width.saturating_add(4))),
+            app.theme.style(theme::StyleRole::TextDisabled),
+        ))];
+    }
+    list.entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let selected = index == list.selected;
+            let mut spans = vec![
+                Span::styled(
+                    format!(
+                        "{}{} ",
+                        " ".repeat(label_width.saturating_add(2)),
+                        if selected { "\u{2022}" } else { " " }
+                    ),
+                    app.theme.style(theme::StyleRole::KeyHint),
+                ),
+                Span::styled(
+                    entry.clone(),
+                    app.theme.style(if selected {
+                        theme::StyleRole::Focus
+                    } else {
+                        theme::StyleRole::TextPrimary
+                    }),
+                ),
+            ];
+            if selected {
+                spans.push(Span::styled(
+                    "\u{2588}",
+                    app.theme.style(theme::StyleRole::Focus),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// Only the keys that do something on the field the user is standing on.
 fn hints(app: &App, state: &FormState) -> Line<'static> {
     let pairs = if state.is_editing() {
-        match state.fields.get(state.selected).map(|field| &field.kind) {
+        match state.selected_field().map(|field| &field.kind) {
             Some(FieldKind::Text { .. }) => vec![("Enter", "keep"), ("Esc", "discard")],
+            Some(FieldKind::List { .. }) => vec![
+                ("↑/↓", "entry"),
+                ("Ctrl+↑/↓", "move"),
+                ("Ctrl+i", "add"),
+                ("Ctrl+x", "drop"),
+                ("Enter", "keep"),
+            ],
             _ => vec![("←/→", "change"), ("Enter", "keep"), ("Esc", "discard")],
         }
     } else if state.on_submit_row() {

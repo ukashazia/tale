@@ -256,16 +256,27 @@ fn policy_managed_preferences_remain_visible_but_cannot_dispatch() {
             PreferenceEditability::PolicyManaged
         );
         let _ = app.dispatch_action(ActionId::LocalPreferencesEdit);
-        let _ = app.update(Event::Input(InputEvent::Paste(
-            "accept-dns=false".to_owned(),
-        )));
+        // The field is on the form, holding what the daemon reports, but the
+        // form says who decides it instead of opening an editor.
+        let locked = match app.overlays.last() {
+            Some(Overlay::Form(state)) => state
+                .fields
+                .iter()
+                .find(|field| field.key == "accept-dns")
+                .and_then(|field| field.locked.clone()),
+            _ => None,
+        };
+        assert!(locked.is_some());
         let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,
         ))));
         assert!(effects.is_empty());
-        assert!(app.overlays.is_empty());
-        assert!(app.runtime_error.is_some());
+        let reported = match app.overlays.last() {
+            Some(Overlay::Form(state)) => state.error.clone(),
+            _ => None,
+        };
+        assert_eq!(reported, locked);
     }
 }
 

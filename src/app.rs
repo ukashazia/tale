@@ -589,6 +589,33 @@ impl OperatorFormState {
     }
 }
 
+/// One option of a `Choice` field. The value is what the action reads; the
+/// label is what the user picks between, so an opaque identifier can still be
+/// chosen by the name the rest of the screen calls it.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FormChoice {
+    pub value: String,
+    pub label: String,
+}
+
+impl FormChoice {
+    pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+        }
+    }
+
+    /// An option whose value reads well enough to be its own label.
+    pub fn plain(value: impl Into<String>) -> Self {
+        let value = value.into();
+        Self {
+            label: value.clone(),
+            value,
+        }
+    }
+}
+
 /// What a form field accepts. The kind decides how it is edited, so the user
 /// never has to know a separator or spell out a value the field already knows.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -596,9 +623,12 @@ pub enum FieldKind {
     /// Free text. `hint` is shown in place of an empty value.
     Text { hint: &'static str },
     /// One of a fixed set, cycled with Left and Right.
-    Choice { options: &'static [&'static str] },
+    Choice { options: Vec<FormChoice> },
     /// Yes or no, toggled with Space.
     Toggle,
+    /// An ordered set of values, edited one entry at a time inside the form.
+    /// The field value is the entries joined by commas.
+    List { hint: &'static str },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -609,6 +639,9 @@ pub struct FormField {
     pub help: &'static str,
     pub kind: FieldKind,
     pub value: String,
+    /// Why the field cannot be changed here, when something outside the form
+    /// decides it. A locked field is still shown: the user can see what holds.
+    pub locked: Option<String>,
 }
 
 impl FormField {
@@ -625,6 +658,7 @@ impl FormField {
             help,
             kind: FieldKind::Text { hint },
             value: value.into(),
+            locked: None,
         }
     }
 
@@ -632,16 +666,36 @@ impl FormField {
         key: &'static str,
         label: &'static str,
         help: &'static str,
-        options: &'static [&'static str],
+        options: impl IntoIterator<Item = FormChoice>,
         value: impl Into<String>,
     ) -> Self {
         Self {
             key,
             label,
             help,
-            kind: FieldKind::Choice { options },
+            kind: FieldKind::Choice {
+                options: options.into_iter().collect(),
+            },
             value: value.into(),
+            locked: None,
         }
+    }
+
+    /// A choice between values that read well enough to be their own labels.
+    pub fn options(
+        key: &'static str,
+        label: &'static str,
+        help: &'static str,
+        options: &[&str],
+        value: impl Into<String>,
+    ) -> Self {
+        Self::choice(
+            key,
+            label,
+            help,
+            options.iter().copied().map(FormChoice::plain),
+            value,
+        )
     }
 
     pub fn toggle(key: &'static str, label: &'static str, help: &'static str, value: bool) -> Self {
@@ -651,24 +705,75 @@ impl FormField {
             help,
             kind: FieldKind::Toggle,
             value: if value { "yes" } else { "no" }.to_owned(),
+            locked: None,
         }
     }
 
-    /// Moves a choice or toggle to its next value; text fields ignore this.
-    fn cycle(&mut self, forward: bool) {
-        let options: &[&str] = match &self.kind {
-            FieldKind::Choice { options } => options,
-            FieldKind::Toggle => &["no", "yes"],
-            FieldKind::Text { .. } => return,
-        };
-        if options.is_empty() {
-            return;
+    pub fn list(
+        key: &'static str,
+        label: &'static str,
+        help: &'static str,
+        hint: &'static str,
+        entries: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self {
+            key,
+            label,
+            help,
+            kind: FieldKind::List { hint },
+            value: entries
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>()
+                .join(","),
+            locked: None,
         }
+    }
+
+    /// States that the field is shown but not answered here, and why.
+    pub fn locked(mut self, reason: impl Into<String>) -> Self {
+        self.locked = Some(reason.into());
+        self
+    }
+
+    /// The entries of a list field, in order and without the empty ones.
+    pub fn entries(&self) -> Vec<String> {
+        self.value
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The label the selected value is shown under.
+    pub fn display(&self) -> &str {
+        match &self.kind {
+            FieldKind::Choice { options } => options
+                .iter()
+                .find(|option| option.value == self.value)
+                .map_or(self.value.as_str(), |option| option.label.as_str()),
+            _ => self.value.as_str(),
+        }
+    }
+
+    /// Moves a choice or toggle to its next value; other kinds ignore this.
+    fn cycle(&mut self, forward: bool) {
+        let options: Vec<&str> = match &self.kind {
+            FieldKind::Choice { options } => {
+                options.iter().map(|option| option.value.as_str()).collect()
+            }
+            FieldKind::Toggle => vec!["no", "yes"],
+            FieldKind::Text { .. } | FieldKind::List { .. } => return,
+        };
+        let Some(length) = std::num::NonZeroUsize::new(options.len()) else {
+            return;
+        };
+        let length = length.get();
         let current = options
             .iter()
             .position(|option| *option == self.value)
             .unwrap_or(0);
-        let length = options.len();
         let next = if forward {
             current.saturating_add(1) % length
         } else {
@@ -677,8 +782,90 @@ impl FormField {
         self.value = options.get(next).map_or("", |option| option).to_owned();
     }
 
-    const fn is_text(&self) -> bool {
+    pub const fn is_text(&self) -> bool {
         matches!(self.kind, FieldKind::Text { .. })
+    }
+
+    const fn is_list(&self) -> bool {
+        matches!(self.kind, FieldKind::List { .. })
+    }
+}
+
+/// The entries of a list field while it is open, so a set that has an order can
+/// be reordered without spelling the whole set out again.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ListEditor {
+    pub entries: Vec<String>,
+    pub selected: usize,
+}
+
+impl ListEditor {
+    fn new(field: &FormField) -> Self {
+        Self {
+            entries: field.entries(),
+            selected: 0,
+        }
+    }
+
+    fn joined(&self) -> String {
+        self.entries
+            .iter()
+            .map(|entry| entry.trim())
+            .filter(|entry| !entry.is_empty())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn select(&mut self, offset: isize) {
+        if self.entries.is_empty() {
+            return;
+        }
+        self.selected = move_bounded_index(self.selected, self.entries.len(), offset);
+    }
+
+    fn move_entry(&mut self, offset: isize) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let target = if offset.is_negative() {
+            self.selected.saturating_sub(offset.unsigned_abs())
+        } else {
+            self.selected.saturating_add(offset.unsigned_abs())
+        };
+        if target >= self.entries.len() || target == self.selected {
+            return;
+        }
+        self.entries.swap(self.selected, target);
+        self.selected = target;
+    }
+
+    fn insert(&mut self) {
+        let position = if self.entries.is_empty() {
+            0
+        } else {
+            self.selected.saturating_add(1).min(self.entries.len())
+        };
+        self.entries.insert(position, String::new());
+        self.selected = position;
+    }
+
+    fn remove(&mut self) {
+        if self.entries.is_empty() {
+            return;
+        }
+        self.entries
+            .remove(self.selected.min(self.entries.len().saturating_sub(1)));
+        self.selected = self.selected.min(self.entries.len().saturating_sub(1));
+    }
+
+    fn edit<F: FnOnce(&mut String)>(&mut self, change: F) {
+        if self.entries.is_empty() {
+            self.entries.push(String::new());
+            self.selected = 0;
+        }
+        if let Some(entry) = self.entries.get_mut(self.selected) {
+            change(entry);
+        }
     }
 }
 
@@ -694,12 +881,18 @@ pub struct FormState {
     pub selected: usize,
     /// The value held before editing began, restored if the edit is abandoned.
     pub draft: Option<String>,
+    /// The open list field's entries, while one is open.
+    pub list: Option<ListEditor>,
     pub error: Option<String>,
 }
 
 impl FormState {
     fn selected_field_mut(&mut self) -> Option<&mut FormField> {
         self.fields.get_mut(self.selected)
+    }
+
+    pub fn selected_field(&self) -> Option<&FormField> {
+        self.fields.get(self.selected)
     }
 
     pub const fn is_editing(&self) -> bool {
@@ -712,18 +905,32 @@ impl FormState {
         self.selected >= self.fields.len()
     }
 
+    /// Why the selected field cannot be edited, if something else decides it.
+    fn locked_reason(&self) -> Option<&str> {
+        self.selected_field()
+            .and_then(|field| field.locked.as_deref())
+    }
+
     fn begin_edit(&mut self) {
-        self.draft = self
-            .fields
-            .get(self.selected)
-            .map(|field| field.value.clone());
+        let Some(field) = self.fields.get(self.selected) else {
+            return;
+        };
+        self.draft = Some(field.value.clone());
+        self.list = field.is_list().then(|| ListEditor::new(field));
     }
 
     fn commit_edit(&mut self) {
+        if let Some(list) = self.list.take() {
+            let joined = list.joined();
+            if let Some(field) = self.fields.get_mut(self.selected) {
+                field.value = joined;
+            }
+        }
         self.draft = None;
     }
 
     fn abandon_edit(&mut self) {
+        self.list = None;
         if let Some(previous) = self.draft.take()
             && let Some(field) = self.fields.get_mut(self.selected)
         {
@@ -743,6 +950,20 @@ impl FormState {
             .iter()
             .find(|field| field.key == key)
             .map_or("", |field| field.value.as_str())
+    }
+
+    /// The entries of a list field, in order.
+    pub fn entries(&self, key: &str) -> Vec<String> {
+        self.fields
+            .iter()
+            .find(|field| field.key == key)
+            .map(FormField::entries)
+            .unwrap_or_default()
+    }
+
+    /// Whether a toggle or yes/no choice is on.
+    pub fn is_yes(&self, key: &str) -> bool {
+        self.value(key) == "yes"
     }
 }
 
@@ -2583,8 +2804,12 @@ impl App {
             }
             Overlay::Form(state) => {
                 state.error = None;
-                if state.is_editing()
-                    && let Some(field) = state.selected_field_mut()
+                if !state.is_editing() {
+                    return Vec::new();
+                }
+                if let Some(list) = state.list.as_mut() {
+                    list.edit(|entry| entry.push_str(text));
+                } else if let Some(field) = state.selected_field_mut()
                     && field.is_text()
                 {
                     field.value.push_str(text);
@@ -3169,6 +3394,43 @@ impl App {
                 // selected. Browsing, that means edit this field or submit;
                 // editing, it means keep the value and stop editing.
                 if state.is_editing() {
+                    // An open list is a form of its own: entries are selected,
+                    // reordered and typed into without leaving the field.
+                    if let Some(list) = state.list.as_mut() {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Enter, _) => state.commit_edit(),
+                            (KeyCode::Esc, _) => state.abandon_edit(),
+                            (KeyCode::Up, modifiers) if modifiers.is_empty() => list.select(-1),
+                            (KeyCode::Down, modifiers) if modifiers.is_empty() => list.select(1),
+                            (KeyCode::Up, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                                list.move_entry(-1);
+                            }
+                            (KeyCode::Down, modifiers)
+                                if modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                list.move_entry(1);
+                            }
+                            (KeyCode::Char('i'), modifiers)
+                                if modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                list.insert();
+                            }
+                            (KeyCode::Char('x'), modifiers)
+                                if modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                list.remove();
+                            }
+                            (KeyCode::Backspace, _) => list.edit(|entry| {
+                                let _ = entry.pop();
+                            }),
+                            (KeyCode::Char(character), _) if is_typed_text(key) => {
+                                list.edit(|entry| entry.push(character));
+                            }
+                            _ => return None,
+                        }
+                        state.error = None;
+                        return Some(Vec::new());
+                    }
                     match key.code {
                         KeyCode::Enter => state.commit_edit(),
                         KeyCode::Esc => state.abandon_edit(),
@@ -3208,6 +3470,12 @@ impl App {
                         if state.on_submit_row() {
                             let state = state.clone();
                             return Some(self.accept_form(state));
+                        }
+                        // A field something else decides says so instead of
+                        // opening an editor that could not change anything.
+                        if let Some(reason) = state.locked_reason() {
+                            state.error = Some(reason.to_owned());
+                            return Some(Vec::new());
                         }
                         state.begin_edit();
                     }
@@ -4829,17 +5097,322 @@ impl App {
                 Some("current preferences are not verified; editing is unavailable".to_owned());
             return Vec::new();
         }
-        let input = match action_id {
-            ActionId::LocalPreferencesEdit => String::new(),
-            ActionId::LocalExitNodeSelect => "none".to_owned(),
-            ActionId::LocalRoutesEditAdvertisements => String::new(),
-            _ => String::new(),
-        };
-        self.overlays
-            .push(Overlay::OperatorForm(OperatorFormState::new(
-                action_id, input, None,
-            )));
+        match action_id {
+            ActionId::LocalPreferencesEdit => self.open_preferences_form(),
+            ActionId::LocalExitNodeSelect => self.open_exit_node_form(),
+            ActionId::LocalRoutesEditAdvertisements => self.open_advertisement_form(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Every preference is shown holding what the daemon reports, so a change
+    /// is a change to something visible rather than a field named from memory.
+    fn open_preferences_form(&mut self) -> Vec<Effect> {
+        let preferences = &self.local_preferences;
+        let fields = vec![
+            preference_choice(
+                "accept-dns",
+                "Accept DNS",
+                "Use the tailnet DNS configuration on this machine",
+                &preferences.accept_dns,
+            ),
+            preference_choice(
+                "accept-routes",
+                "Accept routes",
+                "Use subnet routes other devices advertise",
+                &preferences.accept_routes,
+            ),
+            preference_choice(
+                "shields-up",
+                "Shields up",
+                "Refuse all incoming connections from the tailnet",
+                &preferences.shields_up,
+            ),
+            preference_choice(
+                "ssh",
+                "Tailscale SSH",
+                "Accept Tailscale SSH connections on this machine",
+                &preferences.ssh,
+            ),
+            preference_choice(
+                "auto-update",
+                "Automatic updates",
+                "Install client updates without being asked",
+                &preferences.automatic_update,
+            ),
+            preference_choice(
+                "update-check",
+                "Update checks",
+                "Check whether a newer client is available",
+                &preferences.update_check,
+            ),
+            preference_choice(
+                "report-posture",
+                "Report posture",
+                "Send device posture data to the tailnet",
+                &preferences.report_posture,
+            ),
+            preference_choice(
+                "webclient",
+                "Web client",
+                "Serve the local web interface on this machine",
+                &preferences.web_client,
+            ),
+            preference_text(
+                "hostname",
+                "Hostname",
+                "The name this machine reports to the tailnet",
+                "unchanged",
+                &preferences.hostname,
+            ),
+            preference_text(
+                "nickname",
+                "Nickname",
+                "The name this machine is shown under",
+                "unchanged",
+                &preferences.nickname,
+            ),
+        ];
+        self.push_form(
+            ActionId::LocalPreferencesEdit,
+            "Edit local preferences",
+            Vec::new(),
+            fields,
+        );
         Vec::new()
+    }
+
+    /// The candidates are the list, so an exit node is picked by the name the
+    /// rest of the screen shows rather than typed as an identifier.
+    fn open_exit_node_form(&mut self) -> Vec<Effect> {
+        let mut options = vec![
+            FormChoice::new("none", "none"),
+            FormChoice::new("auto:any", "automatic"),
+        ];
+        options.extend(self.exit_node_candidates().into_iter().map(|candidate| {
+            let state = match candidate.online {
+                Some(true) => "online",
+                Some(false) => "offline",
+                None => "unknown",
+            };
+            let latency = candidate
+                .last_probe_ms
+                .map_or_else(|| "not probed".to_owned(), |value| format!("{value}ms"));
+            FormChoice::new(
+                candidate.device_id.0.clone(),
+                format!("{} · {state} · {latency}", candidate.display_name),
+            )
+        }));
+        let selected = self
+            .local_preferences
+            .exit_node_id
+            .value
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_owned());
+        let allow_lan = self
+            .local_preferences
+            .exit_node_allow_lan_access
+            .value
+            .unwrap_or(false);
+        self.push_form(
+            ActionId::LocalExitNodeSelect,
+            "Route traffic through an exit node",
+            Vec::new(),
+            vec![
+                FormField::choice(
+                    "target",
+                    "Exit node",
+                    "Which device this machine sends its traffic through",
+                    options,
+                    selected,
+                ),
+                FormField::toggle(
+                    "lan",
+                    "Keep LAN access",
+                    "Reach the local network directly while an exit node is in use",
+                    allow_lan,
+                ),
+            ],
+        );
+        Vec::new()
+    }
+
+    fn open_advertisement_form(&mut self) -> Vec<Effect> {
+        let preferences = &self.local_preferences;
+        let routes = preferences
+            .advertised_routes
+            .value
+            .clone()
+            .unwrap_or_default();
+        let endpoints = preferences
+            .relay_server_static_endpoints
+            .value
+            .clone()
+            .unwrap_or_default();
+        let port = preferences
+            .relay_server_port
+            .value
+            .filter(|_| preferences.relay_server_port_disabled.value != Some(true))
+            .map_or_else(String::new, |value| value.to_string());
+        self.push_form(
+            ActionId::LocalRoutesEditAdvertisements,
+            "Advertise routes from this machine",
+            Vec::new(),
+            vec![
+                FormField::list(
+                    "routes",
+                    "Subnet routes",
+                    "The complete set of CIDRs this machine offers to the tailnet",
+                    "none advertised",
+                    routes,
+                ),
+                FormField::toggle(
+                    "exit",
+                    "Offer as exit node",
+                    "Let other devices send their internet traffic through this machine",
+                    preferences.advertised_exit_node.value.unwrap_or(false),
+                ),
+                FormField::toggle(
+                    "connector",
+                    "App connector",
+                    "Route a named application's traffic through this machine",
+                    preferences.app_connector.value.unwrap_or(false),
+                ),
+                FormField::toggle(
+                    "accept-risk",
+                    "Accept connector risk",
+                    "Required before the app connector can be turned on",
+                    false,
+                ),
+                FormField::text(
+                    "relay-port",
+                    "Relay port",
+                    "The port this machine relays on; empty turns relaying off",
+                    "off",
+                    port,
+                ),
+                FormField::list(
+                    "relay-endpoints",
+                    "Relay endpoints",
+                    "The complete set of address:port pairs the relay is reachable on",
+                    "none",
+                    endpoints,
+                ),
+            ],
+        );
+        Vec::new()
+    }
+
+    fn accept_preferences_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let mut request = PreferenceRequest::default();
+        for field in &state.fields {
+            if field.locked.is_some() {
+                continue;
+            }
+            let value = field.value.trim();
+            if value == UNCHANGED {
+                continue;
+            }
+            let flag = value == "yes";
+            match field.key {
+                "accept-dns" => request.accept_dns = Some(flag),
+                "accept-routes" => request.accept_routes = Some(flag),
+                "shields-up" => request.shields_up = Some(flag),
+                "ssh" => request.ssh = Some(flag),
+                "auto-update" => request.automatic_update = Some(flag),
+                "update-check" => request.update_check = Some(flag),
+                "report-posture" => request.report_posture = Some(flag),
+                "webclient" => request.web_client = Some(flag),
+                "hostname" if !value.is_empty() => request.hostname = Some(value.to_owned()),
+                "nickname" if !value.is_empty() => request.nickname = Some(value.to_owned()),
+                _ => {}
+            }
+        }
+        if request == PreferenceRequest::default() {
+            return self.set_form_error("no preference was changed");
+        }
+        self.overlays.pop();
+        self.open_mutation_confirmation(LocalMutation::Preferences(request))
+    }
+
+    fn accept_exit_node_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let target = state.value("target");
+        let allow_lan_access = state.is_yes("lan");
+        let selection = match target {
+            "" | "none" => ExitNodeSelection::None,
+            "auto:any" => ExitNodeSelection::AutoAny,
+            device_id => {
+                let Some(candidate) = self
+                    .exit_node_candidates()
+                    .into_iter()
+                    .find(|candidate| candidate.device_id.0 == device_id)
+                else {
+                    return self.set_form_error("the chosen exit node is no longer a candidate");
+                };
+                let Some(target) = candidate.stable_target() else {
+                    return self.set_form_error("the chosen exit node has no stable target");
+                };
+                ExitNodeSelection::Device {
+                    device_id: candidate.device_id,
+                    target,
+                }
+            }
+        };
+        if matches!(selection, ExitNodeSelection::None) && allow_lan_access {
+            return self.set_form_error("LAN access cannot be enabled when no exit node is chosen");
+        }
+        self.overlays.pop();
+        self.open_mutation_confirmation(LocalMutation::ExitNode(ExitNodeRequest {
+            selection,
+            allow_lan_access,
+        }))
+    }
+
+    fn accept_advertisement_form(&mut self, state: &FormState) -> Vec<Effect> {
+        let routes = if state.entries("routes").is_empty() {
+            Vec::new()
+        } else {
+            match parse_route_set(state.value("routes")) {
+                Ok(routes) => routes,
+                Err(error) => return self.set_form_error(error.to_string()),
+            }
+        };
+        let endpoints = if state.entries("relay-endpoints").is_empty() {
+            Vec::new()
+        } else {
+            match parse_static_endpoints(state.value("relay-endpoints")) {
+                Ok(endpoints) => endpoints,
+                Err(error) => return self.set_form_error(error.to_string()),
+            }
+        };
+        let port = state.value("relay-port").trim();
+        let relay_server_port = if port.is_empty() {
+            None
+        } else {
+            match port.parse::<u16>() {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    return self.set_form_error("relay port must be empty, 0, or 1-65535");
+                }
+            }
+        };
+        let request = AdvertisementRequest {
+            routes: Some(routes),
+            advertise_exit_node: Some(state.is_yes("exit")),
+            advertise_connector: Some(state.is_yes("connector")),
+            relay_server_port: Some(relay_server_port),
+            relay_server_static_endpoints: Some(endpoints),
+            accept_mac_app_connector_risk: state.is_yes("accept-risk"),
+        };
+        if request.advertise_connector == Some(true) && !request.accept_mac_app_connector_risk {
+            return self.set_form_error("turning on the app connector requires accepting its risk");
+        }
+        if request.accept_mac_app_connector_risk && request.advertise_connector != Some(true) {
+            return self.set_form_error("accepting the connector risk requires turning it on");
+        }
+        self.overlays.pop();
+        self.open_mutation_confirmation(LocalMutation::Advertisements(request))
     }
 
     fn open_admin_form(&mut self, action_id: ActionId) -> Vec<Effect> {
@@ -6690,30 +7263,10 @@ impl App {
         if is_admin_mutation_action(state.action_id) {
             return self.accept_admin_form(state);
         }
-        let result = match state.action_id {
-            ActionId::LocalPreferencesEdit => {
-                parse_preference_request(&state.input).map(LocalMutation::Preferences)
-            }
-            ActionId::LocalExitNodeSelect => self
-                .parse_exit_node_request(&state.input)
-                .map(LocalMutation::ExitNode),
-            ActionId::LocalRoutesEditAdvertisements => {
-                parse_advertisement_request(&state.input).map(LocalMutation::Advertisements)
-            }
-            _ => Err("this form is not a local operator form".to_owned()),
-        };
-        match result {
-            Ok(mutation) => {
-                self.overlays.pop();
-                self.open_mutation_confirmation(mutation)
-            }
-            Err(error) => {
-                if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
-                    current.error = Some(error);
-                }
-                Vec::new()
-            }
+        if let Some(Overlay::OperatorForm(current)) = self.overlays.last_mut() {
+            current.error = Some("this form is not a local operator form".to_owned());
         }
+        Vec::new()
     }
 
     fn accept_phase_eight_form(&mut self, state: OperatorFormState) -> Vec<Effect> {
@@ -7417,58 +7970,6 @@ impl App {
                 vec!["reload local system policy -> fresh list verification".to_owned()]
             }
         }
-    }
-
-    fn parse_exit_node_request(&self, input: &str) -> Result<ExitNodeRequest, String> {
-        let mut parts = input.split_ascii_whitespace();
-        let selection_text = parts.next().map_or("none", |value| value);
-        let mut allow_lan_access = false;
-        if let Some(option) = parts.next() {
-            let (name, value) = option
-                .split_once('=')
-                .ok_or_else(|| "exit-node option must be lan=true or lan=false".to_owned())?;
-            if name != "lan" {
-                return Err("exit-node option must be lan=true or lan=false".to_owned());
-            }
-            allow_lan_access = parse_bool(value)?;
-        }
-        if parts.next().is_some() {
-            return Err("enter an exit target and optional lan=true/false".to_owned());
-        }
-        let selection = if selection_text.is_empty() || selection_text == "none" {
-            ExitNodeSelection::None
-        } else if selection_text == "auto:any" {
-            ExitNodeSelection::AutoAny
-        } else {
-            let candidate = self
-                .exit_node_candidates()
-                .into_iter()
-                .find(|candidate| {
-                    candidate.device_id.0 == selection_text
-                        || candidate.dns_name.as_deref() == Some(selection_text)
-                        || candidate
-                            .tailscale_ips
-                            .iter()
-                            .any(|ip| ip == selection_text)
-                })
-                .ok_or_else(|| {
-                    "exit target must be a current candidate ID, DNS name, or IP".to_owned()
-                })?;
-            let target = candidate
-                .stable_target()
-                .ok_or_else(|| "selected exit candidate has no stable target".to_owned())?;
-            ExitNodeSelection::Device {
-                device_id: candidate.device_id,
-                target,
-            }
-        };
-        if matches!(selection, ExitNodeSelection::None) && allow_lan_access {
-            return Err("LAN access cannot be enabled when no exit node is selected".to_owned());
-        }
-        Ok(ExitNodeRequest {
-            selection,
-            allow_lan_access,
-        })
     }
 
     fn accept_admin_batch_confirmation(
@@ -11067,7 +11568,7 @@ impl App {
                             "3000",
                             mapping.backend.argument(),
                         ),
-                        FormField::choice(
+                        FormField::options(
                             "proxy",
                             "PROXY protocol",
                             "Only used by TCP listeners; leave off unless the backend expects it",
@@ -11126,7 +11627,7 @@ impl App {
                             "/path/to/directory",
                             String::new(),
                         ),
-                        FormField::choice(
+                        FormField::options(
                             "conflict",
                             "If a name is taken",
                             "What to do when a file of that name already exists",
@@ -11281,6 +11782,7 @@ impl App {
             fields,
             selected: 0,
             draft: None,
+            list: None,
             error: None,
         }));
     }
@@ -11301,6 +11803,11 @@ impl App {
             }
             ActionId::LocalDnsQuery => return self.accept_dns_query_form(&state),
             ActionId::LocalWhois => return self.accept_whois_form(&state),
+            ActionId::LocalPreferencesEdit => return self.accept_preferences_form(&state),
+            ActionId::LocalExitNodeSelect => return self.accept_exit_node_form(&state),
+            ActionId::LocalRoutesEditAdvertisements => {
+                return self.accept_advertisement_form(&state);
+            }
             _ => {}
         }
         match self.parse_service_form(&state) {
@@ -12170,7 +12677,7 @@ impl App {
                     "host.example.com",
                     String::new(),
                 ),
-                FormField::choice(
+                FormField::options(
                     "type",
                     "Record",
                     "Which record the resolver is asked for",
@@ -12200,7 +12707,7 @@ impl App {
                     "100.64.0.1 or 100.64.0.1:443",
                     seed,
                 ),
-                FormField::choice(
+                FormField::options(
                     "protocol",
                     "Protocol",
                     "Narrows the lookup to one transport; any leaves it unset",
@@ -15589,7 +16096,7 @@ fn mapping_fields(public: bool, existing: Option<&ServiceMapping>) -> Vec<FormFi
         TAILNET_LISTENERS
     };
     vec![
-        FormField::choice(
+        FormField::options(
             "listener",
             "Protocol",
             "How clients connect",
@@ -15620,7 +16127,7 @@ fn mapping_fields(public: bool, existing: Option<&ServiceMapping>) -> Vec<FormFi
             "3000",
             existing.map_or_else(String::new, |mapping| mapping.backend.argument()),
         ),
-        FormField::choice(
+        FormField::options(
             "proxy",
             "PROXY protocol",
             "Only used by TCP listeners; leave off unless the backend expects it",
@@ -16639,103 +17146,58 @@ fn is_phase_three_action(action_id: ActionId) -> bool {
     )
 }
 
-fn parse_preference_request(input: &str) -> Result<PreferenceRequest, String> {
-    let mut request = PreferenceRequest::default();
-    if input.trim().is_empty() {
-        return Err("enter at least one field=value pair".to_owned());
-    }
-    for pair in input.split(',') {
-        let (name, value) = pair
-            .trim()
-            .split_once('=')
-            .ok_or_else(|| "preferences use comma-separated field=value pairs".to_owned())?;
-        match name.trim() {
-            "accept-dns" => request.accept_dns = Some(parse_bool(value)?),
-            "accept-routes" => request.accept_routes = Some(parse_bool(value)?),
-            "shields-up" => request.shields_up = Some(parse_bool(value)?),
-            "ssh" => request.ssh = Some(parse_bool(value)?),
-            "auto-update" => request.automatic_update = Some(parse_bool(value)?),
-            "update-check" => request.update_check = Some(parse_bool(value)?),
-            "report-posture" => request.report_posture = Some(parse_bool(value)?),
-            "hostname" => request.hostname = Some(value.to_owned()),
-            "nickname" => request.nickname = Some(value.to_owned()),
-            "webclient" => request.web_client = Some(parse_bool(value)?),
-            _ => return Err(format!("unsupported preference field: {name}")),
-        }
-    }
-    if request.hostname.as_deref().is_some_and(str::is_empty)
-        || request.nickname.as_deref().is_some_and(str::is_empty)
-    {
-        return Err("hostname and nickname must be non-empty".to_owned());
-    }
-    Ok(request)
+/// The value a preference field holds when the form is not changing it.
+const UNCHANGED: &str = "unchanged";
+
+/// A yes/no preference, offered as a third state so leaving a field alone and
+/// setting it to its current value stay different answers.
+fn preference_choice(
+    key: &'static str,
+    label: &'static str,
+    help: &'static str,
+    preference: &crate::domain::preference::ObservedPreference<bool>,
+) -> FormField {
+    let current = preference
+        .value
+        .map_or_else(|| "not reported".to_owned(), |value| {
+            if value { "yes" } else { "no" }.to_owned()
+        });
+    let field = FormField::choice(
+        key,
+        label,
+        help,
+        [
+            FormChoice::new(UNCHANGED, format!("{UNCHANGED} ({current})")),
+            FormChoice::plain("yes"),
+            FormChoice::plain("no"),
+        ],
+        UNCHANGED,
+    );
+    lock_unless_editable(field, preference.editability)
 }
 
-fn parse_advertisement_request(input: &str) -> Result<AdvertisementRequest, String> {
-    if input.trim().is_empty() {
-        return Err("enter semicolon-separated advertisement fields".to_owned());
-    }
-    let mut request = AdvertisementRequest::default();
-    for pair in input.split(';') {
-        let (name, value) = pair
-            .trim()
-            .split_once('=')
-            .ok_or_else(|| "advertisements use field=value;field=value".to_owned())?;
-        let value = value.trim();
-        match name.trim() {
-            "routes" => {
-                request.routes = Some(if value.trim().is_empty() || value == "empty" {
-                    Vec::new()
-                } else {
-                    parse_route_set(value).map_err(|error| error.to_string())?
-                });
-            }
-            "exit" => request.advertise_exit_node = Some(parse_bool(value)?),
-            "connector" => request.advertise_connector = Some(parse_bool(value)?),
-            "relay-port" => {
-                request.relay_server_port = Some(if value == "empty" || value.is_empty() {
-                    None
-                } else {
-                    Some(
-                        value
-                            .parse::<u16>()
-                            .map_err(|_| "relay-port must be empty, 0, or 1-65535".to_owned())?,
-                    )
-                });
-            }
-            "relay-endpoints" => {
-                request.relay_server_static_endpoints =
-                    Some(if value.trim().is_empty() || value == "empty" {
-                        Vec::new()
-                    } else {
-                        parse_static_endpoints(value).map_err(|error| error.to_string())?
-                    });
-            }
-            "accept-risk" if value == "mac-app-connector" => {
-                request.accept_mac_app_connector_risk = true;
-            }
-            _ => return Err(format!("unsupported advertisement field: {name}")),
-        }
-    }
-    if request.is_empty() {
-        return Err("no advertisement fields were changed".to_owned());
-    }
-    if request.advertise_connector == Some(true) && !request.accept_mac_app_connector_risk {
-        return Err("enabling the app connector requires accept-risk=mac-app-connector".to_owned());
-    }
-    if request.accept_mac_app_connector_risk && request.advertise_connector != Some(true) {
-        return Err("mac-app-connector risk acceptance requires connector=true".to_owned());
-    }
-    Ok(request)
+fn preference_text(
+    key: &'static str,
+    label: &'static str,
+    help: &'static str,
+    hint: &'static str,
+    preference: &crate::domain::preference::ObservedPreference<String>,
+) -> FormField {
+    let field = FormField::text(key, label, help, hint, String::new());
+    lock_unless_editable(field, preference.editability)
 }
 
-fn parse_bool(value: &str) -> Result<bool, String> {
-    match value.trim() {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err("boolean values must be true or false".to_owned()),
+fn lock_unless_editable(
+    field: FormField,
+    editability: crate::domain::preference::PreferenceEditability,
+) -> FormField {
+    if editability.can_edit() {
+        field
+    } else {
+        field.locked(format!("{} here", editability.label()))
     }
 }
+
 
 fn boolean_text(value: Option<bool>) -> &'static str {
     match value {
