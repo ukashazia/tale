@@ -100,12 +100,31 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-/// Up to three rows: what the session is doing, who it is, and anything that
-/// currently needs attention.
+/// The width the three labels share, so their values start in one column.
+const STATUS_LABEL: usize = 10;
+
+/// Three rows, one fact each: how the session is doing, what this machine is
+/// connected to, and what it is administering.
+///
+/// These used to be the state, then an unlabelled name, then an unlabelled
+/// domain. Two tailnets on screen at once — the client's and the profile's —
+/// made that unreadable: three bare names with nothing saying which was which,
+/// and no way to tell a tailnet from a MagicDNS suffix. Every row is named now,
+/// so the two identities can differ without the header becoming a guess.
 fn status_block(app: &App) -> Vec<Vec<Span<'static>>> {
     let (label, role, hint) = connection_state(app);
     let mut first = vec![
-        Span::styled("Status:  ", app.theme.style(theme::StyleRole::TextMuted)),
+        // One short of the shared width: the chip carries its own leading space
+        // so the highlight has a margin, and that space is what lands the three
+        // values in one column.
+        Span::styled(
+            format!(
+                "{:<width$}",
+                "Status:",
+                width = STATUS_LABEL.saturating_sub(1)
+            ),
+            app.theme.style(theme::StyleRole::TextMuted),
+        ),
         Span::styled(
             format!(" {label} "),
             app.theme.style(role).add_modifier(Modifier::REVERSED),
@@ -117,50 +136,128 @@ fn status_block(app: &App) -> Vec<Vec<Span<'static>>> {
             app.theme.style(theme::StyleRole::TextMuted),
         ));
     }
-    let mut block = vec![first];
-    // Who is signed in.
-    if let Some(identity) = tailnet_identity(app) {
-        block.push(vec![Span::styled(
-            identity,
-            app.theme.style(theme::StyleRole::TextPrimary),
-        )]);
+    // Freshness and running work belong with the state they qualify, not on a
+    // row of their own below two identities they say nothing about. Both stay
+    // silent while there is nothing wrong.
+    for (note, role) in [staleness(app), task_state(app)].into_iter().flatten() {
+        first.push(Span::styled(
+            "   ",
+            app.theme.style(theme::StyleRole::Surface),
+        ));
+        first.push(Span::styled(note, app.theme.style(role)));
     }
-    // Which tailnet their devices are on. A different fact from the account
-    // name, so it gets its own row rather than being run together with it.
-    let mut third = Vec::new();
-    if let Some(domain) = tailnet_domain(app) {
-        third.push(Span::styled(
-            domain,
+    vec![
+        first,
+        labelled_row(app, "Local:", local_identity(app)),
+        labelled_row(app, "Profile:", profile_identity(app)),
+    ]
+}
+
+fn labelled_row(app: &App, label: &str, value: IdentityRow) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        format!("{label:<STATUS_LABEL$}"),
+        app.theme.style(theme::StyleRole::TextMuted),
+    )];
+    spans.push(Span::styled(
+        value.primary,
+        app.theme.style(if value.present {
+            theme::StyleRole::TextPrimary
+        } else {
+            theme::StyleRole::TextMuted
+        }),
+    ));
+    if let Some(secondary) = value.secondary {
+        spans.push(Span::styled(
+            format!(" · {secondary}"),
             app.theme.style(theme::StyleRole::TextMuted),
         ));
     }
-    // Freshness is silent while the data is current; it only speaks up when
-    // the snapshot has fallen behind.
-    for (note, role) in [staleness(app), task_state(app)].into_iter().flatten() {
-        if !third.is_empty() {
-            third.push(Span::styled(
-                "   ",
-                app.theme.style(theme::StyleRole::Surface),
-            ));
-        }
-        third.push(Span::styled(note, app.theme.style(role)));
-    }
-    if !third.is_empty() {
-        block.push(third);
-    }
-    block
+    spans
 }
 
-/// The tailnet's own domain, which is what a device's full name ends with.
-/// Absent rather than guessed when the client did not report it.
-fn tailnet_domain(app: &App) -> Option<String> {
-    app.local_resource
-        .snapshot
-        .as_ref()?
+/// One identity: the name that matters, and the qualifier that would be
+/// mistaken for a second name if it were shown on its own.
+struct IdentityRow {
+    primary: String,
+    secondary: Option<String>,
+    present: bool,
+}
+
+impl IdentityRow {
+    fn absent(reason: &str) -> Self {
+        Self {
+            primary: reason.to_owned(),
+            secondary: None,
+            present: false,
+        }
+    }
+}
+
+/// The tailnet this machine's client is on, and the MagicDNS suffix its devices
+/// answer to. The suffix used to sit unlabelled on its own row, where it read as
+/// a third tailnet rather than as a property of this one.
+fn local_identity(app: &App) -> IdentityRow {
+    if app.source_mode == crate::app::SourceMode::Mock {
+        return IdentityRow::absent("simulated");
+    }
+    if app.source_mode == crate::app::SourceMode::Unavailable {
+        return IdentityRow::absent("local access off");
+    }
+    let Some(snapshot) = app.local_resource.snapshot.as_ref() else {
+        return IdentityRow::absent("not connected");
+    };
+    let suffix = snapshot
         .magic_dns_suffix
         .as_deref()
-        .filter(|suffix| !suffix.is_empty())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    match snapshot
+        .current_tailnet
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        Some(tailnet) => IdentityRow {
+            primary: tailnet.to_owned(),
+            // Some tailnets are named after their suffix. Printing it twice
+            // reads as two facts when there is one.
+            secondary: suffix.filter(|suffix| !suffix.eq_ignore_ascii_case(tailnet)),
+            present: true,
+        },
+        // No tailnet name, but the suffix still names the tailnet, so it is
+        // promoted rather than dropped alongside an "unknown".
+        None => match suffix {
+            Some(suffix) => IdentityRow {
+                primary: suffix,
+                secondary: None,
+                present: true,
+            },
+            None => IdentityRow::absent("tailnet not reported"),
+        },
+    }
+}
+
+/// The profile being administered, and the tailnet it reads. Named separately
+/// from the local client because they are two different tailnets as often as
+/// they are one, and the header has no business deciding which one to show.
+fn profile_identity(app: &App) -> IdentityRow {
+    let Some(profile) = app.admin.profile.as_deref() else {
+        return IdentityRow::absent("none · :profiles to choose one");
+    };
+    // `tailnet = "-"` is a request parameter meaning "this credential's own
+    // tailnet", so it identifies nothing; what the API returned does.
+    let configured = app
+        .admin
+        .tailnet
+        .as_deref()
+        .filter(|value| !value.is_empty() && *value != "-");
+    let tailnet = configured
         .map(str::to_owned)
+        .or_else(|| app.admin_tailnet_suffix().map(str::to_owned));
+    IdentityRow {
+        primary: profile.to_owned(),
+        secondary: Some(tailnet.unwrap_or_else(|| "tailnet not read yet".to_owned())),
+        present: true,
+    }
 }
 
 fn version_block(app: &App) -> Vec<(&'static str, String)> {
@@ -182,44 +279,43 @@ fn version_block(app: &App) -> Vec<(&'static str, String)> {
     versions
 }
 
+/// The same three facts on one line. One row has no columns to align, so each
+/// identity carries the word that says what it is rather than a padded label —
+/// two bare tailnet names in a row is exactly the ambiguity the tall header
+/// stopped producing.
 fn compact_line(app: &App) -> Line<'static> {
     let (label, role, _) = connection_state(app);
     let mut spans = vec![Span::styled(label, app.theme.style(role))];
-    if let Some(identity) = tailnet_identity(app) {
+    let push = |spans: &mut Vec<Span<'static>>, prefix: &str, value: IdentityRow| {
         spans.push(Span::styled(
             "   ",
             app.theme.style(theme::StyleRole::Surface),
         ));
         spans.push(Span::styled(
-            identity,
-            app.theme.style(theme::StyleRole::TextPrimary),
+            format!("{prefix} "),
+            app.theme.style(theme::StyleRole::TextMuted),
         ));
-        // One line has no rows to spend, so the domain follows the account
-        // rather than being dropped.
-        if let Some(domain) = tailnet_domain(app) {
-            spans.push(Span::styled(
-                "   ",
-                app.theme.style(theme::StyleRole::Surface),
-            ));
-            spans.push(Span::styled(
-                domain,
-                app.theme.style(theme::StyleRole::TextMuted),
-            ));
-        }
+        spans.push(Span::styled(
+            value.primary,
+            app.theme.style(if value.present {
+                theme::StyleRole::TextPrimary
+            } else {
+                theme::StyleRole::TextMuted
+            }),
+        ));
+    };
+    push(&mut spans, "local", local_identity(app));
+    // The profile is named only when there is one; on a single line a permanent
+    // "none" would cost more than it says.
+    if app.admin.profile.is_some() {
+        push(&mut spans, "profile", profile_identity(app));
     }
-    if let Some((note, role)) = staleness(app) {
+    for (note, role) in [staleness(app), task_state(app)].into_iter().flatten() {
         spans.push(Span::styled(
             "   ",
             app.theme.style(theme::StyleRole::Surface),
         ));
         spans.push(Span::styled(note, app.theme.style(role)));
-    }
-    if let Some((tasks, role)) = task_state(app) {
-        spans.push(Span::styled(
-            "   ",
-            app.theme.style(theme::StyleRole::Surface),
-        ));
-        spans.push(Span::styled(tasks, app.theme.style(role)));
     }
     Line::from(spans)
 }
@@ -246,21 +342,6 @@ fn staleness(app: &App) -> Option<(String, theme::StyleRole)> {
         )),
         crate::domain::SourceHealth::Loading | crate::domain::SourceHealth::Healthy => None,
     }
-}
-
-/// The tailnet the user is looking at, falling back to the configured profile.
-fn tailnet_identity(app: &App) -> Option<String> {
-    app.admin
-        .tailnet
-        .as_deref()
-        .or_else(|| {
-            app.local_resource
-                .snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.current_tailnet.as_deref())
-        })
-        .or(app.resolved_config.profile.as_deref())
-        .map(str::to_owned)
 }
 
 /// The label, its meaning, and the key that acts on it when there is one.

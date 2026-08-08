@@ -1016,6 +1016,7 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::AdminDnsSplitCreate => Some("sc"),
         ActionId::AdminDnsSplitEdit => Some("se"),
         ActionId::AdminDnsSplitRemove => Some("sd"),
+        ActionId::ProfileActivate => Some("a"),
         ActionId::SavedViewCreate => Some("vc"),
         ActionId::SavedViewReplace => Some("vr"),
         ActionId::SavedViewRename => Some("vn"),
@@ -1060,6 +1061,7 @@ pub enum TransientGroup {
     Routing,
     Dns,
     SplitDns,
+    Profile,
     Views,
     Data,
     Health,
@@ -1089,6 +1091,7 @@ impl TransientGroup {
             Self::Routing => "Routing",
             Self::Dns => "DNS",
             Self::SplitDns => "Split DNS",
+            Self::Profile => "Profile",
             Self::Views => "Views",
             Self::Data => "Data",
             Self::Health => "Health",
@@ -1133,6 +1136,7 @@ pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
         | ActionId::LocalDnsStatus
         | ActionId::LocalDnsQuery => Some(TransientGroup::Diagnostics),
         ActionId::LocalSshOpen | ActionId::LocalNcOpen => Some(TransientGroup::Handoff),
+        ActionId::ProfileActivate => Some(TransientGroup::Profile),
         ActionId::SettingsAppearance => Some(TransientGroup::Views),
         ActionId::ServicesServeRefresh
         | ActionId::ServicesServeCreate

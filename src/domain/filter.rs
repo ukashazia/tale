@@ -355,6 +355,16 @@ pub const fn service_schema() -> FilterSchema {
     }
 }
 
+/// `:profiles` is a handful of rows describing local configuration. A field
+/// grammar would be more machinery than it has rows, so the whole row is the
+/// haystack, the way `:tasks` works.
+pub const fn profiles_schema() -> FilterSchema {
+    FilterSchema {
+        free_text: "matches profile, tailnet, state, credential, and backend",
+        groups: &[],
+    }
+}
+
 pub const fn empty_schema() -> FilterSchema {
     FilterSchema {
         free_text: "",

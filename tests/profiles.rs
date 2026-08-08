@@ -1,12 +1,16 @@
 use std::fs;
 
-use tale::action::ActionId;
-use tale::app::{App, ProfileRow, Route};
+mod common;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use tale::action::{self, ActionId};
+use tale::app::{App, CopyField, InteractionMode, ProfileRow, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::profile::{CredentialPresence, ProbeState};
 use tale::effect::Effect;
-use tale::event::{CredentialEvent, Event};
+use tale::event::{CredentialEvent, Event, InputEvent};
 use tale::paths::{PathEnvironment, Platform};
 use tale::secrets::CredentialKind;
 
@@ -77,6 +81,13 @@ fn select(app: &mut App, label: &str) {
     if let Some(index) = index {
         app.views.profiles.selected = index;
     }
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        code,
+        KeyModifiers::NONE,
+    ))));
 }
 
 fn activate(app: &mut App) -> Vec<Effect> {
@@ -319,4 +330,319 @@ fn removing_a_credential_updates_a_profile_that_is_not_active() {
 fn the_route_is_addressable() {
     assert_eq!(Route::parse("profiles"), Some(Route::Profiles));
     assert_eq!(Route::Profiles.label(), "profiles");
+}
+
+/// Everything `:devices` offers on a row, `:profiles` offers on a row. The page
+/// shipped with a route and an action but no menus, because an action with no
+/// transient sequence makes the whole menu refuse to open rather than showing a
+/// gap — the failure is silent from the keyboard.
+#[test]
+fn the_actions_menu_opens_and_carries_the_page_verb() {
+    let Some(mut app) = profiles_app("actions") else {
+        return;
+    };
+    inspected(&mut app, vec![("ops".to_owned(), stored())]);
+    select(&mut app, "ops");
+
+    let actions = app.contextual_actions();
+    assert!(actions.contains(&ActionId::ProfileActivate));
+    assert!(
+        action::validate_transient_sequences(&actions).is_ok(),
+        "every visible action needs a sequence or the menu will not open"
+    );
+
+    let _ = app.dispatch_action(ActionId::ResourceActions);
+    assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+    assert!(app.runtime_error.is_none());
+}
+
+/// Saved views and exports describe collections Tale fetched. This page lists
+/// the user's own configuration, so it offers neither rather than offering an
+/// export that would write somebody else's rows.
+#[test]
+fn the_actions_menu_offers_nothing_that_has_no_subject_here() {
+    let Some(mut app) = profiles_app("no-export") else {
+        return;
+    };
+    select(&mut app, "local");
+    let actions = app.contextual_actions();
+    for absent in [
+        ActionId::CollectionExport,
+        ActionId::SavedViewCreate,
+        ActionId::SavedViewApply,
+    ] {
+        assert!(!actions.contains(&absent), "{absent:?} has no subject here");
+    }
+}
+
+/// The copy menu offers what the row actually has: a profile's credential
+/// reference and store path, and for the local client its account instead.
+#[test]
+fn the_copy_menu_offers_the_selected_rows_own_facts() {
+    let Some(mut app) = profiles_app("copy") else {
+        return;
+    };
+    inspected(&mut app, vec![("ops".to_owned(), stored())]);
+
+    select(&mut app, "ops");
+    let fields = app.contextual_copy_fields();
+    assert!(fields.contains(&CopyField::ProfileName));
+    assert!(fields.contains(&CopyField::ProfileTailnet));
+    assert!(fields.contains(&CopyField::ProfileCredential));
+    assert!(fields.contains(&CopyField::ProfileBackend));
+    // The local client has no credential to name.
+    assert!(!fields.contains(&CopyField::ProfileAccount));
+
+    let _ = app.dispatch_action(ActionId::ResourceCopy);
+    assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+
+    app.interaction = InteractionMode::Normal;
+    select(&mut app, "local");
+    let fields = app.contextual_copy_fields();
+    assert!(fields.contains(&CopyField::ProfileName));
+    assert!(!fields.contains(&CopyField::ProfileCredential));
+    assert!(!fields.contains(&CopyField::ProfileBackend));
+}
+
+/// Copying takes the value from the selected row, not from a remembered one.
+#[test]
+fn copying_a_field_takes_it_from_the_selected_row() {
+    let Some(mut app) = profiles_app("copy-value") else {
+        return;
+    };
+    inspected(&mut app, vec![("audit".to_owned(), stored())]);
+    select(&mut app, "audit");
+    let _ = app.dispatch_action(ActionId::ResourceCopy);
+    // `t` is the tailnet, which for this profile is a name rather than `-`.
+    let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('t'),
+        KeyModifiers::NONE,
+    ))));
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::CopyText { text } if text == "example.test")),
+        "the copy did not carry the selected row's tailnet: {effects:?}"
+    );
+}
+
+/// `/` used to open with the device grammar and then filter nothing, so a query
+/// that looked accepted changed no rows. The page has no fields; the whole row
+/// is the haystack, the way `:tasks` works.
+#[test]
+fn the_filter_narrows_the_rows_it_offered_to_narrow() {
+    let Some(mut app) = profiles_app("filter") else {
+        return;
+    };
+    inspected(
+        &mut app,
+        vec![
+            ("ops".to_owned(), stored()),
+            ("audit".to_owned(), CredentialPresence::Missing),
+        ],
+    );
+    app.set_route(Route::Profiles);
+    assert!(!app.filter_schema().free_text.is_empty());
+
+    let _ = app.dispatch_action(ActionId::ViewFilter);
+    assert!(
+        matches!(app.interaction, InteractionMode::FilterLine(_)),
+        "the filter refused to open: {:?}",
+        app.runtime_error
+    );
+    let _ = app.update(Event::Input(InputEvent::Paste("audit".to_owned())));
+    press(&mut app, KeyCode::Enter);
+
+    let labels = app
+        .profile_rows()
+        .iter()
+        .map(|row| row.label().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, vec!["audit".to_owned()]);
+    // The total behind the filter is still reported, and so is the active row
+    // even though the filter hid it.
+    assert_eq!(app.all_profile_rows().len(), 3);
+
+    // A term matching a column other than the name still finds its row.
+    app.views.profiles.filter = "missing".to_owned();
+    assert_eq!(
+        app.profile_rows()
+            .iter()
+            .map(|row| row.label().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["audit".to_owned()]
+    );
+}
+
+/// Esc puts back the rows the filter was narrowing, and the cursor with them.
+#[test]
+fn escaping_the_filter_restores_the_rows() {
+    let Some(mut app) = profiles_app("filter-esc") else {
+        return;
+    };
+    select(&mut app, "ops");
+    let before = app.views.profiles.selected;
+
+    let _ = app.dispatch_action(ActionId::ViewFilter);
+    let _ = app.update(Event::Input(InputEvent::Paste("audit".to_owned())));
+    assert_eq!(app.profile_rows().len(), 1);
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.views.profiles.filter.is_empty());
+    assert_eq!(app.profile_rows().len(), 3);
+    assert_eq!(app.views.profiles.selected, before);
+}
+
+/// The activation acts on the row the filter left selected, not on the one that
+/// was selected before it narrowed.
+#[test]
+fn activation_follows_the_filtered_selection() {
+    let Some(mut app) = profiles_app("filter-activate") else {
+        return;
+    };
+    inspected(&mut app, vec![("ops".to_owned(), stored())]);
+    app.set_route(Route::Profiles);
+    app.views.profiles.filter = "ops".to_owned();
+    app.views.profiles.selected = 0;
+
+    assert_eq!(
+        app.selected_profile_row().map(|row| row.label().to_owned()),
+        Some("ops".to_owned())
+    );
+    let effects = activate(&mut app);
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::StartProfileProbe { profile, .. }) if profile == "ops"
+    ));
+}
+
+fn local_capable_app(name: &str) -> Option<App> {
+    let root = std::env::temp_dir().join(format!("tale-hdr-{}-{name}", std::process::id()));
+    let _ = fs::create_dir_all(&root);
+    let config_path = root.join("config.toml");
+    fs::write(
+        &config_path,
+        "[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
+    )
+    .ok()?;
+    let cli = Cli {
+        command: None,
+        profile: None,
+        config: Some(config_path),
+        view: None,
+        read_only: false,
+        no_local: false,
+        tailscale_path: Some(std::path::PathBuf::from("tailscale")),
+        tailscale_socket: None,
+        mock: false,
+    };
+    let environment = EnvironmentValues {
+        config_file: None,
+        tailscale_path: None,
+        tailscale_socket: None,
+        no_color: true,
+    };
+    let path_environment = PathEnvironment {
+        platform: Platform::Unix,
+        current_dir: root.clone(),
+        xdg_config_home: Some(root.join("config")),
+        home: Some(root.join("home")),
+        xdg_state_home: Some(root.join("state")),
+        xdg_cache_home: Some(root.join("cache")),
+        appdata: None,
+        localappdata: None,
+    };
+    config::resolve(&cli, &environment, &path_environment)
+        .ok()
+        .map(App::new)
+}
+
+fn header_lines(app: &App) -> Vec<String> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let (w, h) = (120u16, 30u16);
+    let backend = TestBackend::new(w, h);
+    let Ok(mut terminal) = Terminal::new(backend) else {
+        return Vec::new();
+    };
+    if terminal.draw(|frame| tale::ui::render(frame, app)).is_err() {
+        return Vec::new();
+    }
+    let buffer = terminal.backend().buffer();
+    (0..6)
+        .map(|y| {
+            (0..w)
+                .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                .collect::<String>()
+        })
+        .collect()
+}
+
+fn header_row<'a>(lines: &'a [String], label: &str) -> Option<&'a str> {
+    lines
+        .iter()
+        .find_map(|line| line.split_once(label))
+        .map(|(_, rest)| rest.trim_end())
+}
+
+/// The header showed the local client's tailnet and called it the session's,
+/// so a profile administering a different one was invisible. Both are named
+/// now, and each says which it is.
+#[test]
+fn the_header_names_both_tailnets_when_they_differ() {
+    let Some(mut app) = local_capable_app("header-divergent") else {
+        return;
+    };
+    common::install_local(&mut app, "home.ts.net", &["self"]);
+    inspected(&mut app, vec![("ops".to_owned(), stored())]);
+    select(&mut app, "ops");
+    let _ = activate(&mut app);
+    let _ = app.update(Event::Credential(Box::new(
+        CredentialEvent::ProfileProbed {
+            profile: "ops".to_owned(),
+            result: Ok(CredentialKind::AccessToken),
+        },
+    )));
+    common::install_admin(&mut app, vec![common::admin_device("a", "work.ts.net")]);
+
+    let lines = header_lines(&app);
+    let local = header_row(&lines, "Local:");
+    let profile = header_row(&lines, "Profile:");
+    assert!(
+        local.is_some_and(|row| row.contains("home.ts.net")),
+        "the local row does not name the local tailnet: {local:?}"
+    );
+    assert!(
+        profile.is_some_and(|row| row.contains("ops") && row.contains("work.ts.net")),
+        "the profile row does not name the profile's tailnet: {profile:?}"
+    );
+    // Neither row may carry the other's tailnet, which is what made the old
+    // single line unreadable.
+    assert!(local.is_some_and(|row| !row.contains("work.ts.net")));
+    assert!(profile.is_some_and(|row| !row.contains("home.ts.net")));
+}
+
+/// With no profile the row says so rather than going blank, because an empty
+/// admin view and an unchosen profile look identical otherwise.
+#[test]
+fn the_header_says_when_no_profile_is_active() {
+    let Some(mut app) = local_capable_app("header-none") else {
+        return;
+    };
+    common::install_local(&mut app, "home.ts.net", &["self"]);
+    let lines = header_lines(&app);
+    assert!(header_row(&lines, "Local:").is_some_and(|row| row.contains("home.ts.net")));
+    assert!(header_row(&lines, "Profile:").is_some_and(|row| row.contains("none")));
+}
+
+/// A tailnet named after its own suffix is one fact, not two.
+#[test]
+fn the_header_does_not_print_one_tailnet_twice() {
+    let Some(mut app) = local_capable_app("header-once") else {
+        return;
+    };
+    common::install_local(&mut app, "solo.ts.net", &["self"]);
+    let lines = header_lines(&app);
+    let local = header_row(&lines, "Local:").unwrap_or_default();
+    assert_eq!(local.matches("solo.ts.net").count(), 1, "{local:?}");
 }

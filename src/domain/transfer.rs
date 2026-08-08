@@ -103,7 +103,15 @@ pub fn validate_receive_directory(path: &Path) -> Result<(), String> {
     if !metadata.is_dir() {
         return Err("destination must be a directory".to_owned());
     }
-    let probe = path.join(".tale-write-check");
+    // `create_new` on a fixed name reports "not writable" for a directory that
+    // is writable, whenever a second check is in flight against it — another
+    // Tale, or the same one twice. The name is unique per check so the probe
+    // measures the directory rather than the other probe.
+    let probe = path.join(format!(
+        ".tale-write-check-{}-{}",
+        std::process::id(),
+        PROBE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -116,6 +124,8 @@ pub fn validate_receive_directory(path: &Path) -> Result<(), String> {
         Err(_) => Err("destination directory is not writable".to_owned()),
     }
 }
+
+static PROBE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn normalize_share_name(input: &str) -> Result<String, String> {
     let normalized = input.trim().to_ascii_lowercase();
@@ -135,4 +145,43 @@ pub fn normalize_share_name(input: &str) -> Result<String, String> {
         );
     }
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A writable directory has to read as writable however many checks are
+    /// running against it. A fixed probe name made the second one fail, which
+    /// told the user their own download directory was not writable.
+    #[test]
+    fn concurrent_checks_of_one_directory_all_succeed() {
+        let directory = std::env::temp_dir().join(format!(
+            "tale-probe-{}-{}",
+            std::process::id(),
+            PROBE_SEQUENCE.load(std::sync::atomic::Ordering::Relaxed)
+        ));
+        assert!(std::fs::create_dir_all(&directory).is_ok());
+
+        let results = std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|_| scope.spawn(|| validate_receive_directory(&directory)))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.len(), 8);
+        for result in results {
+            assert!(result.is_ok(), "a concurrent check failed: {result:?}");
+        }
+        // The probes clean up after themselves rather than accumulating in a
+        // directory the user chose for their downloads.
+        let leftovers = std::fs::read_dir(&directory)
+            .map(|entries| entries.count())
+            .unwrap_or(usize::MAX);
+        assert_eq!(leftovers, 0);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }

@@ -288,6 +288,23 @@ Selecting the `local` row deactivates the admin profile. The selection lasts for
 the session: `--profile` is the only way to start on a profile, so what Tale
 reads from is never a leftover in a file.
 
+### Which tailnet `:devices` shows
+
+The selection decides, and only the selection. With no profile, `:devices` is the
+local client's peers. With a profile active, it is that profile's tailnet.
+
+The two sources are merged into one row per device only when they are describing
+the same tailnet, which Tale establishes by comparing the MagicDNS suffix the
+local client reports against the suffix on the names the Control API returns.
+Nodes shared in from another tailnet carry that tailnet's suffix and so are not
+allowed to answer the question. Until both sources have named a tailnet, they are
+treated as different ones: an unproven match is not a match.
+
+When they differ, the header names both — `example.com · local tailc0de.ts.net` —
+and the row actions that go through the local daemon (ping, whois, SSH, Taildrop)
+are withheld, because this machine cannot reach a tailnet it is not on. The
+tailnet's own actions are unaffected; those go over the API.
+
 Recommended profiles:
 
 - `audit`: read-only with explicit read scopes;

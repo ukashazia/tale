@@ -30,8 +30,8 @@ use crate::domain::admin_mutation::{
 };
 use crate::domain::certificate::{BugReportRequest, CertificateRequest};
 use crate::domain::device::{
-    ComposedDevice, Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec,
-    compare_devices_by_specs, compose_exact_id,
+    AdminDevice, ComposedDevice, Device, DeviceId, LocalDevice, SortDirection, SortField, SortSpec,
+    compare_devices_by_specs, compose_exact_id, same_tailnet,
 };
 use crate::domain::diagnostic::{DiagnosticResult, DiagnosticState};
 use crate::domain::filter::{
@@ -194,6 +194,55 @@ pub enum Focus {
     Inspector,
 }
 
+/// Whether the local client and the active profile are talking about the same
+/// tailnet. Tale reads two independent sources and used to assume they agreed;
+/// this is the assumption made explicit so it can be false.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SourceAlignment {
+    /// Only one source is in play, so there is nothing to reconcile.
+    Single,
+    SameTailnet,
+    /// This machine is on one tailnet and the active profile administers
+    /// another. Both are legitimate; neither describes the other.
+    Divergent {
+        local: String,
+        admin: String,
+    },
+    /// Both sources are present but at least one has not yet said which tailnet
+    /// it is on.
+    Undetermined,
+}
+
+/// Which source `:devices` is showing.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DeviceViewSource {
+    /// The local client's peers. No profile is active.
+    Local,
+    /// The active profile's devices, carrying local detail because both sources
+    /// are on the same tailnet.
+    Composed,
+    /// The active profile's devices alone, because this machine is not on that
+    /// tailnet or has not proven that it is.
+    Admin,
+}
+
+impl DeviceViewSource {
+    /// Whether the rows on screen are peers this machine can actually reach.
+    /// Ping, whois, SSH and Taildrop all go through the local daemon, so they
+    /// are meaningless against a tailnet it is not on.
+    pub const fn is_locally_reachable(self) -> bool {
+        matches!(self, Self::Local | Self::Composed)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Composed => "local + admin",
+            Self::Admin => "admin",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct LineEditorState {
     pub input: String,
@@ -262,6 +311,8 @@ pub struct FilterRestoration {
     pub scroll: usize,
     pub task_filter: String,
     pub task_selection: Option<TaskId>,
+    /// The cursor `:profiles` had, which the filter moves and Esc puts back.
+    pub profile_selection: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -764,6 +815,11 @@ pub enum CopyField {
     TaskResult,
     TaskCommand,
     TaskOutput,
+    ProfileName,
+    ProfileTailnet,
+    ProfileAccount,
+    ProfileCredential,
+    ProfileBackend,
 }
 
 /// The headings the copy menu offers, in the order it shows them.
@@ -809,8 +865,14 @@ impl CopyField {
             | Self::UserId
             | Self::UserName
             | Self::UserLogin
-            | Self::TaskId => CopyGroup::Identity,
-            Self::Addresses | Self::PublicKey | Self::Endpoint => CopyGroup::Network,
+            | Self::TaskId
+            | Self::ProfileName
+            | Self::ProfileTailnet
+            | Self::ProfileAccount
+            | Self::ProfileCredential => CopyGroup::Identity,
+            Self::Addresses | Self::PublicKey | Self::Endpoint | Self::ProfileBackend => {
+                CopyGroup::Network
+            }
             Self::DiagnosticSummary
             | Self::Metrics
             | Self::TaskResult
@@ -842,6 +904,11 @@ impl CopyField {
             Self::TaskResult => "result",
             Self::TaskCommand => "command",
             Self::TaskOutput => "output",
+            Self::ProfileName => "profile",
+            Self::ProfileTailnet => "tailnet",
+            Self::ProfileAccount => "account",
+            Self::ProfileCredential => "credential",
+            Self::ProfileBackend => "store path",
         }
     }
 }
@@ -1046,6 +1113,9 @@ pub struct ProfileViewState {
     pub inspector: bool,
     pub selected: usize,
     pub sort: ProfileSortSpec,
+    /// Free text, matched against the whole row. There is no expression to
+    /// parse, so there is no such thing as an invalid one.
+    pub filter: String,
 }
 
 /// One row of `:profiles`. The two variants are the two unrelated things the
@@ -1136,6 +1206,32 @@ impl<'a> ProfileRow<'a> {
                 }
             }
         }
+    }
+
+    /// Whether the row answers to a free-text query. Every column the table can
+    /// show is part of the haystack, so what is on screen is what is searched.
+    fn matches(&self, needle: &str) -> bool {
+        let mut haystack = vec![
+            self.label().to_ascii_lowercase(),
+            self.state_label().to_ascii_lowercase(),
+            self.access_label().to_ascii_lowercase(),
+        ];
+        if let Some(tailnet) = self.tailnet() {
+            haystack.push(tailnet.to_ascii_lowercase());
+        }
+        match self {
+            Self::Local { account, .. } => {
+                if let Some(account) = account {
+                    haystack.push(account.to_ascii_lowercase());
+                }
+                haystack.push("local".to_owned());
+            }
+            Self::Admin { config, .. } => {
+                haystack.push(config.credential.to_ascii_lowercase());
+                haystack.push(config.credential_backend.label().to_ascii_lowercase());
+            }
+        }
+        haystack.iter().any(|value| value.contains(needle))
     }
 
     fn ordering_key(&self, field: ProfileSortField) -> String {
@@ -2632,6 +2728,9 @@ impl App {
                 if self.current_route() == Route::Tasks {
                     self.task_filter = restoration.task_filter;
                     self.tasks.selected = restoration.task_selection;
+                } else if self.current_route() == Route::Profiles {
+                    self.views.profiles.filter = restoration.input;
+                    self.views.profiles.selected = restoration.profile_selection;
                 } else if self.current_route() == Route::Services {
                     self.views.services.filter_draft = restoration.input;
                     self.views.services.applied_filter = restoration.expression;
@@ -2836,6 +2935,18 @@ impl App {
         // While `Tab` walks the tray the offered set stays anchored, so the row the
         // user is cycling through does not move underneath them.
         let sections = (!anchored).then(|| self.filter_suggestions(&input, cursor));
+        if self.current_route() == Route::Profiles {
+            self.views.profiles.filter = input;
+            self.views.profiles.selected = 0;
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.error = None;
+                state.generation = generation;
+                if let Some(sections) = sections {
+                    state.sections = sections;
+                }
+            }
+            return Vec::new();
+        }
         if self.current_route() == Route::Tasks {
             self.task_filter = input;
             self.tasks.select_filtered_first(&self.task_filter);
@@ -2902,6 +3013,7 @@ impl App {
                 _ => filter::empty_schema(),
             },
             Route::Diagnostics => filter::empty_schema(),
+            Route::Profiles => filter::profiles_schema(),
             _ => filter::device_schema(),
         }
     }
@@ -3439,6 +3551,12 @@ impl App {
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
+        if self.current_route() == Route::Profiles {
+            self.views.profiles.filter = input.trim().to_owned();
+            self.views.profiles.selected = 0;
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
         if self.current_route() == Route::Tasks {
             self.task_filter = input.trim().to_owned();
             self.tasks.select_filtered_first(&self.task_filter);
@@ -3615,7 +3733,9 @@ impl App {
                 Vec::new()
             }
             ActionId::ViewFilter => {
-                if self.filter_schema().is_empty() && self.current_route() != Route::Tasks {
+                if self.filter_schema().is_empty()
+                    && !matches!(self.current_route(), Route::Tasks | Route::Profiles)
+                {
                     let subject = if self.current_route() == Route::Services {
                         self.views.services.section.label()
                     } else {
@@ -3626,6 +3746,7 @@ impl App {
                 }
                 let input = match self.current_route() {
                     Route::Tasks => self.task_filter.clone(),
+                    Route::Profiles => self.views.profiles.filter.clone(),
                     Route::Services => self.views.services.filter_draft.clone(),
                     _ => self.views.devices.filter_draft.clone(),
                 };
@@ -3640,6 +3761,7 @@ impl App {
                     scroll: self.views.devices.scroll,
                     task_filter: self.task_filter.clone(),
                     task_selection: self.tasks.selected,
+                    profile_selection: self.views.profiles.selected,
                 };
                 let cursor = input.len();
                 let sections = self.filter_suggestions(&input, cursor);
@@ -8693,6 +8815,19 @@ impl App {
     /// pinned first because it is where Tale starts and what it falls back to;
     /// only the admin profiles answer to the sort.
     pub fn profile_rows(&self) -> Vec<ProfileRow<'_>> {
+        let filter = self.views.profiles.filter.trim().to_ascii_lowercase();
+        let mut rows = self.all_profile_rows();
+        if !filter.is_empty() {
+            // The local row is pinned, not exempt: a filter that excludes it has
+            // to exclude it, or the count in the border would be a lie.
+            rows.retain(|row| row.matches(&filter));
+        }
+        rows
+    }
+
+    /// Every row, before the filter. The border reports both counts, so the
+    /// total has to survive being narrowed.
+    pub fn all_profile_rows(&self) -> Vec<ProfileRow<'_>> {
         let mut rows = Vec::with_capacity(self.resolved_config.profiles.len().saturating_add(1));
         rows.push(ProfileRow::Local {
             tailnet: self
@@ -8930,7 +9065,7 @@ impl App {
         if let Some(previous) = previous_profile {
             effects.push(Effect::DropAdminToken { profile: previous });
         }
-        self.update_composed_devices();
+        self.refresh_device_view();
         effects.extend(self.start_admin_refresh());
         effects
     }
@@ -9296,8 +9431,7 @@ impl App {
                     report.activity,
                 );
                 self.refresh_admin_capabilities();
-                self.sync_admin_display_devices();
-                self.update_composed_devices();
+                self.refresh_device_view();
                 return self.recompute_health();
             }
             AdminEvent::ResourceRefreshFinished(report) => {
@@ -9494,8 +9628,7 @@ impl App {
                     }
                 }
                 self.refresh_admin_capabilities();
-                self.sync_admin_display_devices();
-                self.update_composed_devices();
+                self.refresh_device_view();
                 let health_effects = self.recompute_health();
                 if let Some(targets) = self.pending_batch_retry.take() {
                     if self.admin.devices.state != AdminResourceState::Ready {
@@ -9546,8 +9679,7 @@ impl App {
                 mark_admin_unauthenticated(&mut self.admin.contacts, generation, detail.clone());
                 mark_admin_unauthenticated(&mut self.admin.activity, generation, detail);
                 self.refresh_admin_capabilities();
-                self.sync_admin_display_devices();
-                self.update_composed_devices();
+                self.refresh_device_view();
                 return self.recompute_health();
             }
             AdminEvent::DeviceEnrichmentFinished {
@@ -9613,7 +9745,7 @@ impl App {
                     None => {}
                 }
                 self.refresh_admin_capabilities();
-                self.update_composed_devices();
+                self.refresh_device_view();
                 return self.recompute_health();
             }
             AdminEvent::DeviceEnrichmentFailed {
@@ -9983,8 +10115,7 @@ impl App {
                     mark_admin_failed(&mut self.admin.contacts, generation, detail.clone());
                     mark_admin_failed(&mut self.admin.activity, generation, detail);
                     self.refresh_admin_capabilities();
-                    self.sync_admin_display_devices();
-                    self.update_composed_devices();
+                    self.refresh_device_view();
                 }
             }
         }
@@ -10316,59 +10447,151 @@ impl App {
         }
     }
 
-    fn update_composed_devices(&mut self) {
-        let local = self.local_resource.snapshot.as_ref().map(|snapshot| {
+    /// The tailnet the local client is on, as its MagicDNS suffix.
+    pub fn local_tailnet_suffix(&self) -> Option<&str> {
+        self.local_resource
+            .snapshot
+            .as_ref()?
+            .magic_dns_suffix
+            .as_deref()
+            .filter(|value| !value.is_empty())
+    }
+
+    /// The tailnet the active profile reads, as its MagicDNS suffix. Taken from
+    /// the devices the API returned rather than from `profiles.*.tailnet`,
+    /// because that field is a request parameter — `-` is legal and common —
+    /// and so cannot identify anything.
+    pub fn admin_tailnet_suffix(&self) -> Option<&str> {
+        self.admin
+            .devices
+            .snapshot
+            .as_ref()?
+            .iter()
+            .find_map(AdminDevice::tailnet_suffix)
+    }
+
+    /// Whether the two sources are describing the same tailnet. Nothing may be
+    /// composed until this says so: a node ID from one tailnet never matches a
+    /// node ID from another, so composing them yields a union of two fleets
+    /// wearing one heading.
+    pub fn source_alignment(&self) -> SourceAlignment {
+        if self.admin.profile.is_none() || self.source_mode != SourceMode::Local {
+            return SourceAlignment::Single;
+        }
+        match (self.local_tailnet_suffix(), self.admin_tailnet_suffix()) {
+            (Some(local), Some(admin)) if same_tailnet(local, admin) => {
+                SourceAlignment::SameTailnet
+            }
+            (Some(local), Some(admin)) => SourceAlignment::Divergent {
+                local: local.to_owned(),
+                admin: admin.to_owned(),
+            },
+            _ => SourceAlignment::Undetermined,
+        }
+    }
+
+    /// Which source owns `:devices`. What the user activated decides it. An
+    /// unproven match is not a match: until both sources have named their
+    /// tailnet, the active profile is shown alone rather than merged on a guess.
+    pub fn device_view_source(&self) -> DeviceViewSource {
+        if self.admin.profile.is_none() {
+            return DeviceViewSource::Local;
+        }
+        match self.source_alignment() {
+            SourceAlignment::SameTailnet => DeviceViewSource::Composed,
+            _ => DeviceViewSource::Admin,
+        }
+    }
+
+    fn local_devices(&self) -> Option<Vec<LocalDevice>> {
+        self.local_resource.snapshot.as_ref().map(|snapshot| {
             let mut devices = Vec::with_capacity(snapshot.peers.len().saturating_add(1));
             devices.push(snapshot.self_node.clone());
             devices.extend(snapshot.peers.clone());
             devices
-        });
+        })
+    }
+
+    fn recompute_composed_devices(&mut self) {
+        let source = self.device_view_source();
+        let local = self.local_devices();
         let admin = self.admin.devices.snapshot.clone();
-        self.composed_devices = match (local.as_deref(), admin.as_deref()) {
-            (Some(local), Some(admin)) => compose_exact_id(local, admin),
-            (Some(local), None) => local
-                .iter()
-                .cloned()
+        self.composed_devices = match source {
+            DeviceViewSource::Composed => match (local.as_deref(), admin.as_deref()) {
+                (Some(local), Some(admin)) => compose_exact_id(local, admin),
+                _ => Vec::new(),
+            },
+            DeviceViewSource::Local => local
+                .unwrap_or_default()
+                .into_iter()
                 .map(|device| ComposedDevice {
                     id: device.id.0.clone(),
                     local: Some(device),
                     admin: None,
                 })
                 .collect(),
-            (None, Some(admin)) => admin
-                .iter()
-                .cloned()
+            DeviceViewSource::Admin => admin
+                .unwrap_or_default()
+                .into_iter()
                 .map(|device| ComposedDevice {
                     id: device.stable_id.clone(),
                     local: None,
                     admin: Some(device),
                 })
                 .collect(),
-            (None, None) => Vec::new(),
         };
-        if self.source_mode == SourceMode::Local && self.admin.profile.is_some() {
-            let display = self
-                .composed_devices
-                .iter()
-                .map(Self::display_device_from_composed)
-                .collect::<Vec<_>>();
-            self.reconcile_selection(Some(&display));
-            self.devices_resource.snapshot = display;
-            self.devices_resource.observed_at = self.local_resource.last_success_at;
-            self.devices_resource.health = match self.local_resource.status {
-                LocalResourceStatus::NeverLoaded => SourceHealth::Unavailable,
-                LocalResourceStatus::Loading => SourceHealth::Loading,
-                LocalResourceStatus::Fresh => SourceHealth::Healthy,
-                LocalResourceStatus::Stale => SourceHealth::Stale,
-                LocalResourceStatus::Failed => SourceHealth::Error,
-            };
-            self.devices_resource.error = self
-                .local_resource
-                .failure
-                .as_ref()
-                .map(|failure| failure.detail.clone());
-            self.reconcile_selection(None);
+    }
+
+    /// The one writer of `devices_resource`. It used to be three — a local poll,
+    /// an admin refresh, and the composer — each overwriting the list on
+    /// arrival, so which tailnet `:devices` showed depended on whichever
+    /// answered last. Now the owning source is decided first and written once.
+    ///
+    /// Public because it is the invariant, not an event handler: anything that
+    /// changes either source restores the view by calling it.
+    pub fn refresh_device_view(&mut self) {
+        self.recompute_composed_devices();
+        // Mock data has no local client and no profile behind it; it writes its
+        // own list through the source events and owns it end to end.
+        if self.source_mode == SourceMode::Mock {
+            return;
         }
+        let display = self
+            .composed_devices
+            .iter()
+            .map(Self::display_device_from_composed)
+            .collect::<Vec<_>>();
+        let (observed_at, health, error) = match self.device_view_source() {
+            DeviceViewSource::Admin => (
+                self.admin.devices.observed_at,
+                SourceHealth::from_admin_state(self.admin.devices.state),
+                self.admin.devices.error.clone(),
+            ),
+            DeviceViewSource::Local | DeviceViewSource::Composed => (
+                self.local_resource.last_success_at,
+                match self.local_resource.status {
+                    LocalResourceStatus::NeverLoaded => SourceHealth::Unavailable,
+                    LocalResourceStatus::Loading => SourceHealth::Loading,
+                    LocalResourceStatus::Fresh => SourceHealth::Healthy,
+                    LocalResourceStatus::Stale => SourceHealth::Stale,
+                    LocalResourceStatus::Failed => SourceHealth::Error,
+                },
+                self.local_resource
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.detail.clone()),
+            ),
+        };
+        self.reconcile_selection(Some(&display));
+        self.devices_resource.snapshot = display;
+        // One counter for one list. Two sources stamping their own generations
+        // on a shared field is what let the visible-row cache serve indexes
+        // computed against a list that is no longer on screen.
+        self.devices_resource.generation = self.devices_resource.generation.saturating_add(1);
+        self.devices_resource.observed_at = observed_at;
+        self.devices_resource.health = health;
+        self.devices_resource.error = error;
+        self.reconcile_selection(None);
     }
 
     fn display_device_from_composed(composed: &ComposedDevice) -> Device {
@@ -10405,28 +10628,6 @@ impl App {
                     approved: true,
                 },
             },
-        }
-    }
-
-    fn sync_admin_display_devices(&mut self) {
-        if self.source_mode == SourceMode::Local && self.local_resource.snapshot.is_some() {
-            return;
-        }
-        if let Some(devices) = self.admin.devices.snapshot.as_ref() {
-            let display = devices
-                .iter()
-                .map(|device| device.to_display_device())
-                .collect::<Vec<_>>();
-            self.reconcile_selection(Some(&display));
-            self.devices_resource.snapshot = display;
-            self.devices_resource.generation = self.admin.devices.generation;
-            self.devices_resource.observed_at = self.admin.devices.observed_at;
-            self.devices_resource.health = SourceHealth::from_admin_state(self.admin.devices.state);
-            self.devices_resource.error = self.admin.devices.error.clone();
-            self.reconcile_selection(None);
-        } else if self.admin.profile.is_some() {
-            self.devices_resource.health = SourceHealth::from_admin_state(self.admin.devices.state);
-            self.devices_resource.error = self.admin.devices.error.clone();
         }
     }
 
@@ -10643,8 +10844,11 @@ impl App {
                 ActionId::LocalSyspolicyReload,
             ],
             // Every one of these acts on the selected row: it pings it, looks
-            // it up, opens a session to it, or sends it a file.
-            Route::Devices => vec![
+            // it up, opens a session to it, or sends it a file. All of them go
+            // through the local daemon, so they are withheld when the rows on
+            // screen belong to a tailnet this machine is not on — offering to
+            // SSH to an unreachable node is worse than not offering at all.
+            Route::Devices if self.device_view_source().is_locally_reachable() => vec![
                 ActionId::LocalProbeConnection,
                 ActionId::LocalWhois,
                 ActionId::LocalSshOpen,
@@ -10687,6 +10891,30 @@ impl App {
             }
             if !task.detail.is_empty() {
                 fields.push(CopyField::TaskOutput);
+            }
+            return fields;
+        }
+        if self.current_route() == Route::Profiles {
+            // The row is mostly words already on screen; what is worth pasting
+            // is what you would type somewhere else — into a config file, a
+            // shell, or a message asking someone why a credential was refused.
+            let Some(row) = self.selected_profile_row() else {
+                return Vec::new();
+            };
+            let mut fields = vec![CopyField::ProfileName];
+            if row.tailnet().is_some_and(|value| !value.is_empty()) {
+                fields.push(CopyField::ProfileTailnet);
+            }
+            match row {
+                ProfileRow::Local { account, .. } => {
+                    if account.is_some() {
+                        fields.push(CopyField::ProfileAccount);
+                    }
+                }
+                ProfileRow::Admin { .. } => {
+                    fields.push(CopyField::ProfileCredential);
+                    fields.push(CopyField::ProfileBackend);
+                }
             }
             return fields;
         }
@@ -10776,14 +11004,22 @@ impl App {
     }
 
     fn phase_eight_resource_actions(&self) -> Vec<ActionId> {
-        let mut actions = vec![
-            ActionId::SavedViewCreate,
-            ActionId::SavedViewReplace,
-            ActionId::SavedViewRename,
-            ActionId::SavedViewDelete,
-            ActionId::SavedViewApply,
-            ActionId::CollectionExport,
-        ];
+        // Saved views and exports are for collections Tale fetched. `:profiles`
+        // lists this machine's own configuration, which is already a file the
+        // user owns, so offering to export it or to name a view of it would be
+        // offering something with no subject.
+        let mut actions = if self.current_route() == Route::Profiles {
+            Vec::new()
+        } else {
+            vec![
+                ActionId::SavedViewCreate,
+                ActionId::SavedViewReplace,
+                ActionId::SavedViewRename,
+                ActionId::SavedViewDelete,
+                ActionId::SavedViewApply,
+                ActionId::CollectionExport,
+            ]
+        };
         match self.current_route() {
             Route::Overview => actions.extend([
                 ActionId::OverviewHealthOpenResource,
@@ -12283,7 +12519,7 @@ impl App {
                 };
                 self.devices_resource.error = None;
                 self.reconcile_selection(None);
-                self.update_composed_devices();
+                self.refresh_device_view();
             }
             SourceEvent::LoadFailed { generation, detail } => {
                 if generation < self.devices_resource.generation {
@@ -12388,7 +12624,7 @@ impl App {
                     snapshot.cert_domains.clone(),
                 );
                 self.local_resource.succeed(generation, snapshot);
-                self.update_composed_devices();
+                self.refresh_device_view();
                 let mut effects = Vec::new();
                 if self.local_executable.is_some()
                     && self.local_cli_state == LocalCliState::Available
@@ -12418,13 +12654,7 @@ impl App {
                 self.local_state = state_for_failure(&failure, self.local_executable.as_ref());
                 self.local_resource.fail(generation, failure.clone());
                 let service_failure = service_failure_from_local_failure(&failure);
-                self.devices_resource.health = if self.local_resource.snapshot.is_some() {
-                    SourceHealth::Stale
-                } else {
-                    SourceHealth::Error
-                };
-                self.devices_resource.error = Some(failure.detail);
-                self.update_composed_devices();
+                self.refresh_device_view();
                 self.services_snapshot
                     .certificate_domains
                     .fail(self.services_snapshot.generation, service_failure);
@@ -12492,11 +12722,9 @@ impl App {
                 };
                 self.local_resource.mark_stale();
                 self.local_preferences_resource.mark_stale();
-                self.devices_resource.health = if self.local_resource.snapshot.is_some() {
-                    SourceHealth::Stale
-                } else {
-                    SourceHealth::Loading
-                };
+                self.refresh_device_view();
+                // The list itself is unchanged by a dropped watcher; only the
+                // reason it has stopped moving is new.
                 self.devices_resource.error = Some(failure.detail);
             }
             LocalEvent::AccountsSucceeded { accounts } => {
@@ -13015,18 +13243,8 @@ impl App {
     }
 
     fn apply_local_snapshot(&mut self, snapshot: &LocalSnapshot) {
-        let mut devices = Vec::with_capacity(snapshot.peers.len().saturating_add(1));
-        devices.push(snapshot.self_node.to_display_device());
-        devices.extend(snapshot.peers.iter().map(LocalDevice::to_display_device));
         self.local_self_id = Some(snapshot.self_node.id.clone());
-        self.reconcile_selection(Some(&devices));
-        self.devices_resource.snapshot = devices;
-        self.devices_resource.generation = self.local_resource.generation;
-        self.devices_resource.observed_at = Some(snapshot.observed_at);
-        self.devices_resource.health = SourceHealth::Healthy;
-        self.devices_resource.error = None;
-        self.reconcile_selection(None);
-        self.update_composed_devices();
+        self.refresh_device_view();
     }
 
     fn apply_fresh_snapshot(&mut self, snapshot: LocalSnapshot) {
@@ -13035,17 +13253,13 @@ impl App {
         self.local_state = snapshot.backend_state.clone();
         self.apply_local_snapshot(&snapshot);
         let _ = self.local_resource.succeed(generation, snapshot);
-        self.update_composed_devices();
+        self.refresh_device_view();
     }
 
     fn invalidate_local_state(&mut self) {
         self.local_resource.snapshot = None;
         self.local_resource.status = LocalResourceStatus::NeverLoaded;
         self.local_resource.generation = self.local_resource.generation.saturating_add(1);
-        self.devices_resource.snapshot.clear();
-        self.devices_resource.observed_at = None;
-        self.devices_resource.health = SourceHealth::Loading;
-        self.devices_resource.error = None;
         self.views.devices.selected_id = None;
         self.views.devices.scroll = 0;
         self.local_self_id = None;
@@ -13056,7 +13270,7 @@ impl App {
         self.local_preferences = LocalPreferences::empty(self.now);
         self.system_policy.clear();
         self.system_policy_failure = None;
-        self.update_composed_devices();
+        self.refresh_device_view();
     }
 
     fn start_account_rediscovery(&mut self) -> Vec<Effect> {
@@ -13825,6 +14039,38 @@ impl App {
             };
             return self.copy_text(value);
         }
+        if matches!(
+            field,
+            CopyField::ProfileName
+                | CopyField::ProfileTailnet
+                | CopyField::ProfileAccount
+                | CopyField::ProfileCredential
+                | CopyField::ProfileBackend
+        ) {
+            let Some(row) = self.selected_profile_row() else {
+                return Vec::new();
+            };
+            let value = match (field, row) {
+                (CopyField::ProfileName, row) => Some(row.label().to_owned()),
+                (CopyField::ProfileTailnet, row) => row.tailnet().map(str::to_owned),
+                (CopyField::ProfileAccount, ProfileRow::Local { account, .. }) => {
+                    account.map(str::to_owned)
+                }
+                (CopyField::ProfileCredential, ProfileRow::Admin { config, .. }) => {
+                    Some(config.credential.clone())
+                }
+                (CopyField::ProfileBackend, ProfileRow::Admin { config, .. }) => {
+                    Some(config.credential_backend.location().display().to_string())
+                }
+                _ => None,
+            };
+            // The menu only offers a field the row has, so a missing one here
+            // means the selection moved: copy nothing rather than a lie.
+            let Some(value) = value else {
+                return Vec::new();
+            };
+            return self.copy_text(value);
+        }
         if field == CopyField::DnsName {
             let Some(value) = self.selected_dns_name() else {
                 return Vec::new();
@@ -13870,7 +14116,12 @@ impl App {
             | CopyField::TaskId
             | CopyField::TaskResult
             | CopyField::TaskCommand
-            | CopyField::TaskOutput => "not returned".to_owned(),
+            | CopyField::TaskOutput
+            | CopyField::ProfileName
+            | CopyField::ProfileTailnet
+            | CopyField::ProfileAccount
+            | CopyField::ProfileCredential
+            | CopyField::ProfileBackend => "not returned".to_owned(),
         };
         self.copy_text(value)
     }
@@ -15345,6 +15596,11 @@ pub const fn copy_field_key(field: CopyField) -> char {
         CopyField::TaskResult => 'r',
         CopyField::TaskCommand => 'c',
         CopyField::TaskOutput => 'o',
+        CopyField::ProfileName => 'n',
+        CopyField::ProfileTailnet => 't',
+        CopyField::ProfileAccount => 'a',
+        CopyField::ProfileCredential => 'c',
+        CopyField::ProfileBackend => 'b',
     }
 }
 

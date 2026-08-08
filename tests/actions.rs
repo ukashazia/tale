@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+mod common;
+
 use tale::action::{self, ActionContext, ActionId, Binding};
 use tale::app::{App, InteractionMode, Route};
 use tale::cli::Cli;
@@ -95,9 +97,16 @@ fn local_app(with_admin_profile: bool) -> Option<App> {
         appdata: None,
         localappdata: None,
     };
-    config::resolve(&cli, &environment, &path_environment)
+    let mut app = config::resolve(&cli, &environment, &path_environment)
         .ok()
-        .map(App::new)
+        .map(App::new)?;
+    if with_admin_profile {
+        // Both sources on one tailnet, which is what makes the two halves of the
+        // devices menu belong to the same rows.
+        common::install_aligned_sources(&mut app, "fixture.ts.net", &["node-01", "node-02"]);
+        app.views.devices.selected_id = Some(tale::domain::device::DeviceId::new("node-01"));
+    }
+    Some(app)
 }
 
 /// An action is offered where its subject is on screen. The local client's
@@ -167,9 +176,13 @@ fn local_actions_are_offered_only_where_their_subject_is() {
     assert!(app.contextual_actions().contains(&ActionId::DiagnosticCopy));
 }
 
-/// An admin profile adds the tailnet's verbs to the devices menu; it does not
-/// take away the ones the local client offers on the same row. Both sets share
-/// one menu, so no sequence may shadow another.
+/// A profile for the tailnet this machine is on adds the tailnet's verbs to the
+/// devices menu; it does not take away the ones the local client offers on the
+/// same row. Both sets share one menu, so no sequence may shadow another.
+///
+/// Which tailnet the rows belong to is what decides whether the local half is
+/// offered at all, so the fixture has to put both sources on one tailnet —
+/// `tests/device_source.rs` covers the case where they diverge.
 #[test]
 fn the_devices_menu_carries_admin_and_local_actions_together() {
     let Some(mut app) = local_app(true) else {
@@ -177,6 +190,11 @@ fn the_devices_menu_carries_admin_and_local_actions_together() {
     };
     // Without both halves the test proves nothing.
     assert!(app.admin.profile.is_some(), "the fixture has no profile");
+    assert_eq!(
+        app.device_view_source(),
+        tale::app::DeviceViewSource::Composed,
+        "the fixture must have both sources on one tailnet"
+    );
     app.set_route(Route::Devices);
     let actions = app.contextual_actions();
     assert!(actions.contains(&ActionId::AdminDeviceRename));

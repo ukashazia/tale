@@ -511,10 +511,14 @@ fn filter_header(app: &App, width: u16) -> Line<'static> {
 fn filter_content(app: &App, state: &FilterLineState, area: Rect) -> Vec<Line<'static>> {
     let cells = filter_cells(&state.sections);
     if cells.is_empty() {
-        let note = if app.filter_schema().is_empty() {
-            "this view has no filter fields"
-        } else {
-            "no field matches this text"
+        let schema = app.filter_schema();
+        // A route with no fields is not a route with no filter: `:tasks` and
+        // `:profiles` match free text against the whole row, and saying they
+        // cannot be filtered contradicts the line above offering to do it.
+        let note = match (schema.is_empty(), schema.free_text.is_empty()) {
+            (true, false) => "no fields here: any text matches the whole row",
+            (true, true) => "this view has no filter",
+            _ => "no field matches this text",
         };
         return vec![Line::styled(
             note,

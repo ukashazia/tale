@@ -257,7 +257,14 @@ fn optional(value: Option<&str>) -> String {
 
 /// Route context lives in the border, the way it does on every other route.
 fn title(app: &App, rows: &[ProfileRow<'_>]) -> String {
-    let mut detail = vec![format!(
+    let mut detail = Vec::new();
+    if !app.views.profiles.filter.is_empty() {
+        detail.push(format!(
+            "/{}",
+            text::ellipsize(&app.views.profiles.filter, 32)
+        ));
+    }
+    detail.push(format!(
         "{} {}",
         app.views.profiles.sort.field.label(),
         if app.views.profiles.sort.direction.is_ascending() {
@@ -265,12 +272,20 @@ fn title(app: &App, rows: &[ProfileRow<'_>]) -> String {
         } else {
             "\u{2193}"
         }
-    )];
+    ));
+    // The active source is a fact about the session, not about the rows, so it
+    // is named even when the filter has hidden the row it names.
     detail.push(format!(
         "active: {}",
-        rows.iter()
+        app.all_profile_rows()
+            .iter()
             .find(|row| row.active())
             .map_or("none", ProfileRow::label)
     ));
-    text::view_title("profiles", rows.len(), rows.len(), &detail)
+    text::view_title(
+        "profiles",
+        rows.len(),
+        app.all_profile_rows().len(),
+        &detail,
+    )
 }

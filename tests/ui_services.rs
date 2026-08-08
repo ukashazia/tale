@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -334,9 +336,13 @@ fn taildrop_is_offered_on_the_devices_route_and_not_on_services() {
     assert!(matches!(app.interaction, InteractionMode::Transient(_)));
     assert!(app.runtime_error.is_none());
 
-    // The same menu with a profile, where the admin device actions crowd in.
+    // The same menu with a profile for the tailnet this machine is on, where the
+    // admin device actions crowd in alongside the local ones. A profile for some
+    // other tailnet is a different menu entirely — see `tests/device_source.rs`.
     app.interaction = InteractionMode::Normal;
     app.admin.profile = Some("fictional".to_owned());
+    common::install_aligned_sources(&mut app, "fixture.ts.net", &["office-laptop"]);
+    app.views.devices.selected_id = Some(DeviceId::new("office-laptop"));
     let with_admin = app.contextual_actions();
     assert!(with_admin.contains(&ActionId::DevicesTaildropSend));
     assert!(validate_transient_sequences(&with_admin).is_ok());

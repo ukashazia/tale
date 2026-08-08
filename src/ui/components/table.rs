@@ -75,12 +75,16 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn layout_for(app: &App, area: Rect) -> Layout {
-    let local = app.source_mode == crate::app::SourceMode::Local;
+    // The columns follow the rows. Local columns are empty for a tailnet this
+    // machine is not on, and admin columns are empty for a tailnet no profile
+    // is reading, so neither is spent on a source that is not on screen.
+    let source = app.device_view_source();
     let wide = app.views.devices.wide_columns && area.width >= 120;
+    let local = source.is_locally_reachable() && app.source_mode == crate::app::SourceMode::Local;
     Layout {
         wide: app.views.devices.wide_columns,
         local: local && wide,
-        admin: app.admin.profile.is_some() && wide,
+        admin: source != crate::app::DeviceViewSource::Local && wide,
         traffic: local && wide && area.width >= 150,
     }
 }
@@ -317,8 +321,11 @@ fn devices_title(app: &App) -> String {
             "\u{2193}"
         }
     ));
-    if app.admin.profile.is_some() {
-        detail.push("local + admin".to_owned());
+    detail.push(app.device_view_source().label().to_owned());
+    if let crate::app::SourceAlignment::Divergent { local, .. } = app.source_alignment() {
+        // The rows are the profile's tailnet; this machine is on another one.
+        // Saying so is what stops the list from reading as one fleet.
+        detail.push(format!("local client on {local}"));
     }
     text::view_title(
         "devices",

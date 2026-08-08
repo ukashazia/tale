@@ -209,6 +209,16 @@ impl AdminDevice {
         self.node_id.as_deref().or(self.legacy_id.as_deref())
     }
 
+    /// The tailnet this device's name places it in. A node shared in from
+    /// another tailnet carries that tailnet's suffix, so it is excluded rather
+    /// than allowed to speak for the tailnet being read.
+    pub fn tailnet_suffix(&self) -> Option<&str> {
+        if self.is_external == Some(true) {
+            return None;
+        }
+        magic_dns_suffix(self.name.as_deref()?)
+    }
+
     pub fn to_display_device(&self) -> Device {
         let os = match self.os.clone() {
             Some(os) => os,
@@ -269,6 +279,21 @@ pub struct ComposedDevice {
     pub id: String,
     pub local: Option<LocalDevice>,
     pub admin: Option<AdminDevice>,
+}
+
+/// Everything after the first label of a fully-qualified device name, which is
+/// the tailnet's MagicDNS suffix. `None` when the name carries no suffix to
+/// compare, so an unqualified name never reads as agreement.
+pub fn magic_dns_suffix(name: &str) -> Option<&str> {
+    let suffix = name.trim_end_matches('.').split_once('.')?.1;
+    (!suffix.is_empty()).then_some(suffix)
+}
+
+/// Whether two MagicDNS suffixes name the same tailnet. DNS is case-insensitive
+/// and the trailing root dot is optional, so neither may decide the answer.
+pub fn same_tailnet(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| value.trim_end_matches('.').to_ascii_lowercase();
+    !left.is_empty() && normalize(left) == normalize(right)
 }
 
 pub fn compose_exact_id(local: &[LocalDevice], admin: &[AdminDevice]) -> Vec<ComposedDevice> {
