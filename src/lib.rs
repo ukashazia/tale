@@ -284,8 +284,10 @@ fn auth_status(
     checked: &ResolvedConfig,
 ) -> Result<(), TaleError> {
     let profile_name = requested_profile
-        .or_else(|| checked.default_profile.clone())
-        .ok_or_else(|| TaleError::InvalidArguments("no profile is selected".to_owned()))?;
+        .or_else(|| checked.profile.clone())
+        .ok_or_else(|| {
+            TaleError::InvalidArguments("no profile is selected; pass --profile".to_owned())
+        })?;
     let profile = checked
         .profiles
         .get(&profile_name)
@@ -319,6 +321,7 @@ fn auth_status(
                 &profile.tailnet,
                 &profile.credential,
                 store,
+                checked.admin.request_timeout,
             ));
             println!(
                 "live authentication: {}",
@@ -335,9 +338,9 @@ fn auth_remove(profile_name: String, checked: &ResolvedConfig) -> Result<(), Tal
         .get(&profile_name)
         .ok_or_else(|| TaleError::InvalidArguments("profile does not exist".to_owned()))?;
     let store = profile.credential_backend.open();
-    let removed = store.delete(&profile.credential).map_err(|error| {
-        TaleError::Application(format!("credential removal failed: {error}"))
-    })?;
+    let removed = store
+        .delete(&profile.credential)
+        .map_err(|error| TaleError::Application(format!("credential removal failed: {error}")))?;
     if removed {
         println!("removed stored credential {}", profile.credential);
     } else {

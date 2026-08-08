@@ -30,6 +30,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     match app.current_route() {
         Route::Overview => views::overview::render(frame, app, layout.content),
         Route::Local => views::local::render(frame, app, layout.content),
+        Route::Profiles => views::profiles::render(frame, app, layout.content, layout.inspector),
         Route::Devices => views::devices::render(frame, app, layout.content, layout.inspector),
         Route::Users => views::users::render(frame, app, layout.content, layout.inspector),
         Route::Routes => views::routes::render_admin(frame, app, layout.content),

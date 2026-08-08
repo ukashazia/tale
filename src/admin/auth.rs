@@ -368,6 +368,7 @@ pub async fn live_check(
     tailnet: &str,
     reference: &str,
     store: Arc<dyn CredentialStore>,
+    timeout: Duration,
 ) -> Result<CredentialKind, AuthError> {
     let record = store.get(reference)?;
     let kind = record
@@ -375,7 +376,7 @@ pub async fn live_check(
         .map_or(CredentialKind::AccessToken, CredentialRecord::kind);
     let manager = TokenManager::new(Arc::clone(&store));
     let token = manager.access_token(profile, reference).await?;
-    let client = AdminClient::new(Duration::from_secs(15)).map_err(map_admin_error)?;
+    let client = AdminClient::new(timeout).map_err(map_admin_error)?;
     probe_record(&client, &token, tailnet, record.as_ref())
         .await
         .map(|_| kind)
@@ -567,9 +568,7 @@ fn map_admin_error(error: AdminError) -> AuthError {
         AdminError::ServerFailure { .. } | AdminError::UnexpectedStatus { .. } => {
             AuthError::ServerFailure
         }
-        AdminError::ValidationFailed { .. } | AdminError::Conflict { .. } => {
-            AuthError::ApiRejected
-        }
+        AdminError::ValidationFailed { .. } | AdminError::Conflict { .. } => AuthError::ApiRejected,
         AdminError::DecodeFailed { .. } | AdminError::BodyTooLarge { .. } => {
             AuthError::MalformedResponse
         }
@@ -685,6 +684,10 @@ mod tests {
             AuthError::Unauthenticated.to_string(),
             AuthError::Rejected.to_string()
         );
-        assert!(AuthError::Unauthenticated.to_string().contains("no credential is stored"));
+        assert!(
+            AuthError::Unauthenticated
+                .to_string()
+                .contains("no credential is stored")
+        );
     }
 }

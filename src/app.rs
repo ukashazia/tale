@@ -52,6 +52,9 @@ use crate::domain::policy_workflow::{PolicySelectorType, PolicyState, PolicyWork
 use crate::domain::preference::{
     LocalPreferences, ObservedPreference, PreferenceEditability, PreferenceField, PreferenceRequest,
 };
+use crate::domain::profile::{
+    CredentialPresence, ProbeState, ProfileSortField, ProfileSortSpec, ProfileStatus,
+};
 use crate::domain::redaction::{DiagnosticReportInput, redact_diagnostic_report};
 use crate::domain::route::{
     AdvertisementRequest, ExitNodeCandidate, ExitNodeRequest, ExitNodeSelection,
@@ -125,6 +128,9 @@ impl SourceMode {
 pub enum Route {
     Overview,
     Local,
+    /// The local client and every configured admin profile, and which of them
+    /// the rest of the app is reading from.
+    Profiles,
     Devices,
     Users,
     Routes,
@@ -143,6 +149,7 @@ impl Route {
         match self {
             Self::Overview => "overview",
             Self::Local => "local",
+            Self::Profiles => "profiles",
             Self::Devices => "devices",
             Self::Users => "users",
             Self::Routes => "routes",
@@ -161,6 +168,7 @@ impl Route {
         match value.to_ascii_lowercase().as_str() {
             "overview" => Some(Self::Overview),
             "local" => Some(Self::Local),
+            "profiles" => Some(Self::Profiles),
             "devices" => Some(Self::Devices),
             "users" => Some(Self::Users),
             "routes" => Some(Self::Routes),
@@ -302,6 +310,7 @@ pub enum TransientKind {
 pub enum ChoiceOutcome {
     Sort(SortSpec),
     ServiceSort(ServiceSortSpec),
+    ProfileSort(ProfileSortSpec),
     Theme(ThemeId),
     Account {
         action_id: ActionId,
@@ -1027,6 +1036,116 @@ pub struct Views {
     pub diagnostics: DiagnosticsViewState,
     pub users: UserViewState,
     pub tasks: TaskViewState,
+    pub profiles: ProfileViewState,
+}
+
+/// What `:profiles` remembers between frames. The list is short and derived from
+/// configuration rather than fetched, so the cursor is an index into it.
+#[derive(Debug, Clone, Default)]
+pub struct ProfileViewState {
+    pub inspector: bool,
+    pub selected: usize,
+    pub sort: ProfileSortSpec,
+}
+
+/// One row of `:profiles`. The two variants are the two unrelated things the
+/// page lists: the client on this machine, and a credential for somebody's
+/// control plane. Keeping them apart in the type is what stops the page from
+/// pretending a stored API token says anything about the local daemon.
+#[derive(Debug, Clone, Copy)]
+pub enum ProfileRow<'a> {
+    Local {
+        tailnet: Option<&'a str>,
+        account: Option<&'a str>,
+        state: &'static str,
+        active: bool,
+    },
+    Admin {
+        name: &'a str,
+        config: &'a crate::config::ProfileConfig,
+        status: Option<&'a ProfileStatus>,
+        active: bool,
+    },
+}
+
+impl<'a> ProfileRow<'a> {
+    /// The configured profile's name, or `None` for the local client, which has
+    /// no name because it is not a profile.
+    pub const fn name(&self) -> Option<&'a str> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Admin { name, .. } => Some(name),
+        }
+    }
+
+    pub const fn label(&self) -> &'a str {
+        match self {
+            Self::Local { .. } => "local",
+            Self::Admin { name, .. } => name,
+        }
+    }
+
+    pub const fn active(&self) -> bool {
+        match self {
+            Self::Local { active, .. } | Self::Admin { active, .. } => *active,
+        }
+    }
+
+    pub fn tailnet(&self) -> Option<&'a str> {
+        match self {
+            Self::Local { tailnet, .. } => *tailnet,
+            Self::Admin { config, .. } => Some(config.tailnet.as_str()),
+        }
+    }
+
+    /// One word for the row's condition. For the local client that is the
+    /// daemon's state; for a profile it is the store's answer, or the control
+    /// plane's once the user has asked for one.
+    pub fn state_label(&self) -> &'static str {
+        match self {
+            Self::Local { state, .. } => state,
+            Self::Admin { status, .. } => status.map_or("reading", ProfileStatus::label),
+        }
+    }
+
+    /// What activating this row would permit. The local client is bounded by
+    /// the daemon, not by Tale, so it makes no claim here.
+    pub const fn access_label(&self) -> &'static str {
+        match self {
+            Self::Local { .. } => "-",
+            Self::Admin { config, .. } => {
+                if config.read_only {
+                    "read-only"
+                } else {
+                    "read-write"
+                }
+            }
+        }
+    }
+
+    /// Why the row is in the state it is in, when there is more to say than the
+    /// one word.
+    pub fn detail(&self) -> Option<&'a str> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Admin { status, .. } => {
+                let status = (*status)?;
+                match status.presence.as_ref() {
+                    Some(CredentialPresence::Unreadable { detail }) => Some(detail.as_str()),
+                    _ => status.probe.detail(),
+                }
+            }
+        }
+    }
+
+    fn ordering_key(&self, field: ProfileSortField) -> String {
+        match field {
+            ProfileSortField::Name => self.label().to_owned(),
+            ProfileSortField::Tailnet => self.tailnet().unwrap_or_default().to_owned(),
+            ProfileSortField::State => self.state_label().to_owned(),
+            ProfileSortField::Access => self.access_label().to_owned(),
+        }
+    }
 }
 
 /// What `:tasks` remembers between frames. The selection itself lives in the
@@ -1126,6 +1245,11 @@ pub struct App {
     pub saved_views: Option<crate::saved_views::SavedViewsState>,
     pending_export_fingerprint: Option<[u8; 32]>,
     pub admin_profile_snapshots: BTreeMap<String, AdminSnapshot>,
+    /// What `:profiles` knows about each configured profile, keyed by name.
+    pub profile_statuses: BTreeMap<String, ProfileStatus>,
+    /// The profile whose activation probe is outstanding. One at a time: a
+    /// second attempt supersedes the first rather than racing it.
+    profile_probe_in_flight: Option<String>,
     pub policy_workflow: Option<PolicyWorkflow>,
     policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
     latest_policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
@@ -1265,6 +1389,7 @@ impl App {
                 diagnostics: DiagnosticsViewState::default(),
                 users: UserViewState::default(),
                 tasks: TaskViewState::default(),
+                profiles: ProfileViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
             admin,
@@ -1283,6 +1408,8 @@ impl App {
             saved_views,
             pending_export_fingerprint: None,
             admin_profile_snapshots: BTreeMap::new(),
+            profile_statuses: BTreeMap::new(),
+            profile_probe_in_flight: None,
             policy_workflow: None,
             policy_temp_file: None,
             latest_policy_temp_file: None,
@@ -1366,6 +1493,11 @@ impl App {
 
     pub fn bootstrap_effects(&mut self) -> Vec<Effect> {
         let mut effects = self.start_admin_refresh();
+        // Every profile's credential is read up front because it is a local read
+        // and `:profiles` is useless without it. Nothing is sent anywhere.
+        if let Some(effect) = self.inspect_profile_credentials() {
+            effects.push(effect);
+        }
         match self.source_mode {
             SourceMode::Unavailable => return effects,
             SourceMode::Mock => {
@@ -1829,9 +1961,24 @@ impl App {
                     }
                 }
             }
+            CredentialEvent::ProfilesInspected { presences } => {
+                for (profile, presence) in presences {
+                    self.profile_statuses.entry(profile).or_default().presence = Some(presence);
+                }
+            }
+            CredentialEvent::ProfileProbed { profile, result } => {
+                return self.finish_profile_probe(&profile, result);
+            }
             CredentialEvent::LocalRemoved {
                 profile, result, ..
             } => {
+                // The page reports what the store holds for every profile, not
+                // only the active one, so the removal is recorded either way.
+                if matches!(result, Ok(true)) {
+                    let status = self.profile_statuses.entry(profile.clone()).or_default();
+                    status.presence = Some(CredentialPresence::Missing);
+                    status.probe = ProbeState::NotProbed;
+                }
                 if self.admin.profile.as_deref() != Some(profile.as_str()) {
                     return Vec::new();
                 }
@@ -2083,7 +2230,7 @@ impl App {
             // Audit is the one route that is still a body of text rather than a
             // collection, so it keeps a context of its own.
             Route::Audit => ActionContext::Audit,
-            Route::Devices | Route::Services | Route::Tasks
+            Route::Devices | Route::Services | Route::Tasks | Route::Profiles
                 if matches!(self.focus, Focus::Inspector) =>
             {
                 ActionContext::Detail
@@ -2092,6 +2239,7 @@ impl App {
             | Route::Users
             | Route::Routes
             | Route::Credentials
+            | Route::Profiles
             | Route::Services
             | Route::Tasks
             // Metrics is a long text body, so the movement keys scroll it.
@@ -2153,7 +2301,7 @@ impl App {
                 return;
             }
             let first_row = match self.current_route() {
-                Route::Users | Route::Credentials => area.y.saturating_add(1),
+                Route::Users | Route::Credentials | Route::Profiles => area.y.saturating_add(1),
                 // A border and a heading row sit above the first task.
                 Route::Routes | Route::Tasks => area.y.saturating_add(2),
                 Route::Services => area.y.saturating_add(3),
@@ -2174,6 +2322,12 @@ impl App {
                     let length = self.admin.route_observations().len();
                     if usize::from(position) < length {
                         self.admin_route_selected = usize::from(position);
+                    }
+                }
+                Route::Profiles => {
+                    let length = self.profile_rows().len();
+                    if usize::from(position) < length {
+                        self.views.profiles.selected = usize::from(position);
                     }
                 }
                 Route::Credentials => {
@@ -2265,7 +2419,12 @@ impl App {
         }
         if !matches!(
             self.current_route(),
-            Route::Users | Route::Routes | Route::Credentials | Route::Services | Route::Tasks
+            Route::Users
+                | Route::Routes
+                | Route::Credentials
+                | Route::Profiles
+                | Route::Services
+                | Route::Tasks
         ) {
             return false;
         }
@@ -3435,7 +3594,9 @@ impl App {
                 || (self.current_route() == Route::Audit
                     && self.selected_admin_activity().is_none())
                 || (self.current_route() == Route::Users && self.selected_admin_user().is_none())
-                || (self.current_route() == Route::Routes && self.selected_admin_route().is_none()))
+                || (self.current_route() == Route::Routes && self.selected_admin_route().is_none())
+                || (self.current_route() == Route::Profiles
+                    && self.selected_profile_row().is_none()))
         {
             self.runtime_error = Some("select a resource before running this action".to_owned());
             return Vec::new();
@@ -3519,10 +3680,13 @@ impl App {
                 self.navigate(Route::Diagnostics);
                 Vec::new()
             }
-            ActionId::ProfileSelect => self.select_next_profile(),
-            ActionId::ProfileClear => self.clear_admin_profile(),
+            ActionId::ProfileActivate => self.activate_selected_profile(),
             ActionId::AdminRefreshCurrent => self.start_admin_current_view_refresh(),
             ActionId::AdminRefreshAll => self.start_admin_refresh(),
+            ActionId::ViewProfiles => {
+                self.navigate(Route::Profiles);
+                Vec::new()
+            }
             ActionId::ViewUsers => {
                 self.navigate(Route::Users);
                 Vec::new()
@@ -3639,6 +3803,8 @@ impl App {
                     self.move_admin_route_selection(-1);
                 } else if self.current_route() == Route::Credentials {
                     self.move_admin_credential_selection(-1);
+                } else if self.current_route() == Route::Profiles {
+                    self.move_profile_selection(-1);
                 } else {
                     self.move_selection(-1);
                 }
@@ -3659,6 +3825,8 @@ impl App {
                     self.move_admin_route_selection(1);
                 } else if self.current_route() == Route::Credentials {
                     self.move_admin_credential_selection(1);
+                } else if self.current_route() == Route::Profiles {
+                    self.move_profile_selection(1);
                 } else {
                     self.move_selection(1);
                 }
@@ -3678,6 +3846,8 @@ impl App {
                     self.admin_route_selected = 0;
                 } else if self.current_route() == Route::Credentials {
                     self.admin_credential_selected = 0;
+                } else if self.current_route() == Route::Profiles {
+                    self.views.profiles.selected = 0;
                 } else {
                     self.move_selection_to(0);
                 }
@@ -3710,6 +3880,8 @@ impl App {
                         .snapshot
                         .as_ref()
                         .map_or(0, |snapshot| snapshot.records.len().saturating_sub(1));
+                } else if self.current_route() == Route::Profiles {
+                    self.views.profiles.selected = self.profile_rows().len().saturating_sub(1);
                 } else {
                     self.move_selection_to(usize::MAX);
                 }
@@ -3730,6 +3902,8 @@ impl App {
                     self.move_admin_route_selection(-5);
                 } else if self.current_route() == Route::Credentials {
                     self.move_admin_credential_selection(-5);
+                } else if self.current_route() == Route::Profiles {
+                    self.move_profile_selection(-5);
                 } else {
                     self.move_selection(-5);
                 }
@@ -3750,6 +3924,8 @@ impl App {
                     self.move_admin_route_selection(5);
                 } else if self.current_route() == Route::Credentials {
                     self.move_admin_credential_selection(5);
+                } else if self.current_route() == Route::Profiles {
+                    self.move_profile_selection(5);
                 } else {
                     self.move_selection(5);
                 }
@@ -3775,6 +3951,10 @@ impl App {
                     // Enter replaces the table with the detail view; there is
                     // nothing to open into when no row is selected.
                     if self.selected_admin_user().is_some() {
+                        self.focus = Focus::Inspector;
+                    }
+                } else if self.current_route() == Route::Profiles {
+                    if self.selected_profile_row().is_some() {
                         self.focus = Focus::Inspector;
                     }
                 } else if self.current_route() == Route::Services
@@ -3820,6 +4000,10 @@ impl App {
                     Route::Tasks => {
                         self.views.tasks.inspector = !self.views.tasks.inspector;
                         self.views.tasks.inspector
+                    }
+                    Route::Profiles => {
+                        self.views.profiles.inspector = !self.views.profiles.inspector;
+                        self.views.profiles.inspector
                     }
                     _ => return Vec::new(),
                 };
@@ -4104,9 +4288,10 @@ impl App {
 
     fn admin_action_available(&self, action_id: ActionId) -> bool {
         match action_id {
-            ActionId::ProfileSelect => !self.resolved_config.profiles.is_empty(),
-            ActionId::ProfileClear => self.admin.profile.is_some(),
-            ActionId::ViewDns => true,
+            ActionId::ViewDns | ActionId::ViewProfiles => true,
+            // Always offered: the page always has the local row to fall back to,
+            // and a probe already in flight is superseded rather than refused.
+            ActionId::ProfileActivate => self.selected_profile_row().is_some(),
             ActionId::AdminRefreshCurrent | ActionId::AdminRefreshAll => {
                 self.admin.profile.is_some()
             }
@@ -8504,30 +8689,156 @@ impl App {
         }
     }
 
-    fn select_next_profile(&mut self) -> Vec<Effect> {
-        let mut profiles = self.resolved_config.profiles.keys();
-        let profile = match self.resolved_config.profile.as_deref() {
-            None => profiles.next().cloned(),
-            Some(current) => {
-                let mut next = false;
-                profiles
-                    .find_map(|candidate| {
-                        if next {
-                            Some(candidate.clone())
-                        } else if candidate == current {
-                            next = true;
-                            None
-                        } else {
-                            None
-                        }
-                    })
-                    .or_else(|| self.resolved_config.profiles.keys().next().cloned())
+    /// The rows of `:profiles`, in the order they are shown. The local client is
+    /// pinned first because it is where Tale starts and what it falls back to;
+    /// only the admin profiles answer to the sort.
+    pub fn profile_rows(&self) -> Vec<ProfileRow<'_>> {
+        let mut rows = Vec::with_capacity(self.resolved_config.profiles.len().saturating_add(1));
+        rows.push(ProfileRow::Local {
+            tailnet: self
+                .local_resource
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.current_tailnet.as_deref()),
+            account: self
+                .local_accounts
+                .iter()
+                .find(|account| account.active)
+                .map(LocalAccount::display_label),
+            state: self.local_state.label(),
+            active: self.admin.profile.is_none(),
+        });
+        let mut profiles = self
+            .resolved_config
+            .profiles
+            .iter()
+            .map(|(name, config)| ProfileRow::Admin {
+                name: name.as_str(),
+                config,
+                status: self.profile_statuses.get(name),
+                active: self.admin.profile.as_deref() == Some(name.as_str()),
+            })
+            .collect::<Vec<_>>();
+        let sort = self.views.profiles.sort;
+        profiles.sort_by(|left, right| {
+            let ordering = left
+                .ordering_key(sort.field)
+                .cmp(&right.ordering_key(sort.field));
+            if sort.direction.is_ascending() {
+                ordering
+            } else {
+                ordering.reverse()
             }
+        });
+        rows.extend(profiles);
+        rows
+    }
+
+    pub fn selected_profile_row(&self) -> Option<ProfileRow<'_>> {
+        self.profile_rows()
+            .get(self.views.profiles.selected)
+            .copied()
+    }
+
+    fn move_profile_selection(&mut self, offset: isize) {
+        let length = self.profile_rows().len();
+        self.views.profiles.selected =
+            move_bounded_index(self.views.profiles.selected, length, offset);
+    }
+
+    /// Read what every configured profile's store holds. Local reads only, so
+    /// this is cheap enough to repeat whenever the answer could have changed.
+    fn inspect_profile_credentials(&self) -> Option<Effect> {
+        if self.resolved_config.profiles.is_empty() {
+            return None;
+        }
+        Some(Effect::InspectProfileCredentials {
+            profiles: self
+                .resolved_config
+                .profiles
+                .iter()
+                .map(|(name, profile)| crate::effect::ProfileCredentialRef {
+                    profile: name.clone(),
+                    credential: profile.credential.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Activation is the only thing on this page that costs a request, and it
+    /// only ever costs one: the selected profile has to answer the control plane
+    /// before the rest of the app is pointed at it.
+    fn activate_selected_profile(&mut self) -> Vec<Effect> {
+        let Some(row) = self.selected_profile_row() else {
+            self.runtime_error = Some("no profile row is selected".to_owned());
+            return Vec::new();
         };
-        match profile {
-            Some(profile) => self.switch_profile(Some(profile)),
+        let Some(name) = row.name().map(str::to_owned) else {
+            // The local client needs no credential and no verification: it is
+            // the daemon on this machine, reachable or not on its own terms.
+            self.profile_probe_in_flight = None;
+            return self.switch_profile(None);
+        };
+        if self.admin.profile.as_deref() == Some(name.as_str()) {
+            self.runtime_error = Some(format!("profile {name} is already active"));
+            return Vec::new();
+        }
+        let Some(profile) = self.resolved_config.profiles.get(&name) else {
+            self.runtime_error = Some(format!("profile {name} is no longer configured"));
+            return Vec::new();
+        };
+        let status = self.profile_statuses.entry(name.clone()).or_default();
+        match status.presence.as_ref() {
             None => {
-                self.runtime_error = Some("no admin profiles are configured".to_owned());
+                self.runtime_error = Some("the credential store has not been read yet".to_owned());
+                return Vec::new();
+            }
+            Some(CredentialPresence::Missing) => {
+                self.runtime_error = Some(format!(
+                    "profile {name} has no stored credential; run `tale auth add {name}`"
+                ));
+                return Vec::new();
+            }
+            Some(CredentialPresence::Unreadable { detail }) => {
+                self.runtime_error =
+                    Some(format!("profile {name} credential is unreadable: {detail}"));
+                return Vec::new();
+            }
+            Some(CredentialPresence::Stored { .. }) => {}
+        }
+        status.probe = ProbeState::InFlight;
+        self.profile_probe_in_flight = Some(name.clone());
+        vec![Effect::StartProfileProbe {
+            profile: name,
+            tailnet: profile.tailnet.clone(),
+            credential: profile.credential.clone(),
+            timeout: self.resolved_config.admin.request_timeout,
+        }]
+    }
+
+    /// A verdict only counts for the attempt that is still outstanding, so a
+    /// superseded probe cannot activate a profile the user has moved on from.
+    fn finish_profile_probe(
+        &mut self,
+        profile: &str,
+        result: Result<crate::secrets::CredentialKind, String>,
+    ) -> Vec<Effect> {
+        if self.profile_probe_in_flight.as_deref() != Some(profile) {
+            return Vec::new();
+        }
+        self.profile_probe_in_flight = None;
+        let status = self.profile_statuses.entry(profile.to_owned()).or_default();
+        match result {
+            Ok(kind) => {
+                status.probe = ProbeState::Reachable { kind, at: self.now };
+                self.switch_profile(Some(profile.to_owned()))
+            }
+            Err(detail) => {
+                status.probe = ProbeState::Rejected {
+                    detail: detail.clone(),
+                    at: self.now,
+                };
+                self.runtime_error = Some(format!("profile {profile} was not activated: {detail}"));
                 Vec::new()
             }
         }
@@ -8671,6 +8982,11 @@ impl App {
     }
 
     fn start_admin_current_view_refresh(&mut self) -> Vec<Effect> {
+        // Refreshing `:profiles` re-reads the credential stores. It deliberately
+        // does not re-probe: a probe is what activation is for.
+        if self.current_route() == Route::Profiles {
+            return self.inspect_profile_credentials().into_iter().collect();
+        }
         let resources = match self.current_route() {
             Route::Overview | Route::Services | Route::Diagnostics => vec![
                 AdminRefreshResource::Devices,
@@ -8748,6 +9064,8 @@ impl App {
                 AdminRefreshResource::LogStreamStatus(crate::domain::log_stream::LogType::Network),
             ],
             Route::Local => vec![AdminRefreshResource::Devices],
+            // Handled above: this page reads stores, not the control plane.
+            Route::Profiles => Vec::new(),
         };
         self.start_admin_resource_refresh(resources)
     }
@@ -8786,6 +9104,7 @@ impl App {
             Route::Settings => self.start_admin_current_view_refresh(),
             Route::Overview
             | Route::Local
+            | Route::Profiles
             | Route::Services
             | Route::Diagnostics
             | Route::Tasks => self.start_admin_current_view_refresh(),
@@ -10497,6 +10816,8 @@ impl App {
                 ActionId::AdminLogStreamDelete,
                 ActionId::AdminNetworkLogsSettings,
             ]),
+            // The one thing a row on this page can be asked to do.
+            Route::Profiles => actions.push(ActionId::ProfileActivate),
             Route::Devices
             | Route::Users
             | Route::Routes
@@ -13293,9 +13614,34 @@ impl App {
             .collect()
     }
 
+    fn profile_sort_choices(&self) -> Vec<MenuChoice> {
+        let current = self.views.profiles.sort;
+        ProfileSortField::ALL
+            .into_iter()
+            .flat_map(|field| {
+                [
+                    (SortDirection::Ascending, 'a', "ascending"),
+                    (SortDirection::Descending, 'd', "descending"),
+                ]
+                .into_iter()
+                .map(move |(direction, order, label)| MenuChoice {
+                    sequence: format!("{}{order}", field.key()),
+                    group: "Column".to_owned(),
+                    subject: field.label().to_owned(),
+                    label: label.to_owned(),
+                    active: current.field == field && current.direction == direction,
+                    outcome: ChoiceOutcome::ProfileSort(ProfileSortSpec { field, direction }),
+                })
+            })
+            .collect()
+    }
+
     fn sort_choices(&self) -> Vec<MenuChoice> {
         if self.current_route() == Route::Services {
             return self.service_sort_choices();
+        }
+        if self.current_route() == Route::Profiles {
+            return self.profile_sort_choices();
         }
         const FIELDS: [(char, SortField, &str, &str); 10] = [
             ('n', SortField::Name, "Identity", "name"),
@@ -13380,6 +13726,11 @@ impl App {
                 self.views.services.sort = sort;
                 self.views.services.selected = 0;
                 self.views.services.scroll = 0;
+                Vec::new()
+            }
+            ChoiceOutcome::ProfileSort(sort) => {
+                self.views.profiles.sort = sort;
+                self.views.profiles.selected = 0;
                 Vec::new()
             }
             ChoiceOutcome::Theme(id) => {
@@ -13589,6 +13940,7 @@ impl App {
             Route::Devices => self.views.devices.inspector,
             Route::Users => self.views.users.inspector,
             Route::Tasks => self.views.tasks.inspector,
+            Route::Profiles => self.views.profiles.inspector,
             _ => true,
         }
     }
@@ -14693,10 +15045,11 @@ fn mock_services_snapshot() -> LocalServicesSnapshot {
     snapshot
 }
 
-fn navigation_catalog() -> [(Route, &'static str, &'static str); 13] {
+fn navigation_catalog() -> [(Route, &'static str, &'static str); 14] {
     [
         (Route::Devices, "devices", "machines & status"),
         (Route::Local, "local", "this machine"),
+        (Route::Profiles, "profiles", "which source is active"),
         (Route::Services, "services", "serve, funnel & files"),
         (
             Route::Diagnostics,
@@ -15340,10 +15693,10 @@ fn is_local_verification_mutation(action_id: ActionId) -> bool {
 fn is_admin_action(action_id: ActionId) -> bool {
     matches!(
         action_id,
-        ActionId::ProfileSelect
-            | ActionId::ProfileClear
+        ActionId::ProfileActivate
             | ActionId::AdminRefreshCurrent
             | ActionId::AdminRefreshAll
+            | ActionId::ViewProfiles
             | ActionId::ViewUsers
             | ActionId::ViewRoutes
             | ActionId::ViewDns

@@ -70,6 +70,9 @@ tale config check
 tale doctor [--config PATH] [--mock] [--output PATH]
 ```
 
+- `--profile` activates a configured admin profile for the session. Without it a
+  session starts on the local client and nothing is sent to the Control API until
+  a profile is activated on `:profiles`.
 - `--read-only` disables all mutations regardless of profile configuration.
 - `--no-local` skips local-client detection and is useful on an admin workstation
   without Tailscale installed.
@@ -82,8 +85,7 @@ tale doctor [--config PATH] [--mock] [--output PATH]
   controlling terminal; in that form every other value must arrive as a flag,
   because no prompt can be answered.
 - `auth remove` removes the stored credential; it does not revoke the credential
-  at Tailscale. Removing the last profile leaves the file without
-  `default_profile`, which no longer selects anything.
+  at Tailscale.
 - `doctor` performs non-mutating local, credential-store, API, terminal, and config checks
   and redacts its output. `--output` writes the allowlisted Tale 1.0 support
   bundle to an explicit path and never uploads it.
@@ -93,7 +95,6 @@ tale doctor [--config PATH] [--mock] [--output PATH]
 The initial complete schema is:
 
 ```toml
-default_profile = "ops"
 read_only = false
 
 [local]
@@ -154,7 +155,6 @@ Theme selection never upgrades the resolved capability.
 
 | Field | Type | Default | Rules |
 | --- | --- | --- | --- |
-| `default_profile` | string | none | must name an existing profile |
 | `read_only` | bool | `false` | global write lock; profiles cannot override `true` |
 
 ### Local fields
@@ -267,8 +267,26 @@ profiles keep working because they already say which backend they use.
 `auth add` records the backend when it creates a profile and leaves it alone
 afterwards, so rotating a secret never relocates it.
 
-A configuration that selects no profile is not an error. Tale starts, local
-views work, and the admin views stay inactive until a profile is selected.
+A configuration that selects no profile is not an error, and it is the default.
+Tale starts on the local client, local views work, and the admin views stay
+inactive until a profile is activated.
+
+### Selecting a profile
+
+A profile is a Control API credential. It is unrelated to the Tailscale account
+`tailscaled` is logged into, which Tailscale itself also calls a profile; Tale
+calls that one a local account and shows it on `:local`.
+
+`:profiles` lists the local client and every configured admin profile, with what
+each profile's credential store holds — stored, missing, or unreadable. That much
+costs a file read and no request. Activating a row is the only thing on the page
+that reaches the network: the selected profile has to answer one read against the
+control plane before it becomes active, and a profile that cannot answer stays
+inactive with the reason on the row.
+
+Selecting the `local` row deactivates the admin profile. The selection lasts for
+the session: `--profile` is the only way to start on a profile, so what Tale
+reads from is never a leftover in a file.
 
 Recommended profiles:
 

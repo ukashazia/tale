@@ -17,6 +17,7 @@ pub mod operational;
 pub mod policy;
 pub mod policy_workflow;
 pub mod preference;
+pub mod profile;
 pub mod redaction;
 pub mod route;
 pub mod saved_view;

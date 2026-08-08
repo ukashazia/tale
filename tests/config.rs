@@ -261,9 +261,58 @@ fn mock_conflicts_with_a_selected_profile_and_is_not_persisted() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// A configured profile is offered, never assumed. The session starts on the
+/// local client, and `:profiles` or `--profile` is what activates anything else.
 #[test]
-fn default_profile_is_validated_and_activated_for_phase_five() {
+fn a_configured_profile_is_not_active_until_it_is_asked_for() {
     let root = std::env::temp_dir().join(format!("tale-default-profile-{}", std::process::id()));
+    let _ = fs::create_dir_all(&root);
+    let file = root.join("config.toml");
+    let write = fs::write(
+        &file,
+        "[profiles.ops]\ntailnet = \"-\"\ncredential = \"ops\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
+    );
+    assert!(write.is_ok());
+
+    let resolved = config::resolve(
+        &cli(Some(file.clone())),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(resolved.is_ok());
+    if let Ok(resolved) = resolved {
+        assert!(resolved.profile.is_none());
+        assert!(resolved.profiles.contains_key("ops"));
+        assert_eq!(resolved.profiles["ops"].tailnet, "-");
+    }
+
+    let requested = Cli::try_parse_from([
+        "tale",
+        "--config",
+        file.to_string_lossy().as_ref(),
+        "--profile",
+        "ops",
+    ]);
+    assert!(requested.is_ok());
+    if let Ok(requested) = requested {
+        let resolved = config::resolve(
+            &requested,
+            &environment(),
+            &path_environment(Platform::Unix, &root),
+        );
+        assert!(resolved.is_ok());
+        if let Ok(resolved) = resolved {
+            assert_eq!(resolved.profile.as_deref(), Some("ops"));
+        }
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// `default_profile` is gone rather than ignored: a file that still names one is
+/// an error, so nobody is left believing it still selects something.
+#[test]
+fn default_profile_is_no_longer_a_configuration_field() {
+    let root = std::env::temp_dir().join(format!("tale-stale-default-{}", std::process::id()));
     let _ = fs::create_dir_all(&root);
     let file = root.join("config.toml");
     let write = fs::write(
@@ -272,38 +321,15 @@ fn default_profile_is_validated_and_activated_for_phase_five() {
     );
     assert!(write.is_ok());
 
-    let active = config::resolve(
-        &cli(Some(file.clone())),
+    let resolved = config::resolve(
+        &cli(Some(file)),
         &environment(),
         &path_environment(Platform::Unix, &root),
     );
-    assert!(active.is_ok());
-    if let Ok(active) = active {
-        assert_eq!(active.profile.as_deref(), Some("ops"));
-        assert_eq!(active.profiles["ops"].tailnet, "-");
-    }
-
-    let check = Cli::try_parse_from([
-        "tale",
-        "config",
-        "check",
-        "--config",
-        file.to_string_lossy().as_ref(),
-    ]);
-    assert!(check.is_ok());
-    if let Ok(check) = check {
-        let resolved = config::resolve(
-            &check,
-            &environment(),
-            &path_environment(Platform::Unix, &root),
-        );
-        assert!(resolved.is_ok());
-        if let Ok(resolved) = resolved {
-            assert_eq!(resolved.default_profile.as_deref(), Some("ops"));
-            assert!(resolved.profile.is_none());
-            assert!(resolved.profiles.contains_key("ops"));
-        }
-    }
+    assert!(matches!(
+        resolved,
+        Err(config::ConfigError::UnknownField(field)) if field == "default_profile"
+    ));
     let _ = fs::remove_dir_all(root);
 }
 

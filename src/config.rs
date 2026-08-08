@@ -56,7 +56,6 @@ pub struct ResolvedConfig {
     pub read_only: bool,
     pub no_local: bool,
     pub profile: Option<String>,
-    pub default_profile: Option<String>,
     pub profiles: BTreeMap<String, ProfileConfig>,
     pub read_only_source: ValueSource,
     pub local: LocalConfig,
@@ -251,7 +250,6 @@ pub enum ConfigError {
 
 #[derive(Debug, Clone)]
 struct FileConfig {
-    default_profile: Option<String>,
     read_only: Option<bool>,
     local: FileLocal,
     admin: FileAdmin,
@@ -308,10 +306,9 @@ pub fn resolve(
     }
 
     let file = read_file_config(&paths.config_file)?;
-    let selected_profile = cli
-        .profile
-        .clone()
-        .or_else(|| file.default_profile.clone());
+    // A session starts on the local client. An admin profile is a deliberate
+    // act, on the command line or on `:profiles`, never a leftover in a file.
+    let selected_profile = cli.profile.clone();
     if let Some(profile) = selected_profile.as_deref()
         && !file.profiles.contains_key(profile)
     {
@@ -409,7 +406,6 @@ pub fn resolve(
         } else {
             None
         },
-        default_profile: file.default_profile,
         profiles: file.profiles,
         read_only_source,
         local: LocalConfig {
@@ -549,12 +545,6 @@ pub fn write_profile_atomic(
         }
     }
     profiles.insert(profile_name.to_owned(), toml::Value::Table(profile_table));
-    if !root.contains_key("default_profile") {
-        root.insert(
-            "default_profile".to_owned(),
-            toml::Value::String(profile_name.to_owned()),
-        );
-    }
     let serialized =
         toml::to_string_pretty(&toml::Value::Table(root)).map_err(|_| ConfigError::WriteFailure)?;
     atomic_write(path, serialized.as_bytes())
@@ -575,13 +565,6 @@ pub fn remove_profile_atomic(path: &Path, profile_name: &str) -> Result<bool, Co
         if profiles.is_empty() {
             root.remove("profiles");
         }
-    }
-    if root
-        .get("default_profile")
-        .and_then(toml::Value::as_str)
-        .is_some_and(|value| value == profile_name)
-    {
-        root.remove("default_profile");
     }
     if removed {
         let serialized = toml::to_string_pretty(&toml::Value::Table(root))
@@ -646,7 +629,6 @@ fn read_file_config(path: &Path) -> Result<FileConfig, ConfigError> {
     match fs::read_to_string(path) {
         Ok(contents) => parse_file_config(&contents),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileConfig {
-            default_profile: None,
             read_only: None,
             local: FileLocal::default(),
             admin: FileAdmin::default(),
@@ -663,18 +645,9 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
     check_unknown(
         &root,
         "",
-        &[
-            "default_profile",
-            "read_only",
-            "local",
-            "admin",
-            "ui",
-            "history",
-            "profiles",
-        ],
+        &["read_only", "local", "admin", "ui", "history", "profiles"],
     )?;
 
-    let default_profile = optional_string(&root, "default_profile", "default_profile")?;
     let read_only = optional_bool(&root, "read_only", "read_only")?;
     let local_table = optional_table(&root, "local", "local")?;
     check_unknown(
@@ -832,17 +805,7 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
             },
         );
     }
-    if let Some(profile) = default_profile.as_deref()
-        && !profiles.contains_key(profile)
-    {
-        return Err(ConfigError::InvalidField {
-            field: "default_profile".to_owned(),
-            expected: "the name of an existing profile",
-        });
-    }
-
     Ok(FileConfig {
-        default_profile,
         read_only,
         local,
         admin,

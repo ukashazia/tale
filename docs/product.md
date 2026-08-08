@@ -85,6 +85,7 @@ The UI presents these top-level resources:
 | --- | --- | --- |
 | Overview | actionable summary, alerts, recent tasks | composed |
 | Local | current client, preferences, accounts, addresses | LocalAPI + CLI where needed |
+| Profiles | the local client and each configured admin credential, and which is active | local config + credential store |
 | Devices | nodes registered with or visible to the tailnet | LocalAPI + Control API |
 | Users | members, roles, status, owned devices | Control API |
 | Routes | subnet routes, exit nodes, advertisers, approval state | LocalAPI + Control API |

@@ -132,13 +132,10 @@ pub fn resolve_paths(environment: &PathEnvironment) -> Result<Paths, PathError> 
 /// throwaway directory does not silently read or write secrets in the real one.
 pub fn with_config_file(mut paths: Paths, config_file: &Path, current_dir: &Path) -> Paths {
     paths.config_file = lexical_absolute(config_file, current_dir);
-    paths.credentials_file = paths
-        .config_file
-        .parent()
-        .map_or_else(
-            || PathBuf::from("credentials.toml"),
-            |parent| parent.join("credentials.toml"),
-        );
+    paths.credentials_file = paths.config_file.parent().map_or_else(
+        || PathBuf::from("credentials.toml"),
+        |parent| parent.join("credentials.toml"),
+    );
     paths
 }
 

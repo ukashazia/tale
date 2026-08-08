@@ -56,7 +56,7 @@ fn local_app(with_admin_profile: bool) -> Option<App> {
     if with_admin_profile
         && std::fs::write(
             &config_path,
-            "default_profile = \"audit\"\n[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
+            "[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
         )
         .is_err()
     {
@@ -64,7 +64,9 @@ fn local_app(with_admin_profile: bool) -> Option<App> {
     }
     let cli = Cli {
         command: None,
-        profile: None,
+        // A profile is active only when it is asked for; the fixture asks when
+        // it is the admin-profile variant it is testing.
+        profile: with_admin_profile.then(|| "audit".to_owned()),
         config: Some(if with_admin_profile {
             config_path
         } else {

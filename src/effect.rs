@@ -22,6 +22,14 @@ use crate::local::handoff::HandoffCommand;
 use crate::mock::{MockLoadScenario, MockTaskBehavior};
 use crate::task::TaskId;
 
+/// A profile and the store reference its secret lives under. The backend itself
+/// is resolved by the runtime, which already caches one per profile.
+#[derive(Debug, Clone)]
+pub struct ProfileCredentialRef {
+    pub profile: String,
+    pub credential: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum Effect {
     StartMockLoad {
@@ -162,6 +170,19 @@ pub enum Effect {
     StartProfileCredentialRemove {
         profile: String,
         reference: String,
+    },
+    /// Read what each profile's credential store holds. Local reads only: this
+    /// is what `:profiles` can report without spending a single request.
+    InspectProfileCredentials {
+        profiles: Vec<ProfileCredentialRef>,
+    },
+    /// The one request `:profiles` makes, and only because the user asked for
+    /// this profile to become active.
+    StartProfileProbe {
+        profile: String,
+        tailnet: String,
+        credential: String,
+        timeout: Duration,
     },
     CopySecret {
         result_id: u64,

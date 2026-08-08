@@ -15,20 +15,23 @@ use tale::domain::policy::PolicySnapshot;
 use tale::domain::webhook::{DestinationType, SubscriptionSet, WebhookEndpoint};
 use tale::paths::{PathEnvironment, Platform};
 
-fn admin_app() -> Option<App> {
-    let root = std::env::temp_dir().join(format!("tale-admin-ui-{}", std::process::id()));
+/// Each caller gets its own directory. Tests run in parallel, and two of them
+/// writing one `config.toml` is a race that resolves a half-written file.
+fn admin_app(name: &str) -> Option<App> {
+    let root = std::env::temp_dir().join(format!("tale-admin-ui-{}-{name}", std::process::id()));
     let _ = fs::create_dir_all(&root);
     let config_path = root.join("config.toml");
     let write = fs::write(
         &config_path,
-        "default_profile = \"audit\"\n[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
+        "[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
     );
     if write.is_err() {
         return None;
     }
     let cli = Cli {
         command: None,
-        profile: None,
+        // A profile is active only when it is asked for; the fixture asks.
+        profile: Some("audit".to_owned()),
         config: Some(config_path),
         view: None,
         read_only: true,
@@ -92,7 +95,7 @@ fn render_lines(app: &App, width: u16, height: u16) -> Option<Vec<String>> {
 
 #[test]
 fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
-    let app = admin_app();
+    let app = admin_app("render");
     assert!(app.is_some());
     if let Some(mut app) = app {
         for route in [
@@ -128,7 +131,7 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
 
 #[test]
 fn phase_eight_sections_render_derived_and_authoritative_states() {
-    let app = admin_app();
+    let app = admin_app("sections");
     assert!(app.is_some());
     let Some(mut app) = app else {
         return;

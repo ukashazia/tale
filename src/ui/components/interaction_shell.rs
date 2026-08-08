@@ -113,19 +113,29 @@ type ShellLines = (Vec<Line<'static>>, Option<(u16, u16)>);
 /// The tallest the route grid gets: the longest section, plus its heading, in
 /// each of the two bands, plus the blank between them. The palette reserves it
 /// whether or not the current search fills it, so the prompt does not walk up
-/// and down the screen as the user types.
-pub const NAVIGATION_GRID_HEIGHT: usize = 10;
+/// and down the screen as the user types. Four routes is the longest section, so
+/// a band is five rows; the minimum terminal width keeps this at two bands.
+pub const NAVIGATION_GRID_HEIGHT: usize = 11;
 
-/// What the palette occupies: the grid, a title and a blank above it, and a
-/// blank, the prompt, and the hint row below. Derived rather than written twice,
-/// because the two numbers drifting apart is what moves the caret off the
-/// prompt.
+/// Everything the palette spends on itself rather than on routes: a title and a
+/// blank above the grid, and a blank, the prompt, and the hint row below. The
+/// prompt is measured from this rather than written twice, because the two
+/// numbers drifting apart is what moves the caret off the prompt.
+pub const NAVIGATION_CHROME_HEIGHT: usize = 5;
+
+/// What the palette occupies when the terminal can carry all of it.
 pub const fn navigation_height() -> u16 {
-    NAVIGATION_GRID_HEIGHT as u16 + 5
+    (NAVIGATION_GRID_HEIGHT + NAVIGATION_CHROME_HEIGHT) as u16
 }
 
 fn navigation_lines(app: &App, state: &crate::app::CommandLineState, area: Rect) -> ShellLines {
-    const GRID_HEIGHT: usize = NAVIGATION_GRID_HEIGHT;
+    // The reserve keeps the prompt still while the search narrows, but the pane
+    // itself is clamped by the terminal. Where the two disagree the terminal
+    // wins: a palette without its prompt cannot be typed into, and what the grid
+    // loses the search can still reach.
+    let grid_height = usize::from(area.height)
+        .saturating_sub(NAVIGATION_CHROME_HEIGHT)
+        .clamp(1, NAVIGATION_GRID_HEIGHT);
     let sections = navigation_sections(&state.candidates);
     let columns = layout::navigation_columns(area.width).min(sections.len().max(1));
     let separator_width = columns.saturating_sub(1).saturating_mul(2);
@@ -157,7 +167,8 @@ fn navigation_lines(app: &App, state: &crate::app::CommandLineState, area: Rect)
             lines.push(Line::from(spans));
         }
     }
-    while lines.len().saturating_sub(grid_start) < GRID_HEIGHT {
+    lines.truncate(grid_start.saturating_add(grid_height));
+    while lines.len().saturating_sub(grid_start) < grid_height {
         lines.push(Line::default());
     }
     lines.push(Line::default());
@@ -196,7 +207,7 @@ impl NavigationSectionKind {
     const fn for_route(route: Route) -> Self {
         match route {
             Route::Overview | Route::Devices | Route::Users => Self::Fleet,
-            Route::Local | Route::Services | Route::Diagnostics => Self::Local,
+            Route::Local | Route::Profiles | Route::Services | Route::Diagnostics => Self::Local,
             Route::Routes | Route::Dns | Route::Access => Self::Network,
             Route::Credentials | Route::Tasks | Route::Audit | Route::Settings => Self::Operations,
         }

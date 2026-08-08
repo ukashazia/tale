@@ -226,4 +226,3 @@ fn scripted_auth_add_reports_the_missing_flag_instead_of_blocking_on_a_prompt() 
         }
     }
 }
-

@@ -202,6 +202,16 @@ pub enum CredentialEvent {
         reference: String,
         result: Result<bool, String>,
     },
+    /// What each profile's credential store holds, read locally.
+    ProfilesInspected {
+        presences: Vec<(String, crate::domain::profile::CredentialPresence)>,
+    },
+    /// The verdict of the one control-plane request an activation is allowed to
+    /// make. `Ok` is what lets the profile become active.
+    ProfileProbed {
+        profile: String,
+        result: Result<crate::secrets::CredentialKind, String>,
+    },
     ClipboardCopied {
         result_id: u64,
         result: Result<(), String>,

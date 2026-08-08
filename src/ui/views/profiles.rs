@@ -1,0 +1,276 @@
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::text::{Line, Span};
+
+use crate::app::{App, Focus, ProfileRow};
+use crate::domain::profile::{CredentialPresence, ProbeState};
+use crate::ui::components::{grid, panel};
+use crate::ui::{text, theme};
+
+/// When a column is worth its width. The list is short, so the tiers read the
+/// terminal rather than waiting for a `w columns` key this route does not offer.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Tier {
+    Always,
+    /// Wide enough for where the secret is kept.
+    Wide,
+    /// Wide enough for the store reference as well.
+    Widest,
+}
+
+/// Header, width, and when it appears. The order here is the order on screen.
+const COLUMNS: &[(&str, Tier, grid::Width)] = &[
+    ("S", Tier::Always, grid::Width::Fixed(2)),
+    ("PROFILE", Tier::Always, grid::Width::Fill(14)),
+    ("TAILNET", Tier::Always, grid::Width::Fill(16)),
+    ("STATE", Tier::Always, grid::Width::Fill(12)),
+    ("ACCESS", Tier::Always, grid::Width::Fill(10)),
+    ("BACKEND", Tier::Wide, grid::Width::Fill(10)),
+    ("CREDENTIAL", Tier::Widest, grid::Width::Fill(14)),
+];
+
+pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector: Option<Rect>) {
+    if app.focus == Focus::Inspector || wide_inspector.is_none() {
+        // `i` hides the side pane, so a narrow terminal is not the only reason
+        // the table can have the whole width.
+        if app.focus == Focus::Inspector {
+            render_inspector(frame, app, area);
+        } else {
+            render_table(frame, app, area);
+        }
+        return;
+    }
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+    render_table(frame, app, horizontal[0]);
+    if let Some(inspector_area) = wide_inspector {
+        render_inspector(frame, app, inspector_area);
+    } else {
+        render_inspector(frame, app, horizontal[1]);
+    }
+}
+
+fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let rows = app.profile_rows();
+    let shows = |tier: Tier| match tier {
+        Tier::Always => true,
+        Tier::Wide => area.width >= 100,
+        Tier::Widest => area.width >= 140,
+    };
+    let columns = COLUMNS
+        .iter()
+        .filter(|(_, tier, _)| shows(*tier))
+        .map(|(header, _, width)| grid::Column {
+            header: (*header).to_owned(),
+            width: *width,
+        })
+        .collect::<Vec<_>>();
+    let table_rows = visible_rows(app, &rows, area)
+        .map(|(row, selected)| {
+            let cells = COLUMNS
+                .iter()
+                .filter(|(_, tier, _)| shows(*tier))
+                .map(|(header, _, _)| cell(app, row, header))
+                .collect::<Vec<_>>();
+            grid::Row::new(cells).selected(selected)
+        })
+        .collect::<Vec<_>>();
+    let lines = grid::lines(app, &columns, &table_rows, area.width.saturating_sub(4));
+    panel::render(frame, app, area, &title(app, &rows), lines);
+}
+
+/// The row again, one fact per line, plus the one thing the table has no room
+/// for: why a profile is in the state it reports.
+fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(row) = app.selected_profile_row() else {
+        panel::render(frame, app, area, "inspector", "No profile selected");
+        return;
+    };
+    let mut pairs = vec![
+        (
+            "selection",
+            if row.active() {
+                "active".to_owned()
+            } else {
+                "not active".to_owned()
+            },
+        ),
+        ("state", row.state_label().to_owned()),
+    ];
+    match row {
+        ProfileRow::Local {
+            tailnet, account, ..
+        } => {
+            pairs.push(("kind", "local client".to_owned()));
+            pairs.push(("tailnet", optional(tailnet)));
+            pairs.push(("account", optional(account)));
+            pairs.push(("reads", "the tailscaled socket on this machine".to_owned()));
+        }
+        ProfileRow::Admin { config, status, .. } => {
+            pairs.push(("kind", "control API credential".to_owned()));
+            pairs.push(("tailnet", config.tailnet.clone()));
+            pairs.push(("access", row.access_label().to_owned()));
+            pairs.push(("credential", config.credential.clone()));
+            pairs.push((
+                "backend",
+                format!(
+                    "{} ({})",
+                    config.credential_backend.label(),
+                    config.credential_backend.location().display()
+                ),
+            ));
+            if let Some(status) = status {
+                pairs.push((
+                    "stored",
+                    match status.presence.as_ref() {
+                        None => "not read yet".to_owned(),
+                        Some(presence) => presence.label().to_owned(),
+                    },
+                ));
+                if let Some(CredentialPresence::Stored { scopes, .. }) = status.presence.as_ref()
+                    && !scopes.is_empty()
+                {
+                    pairs.push(("scopes", scopes.join(" ")));
+                }
+                pairs.push(("verified", probe_summary(app, &status.probe)));
+            }
+        }
+    }
+    let mut lines = vec![Line::from(Span::styled(
+        text::ellipsize(row.label(), usize::from(area.width.saturating_sub(4))),
+        app.theme.style(theme::StyleRole::TextPrimary),
+    ))];
+    lines.extend(grid::detail(app, &pairs));
+    if let Some(detail) = row.detail() {
+        lines.push(Line::from(Span::styled(
+            detail.to_owned(),
+            app.theme.style(theme::StyleRole::StateDanger),
+        )));
+    }
+    panel::render_focusable(
+        frame,
+        app,
+        area,
+        "inspector",
+        lines,
+        app.focus == Focus::Inspector,
+    );
+}
+
+/// A profile is only ever verified because someone tried to activate it, so the
+/// summary says when that was rather than implying a background check.
+fn probe_summary(app: &App, probe: &ProbeState) -> String {
+    match probe {
+        ProbeState::NotProbed => "not attempted".to_owned(),
+        ProbeState::InFlight => "checking now".to_owned(),
+        ProbeState::Reachable { kind, at } => format!(
+            "{} reached the control plane {} ago",
+            kind.label(),
+            text::format_age(app.now.saturating_sub(*at))
+        ),
+        ProbeState::Rejected { at, .. } => format!(
+            "rejected {} ago",
+            text::format_age(app.now.saturating_sub(*at))
+        ),
+    }
+}
+
+/// The window that fits, kept over the selection. The list carries no scroll
+/// offset of its own, so the cursor position decides which slice is on screen.
+fn visible_rows<'a>(
+    app: &App,
+    rows: &'a [ProfileRow<'a>],
+    area: Rect,
+) -> impl Iterator<Item = (&'a ProfileRow<'a>, bool)> {
+    let viewport = usize::from(area.height.saturating_sub(3)).max(1);
+    let selected = app.views.profiles.selected;
+    let start = selected
+        .saturating_add(1)
+        .saturating_sub(viewport)
+        .min(rows.len().saturating_sub(1));
+    rows.iter()
+        .enumerate()
+        .skip(start)
+        .take(viewport)
+        .map(move |(index, row)| (row, index == selected))
+}
+
+/// The one cell that means something the row does not: whether this is the
+/// source the rest of Tale is reading from.
+fn selection_cell(app: &App, row: &ProfileRow<'_>) -> grid::Cell {
+    let unicode = app.resolved_config.ui.symbols.unicode();
+    if row.active() {
+        return grid::Cell::new(if unicode { "●" } else { "*" })
+            .with_role(theme::StyleRole::StateHealthy);
+    }
+    let (marker, role) = match row {
+        ProfileRow::Local { .. } => ("○", theme::StyleRole::StateUnknown),
+        ProfileRow::Admin { status, .. } => match status {
+            None => ("?", theme::StyleRole::StateUnknown),
+            Some(status) => match (&status.presence, &status.probe) {
+                (_, ProbeState::InFlight) => ("~", theme::StyleRole::StateUnknown),
+                (Some(CredentialPresence::Stored { .. }), ProbeState::Rejected { .. }) => {
+                    ("!", theme::StyleRole::StateDanger)
+                }
+                (Some(CredentialPresence::Stored { .. }), _) => {
+                    ("○", theme::StyleRole::StateUnknown)
+                }
+                (Some(_), _) => ("!", theme::StyleRole::StateDanger),
+                (None, _) => ("?", theme::StyleRole::StateUnknown),
+            },
+        },
+    };
+    let marker = if unicode || marker != "○" {
+        marker
+    } else {
+        "o"
+    };
+    grid::Cell::new(marker).with_role(role)
+}
+
+fn cell(app: &App, row: &ProfileRow<'_>, header: &str) -> grid::Cell {
+    match header {
+        "S" => selection_cell(app, row),
+        "PROFILE" => grid::Cell::new(row.label()),
+        "TAILNET" => grid::Cell::new(optional(row.tailnet())),
+        "STATE" => grid::Cell::new(row.state_label()),
+        "ACCESS" => grid::Cell::new(row.access_label()),
+        "BACKEND" => grid::Cell::new(match row {
+            ProfileRow::Local { .. } => "socket",
+            ProfileRow::Admin { config, .. } => config.credential_backend.label(),
+        }),
+        "CREDENTIAL" => grid::Cell::new(match row {
+            ProfileRow::Local { .. } => "-",
+            ProfileRow::Admin { config, .. } => config.credential.as_str(),
+        }),
+        _ => grid::Cell::new("-"),
+    }
+}
+
+fn optional(value: Option<&str>) -> String {
+    value
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| "-".to_owned(), str::to_owned)
+}
+
+/// Route context lives in the border, the way it does on every other route.
+fn title(app: &App, rows: &[ProfileRow<'_>]) -> String {
+    let mut detail = vec![format!(
+        "{} {}",
+        app.views.profiles.sort.field.label(),
+        if app.views.profiles.sort.direction.is_ascending() {
+            "\u{2191}"
+        } else {
+            "\u{2193}"
+        }
+    )];
+    detail.push(format!(
+        "active: {}",
+        rows.iter()
+            .find(|row| row.active())
+            .map_or("none", ProfileRow::label)
+    ));
+    text::view_title("profiles", rows.len(), rows.len(), &detail)
+}

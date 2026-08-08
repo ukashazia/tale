@@ -200,7 +200,7 @@ fn navigation_palette_is_canonical_and_fuzzy() {
         assert!(matches!(
             &app.interaction,
             InteractionMode::CommandLine(state)
-                if state.candidates.len() == 13
+                if state.candidates.len() == 14
                     && state.candidates.first().map(|candidate| candidate.route)
                         == Some(Route::Devices)
         ));

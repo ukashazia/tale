@@ -691,4 +691,3 @@ async fn credential_status_still_reads_when_nothing_is_cached() -> Result<(), St
     assert_eq!(store.reads(), 2, "clearing the cache must force a re-read");
     Ok(())
 }
-

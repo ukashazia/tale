@@ -12,6 +12,7 @@ pub mod local;
 pub mod log_streams;
 pub mod overview;
 pub mod policy_editor;
+pub mod profiles;
 pub mod routes;
 pub mod secret_result;
 pub mod services;

@@ -14,9 +14,7 @@ use tokio::task::JoinSet;
 
 use crate::action::ActionId;
 use crate::admin;
-use crate::admin::auth::{
-    CredentialBackend, CredentialStore, MemoryCredentialStore, TokenManager,
-};
+use crate::admin::auth::{CredentialBackend, CredentialStore, MemoryCredentialStore, TokenManager};
 use crate::admin::client::{AdminClient, AdminError};
 use crate::admin::key_mutations::decode_created_auth_key;
 use crate::admin::mutation::{
@@ -31,6 +29,7 @@ use crate::domain::mutation::{LocalMutation, MutationResult};
 use crate::domain::operational::{LogStreamMutationDraft, OperationalMutation};
 use crate::domain::policy_workflow::{PolicyDocument, PolicySelectorType, hash_bytes};
 use crate::domain::preference::{LocalPreferences, PreferenceRequest};
+use crate::domain::profile::CredentialPresence;
 use crate::domain::redaction::Redactor;
 use crate::domain::route::{
     AdvertisementRequest, ExitNodeRequest, ExitNodeSelection, canonical_routes,
@@ -1002,9 +1001,10 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
         }
         Effect::StartProfileCredentialRemove { profile, reference } => {
             let queue = queue.clone();
-            let store = credential_backends
-                .get(&profile)
-                .map_or_else(|| Arc::new(MemoryCredentialStore::default()) as _, CredentialBackend::open);
+            let store = credential_backends.get(&profile).map_or_else(
+                || Arc::new(MemoryCredentialStore::default()) as _,
+                CredentialBackend::open,
+            );
             tasks.spawn(async move {
                 let result = store.delete(&reference).map_err(|error| error.to_string());
                 queue
@@ -1013,6 +1013,55 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                         reference,
                         result,
                     })))
+                    .await;
+            });
+        }
+        Effect::InspectProfileCredentials { profiles } => {
+            let queue = queue.clone();
+            let stores = profiles
+                .into_iter()
+                .map(|entry| {
+                    let store = credential_backends.get(&entry.profile).map_or_else(
+                        || Arc::new(MemoryCredentialStore::default()) as _,
+                        CredentialBackend::open,
+                    );
+                    (entry.profile, entry.credential, store)
+                })
+                .collect::<Vec<_>>();
+            tasks.spawn(async move {
+                let presences = stores
+                    .into_iter()
+                    .map(|(profile, reference, store)| {
+                        (profile, credential_presence(store.as_ref(), &reference))
+                    })
+                    .collect();
+                queue
+                    .send(Event::Credential(Box::new(
+                        CredentialEvent::ProfilesInspected { presences },
+                    )))
+                    .await;
+            });
+        }
+        Effect::StartProfileProbe {
+            profile,
+            tailnet,
+            credential,
+            timeout,
+        } => {
+            let queue = queue.clone();
+            let store = credential_backends.get(&profile).map_or_else(
+                || Arc::new(MemoryCredentialStore::default()) as _,
+                CredentialBackend::open,
+            );
+            tasks.spawn(async move {
+                let result =
+                    crate::admin::auth::live_check(&profile, &tailnet, &credential, store, timeout)
+                        .await
+                        .map_err(|error| error.to_string());
+                queue
+                    .send(Event::Credential(Box::new(
+                        CredentialEvent::ProfileProbed { profile, result },
+                    )))
                     .await;
             });
         }
@@ -1537,6 +1586,22 @@ struct AdminTaskContext {
     cancellation: Cancellation,
 }
 
+/// What one profile's store holds, without asking the control plane anything.
+/// A store that cannot be read is reported as such rather than as an absent
+/// credential, because the two have different remedies.
+fn credential_presence(store: &dyn CredentialStore, reference: &str) -> CredentialPresence {
+    match store.get(reference) {
+        Ok(None) => CredentialPresence::Missing,
+        Ok(Some(record)) => CredentialPresence::Stored {
+            kind: record.kind(),
+            scopes: record.requested_scopes(),
+        },
+        Err(error) => CredentialPresence::Unreadable {
+            detail: error.to_string(),
+        },
+    }
+}
+
 fn token_manager_for(
     managers: &mut BTreeMap<String, Arc<TokenManager>>,
     profile: &str,
@@ -1547,9 +1612,10 @@ fn token_manager_for(
     }
     // A profile with no declared backend has no credential either, so an empty store is
     // the accurate answer: reads report a missing credential rather than failing oddly.
-    let store: Arc<dyn CredentialStore> = backends
-        .get(profile)
-        .map_or_else(|| Arc::new(MemoryCredentialStore::default()) as _, CredentialBackend::open);
+    let store: Arc<dyn CredentialStore> = backends.get(profile).map_or_else(
+        || Arc::new(MemoryCredentialStore::default()) as _,
+        CredentialBackend::open,
+    );
     let manager = Arc::new(TokenManager::new(store));
     managers.insert(profile.to_owned(), Arc::clone(&manager));
     manager
