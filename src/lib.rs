@@ -120,15 +120,11 @@ fn run_auth(
         AuthCommand::Status(args) => args.profile.clone(),
     };
     check_cli.mock = false;
-    let mut check_environment = environment.clone();
-    if matches!(&command, AuthCommand::Add(_)) {
-        check_environment.profile = None;
-    }
     let checked =
-        config::resolve(&check_cli, &check_environment, path_environment).map_err(config_error)?;
+        config::resolve(&check_cli, environment, path_environment).map_err(config_error)?;
     match command {
         AuthCommand::Add(args) => auth_add(args, &checked),
-        AuthCommand::Status(args) => auth_status(args.profile, &checked, environment),
+        AuthCommand::Status(args) => auth_status(args.profile, &checked),
         AuthCommand::Remove(args) => auth_remove(args.profile, &checked),
     }
 }
@@ -279,10 +275,8 @@ fn auth_add(args: AuthAddArgs, checked: &ResolvedConfig) -> Result<(), TaleError
 fn auth_status(
     requested_profile: Option<String>,
     checked: &ResolvedConfig,
-    environment: &EnvironmentValues,
 ) -> Result<(), TaleError> {
     let profile_name = requested_profile
-        .or_else(|| environment.profile.clone())
         .or_else(|| checked.default_profile.clone())
         .ok_or_else(|| TaleError::InvalidArguments("no profile is selected".to_owned()))?;
     let profile = checked

@@ -37,7 +37,6 @@ fn cli(config: Option<PathBuf>) -> Cli {
 fn environment() -> EnvironmentValues {
     EnvironmentValues {
         config_file: None,
-        profile: None,
         tailscale_path: None,
         tailscale_socket: None,
         no_color: false,

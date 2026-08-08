@@ -50,7 +50,6 @@ Environment variables do not map generically onto TOML keys.
 | Variable | Purpose |
 | --- | --- |
 | `TALE_CONFIG_FILE` | use an explicit config path |
-| `TALE_PROFILE` | select an admin profile for this run |
 | `TALE_TAILSCALE_PATH` | override the local executable for this run |
 | `TALE_TAILSCALE_SOCKET` | override the local daemon socket or named pipe for this run |
 | `NO_COLOR` | force color mode `none` |

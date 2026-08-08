@@ -453,7 +453,6 @@ fn no_local_bootstrap_has_no_local_effect() {
     };
     let environment = EnvironmentValues {
         config_file: None,
-        profile: None,
         tailscale_path: Some(root.join("environment").to_string_lossy().into_owned()),
         tailscale_socket: None,
         no_color: false,
@@ -599,7 +598,6 @@ fn local_app() -> Option<App> {
     };
     let environment = EnvironmentValues {
         config_file: None,
-        profile: None,
         tailscale_path: None,
         tailscale_socket: None,
         no_color: false,

@@ -95,7 +95,6 @@ fn mock_app() -> Option<App> {
     let cli = Cli::try_parse_from(["tale", "--mock"]).ok()?;
     let environment = EnvironmentValues {
         config_file: None,
-        profile: None,
         tailscale_path: None,
         tailscale_socket: None,
         no_color: false,

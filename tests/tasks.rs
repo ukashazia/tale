@@ -22,7 +22,6 @@ fn app() -> Option<App> {
     };
     let environment = EnvironmentValues {
         config_file: None,
-        profile: None,
         tailscale_path: None,
         tailscale_socket: None,
         no_color: false,

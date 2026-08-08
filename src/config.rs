@@ -32,7 +32,6 @@ impl ValueSource {
 #[derive(Debug, Clone)]
 pub struct EnvironmentValues {
     pub config_file: Option<PathBuf>,
-    pub profile: Option<String>,
     pub tailscale_path: Option<String>,
     pub tailscale_socket: Option<PathBuf>,
     pub no_color: bool,
@@ -42,7 +41,6 @@ impl EnvironmentValues {
     pub fn from_process() -> Self {
         Self {
             config_file: std::env::var_os("TALE_CONFIG_FILE").map(PathBuf::from),
-            profile: std::env::var("TALE_PROFILE").ok(),
             tailscale_path: std::env::var("TALE_TAILSCALE_PATH").ok(),
             tailscale_socket: std::env::var_os("TALE_TAILSCALE_SOCKET").map(PathBuf::from),
             no_color: std::env::var_os("NO_COLOR").is_some(),
@@ -296,7 +294,7 @@ pub fn resolve(
     environment: &EnvironmentValues,
     path_environment: &PathEnvironment,
 ) -> Result<ResolvedConfig, ConfigError> {
-    if cli.mock && (cli.profile.is_some() || environment.profile.is_some()) {
+    if cli.mock && cli.profile.is_some() {
         return Err(ConfigError::MockConflict);
     }
     let mut paths = paths::resolve_paths(path_environment).map_err(path_error)?;
@@ -309,7 +307,6 @@ pub fn resolve(
     let selected_profile = cli
         .profile
         .clone()
-        .or_else(|| environment.profile.clone())
         .or_else(|| file.default_profile.clone());
     if let Some(profile) = selected_profile.as_deref()
         && !file.profiles.contains_key(profile)

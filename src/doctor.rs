@@ -413,7 +413,6 @@ mod tests {
         let cli = Cli::try_parse_from(["tale", "--mock"]).map_err(|error| error.to_string())?;
         let mut environment = EnvironmentValues::from_process();
         environment.config_file = Some(PathBuf::from("/tmp/tale-doctor-test-config.toml"));
-        environment.profile = None;
         let paths = PathEnvironment::from_process().map_err(|error| error.to_string())?;
         resolve(&cli, &environment, &paths).map_err(|error| error.to_string())
     }
