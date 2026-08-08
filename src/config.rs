@@ -243,11 +243,17 @@ pub enum ConfigError {
     WriteFailure,
     #[error("profile does not exist: {0}")]
     UnknownProfile(String),
-    #[error("no profiles are configured in {0}; add one with `tale auth add <name>`")]
+    // Both of these are reachable only because TALE_ACCESS_TOKEN is set: without it a
+    // configuration that selects no profile simply starts without admin access. Naming
+    // the variable first keeps the message from reading as "tale requires a profile".
+    #[error(
+        "TALE_ACCESS_TOKEN is set but no profiles are configured in {0}; add one with \
+         `tale auth add <name>`, or unset TALE_ACCESS_TOKEN to start without admin access"
+    )]
     NoProfilesConfigured(String),
     #[error(
-        "no profile is selected; set default_profile in {path} or pass --profile, \
-         choosing from: {available}"
+        "TALE_ACCESS_TOKEN is set but no profile is selected; set default_profile in \
+         {path}, pass --profile, or unset TALE_ACCESS_TOKEN. Configured profiles: {available}"
     )]
     NoProfileSelected { path: String, available: String },
     #[error("--mock cannot be combined with a profile or TALE_ACCESS_TOKEN")]
