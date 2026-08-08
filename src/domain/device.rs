@@ -515,16 +515,31 @@ pub fn compare_devices_by_specs(
     now: Timestamp,
 ) -> Ordering {
     for sort in sorts {
-        let primary = compare_device_field(left, right, sort.field, now);
-        let directed = match sort.direction {
-            SortDirection::Ascending => primary,
-            SortDirection::Descending => primary.reverse(),
-        };
+        let directed = compare_directed_device_field(left, right, *sort, now);
         if directed != Ordering::Equal {
             return directed;
         }
     }
     left.id.cmp(&right.id)
+}
+
+fn compare_directed_device_field(
+    left: &Device,
+    right: &Device,
+    sort: SortSpec,
+    now: Timestamp,
+) -> Ordering {
+    match (sort.field, left.last_seen, right.last_seen) {
+        (SortField::LastSeen, Some(_), None) => Ordering::Less,
+        (SortField::LastSeen, None, Some(_)) => Ordering::Greater,
+        _ => {
+            let primary = compare_device_field(left, right, sort.field, now);
+            match sort.direction {
+                SortDirection::Ascending => primary,
+                SortDirection::Descending => primary.reverse(),
+            }
+        }
+    }
 }
 
 fn compare_device_field(
