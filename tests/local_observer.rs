@@ -152,6 +152,42 @@ fn status_fixture_maps_wire_dto_to_rich_local_snapshot() {
 }
 
 #[test]
+fn status_preserves_capability_identifiers_verbatim() {
+    let status = r#"{
+        "BackendState": "Running",
+        "Self": {
+            "ID": "nodekey:self",
+            "HostName": "self",
+            "Capabilities": {
+                "funnel": true,
+                "https://tailscale.com/cap/file-sharing": true,
+                "https://tailscale.com/cap/funnel-ports?ports=443,8443,10000": true,
+                "https://tailscale.com/cap/is-admin": true
+            }
+        },
+        "Peer": {}
+    }"#;
+    let snapshot = decode_status(status, "1.98.9".to_owned(), None, timestamp());
+    assert!(snapshot.is_ok());
+    if let Ok(snapshot) = snapshot {
+        for capability in [
+            "https://tailscale.com/cap/file-sharing",
+            "https://tailscale.com/cap/funnel-ports?ports=443,8443,10000",
+            "https://tailscale.com/cap/is-admin",
+        ] {
+            assert_eq!(snapshot.self_node.capabilities.get(capability), Some(&true));
+        }
+        assert!(
+            !snapshot
+                .self_node
+                .capabilities
+                .contains_key("httpstailscalecomcapfilesharing")
+        );
+        assert!(snapshot.self_node.to_display_device().capabilities.funnel);
+    }
+}
+
+#[test]
 fn daemon_state_classification_distinguishes_transport_auth_and_health() {
     let needs_login = decode_status(
         r#"{"BackendState":"NeedsLogin","AuthURL":"https://login.example","Self":{"ID":"self"}}"#,

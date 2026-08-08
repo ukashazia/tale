@@ -383,14 +383,14 @@ fn parse_capabilities(value: Option<&Value>) -> BTreeMap<String, bool> {
         Some(Value::Array(values)) => {
             for value in values {
                 if let Some(name) = value.as_str() {
-                    capabilities.insert(normalize(name), true);
+                    capabilities.insert(name.to_owned(), true);
                 }
             }
         }
         Some(Value::Object(map)) => {
             for (name, value) in map {
                 if let Some(value) = value.as_bool() {
-                    capabilities.insert(normalize(name), value);
+                    capabilities.insert(name.clone(), value);
                 }
             }
         }

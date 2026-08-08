@@ -147,7 +147,7 @@ fn full_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         app.theme.style(theme::StyleRole::TextPrimary),
     ))];
     if let Some(local) = local {
-        append_local_sections(app, &mut lines, local);
+        append_local_sections(app, &mut lines, local, width);
     }
     if let Some(admin) = admin {
         append_admin_sections(app, &mut lines, admin, width);
@@ -232,7 +232,12 @@ fn mock_detail(app: &App, device: &Device, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn append_local_sections(app: &App, lines: &mut Vec<Line<'static>>, device: &LocalDevice) {
+fn append_local_sections(
+    app: &App,
+    lines: &mut Vec<Line<'static>>,
+    device: &LocalDevice,
+    width: usize,
+) {
     append_section(
         app,
         lines,
@@ -300,12 +305,6 @@ fn append_local_sections(app: &App, lines: &mut Vec<Line<'static>>, device: &Loc
             ),
         ],
     );
-    let reported = device
-        .capabilities
-        .iter()
-        .filter(|(_, enabled)| **enabled)
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
     append_section(
         app,
         lines,
@@ -322,8 +321,13 @@ fn append_local_sections(app: &App, lines: &mut Vec<Line<'static>>, device: &Loc
                     ("Shared", device.shared),
                 ]),
             ),
-            ("reported flags", list(&reported, "none")),
         ],
+    );
+    append_section(
+        app,
+        lines,
+        "Reported capabilities · local daemon",
+        reported_capability_rows(device, width),
     );
     append_section(
         app,
@@ -334,6 +338,77 @@ fn append_local_sections(app: &App, lines: &mut Vec<Line<'static>>, device: &Loc
             ("observed", moment(app, app.local_resource.last_success_at)),
         ],
     );
+}
+
+fn reported_capability_rows(device: &LocalDevice, width: usize) -> Vec<(&'static str, String)> {
+    if device.capabilities.is_empty() {
+        return vec![("capabilities", "none reported".to_owned())];
+    }
+    device
+        .capabilities
+        .iter()
+        .map(|(name, enabled)| describe_reported_capability(name, *enabled, width))
+        .collect()
+}
+
+fn describe_reported_capability(name: &str, enabled: bool, width: usize) -> (&'static str, String) {
+    let available = if enabled { "available" } else { "unavailable" };
+    let enabled_state = if enabled { "enabled" } else { "disabled" };
+    let yes_no = if enabled { "yes" } else { "no" };
+    let known = match name {
+        "defaultAutoUpdate" => Some(("default auto-update", enabled_state.to_owned())),
+        "funnel" => Some(("Funnel", available.to_owned())),
+        "https" => Some(("HTTPS", available.to_owned())),
+        "ssh" => Some(("Tailscale SSH", available.to_owned())),
+        "approved" => Some(("device approved", yes_no.to_owned())),
+        "expired" => Some(("node key expired", yes_no.to_owned())),
+        "exit-node" => Some(("exit node", enabled_state.to_owned())),
+        "exit-node-option" => Some(("exit node option", enabled_state.to_owned())),
+        "shared" => Some(("shared node", yes_no.to_owned())),
+        _ => describe_tailscale_capability_url(name, enabled),
+    };
+    let (label, value) =
+        known.unwrap_or_else(|| ("other capability", format!("{enabled_state} · {name}")));
+    (label, bounded_capability_value(&value, width))
+}
+
+fn describe_tailscale_capability_url(name: &str, enabled: bool) -> Option<(&'static str, String)> {
+    let url = url::Url::parse(name).ok()?;
+    if url.scheme() != "https" || url.host_str() != Some("tailscale.com") {
+        return None;
+    }
+    let available = if enabled { "available" } else { "unavailable" };
+    match url.path() {
+        "/cap/file-sharing" => Some(("file sharing", available.to_owned())),
+        "/cap/is-admin" => Some((
+            "tailnet admin",
+            if enabled { "yes" } else { "no" }.to_owned(),
+        )),
+        "/cap/funnel-ports" => {
+            let ports = url
+                .query_pairs()
+                .find_map(|(key, value)| (key == "ports").then(|| value.into_owned()));
+            Some((
+                "Funnel ports",
+                ports.map_or_else(
+                    || available.to_owned(),
+                    |ports| {
+                        let ports = ports.split(',').collect::<Vec<_>>().join(", ");
+                        if enabled {
+                            ports
+                        } else {
+                            format!("unavailable · {ports}")
+                        }
+                    },
+                ),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn bounded_capability_value(value: &str, width: usize) -> String {
+    text::ellipsize(value, width.saturating_sub(21))
 }
 
 fn append_admin_sections(

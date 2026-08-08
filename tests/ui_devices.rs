@@ -325,6 +325,76 @@ fn enter_opens_a_scrollable_full_device_record_without_moving_selection() {
 }
 
 #[test]
+fn reported_capabilities_are_readable_bounded_rows() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    let Ok(mut snapshot) = decode_status(STATUS, "1.98.9".to_owned(), None, 1_754_000_000) else {
+        return;
+    };
+    let Some(device) = snapshot
+        .peers
+        .iter_mut()
+        .find(|device| device.id.0 == "nodekey:direct")
+    else {
+        return;
+    };
+    for capability in [
+        "defaultAutoUpdate",
+        "funnel",
+        "https",
+        "https://tailscale.com/cap/file-sharing",
+        "https://tailscale.com/cap/funnel-ports?ports=443,8443,10000",
+        "https://tailscale.com/cap/is-admin",
+        "https://example.com/cap/a-deliberately-long-future-capability-name",
+    ] {
+        device.capabilities.insert(capability.to_owned(), true);
+    }
+    app.local_resource.generation = 1;
+    let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+        generation: 1,
+        snapshot: Box::new(snapshot),
+    })));
+    app.set_route(Route::Devices);
+    app.views.devices.selected_id = Some(DeviceId::new("nodekey:direct"));
+    app.set_terminal_size(68, 60);
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+
+    let Some(lines) = render_lines(&app, 68, 60) else {
+        return;
+    };
+    let detail = lines.join("\n");
+    for wanted in [
+        "Reported capabilities · local daemon",
+        "default auto-update",
+        "Funnel",
+        "HTTPS",
+        "file sharing",
+        "Funnel ports",
+        "443, 8443, 10000",
+        "tailnet admin",
+        "other capability",
+        "https://example.com/cap/",
+    ] {
+        assert!(
+            detail.contains(wanted),
+            "device details are missing {wanted}"
+        );
+    }
+    assert!(!detail.contains("httpstailscalecomcap"));
+    assert!(lines.iter().all(|line| line.chars().count() <= 68));
+    let funnel_ports = lines.iter().find(|line| line.contains("Funnel ports"));
+    assert!(funnel_ports.is_some());
+    if let Some(funnel_ports) = funnel_ports {
+        assert!(!funnel_ports.contains("file sharing"));
+        assert!(!funnel_ports.contains("tailnet admin"));
+    }
+}
+
+#[test]
 fn slash_searches_inside_device_details_and_n_walks_matches() {
     let Some(mut app) = local_app() else {
         return;
