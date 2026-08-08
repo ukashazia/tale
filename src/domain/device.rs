@@ -121,7 +121,7 @@ pub struct Device {
     pub owner: Option<String>,
     pub owner_label: Option<String>,
     pub os: OperatingSystem,
-    pub version: String,
+    pub version: Option<String>,
     pub liveness: Liveness,
     pub path: ConnectionPath,
     pub addresses: Vec<String>,
@@ -234,10 +234,7 @@ impl AdminDevice {
             owner: self.user_id.clone(),
             owner_label: self.user_id.clone(),
             os,
-            version: match self.client_version.clone() {
-                Some(version) => version,
-                None => "not returned".to_owned(),
-            },
+            version: self.client_version.clone(),
             liveness: match self.connected_to_control {
                 Some(true) => Liveness::Online,
                 Some(false) => Liveness::Offline,
@@ -365,10 +362,7 @@ impl LocalDevice {
             owner: None,
             owner_label: self.owner_label.clone(),
             os: self.os.clone(),
-            version: match self.version.clone() {
-                Some(value) => value,
-                None => "not returned".to_owned(),
-            },
+            version: self.version.clone(),
             liveness: self.liveness(),
             path: self.path.clone(),
             addresses: self.tailscale_ips.clone(),

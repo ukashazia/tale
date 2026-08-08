@@ -3137,7 +3137,9 @@ impl App {
                 }
                 FilterField::Tag => values.extend(device.tags.iter().cloned()),
                 FilterField::ClientVersion => {
-                    let _ = values.insert(device.version.clone());
+                    if let Some(version) = device.version.clone() {
+                        let _ = values.insert(version);
+                    }
                 }
                 _ => {}
             }
@@ -10605,7 +10607,7 @@ impl App {
                 owner: None,
                 owner_label: None,
                 os: crate::domain::device::OperatingSystem::Unknown("not returned".to_owned()),
-                version: "not returned".to_owned(),
+                version: None,
                 liveness: crate::domain::device::Liveness::Unknown,
                 path: crate::domain::device::ConnectionPath::Unknown(
                     "no source snapshot".to_owned(),

@@ -402,7 +402,7 @@ fn device(
         owner: owner.map(str::to_owned),
         owner_label: owner_label.map(str::to_owned),
         os,
-        version: "1.98.9".to_owned(),
+        version: Some("1.98.9".to_owned()),
         liveness,
         path,
         addresses: addresses.into_iter().map(str::to_owned).collect(),

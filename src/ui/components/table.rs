@@ -199,7 +199,7 @@ fn cell(app: &App, device: &Device, header: &str) -> grid::Cell {
                 .map_or_else(|| "-".to_owned(), text::format_age),
         ),
         "IP" => grid::Cell::new(device.addresses.join(", ")),
-        "VER" => grid::Cell::new(device.version.clone()),
+        "VER" => grid::Cell::new(device.version.as_deref().unwrap_or("-")),
         "ROUTES" => grid::Cell::new(device.advertised_routes.join(", ")),
         "RX" => grid::Cell::new(optional_bytes(device.rx_bytes)),
         "TX" => grid::Cell::new(optional_bytes(device.tx_bytes)),
@@ -284,7 +284,7 @@ fn registered_value(app: &App, device: &Device, name: &str) -> String {
             .as_deref()
             .or(device.owner_label.as_deref())
             .map_or_else(|| "-".to_owned(), str::to_owned),
-        "version" => device.version.clone(),
+        "version" => device.version.clone().unwrap_or_else(|| "-".to_owned()),
         "last_seen" => device
             .age_at(app.now)
             .map_or_else(|| "-".to_owned(), text::format_age),

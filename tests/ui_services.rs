@@ -397,7 +397,7 @@ fn office_laptop() -> Device {
         owner: None,
         owner_label: None,
         os: OperatingSystem::Linux,
-        version: "1.98.9".to_owned(),
+        version: Some("1.98.9".to_owned()),
         liveness: Liveness::Online,
         path: ConnectionPath::Direct { latency_ms: None },
         addresses: vec!["100.64.0.2".to_owned()],

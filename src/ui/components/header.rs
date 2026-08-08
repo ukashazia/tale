@@ -349,53 +349,53 @@ fn connection_state(app: &App) -> (String, theme::StyleRole, Option<&'static str
     use crate::domain::source::LocalDaemonState;
     match app.source_mode {
         crate::app::SourceMode::Mock => (
-            "Simulated data".to_owned(),
+            "simulated data".to_owned(),
             theme::StyleRole::StateUnknown,
             None,
         ),
         crate::app::SourceMode::Unavailable => (
-            "No local connection".to_owned(),
+            "no local connection".to_owned(),
             theme::StyleRole::StateDanger,
             None,
         ),
         crate::app::SourceMode::Local => match &app.local_daemon_state {
             LocalDaemonState::Live => (
-                "Connected locally".to_owned(),
+                "connected locally".to_owned(),
                 theme::StyleRole::StateHealthy,
                 None,
             ),
             LocalDaemonState::Connecting => (
-                "Connecting".to_owned(),
+                "connecting".to_owned(),
                 theme::StyleRole::StatePending,
                 None,
             ),
             LocalDaemonState::Reconnecting => (
-                "Reconnecting".to_owned(),
+                "reconnecting".to_owned(),
                 theme::StyleRole::StateWarning,
                 None,
             ),
             LocalDaemonState::Disabled => (
-                "Local access off".to_owned(),
+                "local access off".to_owned(),
                 theme::StyleRole::TextMuted,
                 None,
             ),
             LocalDaemonState::Mock => (
-                "Simulated data".to_owned(),
+                "simulated data".to_owned(),
                 theme::StyleRole::StateUnknown,
                 None,
             ),
             LocalDaemonState::PermissionDenied { .. } => (
-                "Local access denied".to_owned(),
+                "local access denied".to_owned(),
                 theme::StyleRole::StateDanger,
                 Some("press a d for diagnostics"),
             ),
             LocalDaemonState::Unsupported { .. } => (
-                "Local client unsupported".to_owned(),
+                "local client unsupported".to_owned(),
                 theme::StyleRole::StateDanger,
                 None,
             ),
             LocalDaemonState::Unavailable { .. } => (
-                "Local daemon unreachable".to_owned(),
+                "local daemon unreachable".to_owned(),
                 theme::StyleRole::StateDanger,
                 Some("press r to retry"),
             ),

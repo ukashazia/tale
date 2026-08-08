@@ -1174,7 +1174,10 @@ fn structured_device_field_matches(
         FilterField::LastSeen => device
             .last_seen
             .is_some_and(|candidate| text_matches(candidate.to_string().as_str(), value, mode)),
-        FilterField::ClientVersion => text_matches(device.version.as_str(), value, mode),
+        FilterField::ClientVersion => device
+            .version
+            .as_deref()
+            .is_some_and(|candidate| text_matches(candidate, value, mode)),
         FilterField::Property
         | FilterField::Approval
         | FilterField::KeyExpiry

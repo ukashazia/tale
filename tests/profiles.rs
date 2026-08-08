@@ -562,8 +562,9 @@ fn header_lines(app: &App) -> Vec<String> {
     use ratatui::backend::TestBackend;
     let (w, h) = (120u16, 30u16);
     let backend = TestBackend::new(w, h);
-    let Ok(mut terminal) = Terminal::new(backend) else {
-        return Vec::new();
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(_) => return Vec::new(),
     };
     if terminal.draw(|frame| tale::ui::render(frame, app)).is_err() {
         return Vec::new();

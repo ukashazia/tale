@@ -44,7 +44,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(format!(
             "os           {} {}",
             device.os.label(),
-            device.version
+            device.version.as_deref().unwrap_or("-")
         )),
         Line::from(format!(
             "state        {} / {}",
@@ -181,10 +181,7 @@ fn render_local(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(format!(
             "OS/version  {} / {}",
             device.os.label(),
-            device
-                .version
-                .as_deref()
-                .map_or("not returned", |value| value)
+            device.version.as_deref().unwrap_or("-")
         )),
         Line::from(format!(
             "state       {} / {} / active={}",

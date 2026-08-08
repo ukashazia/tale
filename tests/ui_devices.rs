@@ -161,6 +161,65 @@ fn pressing_i_shows_and_hides_the_inspector_beside_the_table() {
     );
 }
 
+/// A peer that never told us its client version gets the same dash every other
+/// empty column gets. `not returned` reads like a value, sorts like one, and
+/// copies like one.
+#[test]
+fn a_device_without_a_reported_version_shows_a_dash() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    let snapshot = decode_status(STATUS, "1.98.9".to_owned(), None, 1_754_000_000);
+    assert!(snapshot.is_ok());
+    if let Ok(snapshot) = snapshot {
+        app.local_resource.generation = 1;
+        let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+            generation: 1,
+            snapshot: Box::new(snapshot),
+        })));
+    }
+    app.set_route(Route::Devices);
+    app.views.devices.selected_id = Some(DeviceId::new("nodekey:derp"));
+    assert_eq!(
+        app.selected_device()
+            .and_then(|device| device.version.clone()),
+        None,
+        "the fixture peer is expected to omit its version"
+    );
+
+    app.views.devices.wide_columns = true;
+    let Some(table) = render_lines(&app, 280, 35) else {
+        return;
+    };
+    // The border glyphs are multi-byte, so the cell starts at a character
+    // offset rather than the byte offset `find` reports.
+    let version_column = table
+        .iter()
+        .find(|line| line.contains(" VER "))
+        .and_then(|header| header.find(" VER ").map(|byte| header[..byte].chars()))
+        .map(Iterator::count);
+    assert!(version_column.is_some(), "the VER column is not on screen");
+    if let Some(column) = version_column {
+        let row = table.iter().find(|line| line.contains("relay fixture"));
+        assert!(row.is_some());
+        if let Some(row) = row {
+            let cell = row.chars().skip(column + 1).take(3).collect::<String>();
+            assert_eq!(cell.trim(), "-", "the VER cell reads {cell:?} in {row:?}");
+        }
+    }
+
+    press(&mut app, 'i');
+    let Some(lines) = render_lines(&app, 160, 30) else {
+        return;
+    };
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("OS/version") && line.contains("/ -")),
+        "the inspector did not dash the missing version: {lines:?}"
+    );
+}
+
 /// The bar names what landed on the clipboard, not what it was called. A field
 /// label only repeats the key that was just pressed; the value is the thing
 /// worth checking without pasting somewhere to see it.
@@ -288,10 +347,12 @@ fn copying_the_dns_name_gives_the_full_magicdns_name_without_its_trailing_dot() 
     );
 }
 
-/// The account says who is signed in; the domain says which tailnet the devices
-/// are on. Two facts, two rows.
+/// The tailnet says who this machine is signed in to; the MagicDNS suffix says
+/// what its devices answer to. One row names both, because on its own the suffix
+/// reads as a second tailnet — which is exactly what it looked like once a
+/// profile put a real second tailnet on the screen beside it.
 #[test]
-fn the_header_shows_the_tailnet_domain_below_the_account() {
+fn the_header_names_the_local_tailnet_and_its_domain_together() {
     let Some(mut app) = local_app() else {
         return;
     };
@@ -309,30 +370,29 @@ fn the_header_shows_the_tailnet_domain_below_the_account() {
     let lines = render_lines(&app, 120, 30);
     assert!(lines.is_some());
     if let Some(lines) = lines {
-        let account = lines
-            .iter()
-            .position(|line| line.contains("Example Tailnet"));
-        let domain = lines
-            .iter()
-            .position(|line| line.contains("tail.example.ts.net"));
-        assert!(account.is_some(), "the header lost the account");
-        assert!(domain.is_some(), "the header does not show the tailnet");
-        assert_eq!(
-            domain,
-            account.map(|row| row.saturating_add(1)),
-            "the tailnet is not on the row below the account"
+        let local = lines.iter().find(|line| line.contains("Local:"));
+        assert!(local.is_some(), "the header has no local row");
+        assert!(
+            local.is_some_and(
+                |row| row.contains("Example Tailnet") && row.contains("tail.example.ts.net")
+            ),
+            "the local row does not carry both the tailnet and its domain: {local:?}"
         );
+        // The row is named, so neither value can be mistaken for the other or
+        // for the profile's.
+        assert!(lines.iter().any(|line| line.contains("Profile:")));
     }
 
-    // Below 26 rows the header is one line, so the domain follows the account
-    // rather than disappearing.
+    // Below 26 rows the header is one line, so the tailnet keeps the word that
+    // says which of the two identities it is.
     let short = render_lines(&app, 120, 24);
     assert!(short.is_some());
     if let Some(short) = short {
         assert!(
-            short.iter().any(
-                |line| line.contains("Example Tailnet") && line.contains("tail.example.ts.net")
-            )
+            short
+                .iter()
+                .any(|line| line.contains("local") && line.contains("Example Tailnet")),
+            "the compact header dropped the local tailnet or its label"
         );
     }
 }
