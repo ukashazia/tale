@@ -616,7 +616,7 @@ fn render_local_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ),
         ),
     ];
-    render_summary(frame, app, area, &device.display_name, pairs, "local");
+    render_summary(frame, app, area, &device.display_name, pairs);
 }
 
 fn render_mock_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -640,7 +640,7 @@ fn render_mock_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ("capabilities", capability_summary(&device.capabilities)),
         ("Status:", "Simulated data".to_owned()),
     ];
-    render_summary(frame, app, area, &device.display_name, pairs, "mock");
+    render_summary(frame, app, area, &device.display_name, pairs);
 }
 
 fn render_composed_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -677,14 +677,7 @@ fn render_composed_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ("tags", list(&device.tags, "none")),
         ("capabilities", capability_summary(&device.capabilities)),
     ];
-    render_summary(
-        frame,
-        app,
-        area,
-        &device.display_name,
-        pairs,
-        "local + admin",
-    );
+    render_summary(frame, app, area, &device.display_name, pairs);
 }
 
 fn render_admin_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -708,7 +701,7 @@ fn render_admin_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ("ACL tags", list(&device.tags, "none")),
         ("key expiry", key_expiry(app, device)),
     ];
-    render_summary(frame, app, area, device.display_name(), pairs, "admin");
+    render_summary(frame, app, area, device.display_name(), pairs);
 }
 
 fn render_summary(
@@ -717,17 +710,12 @@ fn render_summary(
     area: Rect,
     name: &str,
     pairs: Vec<(&str, String)>,
-    source: &str,
 ) {
     let mut lines = vec![Line::from(Span::styled(
         text::ellipsize(name, usize::from(area.width.saturating_sub(4))),
         app.theme.style(theme::StyleRole::TextPrimary),
     ))];
     lines.extend(grid::detail(app, &pairs));
-    lines.push(Line::from(Span::styled(
-        format!("Enter opens all available {source} details"),
-        app.theme.style(theme::StyleRole::TextMuted),
-    )));
     panel::render_focusable(frame, app, area, "inspector", lines, false);
 }
 
