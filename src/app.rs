@@ -3524,36 +3524,26 @@ impl App {
                 if state.is_editing() {
                     // An open list is a form of its own: entries are selected,
                     // reordered and typed into without leaving the field.
+                    //
+                    // Every binding here is one a terminal actually sends under
+                    // the encoding this app asks for. Ctrl+I and Tab are the
+                    // same byte, so Tab adds an entry; Ctrl with an arrow is not
+                    // encoded at all, so the moves are plain control characters.
                     if let Some(list) = state.list.as_mut() {
-                        match (key.code, key.modifiers) {
-                            (KeyCode::Enter, _) => state.commit_edit(),
-                            (KeyCode::Esc, _) => state.abandon_edit(),
-                            (KeyCode::Up, modifiers) if modifiers.is_empty() => list.select(-1),
-                            (KeyCode::Down, modifiers) if modifiers.is_empty() => list.select(1),
-                            (KeyCode::Up, modifiers)
-                                if modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
-                                list.move_entry(-1);
-                            }
-                            (KeyCode::Down, modifiers)
-                                if modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
-                                list.move_entry(1);
-                            }
-                            (KeyCode::Char('i'), modifiers)
-                                if modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
-                                list.insert();
-                            }
-                            (KeyCode::Char('x'), modifiers)
-                                if modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
-                                list.remove();
-                            }
-                            (KeyCode::Backspace, _) => list.edit(|entry| {
+                        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+                        match key.code {
+                            KeyCode::Enter => state.commit_edit(),
+                            KeyCode::Esc => state.abandon_edit(),
+                            KeyCode::Up => list.select(-1),
+                            KeyCode::Down => list.select(1),
+                            KeyCode::Tab => list.insert(),
+                            KeyCode::Char('p') if control => list.move_entry(-1),
+                            KeyCode::Char('n') if control => list.move_entry(1),
+                            KeyCode::Char('x') if control => list.remove(),
+                            KeyCode::Backspace => list.edit(|entry| {
                                 let _ = entry.pop();
                             }),
-                            (KeyCode::Char(character), _) if is_typed_text(key) => {
+                            KeyCode::Char(character) if is_typed_text(key) => {
                                 list.edit(|entry| entry.push(character));
                             }
                             _ => return None,

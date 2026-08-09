@@ -5,7 +5,7 @@ use std::time::Duration;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use tale::action::ActionId;
-use tale::app::{App, Overlay, SourceMode};
+use tale::app::{App, FormState, Overlay, SourceMode};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::DeviceId;
@@ -376,6 +376,24 @@ fn press_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     ))));
 }
 
+fn render_form(app: &App) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let Ok(mut terminal) = Terminal::new(TestBackend::new(100, 30));
+    if terminal.draw(|frame| tale::ui::render(frame, app)).is_err() {
+        return String::new();
+    }
+    let buffer = terminal.backend().buffer();
+    (0..30)
+        .map(|y| {
+            (0..100)
+                .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn form(app: &App) -> Option<&tale::app::FormState> {
     match app.overlays.last() {
         Some(Overlay::Form(state)) => Some(state),
@@ -433,8 +451,41 @@ fn local_operator_forms_ask_field_by_field() {
     }
 }
 
+/// A hint says what a field would hold. Once the field is open it is showing
+/// what the user typed, and an empty one shows nothing rather than words they
+/// did not write and would have to delete first.
+#[test]
+fn opening_a_text_field_clears_its_placeholder() {
+    let prepared = prepared_app();
+    assert!(prepared.is_some());
+    if let Some(mut app) = prepared {
+        let _ = app.dispatch_action(ActionId::LocalSshOpen);
+        let hint = match form(&app).and_then(FormState::selected_field) {
+            Some(field) => match &field.kind {
+                tale::app::FieldKind::Text { hint } => Some((*hint).to_owned()),
+                _ => None,
+            },
+            None => None,
+        };
+        assert_eq!(hint.as_deref(), Some("remote default"));
+        let rendered = render_form(&app);
+        assert!(rendered.contains("remote default"), "hint is not shown");
+
+        press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let rendered = render_form(&app);
+        assert!(
+            !rendered.contains("remote default"),
+            "the placeholder survived the field being opened"
+        );
+        // The field is still empty: the hint went, the value did not arrive.
+        assert_eq!(form(&app).map(|state| state.value("user")), Some(""));
+    }
+}
+
 /// A set that has an order is edited entry by entry, so it can be reordered
-/// without spelling the whole set out again.
+/// without spelling the whole set out again. Every binding is one the terminal
+/// actually sends: Ctrl+I and Tab are the same byte, and Ctrl with an arrow is
+/// not encoded at all under the escape sequences this app asks for.
 #[test]
 fn list_fields_are_edited_and_reordered_in_place() {
     let prepared = prepared_app();
@@ -451,9 +502,9 @@ fn list_fields_are_edited_and_reordered_in_place() {
                 .and_then(|state| state.list.as_ref())
                 .is_some_and(|list| list.entries.is_empty())
         );
-        press_key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         let _ = app.update(Event::Input(InputEvent::Paste("10.0.0.0/8".to_owned())));
-        press_key(&mut app, KeyCode::Char('i'), KeyModifiers::CONTROL);
+        press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         let _ = app.update(Event::Input(InputEvent::Paste("192.168.0.0/16".to_owned())));
         let before = form(&app)
             .and_then(|state| state.list.as_ref())
@@ -464,7 +515,7 @@ fn list_fields_are_edited_and_reordered_in_place() {
             vec!["10.0.0.0/8".to_owned(), "192.168.0.0/16".to_owned()]
         );
         // The last entry moves above the one before it, in place.
-        press_key(&mut app, KeyCode::Up, KeyModifiers::CONTROL);
+        press_key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
         press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let after = form(&app)
             .map(|state| state.entries("routes"))
@@ -477,17 +528,41 @@ fn list_fields_are_edited_and_reordered_in_place() {
 }
 
 /// A write-only secret is held once, zeroized, and never reaches the field the
-/// screen can draw.
+/// screen can draw. The row still shows that something was entered, because a
+/// field that looks empty after typing reads as a field that did not take it.
 #[test]
-fn secret_fields_never_hold_their_value_on_the_field() {
+fn secret_fields_show_their_length_and_never_hold_their_value() {
     let prepared = prepared_app();
     assert!(prepared.is_some());
     if let Some(mut app) = prepared {
-        let _ = app.dispatch_action(ActionId::LocalDnsQuery);
-        // The DNS form has no secret, so the form holds none either.
-        assert!(form(&app).is_some_and(|state| state.secret.is_none()));
+        app.overlays.push(Overlay::Form(FormState {
+            action_id: ActionId::AdminLogStreamReplace,
+            title: "Replace a log stream",
+            subject: Vec::new(),
+            fields: vec![tale::app::FormField::secret(
+                "secret",
+                "Secret",
+                "The write-only token",
+            )],
+            selected: 0,
+            draft: None,
+            list: None,
+            secret: None,
+            error: None,
+        }));
+        press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let _ = app.update(Event::Input(InputEvent::Paste("hunter2".to_owned())));
+        assert_eq!(form(&app).map(FormState::secret_length), Some(7));
+        // The field the renderer reads never held it, so it cannot be drawn.
+        assert_eq!(form(&app).map(|state| state.value("secret")), Some(""));
+        let rendered = render_form(&app);
         assert!(
-            form(&app).is_some_and(|state| state.fields.iter().all(|field| !field.is_secret()))
+            !rendered.contains("hunter2"),
+            "the secret reached the screen"
+        );
+        assert!(
+            rendered.contains(&"\u{2022}".repeat(7)),
+            "the row does not show that a secret was entered"
         );
     }
 }

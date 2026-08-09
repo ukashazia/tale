@@ -37,9 +37,24 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
     for (index, field) in state.fields.iter().enumerate() {
         let selected = index == state.selected;
         let editing = selected && state.is_editing();
+        // A hint says what a field would hold, so it belongs only where nothing
+        // is being typed. Once the field is open the row shows the value alone,
+        // and an empty one shows the caret rather than words the user did not
+        // write and would have to delete.
         let (value, value_role) = match (&field.kind, field.display()) {
-            (FieldKind::Text { hint }, "") => ((*hint).to_owned(), theme::StyleRole::TextDisabled),
-            (FieldKind::List { hint }, "") => ((*hint).to_owned(), theme::StyleRole::TextDisabled),
+            (FieldKind::Secret, _) => (
+                "\u{2022}".repeat(state.secret_length()),
+                theme::StyleRole::TextPrimary,
+            ),
+            (FieldKind::Text { hint }, "") if !editing => {
+                ((*hint).to_owned(), theme::StyleRole::TextDisabled)
+            }
+            (FieldKind::List { hint }, "") if !editing => {
+                ((*hint).to_owned(), theme::StyleRole::TextDisabled)
+            }
+            (FieldKind::Text { .. } | FieldKind::List { .. }, "") => {
+                (String::new(), theme::StyleRole::TextPrimary)
+            }
             (FieldKind::List { .. }, value) => {
                 (value.replace(',', ", "), theme::StyleRole::TextPrimary)
             }
@@ -76,7 +91,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
             ),
         ];
         // A caret only where typing does something: inside an open text field.
-        if editing && field.is_text() {
+        if editing && (field.is_text() || field.is_secret()) {
             spans.push(Span::styled(
                 "\u{2588}",
                 app.theme.style(theme::StyleRole::Focus),
@@ -196,11 +211,12 @@ fn hints(app: &App, state: &FormState) -> Line<'static> {
             Some(FieldKind::Text { .. }) => vec![("Enter", "keep"), ("Esc", "discard")],
             Some(FieldKind::List { .. }) => vec![
                 ("↑/↓", "entry"),
-                ("Ctrl+↑/↓", "move"),
-                ("Ctrl+i", "add"),
+                ("Tab", "add"),
                 ("Ctrl+x", "drop"),
+                ("Ctrl+p/n", "move"),
                 ("Enter", "keep"),
             ],
+            Some(FieldKind::Secret) => vec![("Enter", "keep"), ("Esc", "discard")],
             _ => vec![("←/→", "change"), ("Enter", "keep"), ("Esc", "discard")],
         }
     } else if state.on_submit_row() {
