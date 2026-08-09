@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
-use crate::ui::components::{batch_result, confirm, form};
+use crate::ui::components::{batch_result, confirm, form, panel};
 use crate::ui::theme::StyleRole;
 use crate::ui::views::{audit_investigation, policy_editor, secret_result};
 
@@ -41,15 +41,14 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 || "task no longer available".to_owned(),
                 |task| format!("{}\n{}\n{}", task.state.label(), task.summary, task.detail),
             );
-            frame.render_widget(
-                Paragraph::new(detail)
-                    .style(app.theme.style(StyleRole::SurfaceRaised))
-                    .block(
-                        ratatui::widgets::Block::default()
-                            .borders(ratatui::widgets::Borders::ALL)
-                            .title("task inspector"),
-                    ),
+            panel::render_styled(
+                frame,
+                app,
                 area,
+                "task inspector",
+                detail,
+                StyleRole::SurfaceRaised,
+                StyleRole::BorderNormal,
             );
         }
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),

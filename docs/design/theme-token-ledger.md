@@ -22,7 +22,7 @@ semantic accents.
 | muted | `#AFACAB` / 145 / gray | `#706E6D` / 242 / dark-gray | B Gray400 / Gray500 | 5.50 minimum / 4.82 minimum on used surfaces |
 | disabled | `#706E6D` / 242 / dark-gray | `#AFACAB` / 145 / gray | B Gray500 / Gray400 | exception; explicit disabled signal required |
 | border-subtle | `#353434` / 236 / dark-gray | `#EEEBEA` / 255 / gray | T / B Gray200 | paired with border glyph |
-| border-normal | `#444342` / 238 / gray | `#DAD6D5` / 188 / dark-gray | B Gray600 / Gray300 | paired with border glyph |
+| border-normal | `#AFACAB` / 145 / gray | `#706E6D` / 242 / dark-gray | B Gray400 / Gray500 | 6.43 / 5.07 on panel surface |
 | selection-ink | `#1F1E1E` / 234 / black | `#1F1E1E` / 234 / black | B Gray900 | 4.50 on the selection fill, both themes |
 | focus | `#85AAF5` / 111 / light-blue | `#3F5DB3` / 61 / blue | B Blue200 / Blue600 | 6.26 / 6.13 |
 | focus-strong | `#5A82DE` / 68 / blue | `#5A82DE` / 68 / light-blue | B Blue400 | selection fill; 4.50 against its ink |
@@ -79,7 +79,7 @@ no-color column is the guaranteed modifier/symbol or label, never color alone.
 | SurfaceInset | inputs, code, diffs, primary/inset | 231/234 or 234/255 | neutral + italic context | inset border/italic |
 | Backdrop | subordinate underlying content | 145/234 or 242/188 | dark-gray + dim | dim plus modal border |
 | BorderSubtle, Divider | low hierarchy structure | 236 or 255 | dark-gray/gray | border glyph + dim |
-| BorderNormal | ordinary pane boundary | 238 or 188 | gray/dark-gray | border glyph |
+| BorderNormal | ordinary pane boundary | 145 or 242 | gray/dark-gray | border glyph |
 | BorderFocused | input-receiving pane | 111 or 61 | light-blue/blue + bold | bold border |
 | BorderDanger | destructive boundary | 210 or 88 | red + bold | bold reversed border/title |
 | TextPrimary | required body text | primary | white/black | normal text |

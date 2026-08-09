@@ -287,6 +287,70 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
 }
 
 #[test]
+fn route_title_uses_primary_text_and_does_not_inherit_the_border() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(app) = app {
+        let width = 80;
+        let height = 24;
+        let backend = TestBackend::new(width, height);
+        let terminal = Terminal::new(backend).ok();
+        assert!(terminal.is_some());
+        if let Some(mut terminal) = terminal {
+            let drawn = terminal.draw(|frame| ui::render(frame, &app));
+            assert!(drawn.is_ok());
+            let layout = ui::layout::compute(ratatui::layout::Rect::new(0, 0, width, height), &app);
+            let buffer = terminal.backend().buffer();
+            let border = buffer.cell((layout.content.x, layout.content.y));
+            // The block draws `\u{250c}`, then the padded title: ` devices `.
+            let title = buffer.cell((layout.content.x.saturating_add(2), layout.content.y));
+            assert!(border.is_some());
+            assert!(title.is_some());
+            if let (Some(border), Some(title)) = (border, title) {
+                assert_eq!(border.symbol(), "\u{250c}");
+                assert_eq!(title.symbol(), "d");
+                assert_eq!(Some(border.fg), app.theme.style(StyleRole::BorderNormal).fg);
+                assert_eq!(Some(title.fg), app.theme.style(StyleRole::TextPrimary).fg);
+                assert_ne!(border.fg, title.fg);
+            }
+        }
+    }
+}
+
+#[test]
+fn full_screen_device_details_do_not_claim_split_pane_focus() {
+    let app = populated_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Inspector);
+        let width = 80;
+        let height = 24;
+        let backend = TestBackend::new(width, height);
+        let terminal = Terminal::new(backend).ok();
+        assert!(terminal.is_some());
+        if let Some(mut terminal) = terminal {
+            let drawn = terminal.draw(|frame| ui::render(frame, &app));
+            assert!(drawn.is_ok());
+            let layout = ui::layout::compute(ratatui::layout::Rect::new(0, 0, width, height), &app);
+            let border = terminal
+                .backend()
+                .buffer()
+                .cell((layout.content.x, layout.content.y));
+            assert!(border.is_some());
+            if let Some(border) = border {
+                assert_eq!(border.symbol(), "\u{250c}");
+                assert_eq!(Some(border.fg), app.theme.style(StyleRole::BorderNormal).fg);
+                assert_ne!(
+                    Some(border.fg),
+                    app.theme.style(StyleRole::BorderFocused).fg
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn required_responsive_frames_render_without_wrapped_rows() {
     let empty = mock_app();
     assert!(empty.is_some());

@@ -156,6 +156,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(app.theme.style(theme::StyleRole::BorderFocused))
+                    .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     .title(format!(" {} ", state.title)),
             ),
         area,

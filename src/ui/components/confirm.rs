@@ -119,6 +119,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(app.theme.style(theme::StyleRole::BorderDanger))
+                    .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     .title(" Confirm "),
             ),
         area,

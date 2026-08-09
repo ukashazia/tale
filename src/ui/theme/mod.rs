@@ -239,7 +239,10 @@ impl TokenKind {
             (Self::Primary, true) => Token::new((250, 249, 248), 231, Color::White),
             (Self::Muted, true) => Token::new((175, 172, 171), 145, Color::Gray),
             (Self::Disabled, true) => Token::new((112, 110, 109), 242, Color::DarkGray),
-            (Self::Border, true) => Token::new((68, 67, 66), 238, Color::Gray),
+            // Normal pane borders must remain visible against the surface they
+            // enclose. Gray400 clears the 3:1 non-text boundary gate; Gray600
+            // measured only 1.47:1 and made the whole frame disappear.
+            (Self::Border, true) => Token::new((175, 172, 171), 145, Color::Gray),
             (Self::SelectionInk, true) => Token::new((31, 30, 30), 234, Color::Black),
             (Self::Focus | Self::Info, true) => Token::new((133, 170, 245), 111, Color::LightBlue),
             (Self::FocusStrong, true) => Token::new((90, 130, 222), 68, Color::Blue),
@@ -254,7 +257,9 @@ impl TokenKind {
                 Token::new((238, 235, 234), 255, Color::Gray)
             }
             (Self::Backdrop, false) => Token::new((218, 214, 213), 188, Color::Gray),
-            (Self::Border, false) => Token::new((218, 214, 213), 188, Color::DarkGray),
+            // Gray500 is the darkest published neutral that keeps a normal
+            // boundary comfortably visible on the light surface.
+            (Self::Border, false) => Token::new((112, 110, 109), 242, Color::DarkGray),
             (Self::Primary | Self::SelectionInk, false) => {
                 Token::new((31, 30, 30), 234, Color::Black)
             }
@@ -392,6 +397,7 @@ mod tests {
                 );
             }
             for boundary in [
+                TokenKind::Border,
                 TokenKind::Focus,
                 TokenKind::Healthy,
                 TokenKind::Warning,

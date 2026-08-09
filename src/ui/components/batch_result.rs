@@ -1,9 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::domain::admin_mutation::{BatchChildOutcome, BatchMutation};
+use crate::ui::components::panel;
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, batch: &BatchMutation) {
@@ -36,14 +36,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, batch: &BatchMutatio
         batch.verified_count(),
         batch.targets.len()
     );
-    frame.render_widget(
-        Paragraph::new(format!("{summary}\n\n{}", lines.join("\n")))
-            .style(app.theme.style(theme::StyleRole::TextPrimary))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("batch outcomes"),
-            ),
+    panel::render_styled(
+        frame,
+        app,
         area,
+        "batch outcomes",
+        format!("{summary}\n\n{}", lines.join("\n")),
+        theme::StyleRole::SurfaceRaised,
+        theme::StyleRole::BorderNormal,
     );
 }

@@ -57,6 +57,10 @@ pub fn render_styled(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(app.theme.style(border))
+                    // A title names the page; it is text, not another border
+                    // glyph. Keeping its ink independent prevents a subtle or
+                    // unfocused boundary from making the route name illegible.
+                    .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     // Content never touches the border; one rule, every box.
                     .padding(Padding::horizontal(1))
                     .title(pad(title)),
@@ -110,6 +114,7 @@ pub fn render_focusable_wrapped(
                     } else {
                         theme::StyleRole::BorderNormal
                     }))
+                    .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     .padding(Padding::horizontal(1))
                     .title(pad(title)),
             ),
@@ -117,10 +122,10 @@ pub fn render_focusable_wrapped(
     );
 }
 
-/// A focused document pane whose body is taller than the terminal. Collection
-/// side panes deliberately do not use this: their summaries stay anchored at
-/// the first line while Enter opens the navigable document.
-pub fn render_focusable_scrolled(
+/// A full-screen document whose body is taller than the terminal. Its input
+/// target is unambiguous, so it keeps the normal boundary instead of claiming
+/// split-pane focus with a blue border.
+pub fn render_scrolled(
     frame: &mut Frame<'_>,
     app: &App,
     area: Rect,
@@ -135,7 +140,8 @@ pub fn render_focusable_scrolled(
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(app.theme.style(theme::StyleRole::BorderFocused))
+                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                    .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     .padding(Padding::horizontal(1))
                     .title(pad(title)),
             ),
@@ -150,6 +156,7 @@ pub fn block<'a>(app: &App, title: &str, content: impl Into<Text<'static>>) -> P
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                 // Content never touches the border; one rule, every box.
                 .padding(Padding::horizontal(1))
                 .title(pad(title)),

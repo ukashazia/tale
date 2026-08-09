@@ -77,11 +77,11 @@ complete distinction is recorded in `docs/design/theme-token-ledger.md`.
 ## Contrast and projection
 
 WCAG 2.1 relative luminance is calculated from linearized sRGB. Primary and
-muted text pairs actually used by Tale pass 4.5:1; state/focus boundaries pass
-3:1. Disabled text is intentionally lower contrast and is always paired with a
-disabled word/symbol and crossed-out or dim-plus-label signaling. The ledger
-records measured ratios and the one prohibited pairing: light muted text is not
-used on the light inset surface (`4.28:1`).
+muted text pairs actually used by Tale pass 4.5:1; normal, state, and focus
+boundaries pass 3:1. Disabled text is intentionally lower contrast and is always
+paired with a disabled word/symbol and crossed-out or dim-plus-label signaling.
+The ledger records measured ratios and the one prohibited pairing: light muted
+text is not used on the light inset surface (`4.28:1`).
 
 ANSI-256 indices were precomputed with CIELAB perceptual distance against the
 xterm palette, then manually reviewed for semantic collisions. A neighboring
