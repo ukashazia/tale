@@ -2985,7 +2985,11 @@ impl App {
             && key.code == KeyCode::Char('e')
             && key.modifiers.is_empty()
         {
-            return self.dispatch_action(ActionId::AdminPolicyEdit);
+            return self.dispatch_action(if self.policy_workflow.is_some() {
+                ActionId::AdminPolicyEditorReopen
+            } else {
+                ActionId::AdminPolicyEdit
+            });
         }
 
         let context = self.action_context();
@@ -6897,8 +6901,7 @@ impl App {
 
     fn open_policy_workflow(&mut self) -> Vec<Effect> {
         if self.policy_workflow.is_some() {
-            self.runtime_error = Some("a policy workflow is already open".to_owned());
-            return Vec::new();
+            return self.reopen_policy_editor();
         }
         if let Err(error) = crate::terminal::EditorCommand::from_environment() {
             self.runtime_error = Some(error.to_string());
@@ -6962,6 +6965,13 @@ impl App {
             }
         };
         let workflow_id = workflow.workflow_id();
+        if !self
+            .overlays
+            .iter()
+            .any(|overlay| matches!(overlay, Overlay::PolicyEditor))
+        {
+            self.overlays.push(Overlay::PolicyEditor);
+        }
         if let Some(workflow) = self.policy_workflow.as_mut() {
             workflow.mark_editing_externally();
         }
@@ -6976,6 +6986,21 @@ impl App {
     fn reopen_policy_editor(&mut self) -> Vec<Effect> {
         if self.policy_workflow.is_none() {
             return self.open_policy_workflow();
+        }
+        if self
+            .policy_workflow
+            .as_ref()
+            .is_some_and(|workflow| workflow.state() == PolicyState::Opening)
+        {
+            if !self
+                .overlays
+                .iter()
+                .any(|overlay| matches!(overlay, Overlay::PolicyEditor))
+            {
+                self.overlays.push(Overlay::PolicyEditor);
+            }
+            self.runtime_error = Some("the policy source is still loading".to_owned());
+            return Vec::new();
         }
         self.start_policy_editor()
     }
@@ -12461,11 +12486,17 @@ impl App {
                 ActionId::OverviewHealthOpenResource,
                 ActionId::OverviewHealthRunSuggestedAction,
             ]),
-            Route::Access => actions.extend([
-                ActionId::AdminPolicyEdit,
-                ActionId::AccessExplorerAsk,
-                ActionId::AccessExplorerOpenRule,
-            ]),
+            Route::Access => {
+                actions.push(if self.policy_workflow.is_some() {
+                    ActionId::AdminPolicyEditorReopen
+                } else {
+                    ActionId::AdminPolicyEdit
+                });
+                actions.extend([
+                    ActionId::AccessExplorerAsk,
+                    ActionId::AccessExplorerOpenRule,
+                ]);
+            }
             Route::Audit => actions.extend([
                 ActionId::ActivityFlowsSelectWindow,
                 ActionId::ActivityFlowsAggregate,

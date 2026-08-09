@@ -1059,7 +1059,7 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::AdminDnsSplitCreate => Some("sc"),
         ActionId::AdminDnsSplitEdit => Some("se"),
         ActionId::AdminDnsSplitRemove => Some("sd"),
-        ActionId::AdminPolicyEdit => Some("pe"),
+        ActionId::AdminPolicyEdit | ActionId::AdminPolicyEditorReopen => Some("pe"),
         ActionId::ProfileActivate => Some("a"),
         ActionId::SavedViewCreate => Some("vc"),
         ActionId::SavedViewReplace => Some("vr"),
@@ -1219,7 +1219,9 @@ pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
         ActionId::AdminDnsSplitCreate
         | ActionId::AdminDnsSplitEdit
         | ActionId::AdminDnsSplitRemove => Some(TransientGroup::SplitDns),
-        ActionId::AdminPolicyEdit => Some(TransientGroup::Policy),
+        ActionId::AdminPolicyEdit | ActionId::AdminPolicyEditorReopen => {
+            Some(TransientGroup::Policy)
+        }
         ActionId::SavedViewCreate
         | ActionId::SavedViewReplace
         | ActionId::SavedViewRename

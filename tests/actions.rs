@@ -9,6 +9,7 @@ use tale::action::{self, ActionContext, ActionId, Binding};
 use tale::app::{App, InteractionMode, Overlay, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
+use tale::domain::policy_workflow::PolicyWorkflow;
 use tale::event::{Event, InputEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
@@ -205,6 +206,28 @@ fn the_devices_menu_carries_admin_and_local_actions_together() {
     assert!(actions.contains(&ActionId::AdminDeviceRename));
     assert!(actions.contains(&ActionId::LocalSshOpen));
     assert!(actions.contains(&ActionId::DevicesTaildropSend));
+    assert!(action::validate_transient_sequences(&actions).is_ok());
+}
+
+#[test]
+fn access_edit_action_becomes_reopen_while_a_workflow_exists() {
+    let Some(mut app) = local_app(true) else {
+        return;
+    };
+    app.set_route(Route::Access);
+    let actions = app.contextual_actions();
+    assert!(actions.contains(&ActionId::AdminPolicyEdit));
+    assert!(!actions.contains(&ActionId::AdminPolicyEditorReopen));
+
+    app.policy_workflow = Some(PolicyWorkflow::opening(
+        1,
+        "audit".to_owned(),
+        "example.test".to_owned(),
+        1,
+    ));
+    let actions = app.contextual_actions();
+    assert!(!actions.contains(&ActionId::AdminPolicyEdit));
+    assert!(actions.contains(&ActionId::AdminPolicyEditorReopen));
     assert!(action::validate_transient_sequences(&actions).is_ok());
 }
 
