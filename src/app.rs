@@ -2981,6 +2981,12 @@ impl App {
             }
             return Vec::new();
         }
+        if self.current_route() == Route::Access
+            && key.code == KeyCode::Char('e')
+            && key.modifiers.is_empty()
+        {
+            return self.dispatch_action(ActionId::AdminPolicyEdit);
+        }
 
         let context = self.action_context();
         let Some(action_id) = action::action_for_key(key, context) else {
@@ -6892,6 +6898,10 @@ impl App {
     fn open_policy_workflow(&mut self) -> Vec<Effect> {
         if self.policy_workflow.is_some() {
             self.runtime_error = Some("a policy workflow is already open".to_owned());
+            return Vec::new();
+        }
+        if let Err(error) = crate::terminal::EditorCommand::from_environment() {
+            self.runtime_error = Some(error.to_string());
             return Vec::new();
         }
         let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
@@ -12452,6 +12462,7 @@ impl App {
                 ActionId::OverviewHealthRunSuggestedAction,
             ]),
             Route::Access => actions.extend([
+                ActionId::AdminPolicyEdit,
                 ActionId::AccessExplorerAsk,
                 ActionId::AccessExplorerOpenRule,
             ]),

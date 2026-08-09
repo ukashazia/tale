@@ -37,27 +37,20 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "Policy source",
+        "Policy editor",
         app.theme.style(theme::StyleRole::SectionHeading),
     )));
-    if let Some(source) = policy.as_str() {
-        let source = source.chars().take(8_000).collect::<String>();
-        lines.extend(source.lines().map(|line| {
-            let style = if line.trim_start().starts_with("//") {
-                app.theme.style(theme::StyleRole::StateWarning)
-            } else if line.contains('"') {
-                app.theme.style(theme::StyleRole::Focus)
-            } else {
-                app.theme.style(theme::StyleRole::TextPrimary)
-            };
-            Line::from(Span::styled(line.to_owned(), style))
-        }));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "The policy source is not valid UTF-8.",
-            app.theme.style(theme::StyleRole::StateDanger),
-        )));
-    }
+    lines.push(Line::from(vec![
+        Span::styled("e", app.theme.style(theme::StyleRole::Focus)),
+        Span::styled(
+            "  Open the exact fetched HuJSON in $EDITOR",
+            app.theme.style(theme::StyleRole::TextPrimary),
+        ),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "Tale suspends this screen while the editor owns the terminal. Search, scroll, and edit there.",
+        app.theme.style(theme::StyleRole::TextMuted),
+    )));
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         "Access Explorer",
@@ -68,11 +61,5 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .lines()
             .map(|line| Line::from(line.to_owned())),
     );
-    panel::render(
-        frame,
-        app,
-        area,
-        "access · preserved source · read-only",
-        lines,
-    );
+    panel::render(frame, app, area, "access · policy", lines);
 }

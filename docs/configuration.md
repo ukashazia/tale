@@ -53,7 +53,7 @@ Environment variables do not map generically onto TOML keys.
 | `TALE_TAILSCALE_PATH` | override the local executable for this run |
 | `TALE_TAILSCALE_SOCKET` | override the local daemon socket or named pipe for this run |
 | `NO_COLOR` | force color mode `none` |
-| `VISUAL`, `EDITOR` | external policy editor, in that order |
+| `EDITOR` | required external policy editor for access-policy editing |
 
 ## Command-line interface
 

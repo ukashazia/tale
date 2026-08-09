@@ -69,11 +69,9 @@ impl EditorCommand {
     }
 
     pub fn from_environment() -> Result<Self, EditorError> {
-        let visual = std::env::var("VISUAL").ok();
         let editor = std::env::var("EDITOR").ok();
-        visual
+        editor
             .filter(|value| !value.trim().is_empty())
-            .or(editor.filter(|value| !value.trim().is_empty()))
             .ok_or(EditorError::NotConfigured)
             .and_then(|value| Self::parse(&value))
     }
@@ -97,9 +95,9 @@ impl EditorCommand {
 
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
 pub enum EditorError {
-    #[error("no usable external editor is configured")]
+    #[error("EDITOR is not set or is empty")]
     NotConfigured,
-    #[error("the external editor command is invalid")]
+    #[error("EDITOR contains an invalid editor command")]
     InvalidCommand,
     #[error("the external editor could not be started")]
     Spawn,
