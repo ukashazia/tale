@@ -1,12 +1,17 @@
 # Tale
 
-Tale is a keyboard-first Tailscale terminal application built with Rust and
-Ratatui. Its goal is to combine local-client operation, tailnet administration,
-and network diagnostics in one coherent interface.
+Use Tale to understand and work with your Tailscale network without leaving the
+terminal. Start with the node you are on, then move into your tailnet when you
+need to inspect devices, people, routes, DNS, access policy, services, or
+recent activity.
 
-Tale is an implementation-stage terminal application. The hardening work keeps
-support claims evidence-based; see `docs/support.md` before treating any
-platform or client combination as supported.
+Tale is keyboard-first: press `:` to go anywhere, `/` to narrow a list, `a` for
+available actions, and `?` whenever you want the keys for the screen in front
+of you.
+
+> **Experimental:** Tale has no Supported 1.0 platform releases yet. It is best
+> used from a checkout for evaluation and development. See the
+> [support matrix](docs/support.md) for the evidence behind that status.
 
 <p align="center">
   <a href="docs/assets/tale-devices.png">
@@ -33,75 +38,70 @@ platform or client combination as supported.
   </tr>
 </table>
 
-<details>
-<summary>Regenerate these screenshots</summary>
+## Start here
+
+You need a stable Rust toolchain, a terminal with alternate-screen support, and
+an installed Tailscale client if you want to inspect or operate the local node.
+From this checkout:
 
 ```sh
-nix develop
-./scripts/capture-readme-screenshots.sh docs/assets/readme-wallpaper.jpg
+cargo install --locked --path .
+tale
 ```
 
-The script builds Tale, drives the deterministic mock TUI, and replaces all
-three PNGs. The Nix development shell provides the pinned capture toolchain.
-The bundled wallpaper is the free Unsplash image
-[“Abstract diagonal lines of light blue fabric”](https://unsplash.com/photos/O0hlizfP-Kw)
-by Logan Voss. Pass another image to use an arbitrary wallpaper instead:
+The first launch works locally and does not require an admin credential. Use
+`tale config check` to validate configuration and `tale config path` to see
+where Tale keeps it.
+
+### Connect a tailnet profile
+
+Add an admin profile only when you need tailnet-wide information or actions.
+Use a least-privilege Control API credential; a read-only profile is the right
+choice when you only need visibility.
 
 ```sh
-./scripts/capture-readme-screenshots.sh /path/to/wallpaper.jpg
+printf '%s' "$TOKEN" |
+  tale auth add ops --tailnet TAILNET_ID --kind access-token --secret-stdin
+tale --profile ops --read-only
 ```
 
-The wallpaper is center-cropped to each screenshot's dimensions. Omitting it
-keeps the solid background defined by the VHS tapes.
+Tale keeps credentials separate from shareable configuration. Before opening a
+profile with write access, review [configuration](docs/configuration.md) and
+[security](docs/security.md).
 
-</details>
+## Everyday navigation
 
-## Project documents
+| Want to… | Try this |
+| --- | --- |
+| Check this computer’s Tailscale connection | Open `local` with `:local` |
+| Find a device or person | Open `devices` or `users`, then press `/` |
+| Inspect routing, DNS, access, or services | Use `:routes`, `:dns`, `:access`, or `:services` |
+| Refresh information | Press `r` for the current view or `R` for all of its sources |
+| See what Tale did | Open task history with `@` |
+| Return to a prior view | Press `[` or `]` |
 
-These documents describe the product and its current contracts. Completed
-implementation plans and point-in-time build evidence are intentionally not
-kept in the main documentation set.
+Destructive actions are never bound to a single direct key: they live behind
+`a` and require typed confirmation. Tale also does not automatically upload
+doctor or support data.
 
-- [Design principles](DESIGN.md)
-- [Product definition and feature catalog](docs/product.md)
-- [Interaction and user flows](docs/ux.md)
-- [Application architecture](docs/architecture.md)
-- [Configuration contract](docs/configuration.md)
-- [Architectural decisions](docs/decisions)
-- [Control API contract ledger](docs/contracts/control-api-2026-08-03.md)
-- [LocalAPI contract ledger](docs/contracts/localapi-1.98.9.md)
-- [Support matrix](docs/support.md)
+## Help and reference
+
+If something is not working, start with [troubleshooting and recovery](docs/troubleshooting.md).
+For a safe diagnostic summary, run `tale doctor`; it is non-mutating and
+redacts its output.
+
 - [Installation](docs/install.md)
-- [Security review](docs/security.md)
+- [Configuration](docs/configuration.md)
+- [Keyboard navigation and user flows](docs/ux.md)
+- [Support matrix](docs/support.md)
+- [Security](docs/security.md)
 - [Troubleshooting and recovery](docs/troubleshooting.md)
-- [Release checklist](docs/release-checklist.md)
 - [`tale(1)` man page](docs/cli/tale.1)
 
-## Product boundary
+## Developing Tale
 
-Tale uses supported Tailscale surfaces instead of scraping the admin console:
-
-- the configured LocalAPI socket or named pipe for local status, preferences,
-  peer observation, and event-driven invalidation;
-- the installed `tailscale` command only for typed local operations whose
-  LocalAPI mutation contract is intentionally not adopted;
-- the documented Tailscale Control API for tailnet-wide inventory and
-  administration.
-
-Local daemon observation, local CLI execution, and admin API access are
-independent capabilities. Tale subscribes before its initial LocalAPI reads,
-coalesces event invalidations into authoritative reads, retains last-good data
-during reconnect, and never falls back to CLI status observation. The bottom
-interaction shell uses `:` and `/` inline editors, `a`/`y` transient mnemonic
-menus, `?` contextual help, and `[`/`]` bounded view history. Built-in
-`tailscale-dark`, `tailscale-light`, and `terminal` themes preserve the same
-state, source, and risk meanings through truecolor, reduced-color, and no-color
-projections.
-
-If Tailscale exposes a feature only in the web console, Tale reports that
-limitation plainly. It does not emulate the console through browser automation
-or depend on undocumented endpoints.
-
-Local installation and local-node operation do not imply admin access. Admin
-mode requires a separately configured profile and least-privilege Control API
-credential. Tale never uploads doctor bundles or support data automatically.
+Contributors can find the project’s [design principles](DESIGN.md),
+[architecture](docs/architecture.md), [feature catalog](docs/product.md), and
+[release checklist](docs/release-checklist.md) in the documentation. To refresh
+the screenshots above, use the instructions in
+[`scripts/capture-readme-screenshots.sh`](scripts/capture-readme-screenshots.sh).
