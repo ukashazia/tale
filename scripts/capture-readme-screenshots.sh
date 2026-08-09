@@ -106,7 +106,7 @@ extract_frame() {
     -i "${video}" \
     -filter_complex \
     "[0:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},format=rgba,split=2[wall][blur_source]; \
-     [blur_source]gblur=sigma=64[blurred]; \
+     [blur_source]gblur=sigma=64,colorchannelmixer=rr=0.85:gg=0.85:bb=0.85[blurred]; \
      [1:v]setpts=PTS-STARTPTS,format=rgba,colorkey=0xE8E1DF:0.035:0.08,split=2[mask_source][terminal]; \
      [mask_source]alphaextract[mask]; \
      [blurred][mask]alphamerge[blurred_window]; \
