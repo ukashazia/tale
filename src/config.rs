@@ -218,6 +218,48 @@ pub struct SettingDisplay {
     pub source: ValueSource,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SettingSortField {
+    Name,
+    Value,
+    Source,
+}
+
+impl SettingSortField {
+    pub const ALL: [Self; 3] = [Self::Name, Self::Value, Self::Source];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Name => "setting",
+            Self::Value => "value",
+            Self::Source => "source",
+        }
+    }
+
+    pub const fn key(self) -> char {
+        match self {
+            Self::Name => 'n',
+            Self::Value => 'v',
+            Self::Source => 's',
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SettingSortSpec {
+    pub field: SettingSortField,
+    pub direction: crate::domain::device::SortDirection,
+}
+
+impl Default for SettingSortSpec {
+    fn default() -> Self {
+        Self {
+            field: SettingSortField::Name,
+            direction: crate::domain::device::SortDirection::Ascending,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("unknown field {0}")]

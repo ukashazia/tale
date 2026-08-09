@@ -3,7 +3,8 @@ use std::fs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use tale::app::{App, Route};
+use tale::action::{ActionContext, ActionId};
+use tale::app::{App, CopyField, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::access_explorer::{AccessDecision, AccessResult, PolicySource};
@@ -515,4 +516,62 @@ fn the_managed_tailnet_is_read_from_the_profile_that_manages_it() {
     assert!(rendered.contains("ui.color.resolved"));
     // Nothing a tailnet owns belongs on this page.
     assert!(!rendered.contains("tailnet.https_enabled"));
+}
+
+#[test]
+fn config_is_a_full_collection_with_filter_sort_copy_and_actions() {
+    let Some(mut app) = admin_app("config-collection") else {
+        return;
+    };
+    app.set_route(Route::Config);
+
+    assert_eq!(app.action_context(), ActionContext::Collection);
+    let footer = app
+        .footer_actions(240)
+        .into_iter()
+        .map(|hint| hint.action_id)
+        .collect::<Vec<_>>();
+    for action in [
+        ActionId::ViewFilter,
+        ActionId::CollectionSort,
+        ActionId::ResourceCopy,
+        ActionId::ResourceActions,
+    ] {
+        assert!(footer.contains(&action), "config is missing {action:?}");
+    }
+
+    let _ = app.dispatch_action(ActionId::ResourceCopy);
+    assert!(matches!(
+        &app.interaction,
+        InteractionMode::Transient(state)
+            if state.fields == [
+                CopyField::ConfigSetting,
+                CopyField::ConfigValue,
+                CopyField::ConfigSource,
+            ]
+    ));
+    press(&mut app, KeyCode::Esc);
+
+    let _ = app.dispatch_action(ActionId::CollectionSort);
+    assert!(matches!(
+        &app.interaction,
+        InteractionMode::Transient(state) if state.choices.len() == 6
+    ));
+    press(&mut app, KeyCode::Esc);
+
+    let _ = app.dispatch_action(ActionId::ViewFilter);
+    let _ = app.update(Event::Input(InputEvent::Paste("theme".to_owned())));
+    assert!(
+        app.config_rows()
+            .iter()
+            .all(|row| row.name.contains("theme") || row.value.contains("theme"))
+    );
+    press(&mut app, KeyCode::Esc);
+
+    let _ = app.dispatch_action(ActionId::ResourceActions);
+    assert!(matches!(
+        &app.interaction,
+        InteractionMode::Transient(state)
+            if state.actions.contains(&ActionId::SettingsAppearance)
+    ));
 }

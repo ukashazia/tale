@@ -20,7 +20,9 @@ use crate::admin::{
     self, AdminRefreshResource, AdminResource, AdminResourceResult, AdminResourceState,
     AdminSnapshot,
 };
-use crate::config::ResolvedConfig;
+use crate::config::{
+    ResolvedConfig, SettingDisplay, SettingSortField, SettingSortSpec, ValueSource,
+};
 use crate::domain::access_explorer::{AccessQuestion, AccessResult, PolicySource};
 use crate::domain::account::LocalAccount;
 use crate::domain::activity::AuditFilters;
@@ -314,6 +316,8 @@ pub struct FilterRestoration {
     pub task_selection: Option<TaskId>,
     /// The cursor `:profiles` had, which the filter moves and Esc puts back.
     pub profile_selection: usize,
+    /// The cursor `:config` had before live filtering began.
+    pub config_selection: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -374,6 +378,7 @@ pub enum ChoiceOutcome {
     Sort(SortSpec),
     ServiceSort(ServiceSortSpec),
     ProfileSort(ProfileSortSpec),
+    ConfigSort(SettingSortSpec),
     Theme(ThemeId),
     Account {
         action_id: ActionId,
@@ -917,11 +922,15 @@ pub enum CopyField {
     ProfileAccount,
     ProfileCredential,
     ProfileBackend,
+    ConfigSetting,
+    ConfigValue,
+    ConfigSource,
 }
 
 /// The headings the copy menu offers, in the order it shows them.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CopyGroup {
+    Configuration,
     Service,
     Identity,
     Network,
@@ -929,7 +938,8 @@ pub enum CopyGroup {
 }
 
 impl CopyGroup {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
+        Self::Configuration,
         Self::Service,
         Self::Identity,
         Self::Network,
@@ -938,6 +948,7 @@ impl CopyGroup {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Configuration => "Configuration",
             Self::Service => "Service",
             Self::Identity => "Identity",
             Self::Network => "Network",
@@ -952,6 +963,9 @@ impl CopyField {
     /// any field nobody remembered to add to it.
     pub const fn group(self) -> CopyGroup {
         match self {
+            Self::ConfigSetting | Self::ConfigValue | Self::ConfigSource => {
+                CopyGroup::Configuration
+            }
             Self::ServiceUrl | Self::ServiceListener | Self::ServiceBackend => CopyGroup::Service,
             Self::DeviceId
             | Self::DisplayName
@@ -1006,6 +1020,9 @@ impl CopyField {
             Self::ProfileAccount => "account",
             Self::ProfileCredential => "credential",
             Self::ProfileBackend => "store path",
+            Self::ConfigSetting => "setting",
+            Self::ConfigValue => "value",
+            Self::ConfigSource => "source",
         }
     }
 }
@@ -1210,6 +1227,15 @@ pub struct Views {
     pub audit: CollectionViewState,
     pub tasks: TaskViewState,
     pub profiles: ProfileViewState,
+    pub config: ConfigViewState,
+}
+
+/// What `:config` remembers while its resolved settings are projected as rows.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigViewState {
+    pub selected: usize,
+    pub sort: SettingSortSpec,
+    pub filter: String,
 }
 
 /// What `:overview` remembers between refreshes. Findings are derived again
@@ -1625,6 +1651,7 @@ impl App {
                 audit: CollectionViewState::default(),
                 tasks: TaskViewState::default(),
                 profiles: ProfileViewState::default(),
+                config: ConfigViewState::default(),
             },
             devices_resource: DeviceResource::empty(source_mode),
             admin,
@@ -2496,6 +2523,7 @@ impl App {
             | Route::Routes
             | Route::Credentials
             | Route::Profiles
+            | Route::Config
             | Route::Services
             | Route::Tasks
             // Metrics is a long text body, so the movement keys scroll it.
@@ -2581,7 +2609,9 @@ impl App {
             let first_row = match self.current_route() {
                 Route::Users | Route::Profiles => area.y.saturating_add(1),
                 // A border and a heading row sit above the first task.
-                Route::Routes | Route::Credentials | Route::Tasks => area.y.saturating_add(2),
+                Route::Routes | Route::Credentials | Route::Tasks | Route::Config => {
+                    area.y.saturating_add(2)
+                }
                 Route::Services => area.y.saturating_add(3),
                 _ => return,
             };
@@ -2606,6 +2636,12 @@ impl App {
                     let length = self.profile_rows().len();
                     if usize::from(position) < length {
                         self.views.profiles.selected = usize::from(position);
+                    }
+                }
+                Route::Config => {
+                    let length = self.config_rows().len();
+                    if usize::from(position) < length {
+                        self.views.config.selected = usize::from(position);
                     }
                 }
                 Route::Credentials => {
@@ -3017,6 +3053,9 @@ impl App {
                 } else if self.current_route() == Route::Profiles {
                     self.views.profiles.filter = restoration.input;
                     self.views.profiles.selected = restoration.profile_selection;
+                } else if self.current_route() == Route::Config {
+                    self.views.config.filter = restoration.input;
+                    self.views.config.selected = restoration.config_selection;
                 } else if self.current_route() == Route::Services {
                     self.views.services.filter_draft = restoration.input;
                     self.views.services.applied_filter = restoration.expression;
@@ -3260,6 +3299,18 @@ impl App {
             }
             return Vec::new();
         }
+        if self.current_route() == Route::Config {
+            self.views.config.filter = input;
+            self.views.config.selected = 0;
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.error = None;
+                state.generation = generation;
+                if let Some(sections) = sections {
+                    state.sections = sections;
+                }
+            }
+            return Vec::new();
+        }
         if self.current_route() == Route::Tasks {
             self.task_filter = input;
             self.tasks.select_filtered_first(&self.task_filter);
@@ -3327,6 +3378,7 @@ impl App {
             },
             Route::Diagnostics => filter::empty_schema(),
             Route::Profiles => filter::profiles_schema(),
+            Route::Config => filter::config_schema(),
             _ => filter::device_schema(),
         }
     }
@@ -3793,6 +3845,12 @@ impl App {
             self.interaction = InteractionMode::Normal;
             return Vec::new();
         }
+        if self.current_route() == Route::Config {
+            self.views.config.filter = input.trim().to_owned();
+            self.views.config.selected = 0;
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
         if self.current_route() == Route::Tasks {
             self.task_filter = input.trim().to_owned();
             self.tasks.select_filtered_first(&self.task_filter);
@@ -3963,7 +4021,8 @@ impl App {
                 || (self.current_route() == Route::Users && self.selected_admin_user().is_none())
                 || (self.current_route() == Route::Routes && self.selected_admin_route().is_none())
                 || (self.current_route() == Route::Profiles
-                    && self.selected_profile_row().is_none()))
+                    && self.selected_profile_row().is_none())
+                || (self.current_route() == Route::Config && self.selected_config_row().is_none()))
         {
             self.runtime_error = Some("select a resource before running this action".to_owned());
             return Vec::new();
@@ -3987,7 +4046,10 @@ impl App {
             }
             ActionId::ViewFilter => {
                 if self.filter_schema().is_empty()
-                    && !matches!(self.current_route(), Route::Tasks | Route::Profiles)
+                    && !matches!(
+                        self.current_route(),
+                        Route::Tasks | Route::Profiles | Route::Config
+                    )
                 {
                     let subject = if self.current_route() == Route::Services {
                         self.views.services.section.label()
@@ -4000,6 +4062,7 @@ impl App {
                 let input = match self.current_route() {
                     Route::Tasks => self.task_filter.clone(),
                     Route::Profiles => self.views.profiles.filter.clone(),
+                    Route::Config => self.views.config.filter.clone(),
                     Route::Services => self.views.services.filter_draft.clone(),
                     _ => self.views.devices.filter_draft.clone(),
                 };
@@ -4015,6 +4078,7 @@ impl App {
                     task_filter: self.task_filter.clone(),
                     task_selection: self.tasks.selected,
                     profile_selection: self.views.profiles.selected,
+                    config_selection: self.views.config.selected,
                 };
                 let cursor = input.len();
                 let sections = self.filter_suggestions(&input, cursor);
@@ -4040,6 +4104,7 @@ impl App {
                     task_filter: self.task_filter.clone(),
                     task_selection: self.tasks.selected,
                     profile_selection: self.views.profiles.selected,
+                    config_selection: self.views.config.selected,
                 };
                 let generation = self.advance_completion_generation();
                 self.interaction = InteractionMode::FilterLine(FilterLineState {
@@ -4220,6 +4285,8 @@ impl App {
                     self.move_admin_credential_selection(-1);
                 } else if self.current_route() == Route::Profiles {
                     self.move_profile_selection(-1);
+                } else if self.current_route() == Route::Config {
+                    self.move_config_selection(-1);
                 } else {
                     self.move_selection(-1);
                 }
@@ -4246,6 +4313,8 @@ impl App {
                     self.move_admin_credential_selection(1);
                 } else if self.current_route() == Route::Profiles {
                     self.move_profile_selection(1);
+                } else if self.current_route() == Route::Config {
+                    self.move_config_selection(1);
                 } else {
                     self.move_selection(1);
                 }
@@ -4271,6 +4340,8 @@ impl App {
                     self.admin_credential_selected = 0;
                 } else if self.current_route() == Route::Profiles {
                     self.views.profiles.selected = 0;
+                } else if self.current_route() == Route::Config {
+                    self.views.config.selected = 0;
                 } else {
                     self.move_selection_to(0);
                 }
@@ -4309,6 +4380,8 @@ impl App {
                         .map_or(0, |snapshot| snapshot.records.len().saturating_sub(1));
                 } else if self.current_route() == Route::Profiles {
                     self.views.profiles.selected = self.profile_rows().len().saturating_sub(1);
+                } else if self.current_route() == Route::Config {
+                    self.views.config.selected = self.config_rows().len().saturating_sub(1);
                 } else {
                     self.move_selection_to(usize::MAX);
                 }
@@ -4335,6 +4408,8 @@ impl App {
                     self.move_admin_credential_selection(-5);
                 } else if self.current_route() == Route::Profiles {
                     self.move_profile_selection(-5);
+                } else if self.current_route() == Route::Config {
+                    self.move_config_selection(-5);
                 } else {
                     self.move_selection(-5);
                 }
@@ -4361,6 +4436,8 @@ impl App {
                     self.move_admin_credential_selection(5);
                 } else if self.current_route() == Route::Profiles {
                     self.move_profile_selection(5);
+                } else if self.current_route() == Route::Config {
+                    self.move_config_selection(5);
                 } else {
                     self.move_selection(5);
                 }
@@ -10159,6 +10236,67 @@ impl App {
             move_bounded_index(self.views.profiles.selected, length, offset);
     }
 
+    /// Resolved settings projected as the collection shown by `:config`.
+    pub fn config_rows(&self) -> Vec<SettingDisplay> {
+        let mut rows = self.all_config_rows();
+        let filter = self.views.config.filter.trim().to_ascii_lowercase();
+        if !filter.is_empty() {
+            rows.retain(|row| {
+                row.name.to_ascii_lowercase().contains(&filter)
+                    || row.value.to_ascii_lowercase().contains(&filter)
+                    || row.source.label().contains(&filter)
+            });
+        }
+        let sort = self.views.config.sort;
+        rows.sort_by(|left, right| {
+            let ordering = match sort.field {
+                SettingSortField::Name => left.name.cmp(right.name),
+                SettingSortField::Value => left.value.cmp(&right.value),
+                SettingSortField::Source => left.source.label().cmp(right.source.label()),
+            };
+            if sort.direction.is_ascending() {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        });
+        rows
+    }
+
+    pub fn all_config_rows(&self) -> Vec<SettingDisplay> {
+        let mut rows = self.resolved_config.settings();
+        rows.push(SettingDisplay {
+            name: "ui.theme.session",
+            value: self.theme.id().as_str().to_owned(),
+            source: ValueSource::Default,
+        });
+        rows.push(SettingDisplay {
+            name: "ui.color.resolved",
+            value: format!(
+                "{} ({})",
+                self.theme.capability().as_str(),
+                match self.resolved_config.ui.color {
+                    crate::config::ColorMode::Auto => "auto policy",
+                    crate::config::ColorMode::None => "NO_COLOR or configured",
+                    _ => "configured",
+                }
+            ),
+            source: self.resolved_config.ui.color_source,
+        });
+        rows
+    }
+
+    pub fn selected_config_row(&self) -> Option<SettingDisplay> {
+        self.config_rows()
+            .into_iter()
+            .nth(self.views.config.selected)
+    }
+
+    fn move_config_selection(&mut self, offset: isize) {
+        let length = self.config_rows().len();
+        self.views.config.selected = move_bounded_index(self.views.config.selected, length, offset);
+    }
+
     /// Read what every configured profile's store holds. Local reads only, so
     /// this is cheap enough to repeat whenever the answer could have changed.
     fn inspect_profile_credentials(&self) -> Option<Effect> {
@@ -12172,6 +12310,15 @@ impl App {
             }
             return fields;
         }
+        if self.current_route() == Route::Config {
+            return self.selected_config_row().map_or_else(Vec::new, |_| {
+                vec![
+                    CopyField::ConfigSetting,
+                    CopyField::ConfigValue,
+                    CopyField::ConfigSource,
+                ]
+            });
+        }
         if self.current_route() == Route::Profiles {
             // The row is mostly words already on screen; what is worth pasting
             // is what you would type somewhere else — into a config file, a
@@ -12289,7 +12436,7 @@ impl App {
         // lists this machine's own configuration, which is already a file the
         // user owns, so offering to export it or to name a view of it would be
         // offering something with no subject.
-        if self.current_route() != Route::Profiles {
+        if !matches!(self.current_route(), Route::Profiles | Route::Config) {
             actions.extend([
                 ActionId::SavedViewCreate,
                 ActionId::SavedViewReplace,
@@ -15237,12 +15384,37 @@ impl App {
             .collect()
     }
 
+    fn config_sort_choices(&self) -> Vec<MenuChoice> {
+        let current = self.views.config.sort;
+        SettingSortField::ALL
+            .into_iter()
+            .flat_map(|field| {
+                [
+                    (SortDirection::Ascending, 'a', "ascending"),
+                    (SortDirection::Descending, 'd', "descending"),
+                ]
+                .into_iter()
+                .map(move |(direction, order, label)| MenuChoice {
+                    sequence: format!("{}{order}", field.key()),
+                    group: "Column".to_owned(),
+                    subject: field.label().to_owned(),
+                    label: label.to_owned(),
+                    active: current.field == field && current.direction == direction,
+                    outcome: ChoiceOutcome::ConfigSort(SettingSortSpec { field, direction }),
+                })
+            })
+            .collect()
+    }
+
     fn sort_choices(&self) -> Vec<MenuChoice> {
         if self.current_route() == Route::Services {
             return self.service_sort_choices();
         }
         if self.current_route() == Route::Profiles {
             return self.profile_sort_choices();
+        }
+        if self.current_route() == Route::Config {
+            return self.config_sort_choices();
         }
         const FIELDS: [(char, SortField, &str, &str); 10] = [
             ('n', SortField::Name, "Identity", "name"),
@@ -15334,6 +15506,11 @@ impl App {
                 self.views.profiles.selected = 0;
                 Vec::new()
             }
+            ChoiceOutcome::ConfigSort(sort) => {
+                self.views.config.sort = sort;
+                self.views.config.selected = 0;
+                Vec::new()
+            }
             ChoiceOutcome::Theme(id) => {
                 self.theme = Theme::new(id, self.theme.capability());
                 Vec::new()
@@ -15386,6 +15563,21 @@ impl App {
                 }
                 CopyField::ServiceBackend => mapping.backend.argument(),
                 _ => self.service_url(&mapping),
+            };
+            return self.copy_text(value);
+        }
+        if matches!(
+            field,
+            CopyField::ConfigSetting | CopyField::ConfigValue | CopyField::ConfigSource
+        ) {
+            let Some(row) = self.selected_config_row() else {
+                return Vec::new();
+            };
+            let value = match field {
+                CopyField::ConfigSetting => row.name.to_owned(),
+                CopyField::ConfigValue => row.value,
+                CopyField::ConfigSource => row.source.label().to_owned(),
+                _ => return Vec::new(),
             };
             return self.copy_text(value);
         }
@@ -15508,7 +15700,10 @@ impl App {
             | CopyField::ProfileTailnet
             | CopyField::ProfileAccount
             | CopyField::ProfileCredential
-            | CopyField::ProfileBackend => "not returned".to_owned(),
+            | CopyField::ProfileBackend
+            | CopyField::ConfigSetting
+            | CopyField::ConfigValue
+            | CopyField::ConfigSource => "not returned".to_owned(),
         };
         self.copy_text(value)
     }
@@ -15623,6 +15818,7 @@ impl App {
             Route::Routes => self.selected_admin_route().is_some(),
             Route::Credentials => self.selected_credential().is_some(),
             Route::Profiles => self.selected_profile_row().is_some(),
+            Route::Config => self.selected_config_row().is_some(),
             Route::Tasks => self.tasks.selected.is_some(),
             Route::Audit => self.selected_admin_activity().is_some(),
             Route::Services => self.service_inspector_available(),
@@ -17105,6 +17301,9 @@ pub const fn copy_field_key(field: CopyField) -> char {
         CopyField::ProfileAccount => 'a',
         CopyField::ProfileCredential => 'c',
         CopyField::ProfileBackend => 'b',
+        CopyField::ConfigSetting => 'n',
+        CopyField::ConfigValue => 'v',
+        CopyField::ConfigSource => 's',
     }
 }
 

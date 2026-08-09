@@ -1403,15 +1403,18 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         // are. Tasks are already in the order they happened, which is the only
         // order a history reads well in.
         ActionId::CollectionSort => {
-            matches!(route, Route::Devices | Route::Profiles | Route::Services)
+            matches!(
+                route,
+                Route::Devices | Route::Profiles | Route::Config | Route::Services
+            )
         }
         // Diagnostics is one scrolling body: nothing to open into, no rows to
         // filter, no columns to order by.
-        ActionId::CollectionOpen => !matches!(route, Route::Diagnostics),
+        ActionId::CollectionOpen => !matches!(route, Route::Config | Route::Diagnostics),
         ActionId::ViewFilter => {
             matches!(
                 route,
-                Route::Devices | Route::Profiles | Route::Services | Route::Tasks
+                Route::Devices | Route::Profiles | Route::Config | Route::Services | Route::Tasks
             )
         }
         ActionId::ResourceCopy => matches!(
@@ -1419,6 +1422,7 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
             Route::Devices
                 | Route::Users
                 | Route::Profiles
+                | Route::Config
                 | Route::Services
                 | Route::Tasks
                 | Route::Diagnostics

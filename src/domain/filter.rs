@@ -365,6 +365,13 @@ pub const fn profiles_schema() -> FilterSchema {
     }
 }
 
+pub const fn config_schema() -> FilterSchema {
+    FilterSchema {
+        free_text: "matches setting, value, and source",
+        groups: &[],
+    }
+}
+
 pub const fn empty_schema() -> FilterSchema {
     FilterSchema {
         free_text: "",

@@ -1,85 +1,83 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
 
 use crate::app::App;
 use crate::config::{SettingDisplay, ValueSource};
-use crate::ui::components::panel;
+use crate::ui::components::{grid, panel};
 use crate::ui::{text, theme};
+
+const COLUMNS: &[(&str, grid::Width)] = &[
+    ("SETTING", grid::Width::Fill(20)),
+    ("VALUE", grid::Width::Fill(30)),
+    ("SOURCE", grid::Width::Fixed(13)),
+];
 
 /// Everything this client resolved for itself, and what decided each value.
 /// Only Tale's own configuration lives here: anything a tailnet owns is read
 /// through the profile that manages it.
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let mut values = app.resolved_config.settings();
-    // Two values the file cannot state, because they are only settled once a
-    // terminal has answered for itself.
-    values.push(SettingDisplay {
-        name: "ui.theme.session",
-        value: app.theme.id().as_str().to_owned(),
-        source: ValueSource::Default,
-    });
-    values.push(SettingDisplay {
-        name: "ui.color.resolved",
-        value: format!(
-            "{} ({})",
-            app.theme.capability().as_str(),
-            match app.resolved_config.ui.color {
-                crate::config::ColorMode::Auto => "auto policy",
-                crate::config::ColorMode::None => "NO_COLOR or configured",
-                _ => "configured",
-            }
-        ),
-        source: app.resolved_config.ui.color_source,
-    });
-    // The name column fits the longest name there is, so no row pushes its own
-    // source out of line with the rest.
-    let name_width = values
+    let rows = app.config_rows();
+    let columns = COLUMNS
         .iter()
-        .map(|setting| setting.name.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max("SETTING".len())
-        .saturating_add(2);
-    let source_width = "environment".len().saturating_add(2);
-    let value_width = usize::from(area.width.saturating_sub(4))
-        .saturating_sub(name_width)
-        .saturating_sub(source_width)
-        .max(8);
-    let mut lines = vec![Line::from(Span::styled(
-        format!(
-            "{}{}{}",
-            text::pad_or_trim("SETTING", name_width),
-            text::pad_or_trim("VALUE", value_width),
-            "SOURCE"
-        ),
-        app.theme.style(theme::StyleRole::SectionHeading),
-    ))];
-    lines.extend(values.into_iter().map(|setting| {
-        Line::from(vec![
-            Span::styled(
-                text::pad_or_trim(setting.name, name_width),
-                app.theme.style(theme::StyleRole::TextMuted),
-            ),
-            // Two columns of gap the value can never eat, so a truncated path
-            // does not run into the source that explains it.
-            Span::styled(
-                text::pad_or_trim(&setting.value, value_width.saturating_sub(2)),
-                app.theme.style(theme::StyleRole::TextPrimary),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                setting.source.label().to_owned(),
-                app.theme.style(source_role(setting.source)),
-            ),
-        ])
-    }));
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        "Read-only here. Edit the config file at the path above, or pass a flag.",
-        app.theme.style(theme::StyleRole::TextMuted),
-    )));
-    panel::render(frame, app, area, "config · read-only", lines);
+        .map(|(header, width)| grid::Column {
+            header: (*header).to_owned(),
+            width: *width,
+        })
+        .collect::<Vec<_>>();
+    let table_rows = visible_rows(app, &rows, area)
+        .map(|(row, selected)| {
+            grid::Row::new(vec![
+                grid::Cell::new(row.name).with_role(theme::StyleRole::TextMuted),
+                grid::Cell::new(row.value.as_str()),
+                grid::Cell::new(row.source.label()).with_role(source_role(row.source)),
+            ])
+            .selected(selected)
+        })
+        .collect::<Vec<_>>();
+    let lines = grid::lines(app, &columns, &table_rows, area.width.saturating_sub(4));
+    panel::render(frame, app, area, &title(app, rows.len()), lines);
+}
+
+fn visible_rows<'a>(
+    app: &App,
+    rows: &'a [SettingDisplay],
+    area: Rect,
+) -> impl Iterator<Item = (&'a SettingDisplay, bool)> {
+    let viewport = usize::from(area.height.saturating_sub(3)).max(1);
+    let selected = app.views.config.selected;
+    let start = selected
+        .saturating_add(1)
+        .saturating_sub(viewport)
+        .min(rows.len().saturating_sub(1));
+    rows.iter()
+        .enumerate()
+        .skip(start)
+        .take(viewport)
+        .map(move |(index, row)| (row, index == selected))
+}
+
+fn title(app: &App, shown: usize) -> String {
+    let mut detail = Vec::new();
+    if !app.views.config.filter.is_empty() {
+        detail.push(format!(
+            "/{}",
+            text::ellipsize(&app.views.config.filter, 32)
+        ));
+    }
+    detail.push(format!(
+        "{} {}",
+        app.views.config.sort.field.label(),
+        if app.views.config.sort.direction.is_ascending() {
+            "\u{2191}"
+        } else {
+            "\u{2193}"
+        }
+    ));
+    let total = app.all_config_rows().len();
+    if shown != total {
+        detail.push(format!("{shown} of {total}"));
+    }
+    format!("config · read-only · {}", detail.join(" · "))
 }
 
 /// A value someone chose reads differently from one nobody did, so the source
