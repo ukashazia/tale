@@ -797,6 +797,8 @@ fn the_header_is_a_spaced_block_that_hides_what_does_not_matter() {
                 rendered.push(line);
             }
             let text = rendered.join("\n");
+            assert!(text.contains("   ______     __   ____"));
+            assert!(text.contains("  /_/  \\_,_/____/___/"));
             // The status chip is a reversed run, not plain text.
             let chip = rendered
                 .iter()

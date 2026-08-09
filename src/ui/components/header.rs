@@ -10,10 +10,10 @@ use crate::ui::theme;
 
 /// The wordmark. Pure ASCII so it needs no symbol fallback.
 const LOGO: [&str; 4] = [
-    "   ______      __   ",
-    "  /_  __/___ _/ /__ ",
-    "   / / / __ `/ / _ \\",
-    "  /_/  \\__,_/_/\\___/",
+    "   ______     __   ____",
+    "  /_  __/__ _/ /  / __/",
+    "   / / / _ `/ /__/ _/  ",
+    "  /_/  \\_,_/____/___/  ",
 ];
 
 /// Rows the tall header occupies, including the blank above and below.

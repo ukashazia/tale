@@ -8,6 +8,31 @@ Tale is an implementation-stage terminal application. The hardening work keeps
 support claims evidence-based; see `docs/support.md` before treating any
 platform or client combination as supported.
 
+<p align="center">
+  <a href="docs/assets/tale-devices.png">
+    <img src="docs/assets/tale-devices.png" alt="Tale device inventory with the build-01 inspector open" width="100%">
+  </a>
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><strong>Services and exposure</strong></td>
+    <td width="50%"><strong>Resource-first navigation</strong></td>
+  </tr>
+  <tr>
+    <td>
+      <a href="docs/assets/tale-services.png">
+        <img src="docs/assets/tale-services.png" alt="Tale services view showing public and tailnet-only mappings">
+      </a>
+    </td>
+    <td>
+      <a href="docs/assets/tale-navigation.png">
+        <img src="docs/assets/tale-navigation.png" alt="Tale command palette grouping fleet, local, network, and operations routes">
+      </a>
+    </td>
+  </tr>
+</table>
+
 ## Project documents
 
 These documents describe the product and its current contracts. Completed
