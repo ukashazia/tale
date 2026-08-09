@@ -166,6 +166,21 @@ fn idle_ticks_do_not_invalidate_a_clean_frame_but_active_tasks_do() {
     }
 }
 
+#[test]
+fn mock_clock_tracks_elapsed_time_instead_of_tick_frequency() {
+    let app = mock_app();
+    assert!(app.is_some());
+    if let Some(mut app) = app {
+        let started = Instant::now();
+        for tenth in 0..10 {
+            let _ = app.update(Event::Tick(started + Duration::from_millis(tenth * 100)));
+        }
+        assert_eq!(app.now, tale::mock::MOCK_NOW);
+        let _ = app.update(Event::Tick(started + Duration::from_secs(1)));
+        assert_eq!(app.now, tale::mock::MOCK_NOW.saturating_add(1));
+    }
+}
+
 #[tokio::test]
 async fn render_failure_restores_the_terminal_before_returning_the_error() {
     let app = mock_app();

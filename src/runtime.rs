@@ -23,6 +23,7 @@ use crate::admin::mutation::{
 };
 use crate::admin::policy_mutations::{decode_preview_checked, decode_validation};
 use crate::app::App;
+use crate::domain::Timestamp;
 use crate::domain::account::LocalAccount;
 use crate::domain::flow::aggregate_checked_cancellable;
 use crate::domain::mutation::{LocalMutation, MutationResult};
@@ -56,7 +57,7 @@ use crate::local::process::{
 };
 use crate::local::{accounts, handoff, policy};
 use crate::local::{certificates, services, transfers};
-use crate::mock::{self, MOCK_NOW, MockTaskBehavior};
+use crate::mock::{self, MockTaskBehavior};
 use crate::task::{Progress, TaskId, grace_duration};
 use crate::terminal::{EditorCommand, RealTerminal};
 use crate::ui;
@@ -442,11 +443,16 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 }
             });
         }
-        Effect::StartMockTask { task_id, behavior } => {
+        Effect::StartMockTask {
+            task_id,
+            behavior,
+            started_at,
+        } => {
             let queue = queue.clone();
             let cancellation = Cancellation::new();
             cancellations.insert(task_id, cancellation.clone());
             tasks.spawn(async move {
+                let task_started = Instant::now();
                 queue
                     .send(Event::Task(Box::new(TaskEvent::Started { task_id })))
                     .await;
@@ -455,7 +461,9 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                         for completed in 1..=3 {
                             tokio::time::sleep(Duration::from_millis(30)).await;
                             if cancellation.is_cancelled() {
-                                queue.send(cancelled_event(task_id)).await;
+                                queue
+                                    .send(cancelled_event(task_id, started_at, task_started))
+                                    .await;
                                 return;
                             }
                             queue
@@ -472,7 +480,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                         queue
                             .send(Event::Task(Box::new(TaskEvent::Succeeded {
                                 task_id,
-                                finished_at: MOCK_NOW,
+                                finished_at: mock_task_finished_at(started_at, task_started),
                                 summary: "mock refresh completed".to_owned(),
                                 detail: "fictional task completed successfully".to_owned(),
                             })))
@@ -481,13 +489,15 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     MockTaskBehavior::DelayedFailure => {
                         tokio::time::sleep(Duration::from_millis(60)).await;
                         if cancellation.is_cancelled() {
-                            queue.send(cancelled_event(task_id)).await;
+                            queue
+                                .send(cancelled_event(task_id, started_at, task_started))
+                                .await;
                             return;
                         }
                         queue
                             .send(Event::Task(Box::new(TaskEvent::Failed {
                                 task_id,
-                                finished_at: MOCK_NOW,
+                                finished_at: mock_task_finished_at(started_at, task_started),
                                 summary: "mock operation failed".to_owned(),
                                 detail: "fictional failure detail: simulated timeout".to_owned(),
                             })))
@@ -497,7 +507,9 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                         for completed in 1..=20 {
                             tokio::time::sleep(Duration::from_millis(50)).await;
                             if cancellation.is_cancelled() {
-                                queue.send(cancelled_event(task_id)).await;
+                                queue
+                                    .send(cancelled_event(task_id, started_at, task_started))
+                                    .await;
                                 return;
                             }
                             queue
@@ -514,7 +526,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                         queue
                             .send(Event::Task(Box::new(TaskEvent::Succeeded {
                                 task_id,
-                                finished_at: MOCK_NOW,
+                                finished_at: mock_task_finished_at(started_at, task_started),
                                 summary: "long mock operation completed".to_owned(),
                                 detail: "fictional cancellable task completed".to_owned(),
                             })))
@@ -525,7 +537,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                         queue
                             .send(Event::Task(Box::new(TaskEvent::Succeeded {
                                 task_id,
-                                finished_at: MOCK_NOW,
+                                finished_at: mock_task_finished_at(started_at, task_started),
                                 summary: "non-cancellable simulation completed".to_owned(),
                                 detail: "fictional non-cancellable task completed".to_owned(),
                             })))
@@ -1555,10 +1567,14 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
     }
 }
 
-fn cancelled_event(task_id: TaskId) -> Event {
+fn mock_task_finished_at(started_at: Timestamp, task_started: Instant) -> Timestamp {
+    started_at.saturating_add(task_started.elapsed().as_secs())
+}
+
+fn cancelled_event(task_id: TaskId, started_at: Timestamp, task_started: Instant) -> Event {
     Event::Task(Box::new(TaskEvent::Cancelled {
         task_id,
-        finished_at: MOCK_NOW,
+        finished_at: mock_task_finished_at(started_at, task_started),
         detail: "fictional task cancelled".to_owned(),
     }))
 }

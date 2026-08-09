@@ -18,6 +18,7 @@ use crate::domain::dns::{AdminDnsPreferences, AdminNameservers, AdminSearchPaths
 use crate::domain::policy::PolicySnapshot;
 use crate::domain::preference::{LocalPreferences, ObservedPreference};
 use crate::domain::source::{LocalResource, LocalSnapshot};
+use crate::domain::user::AdminUser;
 use crate::task::TaskId;
 
 pub const MOCK_NOW: Timestamp = 1_754_000_000;
@@ -157,6 +158,39 @@ pub fn admin_snapshot() -> AdminSnapshot {
             "auth_keys:read".to_owned(),
             "logs:configuration:read".to_owned(),
         ],
+    );
+    admin.users.begin(1);
+    admin.users.succeed(
+        1,
+        vec![
+            AdminUser {
+                id: "user-fictional-alice".to_owned(),
+                display_name: Some("Alice Example".to_owned()),
+                login_name: Some("alice@example.test".to_owned()),
+                tailnet_id: Some("tailnet-fictional".to_owned()),
+                created_at: Some(MOCK_NOW.saturating_sub(7_776_000)),
+                relation_type: Some("member".to_owned()),
+                role: Some("owner".to_owned()),
+                status: Some("active".to_owned()),
+                device_count: Some(2),
+                last_seen: Some(MOCK_NOW.saturating_sub(30)),
+                currently_connected: Some(true),
+            },
+            AdminUser {
+                id: "user-fictional-bob".to_owned(),
+                display_name: Some("Bob Example".to_owned()),
+                login_name: Some("bob@example.test".to_owned()),
+                tailnet_id: Some("tailnet-fictional".to_owned()),
+                created_at: Some(MOCK_NOW.saturating_sub(2_592_000)),
+                relation_type: Some("member".to_owned()),
+                role: Some("member".to_owned()),
+                status: Some("active".to_owned()),
+                device_count: Some(1),
+                last_seen: Some(MOCK_NOW.saturating_sub(3_600)),
+                currently_connected: Some(false),
+            },
+        ],
+        MOCK_NOW,
     );
     admin.routes.begin(1);
     admin.routes.succeed(

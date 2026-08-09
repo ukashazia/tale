@@ -153,8 +153,11 @@ fn notifications_expire_without_removing_task_results() {
             detail: "finished".to_owned(),
         })));
         assert_eq!(application.notifications.len(), 1);
-        for _ in 0..6 {
-            let _ = application.update(Event::Tick(std::time::Instant::now()));
+        let started = std::time::Instant::now();
+        for seconds in 0..=6 {
+            let _ = application.update(Event::Tick(
+                started + std::time::Duration::from_secs(seconds),
+            ));
         }
         assert!(application.notifications.is_empty());
         assert_eq!(

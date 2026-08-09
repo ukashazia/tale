@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::admin::AdminRefreshResource;
 use crate::admin::key_mutations::AuthKeyCreateRequest;
 use crate::admin::mutation::AdminMutationRequest;
+use crate::domain::Timestamp;
 use crate::domain::access_explorer::AccessQuestion;
 use crate::domain::flow::{AggregateDimension, FlowFilter, FlowMessage};
 use crate::domain::health::HealthSnapshot;
@@ -40,6 +41,7 @@ pub enum Effect {
     StartMockTask {
         task_id: TaskId,
         behavior: MockTaskBehavior,
+        started_at: Timestamp,
     },
     StartAdminRefresh {
         profile: String,

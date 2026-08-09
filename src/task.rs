@@ -145,6 +145,18 @@ impl TaskStore {
         self.tasks.iter_mut().find(|task| task.id == id)
     }
 
+    pub fn selected_can_cancel(&self) -> bool {
+        self.selected
+            .and_then(|id| self.get(id))
+            .is_some_and(|task| {
+                task.cancellable
+                    && matches!(
+                        task.state,
+                        TaskState::Queued | TaskState::Running | TaskState::Cancelling
+                    )
+            })
+    }
+
     pub fn set_local_metadata(
         &mut self,
         id: TaskId,

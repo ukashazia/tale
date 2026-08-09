@@ -240,7 +240,15 @@ fn every_documented_duration_boundary_is_checked() {
 fn mock_conflicts_with_a_selected_profile_and_is_not_persisted() {
     let root = std::env::temp_dir().join(format!("tale-mock-config-{}", std::process::id()));
     let _ = fs::create_dir_all(&root);
-    let mut command = cli(None);
+    let file = root.join("config.toml");
+    assert!(
+        fs::write(
+            &file,
+            "[profiles.ops]\ntailnet = \"example.test\"\ncredential = \"real-credential\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n"
+        )
+        .is_ok()
+    );
+    let mut command = cli(Some(file));
     command.mock = true;
     command.profile = Some("ops".to_owned());
     let conflict = config::resolve(
@@ -258,6 +266,10 @@ fn mock_conflicts_with_a_selected_profile_and_is_not_persisted() {
         &path_environment(Platform::Unix, &root),
     );
     assert!(mocked.is_ok());
+    if let Ok(mocked) = mocked {
+        assert!(mocked.profile.is_none());
+        assert!(mocked.profiles.is_empty());
+    }
     let _ = fs::remove_dir_all(root);
 }
 

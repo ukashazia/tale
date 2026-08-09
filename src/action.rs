@@ -993,10 +993,10 @@ pub fn action_for_key(key: KeyEvent, context: ActionContext) -> Option<ActionId>
 /// UI never invents a mnemonic from a label or from the order of a list.
 pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
     match id {
-        ActionId::MockSuccess => Some("s"),
-        ActionId::MockFailure => Some("f"),
-        ActionId::MockCancellable => Some("c"),
-        ActionId::MockNonCancellable => Some("n"),
+        ActionId::MockSuccess => Some("ms"),
+        ActionId::MockFailure => Some("mf"),
+        ActionId::MockCancellable => Some("mc"),
+        ActionId::MockNonCancellable => Some("mn"),
         ActionId::LocalConnect => Some("c"),
         ActionId::LocalDisconnect => Some("d"),
         ActionId::LocalPreferencesEdit => Some("p"),
@@ -1301,6 +1301,15 @@ impl FooterHint {
 }
 
 pub fn footer_actions(context: ActionContext, route: Route, width: u16) -> Vec<FooterHint> {
+    footer_actions_filtered(context, route, width, |_| true)
+}
+
+pub fn footer_actions_filtered(
+    context: ActionContext,
+    route: Route,
+    width: u16,
+    include: impl Fn(ActionId) -> bool,
+) -> Vec<FooterHint> {
     let mut used = 0usize;
     let mut hints = Vec::new();
     let mut specs = all_actions()
@@ -1310,6 +1319,7 @@ pub fn footer_actions(context: ActionContext, route: Route, width: u16) -> Vec<F
                 && !spec.default_bindings.is_empty()
                 && spec.id != ActionId::ViewHelp
                 && applies_to_route(spec.id, route)
+                && include(spec.id)
         })
         .collect::<Vec<_>>();
     specs.sort_by_key(|spec| footer_priority(spec.id));
@@ -1368,6 +1378,7 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
                     | Route::Profiles
                     | Route::Tasks
                     | Route::Audit
+                    | Route::Services
             )
         }
         // A task is this client's own record, so cancelling and reviewing one

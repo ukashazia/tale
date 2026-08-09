@@ -277,7 +277,7 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.theme.style(theme::StyleRole::TextMuted),
         )));
     }
-    panel::render(frame, app, area, "inspector", lines);
+    panel::render_wrapped(frame, app, area, "inspector", lines);
 }
 
 fn field(app: &App, name: &str, value: &str) -> Line<'static> {

@@ -18,7 +18,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     let layout = layout::compute(area, app);
     if layout.minimum {
         let message = format!(
-            "Tale needs at least 60 columns and 18 rows. Current terminal: {}x{}\nResize the terminal or press q to quit.",
+            "Tale needs at least 60 columns and 18 rows.\nCurrent terminal: {}x{}\nResize the terminal or press q to quit.",
             area.width, area.height
         );
         components::panel::render(frame, app, area, "minimum size", message);

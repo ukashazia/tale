@@ -430,10 +430,15 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
     let minimum = populated_app();
     assert!(minimum.is_some());
     if let Some(minimum) = minimum {
-        let lines = lines_at(&minimum, 59, 18);
+        let lines = lines_at(&minimum, 55, 17);
         assert!(lines.is_some());
         if let Some(lines) = lines {
             assert!(lines.iter().any(|line| line.contains("at least 60")));
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("Current terminal: 55x17"))
+            );
         }
     }
 }

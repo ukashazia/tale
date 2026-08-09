@@ -82,12 +82,8 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if !app.resolved_config.ui.show_footer {
         return vec![Line::default()];
     }
-    let context = context(app);
     let mut spans = Vec::new();
-    for (index, hint) in action::footer_actions(context, app.current_route(), width)
-        .into_iter()
-        .enumerate()
-    {
+    for (index, hint) in app.footer_actions(width).into_iter().enumerate() {
         if index > 0 {
             spans.push(Span::styled(
                 "  ",
@@ -1743,9 +1739,10 @@ fn help_group(id: ActionId) -> Option<HelpGroup> {
         | ActionId::CollectionOpen
         | ActionId::ServicesSectionNext
         | ActionId::ServicesSectionPrevious => Some(HelpGroup::Navigation),
-        ActionId::CollectionSort | ActionId::CollectionWideColumns | ActionId::TaskCancel => {
-            Some(HelpGroup::CurrentView)
-        }
+        ActionId::CollectionSort
+        | ActionId::CollectionWideColumns
+        | ActionId::CollectionInspect
+        | ActionId::TaskCancel => Some(HelpGroup::CurrentView),
         ActionId::ViewCommandLine
         | ActionId::ViewFilter
         | ActionId::DeviceDetailSearch
@@ -1793,7 +1790,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
 }
 
 fn help_action_is_relevant(app: &App, id: ActionId) -> bool {
-    action::applies_to_route(id, app.current_route())
+    app.footer_action_is_relevant(id)
 }
 
 fn help_grid_sections(app: &App) -> Vec<MenuSection> {

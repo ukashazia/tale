@@ -624,7 +624,7 @@ fn render_mock_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
         panel::render(frame, app, area, "inspector", "No device selected");
         return;
     };
-    let pairs = vec![
+    let mut pairs = vec![
         ("id", device.id.to_string()),
         ("hostname", device.hostname.clone()),
         (
@@ -635,11 +635,15 @@ fn render_mock_summary(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 path_detail(&device.path)
             ),
         ),
-        ("addresses", list(&device.addresses, "none returned")),
-        ("tags", list(&device.tags, "none")),
-        ("capabilities", capability_summary(&device.capabilities)),
-        ("Status:", "Simulated data".to_owned()),
     ];
+    if !device.addresses.is_empty() {
+        pairs.push(("addresses", list(&device.addresses, "")));
+    }
+    if !device.tags.is_empty() {
+        pairs.push(("tags", list(&device.tags, "")));
+    }
+    pairs.push(("capabilities", capability_summary(&device.capabilities)));
+    pairs.push(("source", "simulated".to_owned()));
     render_summary(frame, app, area, &device.display_name, pairs);
 }
 

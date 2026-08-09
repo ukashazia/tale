@@ -404,7 +404,11 @@ pub fn resolve(
         } else {
             None
         },
-        profiles: file.profiles,
+        profiles: if cli.mock {
+            BTreeMap::new()
+        } else {
+            file.profiles
+        },
         read_only_source,
         local: LocalConfig {
             enabled: local_enabled,

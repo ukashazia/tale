@@ -1389,6 +1389,7 @@ pub struct CollectionViewState {
 
 #[derive(Debug, Clone)]
 pub struct ServiceViewState {
+    pub inspector: bool,
     pub section: ServiceSection,
     pub selected: usize,
     pub scroll: usize,
@@ -1400,6 +1401,7 @@ pub struct ServiceViewState {
 impl Default for ServiceViewState {
     fn default() -> Self {
         Self {
+            inspector: false,
             section: ServiceSection::Serve,
             selected: 0,
             scroll: 0,
@@ -1512,6 +1514,7 @@ pub struct App {
     pub terminal_height: u16,
     pub now: Timestamp,
     pub tick_count: u64,
+    mock_clock_started_at: Option<Instant>,
     pub runtime_error: Option<String>,
     pub copied_value: Option<String>,
     pub mutation_lock: MutationLock,
@@ -1709,6 +1712,7 @@ impl App {
                 crate::local::now()
             },
             tick_count: 0,
+            mock_clock_started_at: None,
             runtime_error: saved_views_error,
             copied_value: None,
             mutation_lock: MutationLock::new(),
@@ -2272,7 +2276,8 @@ impl App {
     fn update_tick(&mut self, tick: Instant) -> Vec<Effect> {
         self.tick_count = self.tick_count.saturating_add(1);
         self.now = if self.source_mode == SourceMode::Mock {
-            MOCK_NOW.saturating_add(self.tick_count)
+            let started_at = *self.mock_clock_started_at.get_or_insert(tick);
+            MOCK_NOW.saturating_add(tick.saturating_duration_since(started_at).as_secs())
         } else {
             crate::local::now()
         };
@@ -2328,11 +2333,8 @@ impl App {
             if self.resolved_config.ui.show_footer
                 && contains_point(layout.footer, mouse.column, mouse.row)
             {
-                let context = self.action_context();
                 let mut x = layout.footer.x;
-                for hint in
-                    action::footer_actions(context, self.current_route(), layout.footer.width)
-                {
+                for hint in self.footer_actions(layout.footer.width) {
                     let end = x.saturating_add(
                         u16::try_from(hint.width()).map_or(u16::MAX, |value| value),
                     );
@@ -3966,6 +3968,10 @@ impl App {
             self.runtime_error = Some("select a resource before running this action".to_owned());
             return Vec::new();
         }
+        // Recoverable interaction errors describe the last failed attempt.
+        // Once another action is valid they are no longer current, and must
+        // not turn a later normal shutdown into an application failure.
+        self.runtime_error = None;
         match action_id {
             ActionId::AppQuit => self.handle_quit_key(),
             ActionId::ViewCommandLine => {
@@ -4398,9 +4404,11 @@ impl App {
                         && self.selected_admin_activity().is_some())
                 {
                     self.focus = Focus::Inspector;
-                } else if self.current_route() == Route::Services
-                    || self.selected_device().is_some()
-                {
+                } else if self.current_route() == Route::Services {
+                    if self.service_inspector_available() {
+                        self.focus = Focus::Inspector;
+                    }
+                } else if self.selected_device().is_some() {
                     let selected_id = self.selected_device().map(|device| device.id.0.clone());
                     if self.current_route() == Route::Devices {
                         self.reset_device_detail_state();
@@ -4460,6 +4468,10 @@ impl App {
                     Route::Audit => {
                         self.views.audit.inspector = !self.views.audit.inspector;
                         self.views.audit.inspector
+                    }
+                    Route::Services => {
+                        self.views.services.inspector = !self.views.services.inspector;
+                        self.views.services.inspector
                     }
                     _ => return Vec::new(),
                 };
@@ -6447,8 +6459,9 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// A saved view keeps the shape of a screen, so the form asks for the name
-    /// and shows the rest as the values it will store.
+    /// A saved view captures the screen that is already visible. The user names
+    /// it; columns, filters, and sorting are UI state, not a serialization
+    /// format the form asks them to type.
     fn open_saved_view_form(&mut self, action_id: ActionId) -> Vec<Effect> {
         let route = self.current_route().label();
         let title = if action_id == ActionId::SavedViewCreate {
@@ -6460,42 +6473,13 @@ impl App {
             action_id,
             title,
             vec![("route", route.to_owned())],
-            vec![
-                FormField::text(
-                    "name",
-                    "Name",
-                    "What this view is called in the saved view list",
-                    "view name",
-                    String::new(),
-                ),
-                FormField::list(
-                    "columns",
-                    "Columns",
-                    "The columns the view shows, in the order shown",
-                    "the route default",
-                    Vec::<String>::new(),
-                ),
-                FormField::toggle(
-                    "wide",
-                    "Wide columns",
-                    "Give each column its full width rather than fitting the screen",
-                    false,
-                ),
-                FormField::text(
-                    "filter",
-                    "Filter",
-                    "Clauses as field|operator|value, joined by ||; empty saves no filter",
-                    "no filter",
-                    String::new(),
-                ),
-                FormField::list(
-                    "sort",
-                    "Sort",
-                    "Terms as field:ascending or field:descending, in priority order",
-                    "the route default",
-                    Vec::<String>::new(),
-                ),
-            ],
+            vec![FormField::text(
+                "name",
+                "Name",
+                "What this view is called; the current columns, filter, and sort are captured",
+                "view name",
+                String::new(),
+            )],
         );
         Vec::new()
     }
@@ -8232,8 +8216,8 @@ impl App {
 
     fn accept_local_operational_form(&mut self, state: &FormState) -> Vec<Effect> {
         let result = match state.action_id {
-            ActionId::SavedViewCreate | ActionId::SavedViewReplace => saved_view_from_form(state)
-                .map(|view| {
+            ActionId::SavedViewCreate | ActionId::SavedViewReplace => {
+                self.saved_view_from_form(state).map(|view| {
                     if state.action_id == ActionId::SavedViewCreate {
                         OperationalMutation::SavedView(SavedViewMutation::Create(view))
                     } else {
@@ -8242,7 +8226,8 @@ impl App {
                             view,
                         })
                     }
-                }),
+                })
+            }
             ActionId::SavedViewRename => {
                 let name = required_form_value(state, "name", "a view to rename");
                 let replacement = required_form_value(state, "new", "a new name");
@@ -8269,6 +8254,50 @@ impl App {
             }
             Err(error) => self.set_form_error(error),
         }
+    }
+
+    fn saved_view_from_form(&self, state: &FormState) -> Result<SavedView, String> {
+        let name = required_form_value(state, "name", "a name for this view")?;
+        let route = state
+            .subject
+            .iter()
+            .find(|(label, _)| *label == "route")
+            .map(|(_, value)| value.clone())
+            .ok_or_else(|| "the view has no route to save".to_owned())?;
+        if route != Route::Devices.label() {
+            return Ok(SavedView {
+                name,
+                route,
+                wide_columns: false,
+                columns: Vec::new(),
+                filters: Vec::new(),
+                sort: Vec::new(),
+            });
+        }
+        let filters = self
+            .views
+            .devices
+            .applied_filter
+            .terms
+            .iter()
+            .map(saved_filter_from_term)
+            .collect::<Result<Vec<_>, _>>()?;
+        let sort = self
+            .views
+            .devices
+            .sort_terms
+            .iter()
+            .copied()
+            .map(saved_sort_from_device)
+            .collect();
+        Ok(SavedView {
+            name,
+            route,
+            wide_columns: self.views.devices.wide_columns,
+            columns: self.views.devices.columns.clone(),
+            filters,
+            sort,
+        })
     }
 
     fn accept_access_explorer_form(&mut self, state: &FormState) -> Vec<Effect> {
@@ -11995,6 +12024,22 @@ impl App {
             .cloned()
     }
 
+    pub fn service_inspector_available(&self) -> bool {
+        match self.views.services.section {
+            ServiceSection::Serve => self.selected_service_mapping().is_some(),
+            ServiceSection::Taildrive => {
+                self.alpha_local_features && self.selected_taildrive_share().is_some()
+            }
+            ServiceSection::Certificates => self
+                .services_snapshot
+                .certificate_domains
+                .value
+                .as_ref()
+                .and_then(|domains| domains.get(self.views.services.selected))
+                .is_some(),
+        }
+    }
+
     fn metrics_max_scroll(&self) -> usize {
         let line_count = self
             .services_snapshot
@@ -13399,6 +13444,7 @@ impl App {
         vec![Effect::StartMockTask {
             task_id: id,
             behavior,
+            started_at: self.now,
         }]
     }
 
@@ -13673,6 +13719,9 @@ impl App {
     }
 
     fn request_shutdown(&mut self, reason: ShutdownReason) -> Vec<Effect> {
+        if reason == ShutdownReason::UserQuit {
+            self.runtime_error = None;
+        }
         if matches!(self.shutdown_state, ShutdownState::Running) {
             self.shutdown_state = ShutdownState::Requested(reason);
             self.close_policy_temp_file();
@@ -15527,6 +15576,50 @@ impl App {
             Route::Routes => self.views.routes.inspector,
             Route::Credentials => self.views.credentials.inspector,
             Route::Audit => self.views.audit.inspector,
+            Route::Services => self.views.services.inspector,
+            _ => true,
+        }
+    }
+
+    pub fn footer_actions(&self, width: u16) -> Vec<action::FooterHint> {
+        action::footer_actions_filtered(self.action_context(), self.current_route(), width, |id| {
+            self.footer_action_is_relevant(id)
+        })
+    }
+
+    pub fn footer_action_is_relevant(&self, id: ActionId) -> bool {
+        if !action::applies_to_route(id, self.current_route())
+            || self.action_unavailable_reason(id).is_some()
+        {
+            return false;
+        }
+        match id {
+            ActionId::CollectionMoveUp
+            | ActionId::CollectionMoveDown
+            | ActionId::CollectionFirst
+            | ActionId::CollectionLast
+            | ActionId::CollectionPageUp
+            | ActionId::CollectionPageDown
+            | ActionId::CollectionOpen
+            | ActionId::CollectionSort
+            | ActionId::CollectionInspect => self.collection_subject_available(),
+            ActionId::CollectionBack => self.focus == Focus::Inspector,
+            ActionId::TaskCancel => self.tasks.selected_can_cancel(),
+            _ => true,
+        }
+    }
+
+    fn collection_subject_available(&self) -> bool {
+        match self.current_route() {
+            Route::Overview => self.selected_overview_finding().is_some(),
+            Route::Devices => self.selected_device().is_some(),
+            Route::Users => self.selected_admin_user().is_some(),
+            Route::Routes => self.selected_admin_route().is_some(),
+            Route::Credentials => self.selected_credential().is_some(),
+            Route::Profiles => self.selected_profile_row().is_some(),
+            Route::Tasks => self.tasks.selected.is_some(),
+            Route::Audit => self.selected_admin_activity().is_some(),
+            Route::Services => self.service_inspector_available(),
             _ => true,
         }
     }
@@ -16014,36 +16107,6 @@ fn required_form_value(state: &FormState, key: &str, what: &str) -> Result<Strin
     }
 }
 
-fn saved_view_from_form(state: &FormState) -> Result<SavedView, String> {
-    let name = required_form_value(state, "name", "a name for this view")?;
-    let route = state
-        .subject
-        .iter()
-        .find(|(label, _)| *label == "route")
-        .map(|(_, value)| value.clone())
-        .ok_or_else(|| "the view has no route to save".to_owned())?;
-    let filter = state.value("filter").trim();
-    let filters = filter
-        .split("||")
-        .filter(|value| !value.trim().is_empty())
-        .map(parse_saved_filter)
-        .collect::<Result<Vec<_>, _>>()?;
-    let sort = state
-        .entries("sort")
-        .iter()
-        .map(String::as_str)
-        .map(parse_saved_sort)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(SavedView {
-        name,
-        route,
-        wide_columns: state.is_yes("wide"),
-        columns: state.entries("columns"),
-        filters,
-        sort,
-    })
-}
-
 fn export_from_form(state: &FormState) -> Result<OperationalMutation, String> {
     let collection = match state.value("collection") {
         "devices" => crate::domain::export::ExportCollection::Devices,
@@ -16067,74 +16130,127 @@ fn export_from_form(state: &FormState) -> Result<OperationalMutation, String> {
     }))
 }
 
-fn parse_saved_filter(value: &str) -> Result<FilterClause, String> {
-    let mut parts = value.splitn(3, '|');
-    let field = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| "saved filter field is required".to_owned())?;
-    let operator = match parts
-        .next()
-        .map(str::trim)
-        .ok_or_else(|| "saved filter operator is required".to_owned())?
-    {
-        "equals" => FilterOperator::Equals,
-        "not_equals" => FilterOperator::NotEquals,
-        "contains" => FilterOperator::Contains,
-        "starts_with" => FilterOperator::StartsWith,
-        "greater_than" => FilterOperator::GreaterThan,
-        "less_than" => FilterOperator::LessThan,
-        value => return Err(format!("unsupported saved filter operator {value}")),
-    };
-    let raw_value = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "saved filter value is required".to_owned())?;
-    let value = if let Some(value) = raw_value.strip_prefix("number:") {
-        FilterValue::Number(
-            value
-                .parse::<i64>()
-                .map_err(|_| "saved numeric filter value is invalid".to_owned())?,
-        )
-    } else if let Some(value) = raw_value.strip_prefix("boolean:") {
-        FilterValue::Boolean(match value {
-            "true" => true,
-            "false" => false,
-            _ => return Err("saved boolean filter value is invalid".to_owned()),
-        })
-    } else {
-        FilterValue::Text(raw_value.to_owned())
+fn saved_filter_from_term(term: &FilterTerm) -> Result<FilterClause, String> {
+    let (field, operator, value) = match term {
+        FilterTerm::Text(_) => {
+            return Err(
+                "a free-text search cannot be saved exactly; use a field filter first".to_owned(),
+            );
+        }
+        FilterTerm::Field {
+            field,
+            negated,
+            values,
+            comparison,
+        } => {
+            let field = saved_device_filter_field(*field)?;
+            if let Some(comparison) = comparison {
+                if *negated {
+                    return Err("a negated duration comparison cannot be saved exactly".to_owned());
+                }
+                let (operator, duration) = match comparison {
+                    Comparison::Less(duration) => (FilterOperator::LessThan, duration),
+                    Comparison::Greater(duration) => (FilterOperator::GreaterThan, duration),
+                    Comparison::LessOrEqual(_) | Comparison::GreaterOrEqual(_) => {
+                        return Err(
+                            "inclusive duration comparisons cannot be saved exactly".to_owned()
+                        );
+                    }
+                };
+                let seconds = i64::try_from(duration.as_secs())
+                    .map_err(|_| "filter duration is too large to save".to_owned())?;
+                (field, operator, FilterValue::Number(seconds))
+            } else {
+                let [value] = values.as_slice() else {
+                    return Err(
+                        "a multi-value filter cannot be saved exactly; use one value per field"
+                            .to_owned(),
+                    );
+                };
+                (
+                    field,
+                    if *negated {
+                        FilterOperator::NotEquals
+                    } else {
+                        FilterOperator::Equals
+                    },
+                    FilterValue::Text(value.clone()),
+                )
+            }
+        }
+        FilterTerm::StructuredField {
+            field,
+            negated,
+            value,
+            mode,
+        } => (
+            saved_device_filter_field(*field)?,
+            if *negated {
+                FilterOperator::NotEquals
+            } else {
+                match mode {
+                    FieldMatchMode::Exact => FilterOperator::Equals,
+                    FieldMatchMode::Contains => FilterOperator::Contains,
+                    FieldMatchMode::StartsWith => FilterOperator::StartsWith,
+                }
+            },
+            FilterValue::Text(value.clone()),
+        ),
     };
     Ok(FilterClause {
-        field,
+        field: field.to_owned(),
         operator,
         value,
     })
 }
 
-fn parse_saved_sort(value: &str) -> Result<SortTerm, String> {
-    let (field, direction) = value
-        .split_once(':')
-        .ok_or_else(|| "saved sort must be field:ascending|descending".to_owned())?;
-    let descending = match direction.trim() {
-        "ascending" => false,
-        "descending" => true,
-        _ => return Err("saved sort direction is invalid".to_owned()),
-    };
-    if field.trim().is_empty() {
-        return Err("saved sort field is required".to_owned());
+fn saved_device_filter_field(field: FilterField) -> Result<&'static str, String> {
+    match field {
+        FilterField::Id => Ok("id"),
+        FilterField::Name => Ok("name"),
+        FilterField::Online => Ok("online"),
+        FilterField::Owner => Ok("owner"),
+        FilterField::Os => Ok("os"),
+        FilterField::Path => Ok("path"),
+        FilterField::Tag => Ok("tag"),
+        FilterField::LastSeen => Ok("last_seen"),
+        FilterField::Approval => Ok("approval"),
+        FilterField::KeyExpiry => Ok("key_expiry"),
+        FilterField::ClientVersion => Ok("version"),
+        FilterField::Sharing => Ok("sharing"),
+        FilterField::Posture => Ok("posture"),
+        FilterField::RouteRole => Ok("route_role"),
+        FilterField::Property
+        | FilterField::Exposure
+        | FilterField::Listener
+        | FilterField::Port
+        | FilterField::Mount
+        | FilterField::Backend => {
+            Err("this filter field is not available in device saved views".to_owned())
+        }
     }
-    Ok(SortTerm {
-        field: field.trim().to_owned(),
-        direction: if descending {
-            SavedSortDirection::Descending
-        } else {
-            SavedSortDirection::Ascending
+}
+
+fn saved_sort_from_device(sort: SortSpec) -> SortTerm {
+    let field = match sort.field {
+        SortField::Name => "name",
+        SortField::Liveness => "state",
+        SortField::Owner => "owner",
+        SortField::Os => "os",
+        SortField::Path => "path",
+        SortField::LastSeen => "last_seen",
+        SortField::Rx => "rx",
+        SortField::Tx => "tx",
+        SortField::DeviceId => "id",
+        SortField::Version => "version",
+    };
+    SortTerm {
+        field: field.to_owned(),
+        direction: match sort.direction {
+            SortDirection::Ascending => SavedSortDirection::Ascending,
+            SortDirection::Descending => SavedSortDirection::Descending,
         },
-    })
+    }
 }
 
 fn saved_filter_to_term(filter: &FilterClause) -> Result<FilterTerm, String> {
@@ -16155,6 +16271,26 @@ fn saved_filter_to_term(filter: &FilterClause) -> Result<FilterTerm, String> {
         "route_role" => FilterField::RouteRole,
         value => return Err(format!("saved device filter field {value} is unavailable")),
     };
+    if matches!(
+        filter.operator,
+        FilterOperator::GreaterThan | FilterOperator::LessThan
+    ) {
+        let FilterValue::Number(seconds) = filter.value else {
+            return Err("saved duration comparison must use whole seconds".to_owned());
+        };
+        let seconds = u64::try_from(seconds)
+            .map_err(|_| "saved duration comparison cannot be negative".to_owned())?;
+        return Ok(FilterTerm::Field {
+            field,
+            negated: false,
+            values: Vec::new(),
+            comparison: Some(match filter.operator {
+                FilterOperator::GreaterThan => Comparison::Greater(Duration::from_secs(seconds)),
+                FilterOperator::LessThan => Comparison::Less(Duration::from_secs(seconds)),
+                _ => return Err("saved duration operator is invalid".to_owned()),
+            }),
+        });
+    }
     let value = match &filter.value {
         FilterValue::Text(value) => value.clone(),
         FilterValue::Number(value) => value.to_string(),
@@ -16166,10 +16302,7 @@ fn saved_filter_to_term(filter: &FilterClause) -> Result<FilterTerm, String> {
         FilterOperator::Contains => (false, FieldMatchMode::Contains),
         FilterOperator::StartsWith => (false, FieldMatchMode::StartsWith),
         FilterOperator::GreaterThan | FilterOperator::LessThan => {
-            return Err(format!(
-                "saved operator {} is unavailable for device filtering",
-                filter.operator.wire_value()
-            ));
+            return Err("saved duration operator was not handled".to_owned());
         }
     };
     Ok(FilterTerm::StructuredField {
@@ -16200,9 +16333,13 @@ fn saved_filter_to_cli(filter: &FilterClause) -> Result<String, String> {
         // A bare term is already a substring match in the filter grammar.
         "contains" => Ok(format!("{field}:{value}")),
         "starts_with" => Ok(format!("{field}:starts_with={value}")),
-        "greater_than" | "less_than" => Err(format!(
-            "saved operator {operator} cannot be translated to the device filter grammar"
-        )),
+        "greater_than" | "less_than" => {
+            let FilterValue::Number(seconds) = filter.value else {
+                return Err("saved duration comparison must use whole seconds".to_owned());
+            };
+            let comparison = if operator == "greater_than" { ">" } else { "<" };
+            Ok(format!("{field}:{comparison}{seconds}s"))
+        }
         _ => Err(format!("saved operator {operator} is not supported")),
     }
 }

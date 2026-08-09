@@ -468,6 +468,7 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
         }));
         let _ = app.dispatch_action(ActionId::ResourceActions);
         assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+        assert!(app.runtime_error.is_none());
         let _ = app.dispatch_action(ActionId::MockSuccess);
         assert_eq!(app.tasks.all().len(), 1);
         let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
@@ -497,7 +498,11 @@ fn transient_sequences_and_reserved_history_bindings_are_stable() {
     assert!(action::validate_transient_sequences(&actions).is_ok());
     assert!(
         action::validate_transient_sequences(&[ActionId::LocalConnect, ActionId::MockCancellable])
-            .is_err()
+            .is_ok()
+    );
+    assert_eq!(
+        action::transient_sequence(ActionId::MockCancellable),
+        Some("mc")
     );
     assert_eq!(
         action::transient_sequence(ActionId::LocalAccountSwitch),
@@ -525,6 +530,100 @@ fn transient_sequences_and_reserved_history_bindings_are_stable() {
         ),
         Some(ActionId::ViewHistoryForward)
     );
+}
+
+#[test]
+fn saved_view_form_names_the_current_view_without_exposing_storage_syntax() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.set_route(Route::Devices);
+    let _ = app.dispatch_action(ActionId::SavedViewCreate);
+    assert!(matches!(app.overlays.last(), Some(Overlay::Form(_))));
+    if let Some(Overlay::Form(form)) = app.overlays.last() {
+        assert_eq!(form.fields.len(), 1);
+        assert_eq!(form.fields[0].key, "name");
+        assert!(
+            form.fields
+                .iter()
+                .all(|field| !matches!(field.key, "columns" | "filter" | "sort" | "wide"))
+        );
+    }
+}
+
+#[test]
+fn empty_collections_do_not_advertise_row_actions() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.set_route(Route::Users);
+    app.admin.users.snapshot = Some(Vec::new());
+    let actions = app
+        .footer_actions(160)
+        .into_iter()
+        .map(|hint| hint.action_id)
+        .collect::<Vec<_>>();
+    for unavailable in [
+        ActionId::CollectionMoveUp,
+        ActionId::CollectionMoveDown,
+        ActionId::CollectionOpen,
+        ActionId::CollectionInspect,
+    ] {
+        assert!(!actions.contains(&unavailable));
+    }
+}
+
+#[test]
+fn task_cancel_is_advertised_only_while_the_selected_task_can_cancel() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.set_route(Route::Tasks);
+    assert!(
+        !app.footer_actions(160)
+            .iter()
+            .any(|hint| hint.action_id == ActionId::TaskCancel)
+    );
+    let task_id = app.tasks.create(
+        ActionId::MockCancellable,
+        "simulation",
+        mock::MOCK_NOW,
+        true,
+    );
+    assert!(
+        app.footer_actions(160)
+            .iter()
+            .any(|hint| hint.action_id == ActionId::TaskCancel)
+    );
+    assert!(app.tasks.start(task_id));
+    assert!(app.tasks.succeed(
+        task_id,
+        mock::MOCK_NOW.saturating_add(1),
+        "done",
+        "complete"
+    ));
+    assert!(
+        !app.footer_actions(160)
+            .iter()
+            .any(|hint| hint.action_id == ActionId::TaskCancel)
+    );
+}
+
+#[test]
+fn a_recoverable_interaction_error_does_not_make_user_quit_fail() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.runtime_error = Some("select a resource before running this action".to_owned());
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    ))));
+    assert!(app.runtime_error.is_none());
+    assert!(matches!(
+        app.shutdown_state,
+        tale::app::ShutdownState::Requested(tale::event::ShutdownReason::UserQuit)
+    ));
 }
 
 #[test]

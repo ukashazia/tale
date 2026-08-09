@@ -1,7 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Borders, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::ui::theme;
@@ -25,6 +25,18 @@ pub fn render(
         theme::StyleRole::Surface,
         theme::StyleRole::BorderNormal,
     );
+}
+
+/// A semantic detail pane whose values may be longer than the available
+/// column. Tables stay single-line; prose and inspector values wrap.
+pub fn render_wrapped(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    title: &str,
+    content: impl Into<Text<'static>>,
+) {
+    frame.render_widget(block(app, title, content).wrap(Wrap { trim: false }), area);
 }
 
 /// A pane whose whole surface carries a meaning — a revealed secret, say. Rare
@@ -75,6 +87,33 @@ pub fn render_focusable(
         } else {
             theme::StyleRole::BorderNormal
         },
+    );
+}
+
+pub fn render_focusable_wrapped(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    title: &str,
+    content: impl Into<Text<'static>>,
+    focused: bool,
+) {
+    frame.render_widget(
+        Paragraph::new(content.into())
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.style(if focused {
+                        theme::StyleRole::BorderFocused
+                    } else {
+                        theme::StyleRole::BorderNormal
+                    }))
+                    .padding(Padding::horizontal(1))
+                    .title(pad(title)),
+            ),
+        area,
     );
 }
 

@@ -526,6 +526,8 @@ fn transient_leaf_dispatches_without_list_navigation() {
         app.set_route(Route::Devices);
         press(&mut app, KeyCode::Char('a'));
         assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+        press(&mut app, KeyCode::Char('m'));
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
         press(&mut app, KeyCode::Char('s'));
         assert!(matches!(app.interaction, InteractionMode::Normal));
         assert_eq!(app.tasks.all().len(), 1);

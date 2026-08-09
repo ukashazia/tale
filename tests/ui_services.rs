@@ -9,7 +9,7 @@ use ratatui::backend::TestBackend;
 
 use tale::action::ActionId;
 use tale::action::validate_transient_sequences;
-use tale::app::{App, InteractionMode, Route};
+use tale::app::{App, Focus, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{
@@ -82,6 +82,24 @@ fn services_render_all_sections_at_required_widths() {
             );
         }
     }
+}
+
+#[test]
+fn services_inspector_is_opt_in_and_empty_sections_do_not_open_it() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    app.set_route(Route::Services);
+    assert!(!app.inspector_pane_visible());
+    let _ = app.dispatch_action(ActionId::CollectionInspect);
+    assert!(app.inspector_pane_visible());
+    let _ = app.dispatch_action(ActionId::CollectionInspect);
+    assert!(!app.inspector_pane_visible());
+
+    app.views.services.section = ServiceSection::Taildrive;
+    app.alpha_local_features = false;
+    let _ = app.dispatch_action(ActionId::CollectionOpen);
+    assert_eq!(app.focus, Focus::Collection);
 }
 
 #[test]

@@ -63,19 +63,20 @@ pub fn view_title(base: &str, shown: usize, total: usize, detail: &[String]) -> 
 pub fn empty_state(
     resource: &str,
     route: &str,
-    admin_configured: bool,
+    admin_active: bool,
     state: crate::admin::AdminResourceState,
     error: Option<&str>,
 ) -> Vec<String> {
     use crate::admin::AdminResourceState as State;
     let mut lines = vec![format!("No {resource} to show"), String::new()];
-    if !admin_configured {
+    if !admin_active {
         lines.push(format!(
-            "{resource} comes from the admin API, and no admin profile is configured."
+            "An active admin profile is required to show {resource}."
         ));
         lines.push(String::new());
-        lines.push("  add a profile    tale auth add <name>".to_owned());
-        lines.push(format!("  then reopen      : {route}"));
+        lines.push("  choose one       :profiles".to_owned());
+        lines.push("  or add one       tale auth add <name>".to_owned());
+        lines.push(format!("  then reopen      :{route}"));
         return lines;
     }
     if let Some(error) = error {

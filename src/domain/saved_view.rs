@@ -193,6 +193,8 @@ impl ViewRegistry {
                 "route_role",
                 "state",
                 "source",
+                "rx",
+                "tx",
             ],
             [
                 "id",
@@ -337,14 +339,15 @@ fn device_operators() -> Vec<(String, Vec<FilterOperator>)> {
         "posture",
         "route_role",
     ] {
-        operators.push((
-            field.to_owned(),
-            vec![
-                FilterOperator::Equals,
-                FilterOperator::NotEquals,
-                FilterOperator::Contains,
-            ],
-        ));
+        let mut values = vec![
+            FilterOperator::Equals,
+            FilterOperator::NotEquals,
+            FilterOperator::Contains,
+        ];
+        if matches!(field, "last_seen" | "key_expiry") {
+            values.extend([FilterOperator::GreaterThan, FilterOperator::LessThan]);
+        }
+        operators.push((field.to_owned(), values));
     }
     operators
 }
