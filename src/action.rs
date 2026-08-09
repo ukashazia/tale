@@ -626,6 +626,11 @@ const NAVIGATION: &[ActionContext] = &[
     ActionContext::Audit,
 ];
 const COLLECTION: &[ActionContext] = &[ActionContext::Collection, ActionContext::Detail];
+const COLLECTION_OR_AUDIT: &[ActionContext] = &[
+    ActionContext::Collection,
+    ActionContext::Detail,
+    ActionContext::Audit,
+];
 const AUDIT: &[ActionContext] = &[ActionContext::Audit];
 const OVERLAY: &[ActionContext] = &[ActionContext::Overlay];
 
@@ -854,7 +859,7 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             id: ActionId::CollectionOpen,
             label: "Open details",
             description: "Open selected resource details",
-            contexts: COLLECTION,
+            contexts: COLLECTION_OR_AUDIT,
             selection_rule: SelectionRule::One,
             default_bindings: BIND_OPEN,
             capability: Capability::Available,
@@ -886,7 +891,7 @@ pub fn phase_one_actions() -> Vec<ActionSpec> {
             id: ActionId::CollectionInspect,
             label: "Inspector",
             description: "Show or hide the inspector pane",
-            contexts: COLLECTION,
+            contexts: COLLECTION_OR_AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: BIND_INSPECT,
             capability: Capability::Available,
@@ -1354,7 +1359,16 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         // Every route here keeps a table with a row worth describing, and each
         // starts with the pane closed.
         ActionId::CollectionInspect => {
-            matches!(route, Route::Devices | Route::Users | Route::Tasks)
+            matches!(
+                route,
+                Route::Devices
+                    | Route::Users
+                    | Route::Routes
+                    | Route::Credentials
+                    | Route::Profiles
+                    | Route::Tasks
+                    | Route::Audit
+            )
         }
         // A task is this client's own record, so cancelling and reviewing one
         // only mean something on the page that lists them.
@@ -1365,12 +1379,26 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         // are. Tasks are already in the order they happened, which is the only
         // order a history reads well in.
         ActionId::CollectionSort => {
-            !matches!(route, Route::Overview | Route::Diagnostics | Route::Tasks)
+            matches!(route, Route::Devices | Route::Profiles | Route::Services)
         }
         // Diagnostics is one scrolling body: nothing to open into, no rows to
         // filter, no columns to order by.
         ActionId::CollectionOpen => !matches!(route, Route::Diagnostics),
-        ActionId::ViewFilter => !matches!(route, Route::Overview | Route::Diagnostics),
+        ActionId::ViewFilter => {
+            matches!(
+                route,
+                Route::Devices | Route::Profiles | Route::Services | Route::Tasks
+            )
+        }
+        ActionId::ResourceCopy => matches!(
+            route,
+            Route::Devices
+                | Route::Users
+                | Route::Profiles
+                | Route::Services
+                | Route::Tasks
+                | Route::Diagnostics
+        ),
         _ => true,
     }
 }

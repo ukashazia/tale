@@ -1,200 +1,239 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::text::Line;
+use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
 
 use crate::app::App;
-use crate::ui::components::panel;
-use crate::ui::views::routes;
+use crate::domain::preference::ObservedPreference;
+use crate::ui::components::{grid, panel};
+use crate::ui::{text, theme};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if app.local_resource.snapshot.is_none() {
+    let Some(snapshot) = app.local_resource.snapshot.as_ref() else {
         render_without_snapshot(frame, app, area);
         return;
-    }
-    let executable = app.local_executable.as_ref();
-    let snapshot = app.local_resource.snapshot.as_ref();
-    let self_node = snapshot.map(|snapshot| &snapshot.self_node);
-    let client_version = executable
-        .map(|value| value.version.as_str())
-        .or_else(|| snapshot.map(|value| value.client_version.as_str()))
-        .map_or("not returned", |value| value);
-    let daemon_version = executable
-        .and_then(|value| value.daemon_version.as_deref())
-        .or_else(|| snapshot.and_then(|value| value.daemon_version.as_deref()))
-        .map_or("not returned", |value| value);
-    let upper_height = area.height.saturating_mul(3) / 5;
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(upper_height.max(12)), Constraint::Min(7)])
-        .split(area);
-    let mut lines = vec![
-        Line::from("Local node · operator (read-only state display)"),
-        Line::from(format!("state       {}", local_display_state(app))),
-        Line::from(format!(
-            "executable  {}",
-            match executable {
-                Some(value) => value.path.display().to_string(),
-                None => "not returned".to_owned(),
-            }
-        )),
-        Line::from(format!(
-            "source      {}",
-            executable
-                .map(|value| value.source.label())
-                .map_or("not returned", |value| value)
-        )),
-        Line::from(format!(
-            "version     {} / daemon {}",
-            client_version, daemon_version
-        )),
-        Line::from(format!(
-            "node        {}",
-            self_node
-                .map(|value| value.display_name.as_str())
-                .map_or("not returned", |value| value)
-        )),
-        Line::from(format!(
-            "DNS name    {}",
-            self_node
-                .and_then(|value| value.dns_name.as_deref())
-                .map_or("not returned", |value| value)
-        )),
-        Line::from(format!(
-            "addresses   {}",
-            match self_node {
-                Some(value) => value.tailscale_ips.join(", "),
-                None => "not returned".to_owned(),
-            }
-        )),
-        Line::from(format!(
-            "tailnet     {}",
-            snapshot
-                .and_then(|value| value.current_tailnet.as_deref())
-                .map_or("not returned", |value| value)
-        )),
-        Line::from(format!(
-            "observed    {} · {}",
-            match snapshot {
-                Some(value) => value.observed_at.to_string(),
-                None => "not returned".to_owned(),
-            },
-            app.local_resource.status.label()
-        )),
-        Line::from(format!(
-            "health      {}",
-            snapshot
-                .map(|value| value.health_messages.join("; "))
-                .filter(|value| !value.is_empty())
-                .map_or("not returned".to_owned(), |value| value)
-        )),
-        Line::from(if app.preferences_ready() {
-            "Preference controls: available through preview and confirmation."
-        } else {
-            "No local preference controls are available until a verified preference read."
-        }),
-        Line::from(format!(
-            "accounts   {}{}",
-            app.local_accounts.len(),
-            if app.local_accounts.iter().any(|account| account.active) {
-                " · active profile returned"
-            } else {
-                " · active profile not returned"
-            }
-        )),
-        Line::from(format!(
-            "policy     {}",
-            if app.system_policy_failure.is_some() {
-                "error"
-            } else if app.system_policy.is_empty() {
-                "not returned"
-            } else {
-                "loaded"
-            }
-        )),
-        Line::from("System Policy · effective local settings"),
-        Line::from("Local system/MDM policy; not tailnet access policy."),
+    };
+    let mut lines = Vec::new();
+    section(app, &mut lines, "Client");
+    let mut client = vec![
+        ("daemon", local_daemon_label(app).to_owned()),
+        ("command", local_command_label(app).to_owned()),
+        ("version", snapshot.client_version.clone()),
     ];
-    if let Some(failure) = app.system_policy_failure.as_ref() {
-        lines.push(Line::from(format!("policy error: {}", failure.detail)));
-    } else if app.system_policy.is_empty() {
-        lines.push(Line::from("policy entries: not returned"));
-    } else {
-        lines.extend(app.system_policy.iter().take(4).map(|entry| {
-            Line::from(format!(
-                "  {} · source={} · value={}{}",
-                entry.name,
-                entry
-                    .source
-                    .as_deref()
-                    .map_or("not returned", |value| value),
-                entry.value.as_deref().map_or("not returned", |value| value),
-                entry
-                    .error
-                    .as_deref()
-                    .map_or(String::new(), |value| format!(" · error={value}"))
-            ))
-        }));
+    if let Some(version) = snapshot.daemon_version.as_deref() {
+        client.push(("daemon version", version.to_owned()));
     }
-    lines.push(Line::from("Preferences · verified current values"));
-    lines.extend([
-        preference_line("accept DNS", &app.local_preferences.accept_dns),
-        preference_line("accept routes", &app.local_preferences.accept_routes),
-        preference_line("shields up", &app.local_preferences.shields_up),
-        preference_line("Tailscale SSH", &app.local_preferences.ssh),
-        preference_line("automatic update", &app.local_preferences.automatic_update),
-        preference_line("update check", &app.local_preferences.update_check),
-        preference_line("posture reporting", &app.local_preferences.report_posture),
-        preference_line("hostname", &app.local_preferences.hostname),
-        preference_line("nickname", &app.local_preferences.nickname),
-        preference_line("web client", &app.local_preferences.web_client),
-    ]);
-    panel::render(frame, app, chunks[0], "local", lines);
-    routes::render(frame, app, chunks[1]);
+    if let Some(executable) = app.local_executable.as_ref() {
+        client.push(("executable", executable.path.display().to_string()));
+    }
+    client.push(("observed", text::format_timestamp(snapshot.observed_at)));
+    lines.extend(grid::detail(app, &client));
+
+    section(app, &mut lines, "Identity");
+    let node = &snapshot.self_node;
+    let mut identity = vec![("node", node.display_name.clone())];
+    push_optional(&mut identity, "DNS name", node.dns_name.as_deref());
+    if !node.tailscale_ips.is_empty() {
+        identity.push(("addresses", node.tailscale_ips.join(" · ")));
+    }
+    push_optional(
+        &mut identity,
+        "tailnet",
+        snapshot.current_tailnet.as_deref(),
+    );
+    push_optional(
+        &mut identity,
+        "MagicDNS suffix",
+        snapshot.magic_dns_suffix.as_deref(),
+    );
+    if !snapshot.health_messages.is_empty() {
+        identity.push(("attention", snapshot.health_messages.join(" · ")));
+    }
+    lines.extend(grid::detail(app, &identity));
+
+    section(app, &mut lines, "Preferences");
+    let mut preferences = Vec::new();
+    push_toggle(
+        &mut preferences,
+        "accept DNS",
+        &app.local_preferences.accept_dns,
+    );
+    push_toggle(
+        &mut preferences,
+        "accept routes",
+        &app.local_preferences.accept_routes,
+    );
+    push_toggle(
+        &mut preferences,
+        "shields up",
+        &app.local_preferences.shields_up,
+    );
+    push_toggle(
+        &mut preferences,
+        "Tailscale SSH",
+        &app.local_preferences.ssh,
+    );
+    push_toggle(
+        &mut preferences,
+        "automatic update",
+        &app.local_preferences.automatic_update,
+    );
+    push_toggle(
+        &mut preferences,
+        "posture reporting",
+        &app.local_preferences.report_posture,
+    );
+    push_preference(
+        &mut preferences,
+        "hostname",
+        &app.local_preferences.hostname,
+    );
+    push_preference(
+        &mut preferences,
+        "nickname",
+        &app.local_preferences.nickname,
+    );
+    lines.extend(grid::detail(app, &preferences));
+
+    if !app.system_policy.is_empty() || app.system_policy_failure.is_some() {
+        section(app, &mut lines, "System policy");
+        if let Some(failure) = app.system_policy_failure.as_ref() {
+            lines.push(Line::from(Span::styled(
+                failure.detail.clone(),
+                app.theme.style(theme::StyleRole::StateDanger),
+            )));
+        } else {
+            let policy = app
+                .system_policy
+                .iter()
+                .map(|entry| {
+                    let value = entry
+                        .value
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
+                        .map_or("configured", |value| value);
+                    (entry.name.as_str(), value.to_owned())
+                })
+                .collect::<Vec<_>>();
+            lines.extend(grid::detail(app, &policy));
+        }
+    }
+    let mut title_detail = vec![match app.source_mode {
+        crate::app::SourceMode::Mock => "simulated".to_owned(),
+        _ => freshness(app),
+    }];
+    if !app.local_accounts.is_empty() {
+        title_detail.push(format!("{} accounts", app.local_accounts.len()));
+    }
+    panel::render(
+        frame,
+        app,
+        area,
+        &format!("local · read-only state · {}", title_detail.join(" · ")),
+        lines,
+    );
 }
 
-fn local_display_state(app: &App) -> String {
+fn section(app: &App, lines: &mut Vec<Line<'static>>, title: &str) {
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(Span::styled(
+        title.to_owned(),
+        app.theme.style(theme::StyleRole::SectionHeading),
+    )));
+}
+
+fn freshness(app: &App) -> String {
     let freshness = match app.local_resource.status {
-        crate::domain::source::LocalResourceStatus::Stale => " · stale",
-        _ => "",
+        crate::domain::source::LocalResourceStatus::Fresh => text::Freshness::Current,
+        crate::domain::source::LocalResourceStatus::Loading => text::Freshness::Loading,
+        crate::domain::source::LocalResourceStatus::Stale => text::Freshness::Stale,
+        crate::domain::source::LocalResourceStatus::NeverLoaded
+        | crate::domain::source::LocalResourceStatus::Failed => text::Freshness::Unavailable,
     };
-    format!(
-        "daemon {} · CLI {}{}",
-        app.local_daemon_state.label(),
-        app.local_cli_state.label(),
-        freshness
+    freshness.phrase(
+        app.local_resource
+            .last_success_at
+            .map(|observed| app.now.saturating_sub(observed)),
     )
 }
 
-fn preference_line<T: std::fmt::Display>(
-    label: &str,
-    preference: &crate::domain::preference::ObservedPreference<T>,
-) -> Line<'static> {
-    let value = preference
-        .value
-        .as_ref()
-        .map_or_else(|| "not returned".to_owned(), ToString::to_string);
-    Line::from(format!(
-        "  {label}: {value} · {}",
-        preference.editability.label()
-    ))
+fn local_daemon_label(app: &App) -> &'static str {
+    if matches!(
+        app.local_daemon_state,
+        crate::domain::source::LocalDaemonState::Mock
+    ) {
+        "simulated"
+    } else {
+        app.local_daemon_state.label()
+    }
 }
 
-/// With no snapshot at all, every field would read "not returned", which claims
-/// the daemon answered and omitted them. Say what is actually missing instead.
+fn local_command_label(app: &App) -> &'static str {
+    if matches!(
+        app.local_cli_state,
+        crate::domain::source::LocalCliState::Mock
+    ) {
+        "simulated"
+    } else {
+        app.local_cli_state.label()
+    }
+}
+
+fn push_optional(
+    pairs: &mut Vec<(&'static str, String)>,
+    label: &'static str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        pairs.push((label, value.to_owned()));
+    }
+}
+
+fn push_preference<T: std::fmt::Display>(
+    pairs: &mut Vec<(&'static str, String)>,
+    label: &'static str,
+    preference: &ObservedPreference<T>,
+) {
+    let Some(value) = preference.value.as_ref() else {
+        return;
+    };
+    let mut display = value.to_string();
+    if !preference.editability.can_edit() {
+        display.push_str(" · ");
+        display.push_str(preference.editability.label());
+    }
+    pairs.push((label, display));
+}
+
+fn push_toggle(
+    pairs: &mut Vec<(&'static str, String)>,
+    label: &'static str,
+    preference: &ObservedPreference<bool>,
+) {
+    let Some(value) = preference.value else {
+        return;
+    };
+    let mut display = if value { "on" } else { "off" }.to_owned();
+    if !preference.editability.can_edit() {
+        display.push_str(" · ");
+        display.push_str(preference.editability.label());
+    }
+    pairs.push((label, display));
+}
+
+/// With no snapshot at all, every field would claim the daemon answered and
+/// omitted it. The empty state says what Tale actually knows and what to do.
 fn render_without_snapshot(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::domain::source::LocalDaemonState;
     let mut lines = vec![Line::from("No local node details to show"), Line::default()];
     match &app.local_daemon_state {
-        LocalDaemonState::Mock => {
-            lines.push(Line::from(
-                "Simulated data has no local machine. Restart without --mock to read this one.",
-            ));
-        }
-        LocalDaemonState::Disabled => {
-            lines.push(Line::from(
-                "Local access is off for this run. Restart without --no-local.",
-            ));
-        }
+        LocalDaemonState::Mock => lines.push(Line::from(
+            "The simulated local snapshot is unavailable. Restart mock mode to reload it.",
+        )),
+        LocalDaemonState::Disabled => lines.push(Line::from(
+            "Local access is off for this run. Restart without --no-local.",
+        )),
         LocalDaemonState::Connecting | LocalDaemonState::Reconnecting => {
             lines.push(Line::from("Connecting to the local Tailscale daemon…"));
         }

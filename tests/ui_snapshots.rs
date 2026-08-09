@@ -893,3 +893,54 @@ fn every_overlay_paints_a_surface_rather_than_showing_the_view_through_it() {
         }
     }
 }
+
+#[test]
+fn mock_resource_routes_use_the_shared_visual_grammar() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    for (route, expected) in [
+        (Route::Local, ["Client", "Identity", "Preferences"]),
+        (Route::Routes, ["DEVICE", "subnet-gateway", "APPROVED"]),
+        (Route::Dns, ["This machine", "Tailnet", "100.100.100.100"]),
+        (
+            Route::Access,
+            ["Policy source", "Fictional mock policy", "hash"],
+        ),
+        (
+            Route::Credentials,
+            ["DESCRIPTION", "CI deployment", "EXPIRES"],
+        ),
+        (Route::Audit, ["ACTION", "Approved route", "Flow Logs"]),
+    ] {
+        app.set_route(route);
+        let Some(lines) = lines_at(&app, 120, 32) else {
+            return;
+        };
+        let rendered = lines.join("\n");
+        for marker in expected {
+            assert!(
+                rendered.contains(marker),
+                "{route:?} did not render {marker} in mock mode"
+            );
+        }
+        assert!(!rendered.contains("state: idle"), "{route:?} leaked state");
+        assert!(
+            !rendered.contains("not returned"),
+            "{route:?} rendered sentinel data"
+        );
+    }
+
+    for route in [Route::Routes, Route::Credentials, Route::Audit] {
+        app.set_route(route);
+        press(&mut app, KeyCode::Enter);
+        let Some(lines) = lines_at(&app, 100, 30) else {
+            return;
+        };
+        assert!(
+            lines.iter().any(|line| line.contains("inspector")),
+            "{route:?} did not open its row detail"
+        );
+        press(&mut app, KeyCode::Char('h'));
+    }
+}

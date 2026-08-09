@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 
-use crate::app::App;
+use crate::app::{App, Focus};
 use crate::domain::activity::AuditEvent;
 use crate::ui::components::{grid, panel};
 use crate::ui::{text, theme};
@@ -16,13 +16,34 @@ const COLUMNS: &[(&str, grid::Width)] = &[
     ("TARGET", grid::Width::Fill(18)),
 ];
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector: Option<Rect>) {
+    if app.focus != Focus::Inspector && wide_inspector.is_none() && area.width >= 110 {
+        let regions = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        render_events(frame, app, regions[0]);
+        render_delivery(frame, app, regions[1]);
+        return;
+    }
+    if app.focus == Focus::Inspector || wide_inspector.is_none() {
+        if app.focus == Focus::Inspector {
+            render_inspector(frame, app, area);
+        } else {
+            render_events(frame, app, area);
+        }
+        return;
+    }
     let regions = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
     render_events(frame, app, regions[0]);
-    render_delivery(frame, app, regions[1]);
+    if let Some(inspector_area) = wide_inspector {
+        render_inspector(frame, app, inspector_area);
+    } else {
+        render_inspector(frame, app, regions[1]);
+    }
 }
 
 fn render_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -43,7 +64,7 @@ fn render_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ))
         })
         .collect::<Vec<_>>();
-        panel::render(frame, app, area, " audit ", lines);
+        panel::render(frame, app, area, "audit", lines);
         return;
     };
     let events = snapshot.filtered_events(&app.audit_filters);
@@ -85,7 +106,7 @@ fn render_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn value(event: &AuditEvent, header: &str) -> String {
     match header {
-        "TIME" => event.event_time_text.clone(),
+        "TIME" => text::format_timestamp(event.event_time),
         "ACTOR" => event
             .actor
             .as_ref()
@@ -104,16 +125,95 @@ fn value(event: &AuditEvent, header: &str) -> String {
     }
 }
 
-/// The three delivery mechanisms the API describes but does not enumerate as
-/// rows. They stay prose until the server gives them a shape worth tabling.
-fn render_delivery(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let detail = format!(
-        "{}\n\n{}\n\n{}",
+fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(event) = app.selected_audit_event_for_view() else {
+        panel::render(frame, app, area, "inspector", "No audit event selected");
+        return;
+    };
+    let mut pairs = vec![("time", text::format_timestamp(event.event_time))];
+    push_optional(&mut pairs, "event", event.event_type.as_deref());
+    push_optional(&mut pairs, "action", event.action.as_deref());
+    if let Some(actor) = event.actor.as_ref() {
+        push_optional(
+            &mut pairs,
+            "actor",
+            actor.display.as_deref().or(actor.id.as_deref()),
+        );
+        push_optional(&mut pairs, "actor type", actor.kind.as_deref());
+    }
+    if let Some(target) = event.target.as_ref() {
+        push_optional(
+            &mut pairs,
+            "target",
+            target.display.as_deref().or(target.id.as_deref()),
+        );
+        push_optional(&mut pairs, "target type", target.kind.as_deref());
+    }
+    push_optional(&mut pairs, "origin", event.origin.as_deref());
+    push_optional(&mut pairs, "details", event.action_details.as_deref());
+    push_optional(&mut pairs, "error", event.error.as_deref());
+    if event.old.is_some() || event.new.is_some() {
+        pairs.push((
+            "change",
+            "Open the investigation to review the diff".to_owned(),
+        ));
+    }
+    let title = event
+        .action
+        .as_deref()
+        .or(event.event_type.as_deref())
+        .map_or("Audit event", |value| value);
+    let mut lines = vec![Line::from(Span::styled(
+        title.to_owned(),
+        app.theme.style(theme::StyleRole::TextPrimary),
+    ))];
+    lines.extend(grid::detail(app, &pairs));
+    lines.extend(delivery_summary(app));
+    panel::render_focusable(
+        frame,
+        app,
+        area,
+        "inspector",
+        lines,
+        app.focus == Focus::Inspector,
+    );
+}
+
+fn delivery_summary(app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::default(),
+        Line::from(Span::styled(
+            "Delivery",
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )),
+    ];
+    for summary in [
         super::flows::summary(app),
         super::log_streams::summary(app),
-        super::webhooks::summary(app)
-    );
-    panel::render(frame, app, area, "delivery", detail);
+        super::webhooks::summary(app),
+    ] {
+        lines.extend(summary.lines().map(|line| {
+            Line::from(Span::styled(
+                line.to_owned(),
+                app.theme.style(theme::StyleRole::TextMuted),
+            ))
+        }));
+    }
+    lines
+}
+
+fn render_delivery(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    panel::render(frame, app, area, "delivery", delivery_summary(app));
+}
+
+fn push_optional(
+    pairs: &mut Vec<(&'static str, String)>,
+    label: &'static str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        pairs.push((label, value.to_owned()));
+    }
 }
 
 fn title(app: &App, shown: usize, total: usize) -> String {

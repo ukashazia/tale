@@ -33,13 +33,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Route::Profiles => views::profiles::render(frame, app, layout.content, layout.inspector),
         Route::Devices => views::devices::render(frame, app, layout.content, layout.inspector),
         Route::Users => views::users::render(frame, app, layout.content, layout.inspector),
-        Route::Routes => views::routes::render_admin(frame, app, layout.content),
+        Route::Routes => views::routes::render_admin(frame, app, layout.content, layout.inspector),
         Route::Dns => views::dns::render(frame, app, layout.content),
         Route::Access => views::access::render(frame, app, layout.content),
         Route::Config => views::config::render(frame, app, layout.content),
-        Route::Credentials => views::credentials::render(frame, app, layout.content),
+        Route::Credentials => {
+            views::credentials::render(frame, app, layout.content, layout.inspector)
+        }
         Route::Tasks => views::tasks::render(frame, app, layout.content, layout.inspector),
-        Route::Audit => views::audit::render(frame, app, layout.content),
+        Route::Audit => views::audit::render(frame, app, layout.content, layout.inspector),
         Route::Services => views::services::render(frame, app, layout.content, layout.inspector),
         Route::Diagnostics => views::diagnostics::render(frame, app, layout.content),
     }

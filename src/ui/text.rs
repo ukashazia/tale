@@ -29,6 +29,20 @@ pub fn format_age(seconds: u64) -> String {
     }
 }
 
+pub fn format_timestamp(value: crate::domain::Timestamp) -> String {
+    use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
+
+    let formatted = i64::try_from(value)
+        .ok()
+        .and_then(|value| OffsetDateTime::from_unix_timestamp(value).ok())
+        .and_then(|value| value.format(&Rfc3339).ok());
+    match formatted {
+        Some(value) => value,
+        None => "invalid timestamp".to_owned(),
+    }
+}
+
 /// A view's border title: what it is, how much of it is showing, and the terms
 /// that narrowed it. This is where route context lives now that no separate
 /// header row repeats the route name.

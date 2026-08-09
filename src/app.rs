@@ -95,7 +95,7 @@ use crate::local::diagnostics::{self, DiagnosticRequest};
 use crate::local::handoff::{self, HandoffCommand};
 use crate::local::policy::SystemPolicyEntry;
 use crate::local::{certificates, services, transfers};
-use crate::mock::{MOCK_NOW, MockLoadScenario, MockTaskBehavior};
+use crate::mock::{self, MOCK_NOW, MockLoadScenario, MockTaskBehavior};
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
 use crate::ui::theme::{Theme, ThemeId};
 
@@ -1205,6 +1205,9 @@ pub struct Views {
     pub services: ServiceViewState,
     pub diagnostics: DiagnosticsViewState,
     pub users: UserViewState,
+    pub routes: CollectionViewState,
+    pub credentials: CollectionViewState,
+    pub audit: CollectionViewState,
     pub tasks: TaskViewState,
     pub profiles: ProfileViewState,
 }
@@ -1373,6 +1376,14 @@ pub struct UserViewState {
     /// Whether the side inspector shares the pane with the table. Off by
     /// default, the way the devices pane is: the table is what the route is
     /// for, and the inspector repeats a row already on screen.
+    pub inspector: bool,
+}
+
+/// The shared view state for admin collections whose cursor lives beside the
+/// resource snapshot. The inspector starts closed on every collection route;
+/// `i` is the one key that both shows and hides it.
+#[derive(Debug, Clone, Default)]
+pub struct CollectionViewState {
     pub inspector: bool,
 }
 
@@ -1572,12 +1583,23 @@ impl App {
             .map_or((None, true), |profile| {
                 (Some(profile.tailnet.clone()), profile.read_only)
             });
-        let admin = AdminSnapshot::new(
-            selected_profile,
-            tailnet,
-            profile_read_only || config.read_only,
-            Vec::new(),
-        );
+        let admin = if config.mock {
+            mock::admin_snapshot()
+        } else {
+            AdminSnapshot::new(
+                selected_profile,
+                tailnet,
+                profile_read_only || config.read_only,
+                Vec::new(),
+            )
+        };
+        let local_preferences_resource = if config.mock {
+            let mut resource = LocalPreferencesResource::new();
+            let _ = resource.succeed(1, mock::local_preferences());
+            resource
+        } else {
+            LocalPreferencesResource::new()
+        };
         let saved_views_load = crate::saved_views::SavedViewsState::load(&config.paths.state_dir);
         let (saved_views, saved_views_error) = match saved_views_load {
             Ok(value) => (Some(value), None),
@@ -1595,6 +1617,9 @@ impl App {
                 services: ServiceViewState::default(),
                 diagnostics: DiagnosticsViewState::default(),
                 users: UserViewState::default(),
+                routes: CollectionViewState::default(),
+                credentials: CollectionViewState::default(),
+                audit: CollectionViewState::default(),
                 tasks: TaskViewState::default(),
                 profiles: ProfileViewState::default(),
             },
@@ -1634,13 +1659,21 @@ impl App {
             audit_filters: AuditFilters::default(),
             task_filter: String::new(),
             composed_devices: Vec::new(),
-            local_resource: LocalResource::new(),
-            local_preferences_resource: LocalPreferencesResource::new(),
+            local_resource: if config.mock {
+                mock::local_resource()
+            } else {
+                LocalResource::new()
+            },
+            local_preferences_resource,
             local_state,
             local_daemon_state,
             local_cli_state,
             local_executable: None,
-            local_capabilities: LocalCapabilities::default(),
+            local_capabilities: if config.mock {
+                LocalCapabilities::all_supported()
+            } else {
+                LocalCapabilities::default()
+            },
             services_snapshot: if source_mode == SourceMode::Mock {
                 mock_services_snapshot()
             } else {
@@ -1649,11 +1682,19 @@ impl App {
             alpha_local_features: false,
             certificate_verification: None,
             service_locks: Vec::new(),
-            local_preferences: LocalPreferences::empty(0),
+            local_preferences: if config.mock {
+                mock::local_preferences()
+            } else {
+                LocalPreferences::empty(0)
+            },
             local_accounts: Vec::new(),
             system_policy: Vec::new(),
             system_policy_failure: None,
-            local_diagnostics: BTreeMap::new(),
+            local_diagnostics: if config.mock {
+                mock::local_diagnostics()
+            } else {
+                BTreeMap::new()
+            },
             tasks: TaskStore::new(),
             notifications: Vec::new(),
             resolved_config: config,
@@ -2433,10 +2474,16 @@ impl App {
     /// the footer, and contextual help all read it, so they cannot disagree.
     pub fn action_context(&self) -> ActionContext {
         match self.current_route() {
-            // Audit is the one route that is still a body of text rather than a
-            // collection, so it keeps a context of its own.
-            Route::Audit => ActionContext::Audit,
-            Route::Overview | Route::Devices | Route::Services | Route::Tasks | Route::Profiles
+            Route::Audit if self.focus != Focus::Inspector => ActionContext::Audit,
+            Route::Overview
+            | Route::Devices
+            | Route::Services
+            | Route::Tasks
+            | Route::Profiles
+            | Route::Users
+            | Route::Routes
+            | Route::Credentials
+            | Route::Audit
                 if matches!(self.focus, Focus::Inspector) =>
             {
                 ActionContext::Detail
@@ -2461,6 +2508,22 @@ impl App {
             return;
         }
         if self.current_route() == Route::Audit {
+            let frame = crate::ui::layout::compute(
+                ratatui::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: self.terminal_width,
+                    height: self.terminal_height,
+                },
+                self,
+            );
+            if frame
+                .inspector
+                .is_some_and(|inspector| contains_point(inspector, column, row))
+            {
+                self.focus = Focus::Inspector;
+                return;
+            }
             self.focus = Focus::Collection;
             let Some(collection) = self.audit_event_area() else {
                 return;
@@ -2491,10 +2554,12 @@ impl App {
             if frame.minimum {
                 return;
             }
-            if matches!(self.current_route(), Route::Services | Route::Tasks)
-                && frame
-                    .inspector
-                    .is_some_and(|inspector| contains_point(inspector, column, row))
+            if matches!(
+                self.current_route(),
+                Route::Routes | Route::Credentials | Route::Services | Route::Tasks
+            ) && frame
+                .inspector
+                .is_some_and(|inspector| contains_point(inspector, column, row))
             {
                 self.focus = Focus::Inspector;
                 return;
@@ -2512,9 +2577,9 @@ impl App {
                 return;
             }
             let first_row = match self.current_route() {
-                Route::Users | Route::Credentials | Route::Profiles => area.y.saturating_add(1),
+                Route::Users | Route::Profiles => area.y.saturating_add(1),
                 // A border and a heading row sit above the first task.
-                Route::Routes | Route::Tasks => area.y.saturating_add(2),
+                Route::Routes | Route::Credentials | Route::Tasks => area.y.saturating_add(2),
                 Route::Services => area.y.saturating_add(3),
                 _ => return,
             };
@@ -2736,9 +2801,13 @@ impl App {
         Some(collection)
     }
 
-    /// The audit route keeps the old split: events on the left, the streams and
-    /// webhooks it cannot table on the right.
+    /// The audit collection uses the whole pane on compact terminals. On a
+    /// wide terminal it yields the right side either to delivery status or to
+    /// the selected event's inspector.
     fn audit_event_area(&self) -> Option<ratatui::layout::Rect> {
+        if self.focus == Focus::Inspector {
+            return None;
+        }
         let frame = crate::ui::layout::compute(
             ratatui::layout::Rect {
                 x: 0,
@@ -2751,14 +2820,21 @@ impl App {
         if frame.minimum {
             return None;
         }
-        let regions = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Horizontal)
-            .constraints([
-                ratatui::layout::Constraint::Percentage(60),
-                ratatui::layout::Constraint::Percentage(40),
-            ])
-            .split(frame.content);
-        regions.first().copied()
+        if let Some(inspector) = frame.inspector {
+            return Some(ratatui::layout::Rect {
+                x: frame.content.x,
+                y: frame.content.y,
+                width: inspector.x.saturating_sub(frame.content.x),
+                height: frame.content.height,
+            });
+        }
+        if frame.content.width < 110 {
+            return Some(frame.content);
+        }
+        Some(ratatui::layout::Rect {
+            width: frame.content.width.saturating_mul(60) / 100,
+            ..frame.content
+        })
     }
 
     fn device_collection_area(
@@ -4324,6 +4400,14 @@ impl App {
                     if self.selected_profile_row().is_some() {
                         self.focus = Focus::Inspector;
                     }
+                } else if (self.current_route() == Route::Routes
+                    && self.selected_admin_route().is_some())
+                    || (self.current_route() == Route::Credentials
+                        && self.selected_credential().is_some())
+                    || (self.current_route() == Route::Audit
+                        && self.selected_admin_activity().is_some())
+                {
+                    self.focus = Focus::Inspector;
                 } else if self.current_route() == Route::Services
                     || self.selected_device().is_some()
                 {
@@ -4374,6 +4458,18 @@ impl App {
                     Route::Profiles => {
                         self.views.profiles.inspector = !self.views.profiles.inspector;
                         self.views.profiles.inspector
+                    }
+                    Route::Routes => {
+                        self.views.routes.inspector = !self.views.routes.inspector;
+                        self.views.routes.inspector
+                    }
+                    Route::Credentials => {
+                        self.views.credentials.inspector = !self.views.credentials.inspector;
+                        self.views.credentials.inspector
+                    }
+                    Route::Audit => {
+                        self.views.audit.inspector = !self.views.audit.inspector;
+                        self.views.audit.inspector
                     }
                     _ => return Vec::new(),
                 };
@@ -15438,6 +15534,9 @@ impl App {
             Route::Users => self.views.users.inspector,
             Route::Tasks => self.views.tasks.inspector,
             Route::Profiles => self.views.profiles.inspector,
+            Route::Routes => self.views.routes.inspector,
+            Route::Credentials => self.views.credentials.inspector,
+            Route::Audit => self.views.audit.inspector,
             _ => true,
         }
     }
