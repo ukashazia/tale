@@ -38,13 +38,14 @@ platform or client combination as supported.
 
 ```sh
 nix develop
-./scripts/capture-readme-screenshots.sh
+./scripts/capture-readme-screenshots.sh docs/assets/readme-wallpaper.jpg
 ```
 
 The script builds Tale, drives the deterministic mock TUI, and replaces all
 three PNGs. The Nix development shell provides the pinned capture toolchain.
-Pass an image to place an arbitrary wallpaper behind a blurred, translucent
-terminal window:
+The bundled wallpaper is the free Unsplash image
+[“Abstract pattern of dark blue and purple shapes”](https://unsplash.com/photos/lyAklGd7z8E)
+by FRAG. Pass another image to use an arbitrary wallpaper instead:
 
 ```sh
 ./scripts/capture-readme-screenshots.sh /path/to/wallpaper.jpg
