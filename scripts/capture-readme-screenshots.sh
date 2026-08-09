@@ -106,13 +106,14 @@ extract_frame() {
     -i "${video}" \
     -filter_complex \
     "[0:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},format=rgba,split=2[wall][blur_source]; \
-     [blur_source]gblur=sigma=32[blurred]; \
-     [1:v]setpts=PTS-STARTPTS,format=rgba,colorkey=0xE8E1DF:0.035:0.08,split=2[mask_source][terminal_source]; \
+     [blur_source]gblur=sigma=64[blurred]; \
+     [1:v]setpts=PTS-STARTPTS,format=rgba,colorkey=0xE8E1DF:0.035:0.08,split=2[mask_source][terminal]; \
      [mask_source]alphaextract[mask]; \
      [blurred][mask]alphamerge[blurred_window]; \
      [wall][blurred_window]overlay=format=auto[wall_with_blur]; \
-     [terminal_source]colorchannelmixer=aa=0.68[terminal]; \
-     [wall_with_blur][terminal]overlay=format=auto,format=rgb24[out]" \
+     color=c=black:s=${width}x${height}[black]; \
+     [black][terminal]overlay=format=auto[terminal_on_black]; \
+     [wall_with_blur][terminal_on_black]blend=all_mode=screen,format=rgb24[out]" \
     -map '[out]' \
     -frames:v 1 \
     -map_metadata -1 \
