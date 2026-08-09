@@ -44,8 +44,8 @@ nix develop
 The script builds Tale, drives the deterministic mock TUI, and replaces all
 three PNGs. The Nix development shell provides the pinned capture toolchain.
 The bundled wallpaper is the free Unsplash image
-[“Abstract pattern of dark blue and purple shapes”](https://unsplash.com/photos/lyAklGd7z8E)
-by FRAG. Pass another image to use an arbitrary wallpaper instead:
+[“Abstract diagonal lines of light blue fabric”](https://unsplash.com/photos/O0hlizfP-Kw)
+by Logan Voss. Pass another image to use an arbitrary wallpaper instead:
 
 ```sh
 ./scripts/capture-readme-screenshots.sh /path/to/wallpaper.jpg
