@@ -55,7 +55,7 @@ pub fn run(mut cli: Cli) -> Result<(), TaleError> {
         && crate::app::Route::parse(view).is_none()
     {
         return Err(TaleError::InvalidArguments(format!(
-            "unknown Phase-1 route: {view}"
+            "unknown route: {view}"
         )));
     }
 

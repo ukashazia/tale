@@ -74,14 +74,14 @@ async fn client_with_token(
     let store = Arc::new(MemoryCredentialStore::default());
     let record = CredentialRecord::AccessToken(AccessTokenRecord {
         version: 1,
-        access_token: SecretValue::new("phase-eight-fixture-token"),
+        access_token: SecretValue::new("operations-fixture-token"),
     });
     store
-        .set("phase-eight", &record)
+        .set("operations", &record)
         .map_err(|error| error.to_string())?;
     let manager = TokenManager::new(store);
     let token = manager
-        .access_token("phase-eight", "phase-eight")
+        .access_token("operations", "operations")
         .await
         .map_err(|error| error.to_string())?;
     let client = AdminClient::with_base_url(base_url, Duration::from_secs(2))
@@ -315,7 +315,7 @@ async fn status_and_network_setting_contracts_preserve_independent_reads_and_par
 }
 
 #[tokio::test]
-async fn phase_eight_contracts_reject_write_only_reads_and_preserve_unknown_edits()
+async fn operational_contracts_reject_write_only_reads_and_preserve_unknown_edits()
 -> Result<(), String> {
     let (base_url, _) = fake_response(
         "200 OK",
@@ -1022,7 +1022,7 @@ fn health_can_render_fifty_thousand_deterministic_findings() {
 }
 
 #[test]
-fn phase_eight_endpoint_scopes_are_explicit() {
+fn operational_endpoint_scopes_are_explicit() {
     assert_eq!(
         Endpoint::NetworkFlowLogs.required_scope(),
         "logs:network:read"

@@ -229,9 +229,6 @@ default whenever the default is wrong rather than merely unspecified.
 
 ## Open
 
-- ~20 admin and operator actions still use the `key=value;key=value` operator
-  form. `FormField` replaces it; `render_operator`'s 190 lines of hint strings
-  go away with it.
 - Dense views (Local, Settings) do not scroll and lose their last rows on short
   terminals.
 - Overview is not yet a home screen.

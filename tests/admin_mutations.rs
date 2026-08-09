@@ -592,7 +592,7 @@ async fn verification_reads_have_exact_resource_paths() -> Result<(), String> {
 }
 
 #[test]
-fn phase_six_endpoint_scopes_are_explicit() {
+fn admin_mutation_endpoint_scopes_are_explicit() {
     assert_eq!(Endpoint::DeviceDelete.required_scope(), "devices:core");
     assert_eq!(Endpoint::DeviceAuthorized.required_scope(), "devices:core");
     assert_eq!(Endpoint::DeviceExpire.required_scope(), "devices:core");

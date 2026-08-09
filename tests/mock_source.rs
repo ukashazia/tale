@@ -5,7 +5,7 @@ use tale::domain::device::{ConnectionPath, Liveness, OperatingSystem};
 use tale::mock::{self, MockLoadScenario};
 
 #[test]
-fn deterministic_fixture_covers_the_phase_one_domain_contract() {
+fn deterministic_fixture_covers_the_domain_contract() {
     let first = mock::devices();
     let second = mock::devices();
     assert_eq!(first, second);

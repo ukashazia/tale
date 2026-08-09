@@ -195,8 +195,7 @@ fn captured_body(request: &str) -> &[u8] {
 }
 
 #[tokio::test]
-async fn policy_validation_preview_and_save_use_exact_phase_seven_contracts() -> Result<(), String>
-{
+async fn policy_validation_preview_and_save_use_exact_contracts() -> Result<(), String> {
     let candidate = include_bytes!("fixtures/admin/policy/valid.hujson").to_vec();
     let (base_url, capture) =
         fake_response("200 OK", "application/json", br#"{}"#.to_vec()).await?;

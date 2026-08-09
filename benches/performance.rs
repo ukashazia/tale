@@ -339,7 +339,7 @@ fn bench_history_restore(c: &mut Criterion) {
 }
 
 criterion_group!(
-    phase9,
+    performance,
     bench_filter,
     bench_sort,
     bench_flow_aggregate,
@@ -353,4 +353,4 @@ criterion_group!(
     bench_transient_and_help_open,
     bench_history_restore
 );
-criterion_main!(phase9);
+criterion_main!(performance);

@@ -25,7 +25,7 @@ fn command_debug_does_not_include_arguments_or_output() {
 }
 
 #[test]
-fn exact_phase_two_command_vectors_are_typed() {
+fn exact_local_observer_command_vectors_are_typed() {
     let path = PathBuf::from("/tmp/tailscale with spaces");
     let ping =
         tale::local::diagnostics::ping_command(&path, Duration::from_secs(5), "name;$(not shell)");

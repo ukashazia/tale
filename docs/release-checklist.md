@@ -17,8 +17,8 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo doc --no-deps --locked
 cargo deny check
 cargo run --locked --bin generate-artifacts -- --output-dir .
-cargo test --locked --test acceptance --test compatibility --test phase_nine
-cargo bench --locked --bench phase9 -- --noplot
+cargo test --locked --test acceptance --test compatibility --test hardening
+cargo bench --locked --bench performance -- --noplot
 ```
 
 The last two commands are evidence runs, not substitutes for real platform or

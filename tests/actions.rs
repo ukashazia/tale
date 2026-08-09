@@ -276,7 +276,7 @@ fn danger_menu_limits_destructive_fill_to_the_heading() {
 
 #[test]
 fn every_required_action_is_registered() {
-    let registered: Vec<_> = action::phase_one_actions()
+    let registered: Vec<_> = action::shell_actions()
         .into_iter()
         .map(|spec| spec.id)
         .collect();
@@ -323,8 +323,8 @@ fn every_action_risk_maps_to_an_explicit_semantic_role() {
 }
 
 #[test]
-fn every_phase_four_action_is_registered_with_required_risk_metadata() {
-    let registered: Vec<_> = action::phase_four_actions()
+fn every_local_service_action_is_registered_with_required_risk_metadata() {
+    let registered: Vec<_> = action::local_service_actions()
         .into_iter()
         .map(|spec| (spec.id, spec.risk))
         .collect();
@@ -407,7 +407,7 @@ fn no_duplicate_active_binding_exists_in_one_context() {
         ActionContext::Detail,
         ActionContext::Audit,
     ] {
-        let actions = action::phase_one_actions();
+        let actions = action::shell_actions();
         for (index, left) in actions.iter().enumerate() {
             if !left.contexts.contains(&context) {
                 continue;

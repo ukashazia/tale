@@ -244,8 +244,6 @@ pub enum ConfigError {
     UnknownProfile(String),
     #[error("--mock cannot be combined with a profile")]
     MockConflict,
-    #[error("route name is not available in Phase 1: {0}")]
-    UnsupportedRoute(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1124,7 +1122,7 @@ impl ResolvedConfig {
             },
             SettingDisplay {
                 name: "ui.mouse",
-                value: format!("{} (opt-in Phase 8 parity)", self.ui.mouse),
+                value: format!("{} (opt-in)", self.ui.mouse),
                 source: self.ui.mouse_source,
             },
             SettingDisplay {

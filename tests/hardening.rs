@@ -1,3 +1,5 @@
+//! Cross-cutting hardening tests.
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 

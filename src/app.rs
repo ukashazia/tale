@@ -4699,14 +4699,14 @@ impl App {
             | ActionId::AdminWebhookDelete
             | ActionId::AdminLogStreamReplace
             | ActionId::AdminLogStreamDelete
-            | ActionId::AdminNetworkLogsSettings => self.open_phase_eight_action(action_id),
+            | ActionId::AdminNetworkLogsSettings => self.open_admin_operational_action(action_id),
             ActionId::SavedViewCreate
             | ActionId::SavedViewReplace
             | ActionId::SavedViewRename
             | ActionId::SavedViewDelete
             | ActionId::SavedViewApply
             | ActionId::CollectionExport
-            | ActionId::AccessExplorerOpenRule => self.open_phase_eight_local_action(action_id),
+            | ActionId::AccessExplorerOpenRule => self.open_local_operational_action(action_id),
             ActionId::AccessExplorerAsk => self.open_access_explorer_form(),
         }
     }
@@ -4757,7 +4757,7 @@ impl App {
             | ActionId::AccessExplorerOpenRule
             | ActionId::OverviewHealthOpenResource
             | ActionId::OverviewHealthRunSuggestedAction => {
-                self.phase_eight_read_available(action_id)
+                self.operational_read_available(action_id)
             }
             ActionId::AdminWebhookCreate
             | ActionId::AdminWebhookEdit
@@ -4766,7 +4766,7 @@ impl App {
             | ActionId::AdminWebhookDelete
             | ActionId::AdminLogStreamReplace
             | ActionId::AdminLogStreamDelete
-            | ActionId::AdminNetworkLogsSettings => self.phase_eight_mutation_available(action_id),
+            | ActionId::AdminNetworkLogsSettings => self.operational_mutation_available(action_id),
             ActionId::SettingsInspectCapabilities => self.admin.profile.is_some(),
             ActionId::SettingsAppearance => true,
             ActionId::AdminPolicyEdit
@@ -4780,7 +4780,9 @@ impl App {
             | ActionId::AdminPolicyWorkflowClose
             | ActionId::AdminCredentialAuthKeyCreate
             | ActionId::AdminCredentialRevoke
-            | ActionId::ProfileCredentialRemove => self.phase_seven_admin_available(action_id),
+            | ActionId::ProfileCredentialRemove => {
+                self.policy_credential_admin_available(action_id)
+            }
             ActionId::AuditFilterTime
             | ActionId::AuditFilterActor
             | ActionId::AuditFilterAction
@@ -4869,7 +4871,7 @@ impl App {
         }
     }
 
-    fn phase_seven_admin_available(&self, action_id: ActionId) -> bool {
+    fn policy_credential_admin_available(&self, action_id: ActionId) -> bool {
         if self.admin.profile.is_none() {
             return false;
         }
@@ -4944,7 +4946,7 @@ impl App {
         }
     }
 
-    fn phase_eight_read_available(&self, action_id: ActionId) -> bool {
+    fn operational_read_available(&self, action_id: ActionId) -> bool {
         if self.admin.profile.is_none() {
             return false;
         }
@@ -4966,7 +4968,7 @@ impl App {
         self.admin_scope_allowed(scope)
     }
 
-    fn phase_eight_mutation_available(&self, action_id: ActionId) -> bool {
+    fn operational_mutation_available(&self, action_id: ActionId) -> bool {
         if self.admin.profile.is_none()
             || self.admin.profile_read_only
             || self.resolved_config.read_only
@@ -5075,7 +5077,7 @@ impl App {
         {
             return Some("Taildrive is alpha and disabled until enabled for this run".to_owned());
         }
-        if is_phase_four_action(action_id) && self.local_executable.is_none() {
+        if is_local_service_action(action_id) && self.local_executable.is_none() {
             return Some(self.missing_executable_reason());
         }
         if self.local_executable.is_none()
@@ -5149,10 +5151,10 @@ impl App {
         ) {
             return true;
         }
-        if is_phase_four_action(action_id) && self.source_mode != SourceMode::Local {
+        if is_local_service_action(action_id) && self.source_mode != SourceMode::Local {
             return false;
         }
-        if is_phase_three_action(action_id) && self.source_mode != SourceMode::Local {
+        if is_local_operator_action(action_id) && self.source_mode != SourceMode::Local {
             return false;
         }
         if is_mutating_action(action_id) && self.resolved_config.read_only {
@@ -5879,7 +5881,7 @@ impl App {
         self.webhooks.first()
     }
 
-    fn open_phase_eight_action(&mut self, action_id: ActionId) -> Vec<Effect> {
+    fn open_admin_operational_action(&mut self, action_id: ActionId) -> Vec<Effect> {
         match action_id {
             ActionId::AdminWebhookCreate
             | ActionId::AdminWebhookEdit
@@ -6152,7 +6154,7 @@ impl App {
         Vec::new()
     }
 
-    fn open_phase_eight_local_action(&mut self, action_id: ActionId) -> Vec<Effect> {
+    fn open_local_operational_action(&mut self, action_id: ActionId) -> Vec<Effect> {
         match action_id {
             ActionId::AccessExplorerOpenRule => {
                 if let Some(result) = self.access_explorer_result.as_ref() {
@@ -7458,8 +7460,7 @@ impl App {
         let credential_type = crate::admin::key_mutations::remote_credential_type(credential);
         if !credential_type.supported_for_revoke() {
             self.runtime_error = Some(
-                "the selected credential type has no supported Phase 7 revocation contract"
-                    .to_owned(),
+                "the selected credential type has no documented revocation contract".to_owned(),
             );
             return Vec::new();
         }
@@ -7499,8 +7500,7 @@ impl App {
         let credential_type = crate::admin::key_mutations::remote_credential_type(&credential);
         if !credential_type.supported_for_revoke() {
             self.runtime_error = Some(
-                "the selected credential type has no supported Phase 7 revocation contract"
-                    .to_owned(),
+                "the selected credential type has no documented revocation contract".to_owned(),
             );
             return Vec::new();
         }
@@ -8126,7 +8126,7 @@ impl App {
         }
     }
 
-    fn accept_phase_eight_form(&mut self, state: &FormState) -> Vec<Effect> {
+    fn accept_admin_operational_form(&mut self, state: &FormState) -> Vec<Effect> {
         let result = match state.action_id {
             ActionId::AdminWebhookCreate => webhook_create_from_form(state),
             ActionId::AdminWebhookEdit => self.webhook_edit_from_form(state),
@@ -8134,7 +8134,7 @@ impl App {
             ActionId::AdminNetworkLogsSettings => Ok(OperationalMutation::NetworkLogSetting {
                 enabled: state.is_yes("enabled"),
             }),
-            _ => Err("this is not a Phase 8 operational form".to_owned()),
+            _ => Err("this is not an admin operational form".to_owned()),
         };
         match result {
             Ok(mutation) => {
@@ -8240,7 +8240,7 @@ impl App {
         }
     }
 
-    fn accept_phase_eight_local_form(&mut self, state: &FormState) -> Vec<Effect> {
+    fn accept_local_operational_form(&mut self, state: &FormState) -> Vec<Effect> {
         let result = match state.action_id {
             ActionId::SavedViewCreate | ActionId::SavedViewReplace => saved_view_from_form(state)
                 .map(|view| {
@@ -8270,7 +8270,7 @@ impl App {
             ActionId::SavedViewApply => required_form_value(state, "name", "a view to open")
                 .map(|name| OperationalMutation::SavedView(SavedViewMutation::Apply { name })),
             ActionId::CollectionExport => export_from_form(state),
-            _ => Err("this is not a local Phase 8 form".to_owned()),
+            _ => Err("this is not a local operational form".to_owned()),
         };
         match result {
             Ok(mutation) => {
@@ -8687,7 +8687,7 @@ impl App {
                     }
                     if candidate.last_probe_ms.is_none() {
                         lines.push(
-                            "latency: not probed; run the Phase-2 ping action before relying on this choice"
+                            "latency: not probed; run the ping action before relying on this choice"
                                 .to_owned(),
                         );
                     }
@@ -9473,7 +9473,7 @@ impl App {
             self.overlays.pop();
             return self.apply_local_operational_mutation(mutation, overwrite_confirmed);
         }
-        if !self.phase_eight_mutation_available(action_id) {
+        if !self.operational_mutation_available(action_id) {
             self.set_confirmation_error(
                 "the operational mutation is no longer permitted by profile, scope, or read-only mode",
             );
@@ -12059,7 +12059,7 @@ impl App {
             Vec::new()
         };
         actions.extend(self.local_actions_for_route());
-        actions.extend(self.phase_eight_resource_actions());
+        actions.extend(self.operational_resource_actions());
         actions
     }
 
@@ -12246,7 +12246,7 @@ impl App {
         }
     }
 
-    fn phase_eight_resource_actions(&self) -> Vec<ActionId> {
+    fn operational_resource_actions(&self) -> Vec<ActionId> {
         // Saved views and exports are for collections Tale fetched. `:profiles`
         // lists this machine's own configuration, which is already a file the
         // user owns, so offering to export it or to name a view of it would be
@@ -12635,7 +12635,7 @@ impl App {
             | ActionId::SavedViewDelete
             | ActionId::SavedViewApply
             | ActionId::CollectionExport => {
-                return self.accept_phase_eight_local_form(&state);
+                return self.accept_local_operational_form(&state);
             }
             ActionId::ActivityFlowsSelectWindow => return self.accept_flow_window_form(&state),
             ActionId::AdminCredentialAuthKeyCreate => return self.accept_auth_key_form(&state),
@@ -12643,7 +12643,7 @@ impl App {
             | ActionId::AdminWebhookEdit
             | ActionId::AdminLogStreamReplace
             | ActionId::AdminNetworkLogsSettings => {
-                return self.accept_phase_eight_form(&state);
+                return self.accept_admin_operational_form(&state);
             }
             ActionId::AdminPolicyPreview => return self.accept_policy_preview_form(&state),
             ActionId::AccessExplorerAsk => return self.accept_access_explorer_form(&state),
@@ -17897,7 +17897,7 @@ fn is_taildrive_action(action_id: ActionId) -> bool {
     )
 }
 
-fn is_phase_four_action(action_id: ActionId) -> bool {
+fn is_local_service_action(action_id: ActionId) -> bool {
     matches!(
         action_id,
         ActionId::ServicesServeRefresh
@@ -17922,7 +17922,7 @@ fn is_phase_four_action(action_id: ActionId) -> bool {
     )
 }
 
-fn is_phase_three_action(action_id: ActionId) -> bool {
+fn is_local_operator_action(action_id: ActionId) -> bool {
     matches!(
         action_id,
         ActionId::LocalConnect

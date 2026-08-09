@@ -608,8 +608,8 @@ mod tests {
     use super::{AuthError, map_admin_error};
     use crate::admin::client::AdminError;
 
-    /// Every one of these used to render as "the requested scope has no verified Phase 5
-    /// validation read", which named neither the cause nor anything the reader could act on.
+    /// Every one of these used to render as "the requested scope has no verified validation
+    /// read", which named neither the cause nor anything the reader could act on.
     #[test]
     fn each_api_failure_keeps_a_distinct_actionable_message() {
         let operation = || "read devices".to_owned();

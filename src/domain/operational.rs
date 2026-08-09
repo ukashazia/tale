@@ -7,7 +7,7 @@ use super::saved_view::SavedView;
 use super::secret_result::SecretBuffer;
 use super::webhook::WebhookMutation;
 
-/// The non-generic, typed payloads used by Phase 8 operational forms.
+/// The non-generic, typed payloads used by operational forms.
 ///
 /// Secret values are held only by an ephemeral reference-counted buffer while a
 /// confirmation or request is alive. They are never part of a preview or task

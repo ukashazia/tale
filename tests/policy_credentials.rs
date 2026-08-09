@@ -66,7 +66,7 @@ fn editor_argv_is_direct_and_appends_one_path_argument() {
 }
 
 #[test]
-fn phase_seven_action_ids_match_the_specification() {
+fn policy_action_ids_match_the_public_contract() {
     assert_eq!(ActionId::AdminPolicyEdit.as_str(), "admin.policy.edit");
     assert_eq!(
         ActionId::AdminPolicyEditorReopen.as_str(),

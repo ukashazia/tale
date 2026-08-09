@@ -663,7 +663,7 @@ const BIND_CANCEL: &[Binding] = &[Binding::Char('x')];
 
 const BIND_ACTIONS_ROOT: &[Binding] = &[Binding::Char('a')];
 
-pub fn phase_one_actions() -> Vec<ActionSpec> {
+pub fn shell_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::AppQuit,
@@ -1470,7 +1470,7 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
     }
 }
 
-pub fn phase_two_actions() -> Vec<ActionSpec> {
+pub fn local_observer_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::LocalDiagnostics,
@@ -1569,7 +1569,7 @@ pub fn phase_two_actions() -> Vec<ActionSpec> {
     ]
 }
 
-pub fn phase_three_actions() -> Vec<ActionSpec> {
+pub fn local_operator_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::LocalConnect,
@@ -1741,7 +1741,7 @@ const SERVICES: &[ActionContext] = &[
 ];
 const SERVICES_NAVIGATION: &[ActionContext] = &[ActionContext::Collection, ActionContext::Detail];
 
-pub fn phase_four_actions() -> Vec<ActionSpec> {
+pub fn local_service_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::ViewServices,
@@ -1979,18 +1979,18 @@ pub fn phase_four_actions() -> Vec<ActionSpec> {
 }
 
 pub fn all_actions() -> Vec<ActionSpec> {
-    let mut actions = phase_one_actions();
-    actions.extend(phase_two_actions());
-    actions.extend(phase_three_actions());
-    actions.extend(phase_four_actions());
-    actions.extend(phase_five_actions());
-    actions.extend(phase_six_actions());
-    actions.extend(phase_seven_actions());
-    actions.extend(phase_eight_actions());
+    let mut actions = shell_actions();
+    actions.extend(local_observer_actions());
+    actions.extend(local_operator_actions());
+    actions.extend(local_service_actions());
+    actions.extend(admin_observer_actions());
+    actions.extend(admin_operator_actions());
+    actions.extend(policy_and_credential_actions());
+    actions.extend(operational_actions());
     actions
 }
 
-pub fn phase_eight_actions() -> Vec<ActionSpec> {
+pub fn operational_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::OverviewHealthOpenResource,
@@ -2205,7 +2205,7 @@ pub fn phase_eight_actions() -> Vec<ActionSpec> {
     ]
 }
 
-pub fn phase_five_actions() -> Vec<ActionSpec> {
+pub fn admin_observer_actions() -> Vec<ActionSpec> {
     vec![
         // The subject is the selected row, so this belongs to the collection the
         // way every other row action does. Selecting `local` is the same act as
@@ -2400,7 +2400,7 @@ const ADMIN_MUTATIONS: &[ActionContext] = &[
 ];
 const ADMIN_BATCH: &[ActionContext] = &[ActionContext::Collection, ActionContext::Detail];
 
-pub fn phase_six_actions() -> Vec<ActionSpec> {
+pub fn admin_operator_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::AdminDeviceRename,
@@ -2615,7 +2615,7 @@ pub fn phase_six_actions() -> Vec<ActionSpec> {
     ]
 }
 
-pub fn phase_seven_actions() -> Vec<ActionSpec> {
+pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::AdminPolicyEdit,

@@ -19,7 +19,7 @@ use tale::paths::{PathEnvironment, Platform};
 const STATUS: &str = include_str!("fixtures/tailscale/1.98.9/linux/status.json");
 
 #[test]
-fn local_devices_render_wide_fields_and_support_phase_two_filters() {
+fn local_devices_render_wide_fields_and_supported_filters() {
     let app = local_app();
     assert!(app.is_some());
     if let Some(mut app) = app {

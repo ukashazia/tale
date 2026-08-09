@@ -172,7 +172,7 @@ impl ViewRegistry {
         );
     }
 
-    pub fn phase_eight_defaults() -> Self {
+    pub fn standard() -> Self {
         let mut registry = Self::new();
         registry.register_route(
             "devices",
@@ -351,7 +351,7 @@ fn device_operators() -> Vec<(String, Vec<FilterOperator>)> {
 
 impl Default for ViewRegistry {
     fn default() -> Self {
-        Self::phase_eight_defaults()
+        Self::standard()
     }
 }
 

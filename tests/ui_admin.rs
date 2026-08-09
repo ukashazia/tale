@@ -189,7 +189,7 @@ fn admin_device_details_render_inventory_routes_and_posture_values() {
 }
 
 #[test]
-fn phase_eight_sections_render_derived_and_authoritative_states() {
+fn operational_sections_render_derived_and_authoritative_states() {
     let app = admin_app("sections");
     assert!(app.is_some());
     let Some(mut app) = app else {

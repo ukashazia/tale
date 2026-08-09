@@ -11,7 +11,7 @@ fn parse(arguments: &[&str]) -> Option<Cli> {
 }
 
 #[test]
-fn every_phase_one_flag_and_subcommand_parses() {
+fn every_flag_and_subcommand_parses() {
     let cli = parse(&[
         "tale",
         "--profile",
@@ -82,7 +82,7 @@ fn every_phase_one_flag_and_subcommand_parses() {
 
 #[test]
 fn invalid_arguments_are_rejected_before_the_tui() {
-    let unknown = Cli::try_parse_from(["tale", "--not-a-phase-one-flag"]);
+    let unknown = Cli::try_parse_from(["tale", "--not-a-real-flag"]);
     assert!(unknown.is_err());
 
     let profile = Cli::try_parse_from(["tale", "--mock", "--profile", "ops"]);
@@ -90,7 +90,7 @@ fn invalid_arguments_are_rejected_before_the_tui() {
 }
 
 #[test]
-fn help_has_no_later_phase_routes() {
+fn help_does_not_expose_tui_routes_as_subcommands() {
     let help = Cli::command().render_help().to_string();
     assert!(help.contains("config"));
     assert!(help.contains("doctor"));
