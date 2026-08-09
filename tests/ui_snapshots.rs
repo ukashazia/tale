@@ -677,6 +677,10 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
                     };
                     assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
                     let buffer = terminal.backend().buffer();
+                    let header_height =
+                        ui::layout::compute(ratatui::layout::Rect::new(0, 0, width, height), &app)
+                            .header
+                            .height;
                     // The wordmark is art now, so check the header drew
                     // something rather than looking for a letter.
                     let mut has_header = false;
@@ -684,7 +688,7 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
                     for y in 0..height {
                         for x in 0..width {
                             if let Some(cell) = buffer.cell((x, y)) {
-                                has_header |= y < 6 && cell.symbol().trim() != "";
+                                has_header |= y < header_height && cell.symbol().trim() != "";
                                 has_non_reset |= cell.fg != ratatui::style::Color::Reset
                                     || cell.bg != ratatui::style::Color::Reset;
                                 if capability == ColorCapability::None {
@@ -775,9 +779,11 @@ fn the_header_is_a_spaced_block_that_hides_what_does_not_matter() {
     if let Some(mut app) = app {
         let area = ratatui::layout::Rect::new(0, 0, 120, 32);
         let layout = tale::ui::layout::compute(area, &app);
+        let title = include_str!("../src/ui/tale-header-title.txt").trim_end();
         assert_eq!(
-            layout.header.height, 6,
-            "a tall terminal gets the big header"
+            usize::from(layout.header.height),
+            title.lines().count().saturating_add(2),
+            "a tall terminal fits the file-backed title and its outer spacing"
         );
 
         let backend = TestBackend::new(area.width, area.height);
@@ -797,8 +803,15 @@ fn the_header_is_a_spaced_block_that_hides_what_does_not_matter() {
                 rendered.push(line);
             }
             let text = rendered.join("\n");
-            assert!(text.contains("   ______     __   ____"));
-            assert!(text.contains("  /_/  \\_,_/____/___/"));
+            for (row, title_line) in title.lines().enumerate() {
+                assert!(
+                    rendered
+                        .get(row.saturating_add(1))
+                        .is_some_and(|line| line.starts_with(title_line)),
+                    "title row {} did not come from tale-header-title.txt",
+                    row.saturating_add(1)
+                );
+            }
             // The status chip is a reversed run, not plain text.
             let chip = rendered
                 .iter()

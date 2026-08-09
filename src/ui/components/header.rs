@@ -9,30 +9,28 @@ use crate::ui::text;
 use crate::ui::theme;
 
 /// The wordmark. Pure ASCII so it needs no symbol fallback.
-const LOGO: [&str; 4] = [
-    "   ______     __   ____",
-    "  /_  __/__ _/ /  / __/",
-    "   / / / _ `/ /__/ _/  ",
-    "  /_/  \\_,_/____/___/  ",
-];
+const LOGO: &str = include_str!("../tale-header-title.txt");
 
 /// Rows the tall header occupies, including the blank above and below.
-pub const TALL_ROWS: u16 = 6;
 /// Below this the header collapses to a single line so the content keeps room.
 const TALL_MINIMUM_HEIGHT: u16 = 26;
 
-pub const fn rows(available: u16) -> u16 {
+pub fn rows(available: u16) -> u16 {
     if available >= TALL_MINIMUM_HEIGHT {
-        TALL_ROWS
+        tall_rows()
     } else {
         1
     }
 }
 
+fn tall_rows() -> u16 {
+    u16::try_from(LOGO.trim_end().lines().count()).map_or(u16::MAX, |rows| rows.saturating_add(2))
+}
+
 /// A logo, then what the session is doing, then the versions — spaced apart
 /// rather than packed together, and carrying only what is worth a permanent row.
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if area.height < TALL_ROWS {
+    if area.height < tall_rows() {
         frame.render_widget(
             Paragraph::new(compact_line(app)).style(app.theme.style(theme::StyleRole::Surface)),
             area,
@@ -47,21 +45,27 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .map(|(_, value)| VERSION_LABEL.saturating_add(value.chars().count()))
         .max()
         .map_or(0, |width| width);
-    let logo_width = LOGO
+    let logo = LOGO.trim_end().lines().collect::<Vec<_>>();
+    let logo_width = logo
         .iter()
         .map(|line| line.chars().count())
         .max()
         .map_or(0, |width| width);
+    let detail_start = logo.len().saturating_sub(status.len()) / 2;
     let gap = 6_usize;
     let mut lines = vec![Line::default()];
-    for row in 0..4 {
+    for (row, logo_line) in logo.iter().enumerate() {
         let mut spans = vec![Span::styled(
-            LOGO.get(row).map_or("", |line| line).to_owned(),
+            *logo_line,
             app.theme.style(theme::StyleRole::Focus),
         )];
         // The status block sits against the middle of the logo, not its top.
-        let detail = row.checked_sub(1).and_then(|index| status.get(index));
-        let version = row.checked_sub(1).and_then(|index| versions.get(index));
+        let detail = row
+            .checked_sub(detail_start)
+            .and_then(|index| status.get(index));
+        let version = row
+            .checked_sub(detail_start)
+            .and_then(|index| versions.get(index));
         let mut used = logo_width;
         if let Some(detail) = detail {
             spans.push(Span::styled(
