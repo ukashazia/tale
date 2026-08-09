@@ -5,7 +5,7 @@ use ratatui::widgets::{Clear, Paragraph};
 use crate::app::{App, Overlay};
 use crate::ui::components::{batch_result, confirm, form, panel};
 use crate::ui::theme::StyleRole;
-use crate::ui::views::{audit_investigation, policy_editor, secret_result};
+use crate::ui::views::{audit_investigation, secret_result};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
     let screen = frame.area();
@@ -53,7 +53,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
         }
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
         Overlay::Form(state) => form::render(frame, app, area, state),
-        Overlay::PolicyEditor => policy_editor::render(frame, app, area),
         Overlay::SecretResult => secret_result::render(frame, app, area),
         Overlay::AuditInvestigation => audit_investigation::render(frame, app, area),
     }
@@ -71,10 +70,7 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
                 height,
             }
         }
-        Overlay::TaskInspector(_)
-        | Overlay::PolicyEditor
-        | Overlay::SecretResult
-        | Overlay::AuditInvestigation => area,
+        Overlay::TaskInspector(_) | Overlay::SecretResult | Overlay::AuditInvestigation => area,
         // A form is as tall as the questions it asks, so no field is asked for
         // off the bottom of the screen. It never grows past the screen itself.
         Overlay::Form(state) => {

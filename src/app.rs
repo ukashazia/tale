@@ -1033,7 +1033,6 @@ pub enum Overlay {
     TaskInspector(TaskId),
     Confirmation(Box<ConfirmationState>),
     Form(FormState),
-    PolicyEditor,
     SecretResult,
     AuditInvestigation,
 }
@@ -2981,17 +2980,6 @@ impl App {
             }
             return Vec::new();
         }
-        if self.current_route() == Route::Access
-            && key.code == KeyCode::Char('e')
-            && key.modifiers.is_empty()
-        {
-            return self.dispatch_action(if self.policy_workflow.is_some() {
-                ActionId::AdminPolicyEditorReopen
-            } else {
-                ActionId::AdminPolicyEdit
-            });
-        }
-
         let context = self.action_context();
         let Some(action_id) = action::action_for_key(key, context) else {
             return Vec::new();
@@ -3748,28 +3736,6 @@ impl App {
                     }
                 }
                 self.overlays.push(Overlay::Confirmation(state));
-                Vec::new()
-            }
-            Overlay::PolicyEditor => {
-                if key.code == KeyCode::Char('e') && key.modifiers.is_empty() {
-                    return self.reopen_policy_editor();
-                }
-                if key.code == KeyCode::Char('v') && key.modifiers.is_empty() {
-                    return self.validate_policy_candidate();
-                }
-                if key.code == KeyCode::Char('p') && key.modifiers.is_empty() {
-                    return self.preview_policy_candidate();
-                }
-                if key.code == KeyCode::Char('d') && key.modifiers.is_empty() {
-                    return self.diff_policy_candidate();
-                }
-                if key.code == KeyCode::Char('a') && key.modifiers.is_empty() {
-                    return self.open_policy_apply_confirmation();
-                }
-                if key.code == KeyCode::Char('x') && key.modifiers.is_empty() {
-                    return self.open_policy_discard_confirmation();
-                }
-                self.overlays.push(Overlay::PolicyEditor);
                 Vec::new()
             }
             Overlay::SecretResult => {
@@ -6919,7 +6885,6 @@ impl App {
             tailnet.clone(),
             self.now,
         ));
-        self.overlays.push(Overlay::PolicyEditor);
         vec![Effect::StartPolicyRemoteFetch {
             workflow_id,
             profile,
@@ -6965,13 +6930,6 @@ impl App {
             }
         };
         let workflow_id = workflow.workflow_id();
-        if !self
-            .overlays
-            .iter()
-            .any(|overlay| matches!(overlay, Overlay::PolicyEditor))
-        {
-            self.overlays.push(Overlay::PolicyEditor);
-        }
         if let Some(workflow) = self.policy_workflow.as_mut() {
             workflow.mark_editing_externally();
         }
@@ -6992,13 +6950,6 @@ impl App {
             .as_ref()
             .is_some_and(|workflow| workflow.state() == PolicyState::Opening)
         {
-            if !self
-                .overlays
-                .iter()
-                .any(|overlay| matches!(overlay, Overlay::PolicyEditor))
-            {
-                self.overlays.push(Overlay::PolicyEditor);
-            }
             self.runtime_error = Some("the policy source is still loading".to_owned());
             return Vec::new();
         }
@@ -7427,8 +7378,6 @@ impl App {
         self.policy_workflow = None;
         self.pending_auth_key_request = None;
         self.pending_credential_revoke = None;
-        self.overlays
-            .retain(|overlay| !matches!(overlay, Overlay::PolicyEditor));
         Vec::new()
     }
 
@@ -10461,7 +10410,7 @@ impl App {
         }
         self.secret_result = None;
         self.overlays
-            .retain(|overlay| !matches!(overlay, Overlay::PolicyEditor | Overlay::SecretResult));
+            .retain(|overlay| !matches!(overlay, Overlay::SecretResult));
         let preflight_locks = self
             .admin_preflight_locks
             .iter()
@@ -12487,11 +12436,20 @@ impl App {
                 ActionId::OverviewHealthRunSuggestedAction,
             ]),
             Route::Access => {
-                actions.push(if self.policy_workflow.is_some() {
-                    ActionId::AdminPolicyEditorReopen
+                if self.policy_workflow.is_some() {
+                    actions.extend([
+                        ActionId::AdminPolicyEditorReopen,
+                        ActionId::AdminPolicyRemoteRefresh,
+                        ActionId::AdminPolicyValidate,
+                        ActionId::AdminPolicyPreview,
+                        ActionId::AdminPolicyDiff,
+                        ActionId::AdminPolicyApply,
+                        ActionId::AdminPolicyCandidateDiscard,
+                        ActionId::AdminPolicyWorkflowClose,
+                    ]);
                 } else {
-                    ActionId::AdminPolicyEdit
-                });
+                    actions.push(ActionId::AdminPolicyEdit);
+                }
                 actions.extend([
                     ActionId::AccessExplorerAsk,
                     ActionId::AccessExplorerOpenRule,
@@ -15955,7 +15913,6 @@ impl App {
             Overlay::TaskInspector(_) => "task",
             Overlay::Confirmation(_) => "confirm local action",
             Overlay::Form(_) => "form",
-            Overlay::PolicyEditor => "policy workflow",
             Overlay::SecretResult => "secret result",
             Overlay::AuditInvestigation => "audit investigation",
         })

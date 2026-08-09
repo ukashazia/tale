@@ -36,21 +36,53 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ],
     );
     lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        "Policy editor",
-        app.theme.style(theme::StyleRole::SectionHeading),
-    )));
-    lines.push(Line::from(vec![
-        Span::styled("e", app.theme.style(theme::StyleRole::Focus)),
-        Span::styled(
-            "  Open the exact fetched HuJSON in $EDITOR",
-            app.theme.style(theme::StyleRole::TextPrimary),
-        ),
-    ]));
-    lines.push(Line::from(Span::styled(
-        "Tale suspends this screen while the editor owns the terminal. Search, scroll, and edit there.",
-        app.theme.style(theme::StyleRole::TextMuted),
-    )));
+    if let Some(workflow) = app.policy_workflow.as_ref() {
+        let summary = workflow.summary();
+        lines.push(Line::from(Span::styled(
+            "Pending change",
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )));
+        lines.extend(grid::detail(
+            app,
+            &[
+                ("state", summary.state.label().to_owned()),
+                (
+                    "candidate",
+                    summary
+                        .candidate_hash
+                        .unwrap_or_else(|| "not ready".to_owned()),
+                ),
+                (
+                    "validation",
+                    workflow.validation().map_or_else(
+                        || "not run".to_owned(),
+                        |validation| {
+                            if validation.valid {
+                                "passed".to_owned()
+                            } else {
+                                "failed".to_owned()
+                            }
+                        },
+                    ),
+                ),
+                (
+                    "preview",
+                    workflow.preview().map_or_else(
+                        || "not run".to_owned(),
+                        |preview| format!("{} matches", preview.matches.len()),
+                    ),
+                ),
+                (
+                    "diff",
+                    workflow.diff().map_or_else(
+                        || "not generated".to_owned(),
+                        |diff| format!("+{} -{}", diff.additions, diff.removals),
+                    ),
+                ),
+            ],
+        ));
+        lines.push(Line::default());
+    }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         "Access Explorer",

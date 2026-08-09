@@ -1048,7 +1048,7 @@ fn mock_resource_routes_use_the_shared_visual_grammar() {
         (Route::Local, ["Client", "Identity", "Preferences"]),
         (Route::Routes, ["DEVICE", "subnet-gateway", "APPROVED"]),
         (Route::Dns, ["This machine", "Tailnet", "100.100.100.100"]),
-        (Route::Access, ["Policy editor", "$EDITOR", "hash"]),
+        (Route::Access, ["format", "Access Explorer", "hash"]),
         (
             Route::Credentials,
             ["DESCRIPTION", "CI deployment", "EXPIRES"],

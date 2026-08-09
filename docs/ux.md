@@ -335,8 +335,9 @@ Tailnet Lock signing is a different action and is never offered as â€œapprove.â€
 ### Edit the policy file
 
 1. Open Access and refresh the remote HuJSON source.
-2. Press `e`; Tale requires `$EDITOR`, writes the exact source to a mode-0600
-   temporary file, and suspends the alternate screen for the editor.
+2. Open the Access actions menu and choose Edit policy. Tale requires `$EDITOR`,
+   writes the exact source to a mode-0600 temporary file, and suspends the
+   alternate screen for the editor.
 3. On return, Tale first checks whether the remote source changed.
 4. It sends the candidate to validation and preview endpoints and runs declared
    policy tests.

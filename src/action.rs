@@ -1060,6 +1060,13 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::AdminDnsSplitEdit => Some("se"),
         ActionId::AdminDnsSplitRemove => Some("sd"),
         ActionId::AdminPolicyEdit | ActionId::AdminPolicyEditorReopen => Some("pe"),
+        ActionId::AdminPolicyCandidateDiscard => Some("px"),
+        ActionId::AdminPolicyRemoteRefresh => Some("pr"),
+        ActionId::AdminPolicyValidate => Some("pv"),
+        ActionId::AdminPolicyPreview => Some("pp"),
+        ActionId::AdminPolicyDiff => Some("pd"),
+        ActionId::AdminPolicyApply => Some("pa"),
+        ActionId::AdminPolicyWorkflowClose => Some("pc"),
         ActionId::ProfileActivate => Some("a"),
         ActionId::SavedViewCreate => Some("vc"),
         ActionId::SavedViewReplace => Some("vr"),
@@ -1219,9 +1226,15 @@ pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
         ActionId::AdminDnsSplitCreate
         | ActionId::AdminDnsSplitEdit
         | ActionId::AdminDnsSplitRemove => Some(TransientGroup::SplitDns),
-        ActionId::AdminPolicyEdit | ActionId::AdminPolicyEditorReopen => {
-            Some(TransientGroup::Policy)
-        }
+        ActionId::AdminPolicyEdit
+        | ActionId::AdminPolicyEditorReopen
+        | ActionId::AdminPolicyCandidateDiscard
+        | ActionId::AdminPolicyRemoteRefresh
+        | ActionId::AdminPolicyValidate
+        | ActionId::AdminPolicyPreview
+        | ActionId::AdminPolicyDiff
+        | ActionId::AdminPolicyApply
+        | ActionId::AdminPolicyWorkflowClose => Some(TransientGroup::Policy),
         ActionId::SavedViewCreate
         | ActionId::SavedViewReplace
         | ActionId::SavedViewRename
