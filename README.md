@@ -10,7 +10,7 @@ platform or client combination as supported.
 
 <p align="center">
   <a href="docs/assets/tale-devices.png">
-    <img src="docs/assets/tale-devices.png" alt="Tale device inventory with the build-01 inspector open" width="100%">
+    <img src="docs/assets/tale-devices.png" alt="Tale device inventory with the edge-relay inspector open" width="100%">
   </a>
 </p>
 
@@ -32,6 +32,19 @@ platform or client combination as supported.
     </td>
   </tr>
 </table>
+
+<details>
+<summary>Regenerate these screenshots</summary>
+
+```sh
+./scripts/capture-readme-screenshots.sh
+```
+
+The script builds Tale, drives the deterministic mock TUI, and replaces all
+three PNGs. It uses installed `vhs` and `ffmpeg` commands or obtains the pinned
+capture toolchain through Nix.
+
+</details>
 
 ## Project documents
 
