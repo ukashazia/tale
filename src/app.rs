@@ -12282,22 +12282,23 @@ impl App {
     }
 
     fn operational_resource_actions(&self) -> Vec<ActionId> {
+        // Appearance belongs to the view itself, so it remains reachable even
+        // when this route has no collection or selected row.
+        let mut actions = vec![ActionId::SettingsAppearance];
         // Saved views and exports are for collections Tale fetched. `:profiles`
         // lists this machine's own configuration, which is already a file the
         // user owns, so offering to export it or to name a view of it would be
         // offering something with no subject.
-        let mut actions = if self.current_route() == Route::Profiles {
-            Vec::new()
-        } else {
-            vec![
+        if self.current_route() != Route::Profiles {
+            actions.extend([
                 ActionId::SavedViewCreate,
                 ActionId::SavedViewReplace,
                 ActionId::SavedViewRename,
                 ActionId::SavedViewDelete,
                 ActionId::SavedViewApply,
                 ActionId::CollectionExport,
-            ]
-        };
+            ]);
+        }
         match self.current_route() {
             Route::Overview => actions.extend([
                 ActionId::OverviewHealthOpenResource,
@@ -13852,6 +13853,11 @@ impl App {
                 self.reconcile_selection(Some(&devices));
                 self.devices_resource.generation = generation;
                 self.devices_resource.snapshot = devices;
+                // The loading frame may already have cached an empty visible
+                // list under this same request generation. The completed
+                // snapshot changes the cache's subject even when the request
+                // generation does not change.
+                let _ = self.device_visible_cache.get_mut().take();
                 self.devices_resource.observed_at = Some(observed_at);
                 self.devices_resource.health = if self.now.saturating_sub(observed_at) > 60 {
                     SourceHealth::Stale

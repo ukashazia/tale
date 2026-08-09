@@ -900,9 +900,9 @@ pub fn shell_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::ResourceActions,
             label: "Actions",
-            description: "Open actions for the selected resource",
+            description: "Open actions for this view and the selected resource",
             contexts: GLOBAL,
-            selection_rule: SelectionRule::One,
+            selection_rule: SelectionRule::None,
             default_bindings: BIND_ACTIONS,
             capability: Capability::Available,
             risk: Risk::Observe,
@@ -1346,11 +1346,24 @@ pub fn footer_actions_filtered(
         used += separator + hint.width();
         hints.push(hint);
     }
-    hints.push(FooterHint {
+    let help = FooterHint {
         action_id: ActionId::ViewHelp,
         key: "?",
         label: if hidden { "more" } else { "help" },
-    });
+    };
+    // Command, search, and help are the three discovery affordances. Help is
+    // reserved while fitting the row, then inserted after the first two so it
+    // stays discoverable without separating related actions later in the bar.
+    let help_index = hints
+        .iter()
+        .take_while(|hint| {
+            matches!(
+                hint.action_id,
+                ActionId::ViewCommandLine | ActionId::ViewFilter | ActionId::DeviceDetailSearch
+            )
+        })
+        .count();
+    hints.insert(help_index, help);
     hints
 }
 
@@ -1416,33 +1429,29 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
 
 const fn footer_priority(id: ActionId) -> u8 {
     match id {
-        ActionId::CollectionMoveUp => 0,
-        ActionId::CollectionMoveDown => 1,
-        ActionId::CollectionOpen => 2,
-        ActionId::ServicesSectionNext => 2,
-        ActionId::ServicesSectionPrevious => 3,
-        ActionId::CollectionBack => 3,
-        ActionId::TaskCancel => 3,
-        ActionId::ViewFilter => 4,
-        ActionId::DeviceDetailSearch => 4,
-        ActionId::DeviceDetailNextMatch => 5,
-        ActionId::DeviceDetailPreviousMatch => 6,
-        ActionId::CollectionSort => 5,
-        ActionId::CollectionWideColumns => 6,
-        ActionId::CollectionInspect => 6,
-        ActionId::ResourceActions => 7,
-        ActionId::ResourceCopy => 8,
-        ActionId::ViewCommandLine => 9,
-        ActionId::ViewRefresh => 10,
-        ActionId::ViewRefreshAll => 11,
-        ActionId::ViewTasks => 12,
-        ActionId::ViewHistoryBack => 13,
-        ActionId::ViewHistoryForward => 14,
-        ActionId::AppQuit => 15,
-        ActionId::CollectionFirst => 16,
-        ActionId::CollectionLast => 17,
-        ActionId::CollectionPageUp => 18,
-        ActionId::CollectionPageDown => 19,
+        ActionId::ViewCommandLine => 0,
+        ActionId::ViewFilter | ActionId::DeviceDetailSearch => 1,
+        ActionId::ResourceActions => 3,
+        ActionId::ResourceCopy => 4,
+        ActionId::ViewTasks => 5,
+        ActionId::CollectionMoveUp => 10,
+        ActionId::CollectionMoveDown => 11,
+        ActionId::CollectionOpen => 12,
+        ActionId::CollectionBack | ActionId::TaskCancel => 13,
+        ActionId::ServicesSectionNext | ActionId::DeviceDetailNextMatch => 14,
+        ActionId::ServicesSectionPrevious | ActionId::DeviceDetailPreviousMatch => 15,
+        ActionId::CollectionSort => 16,
+        ActionId::CollectionWideColumns => 17,
+        ActionId::CollectionInspect => 18,
+        ActionId::ViewRefresh => 20,
+        ActionId::ViewRefreshAll => 21,
+        ActionId::ViewHistoryBack => 22,
+        ActionId::ViewHistoryForward => 23,
+        ActionId::CollectionFirst => 30,
+        ActionId::CollectionLast => 31,
+        ActionId::CollectionPageUp => 32,
+        ActionId::CollectionPageDown => 33,
+        ActionId::AppQuit => 40,
         _ => u8::MAX,
     }
 }

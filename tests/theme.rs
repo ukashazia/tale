@@ -18,6 +18,39 @@ fn every_role_resolves_for_every_builtin_projection() {
 }
 
 #[test]
+fn terminal_theme_leaves_neutral_backgrounds_unpainted() {
+    let theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
+    for role in [
+        StyleRole::Canvas,
+        StyleRole::Surface,
+        StyleRole::SurfaceRaised,
+        StyleRole::SurfaceInset,
+        StyleRole::Backdrop,
+    ] {
+        assert_eq!(theme.style(role).bg, Some(ratatui::style::Color::Reset));
+    }
+}
+
+#[test]
+fn terminal_theme_uses_dark_text_on_a_filled_section_heading() {
+    for capability in [
+        ColorCapability::TrueColor,
+        ColorCapability::Ansi256,
+        ColorCapability::Ansi16,
+    ] {
+        let theme = Theme::new(ThemeId::Terminal, capability);
+        let heading = theme.style(StyleRole::SectionHeading);
+        assert_eq!(heading.bg, theme.style(StyleRole::Focus).fg);
+        assert_eq!(heading.fg, Some(ratatui::style::Color::Black));
+        assert!(
+            heading
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+    }
+}
+
+#[test]
 fn operational_source_and_risk_roles_have_non_color_signals() {
     let meaningful_roles = [
         StyleRole::StateHealthy,

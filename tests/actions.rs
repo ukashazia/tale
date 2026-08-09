@@ -446,13 +446,50 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
     let footer = action::footer_hints(ActionContext::Collection, Route::Devices, 20);
     assert!(footer.last().is_some_and(|hint| hint == "? more"));
     let footer = action::footer_hints(ActionContext::Collection, Route::Devices, 120);
-    assert!(footer.first().is_some_and(|hint| hint == "k up"));
-    assert!(footer.iter().any(|hint| hint == ": command"));
-    assert!(footer.iter().any(|hint| hint == "i inspector"));
+    assert_eq!(
+        footer
+            .iter()
+            .take(6)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            ": command",
+            "/ filter",
+            "? more",
+            "a actions",
+            "y copy",
+            "@ tasks"
+        ]
+    );
     assert_eq!(
         footer.iter().filter(|hint| hint.starts_with("? ")).count(),
         1
     );
+
+    let footer = action::footer_hints(ActionContext::Detail, Route::Devices, 240);
+    assert_eq!(
+        footer
+            .iter()
+            .take(6)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            ": command",
+            "/ search",
+            "? help",
+            "a actions",
+            "y copy",
+            "@ tasks"
+        ]
+    );
+    let next = footer.iter().position(|hint| hint == "n next");
+    let previous = footer.iter().position(|hint| hint == "N previous");
+    assert!(next.is_some_and(|next| previous == Some(next.saturating_add(1))));
+    let sort = footer.iter().position(|hint| hint == "s sort");
+    assert!(previous.is_some_and(|previous| sort == Some(previous.saturating_add(1))));
+    let refresh = footer.iter().position(|hint| hint == "r refresh");
+    let refresh_all = footer.iter().position(|hint| hint == "R refresh-all");
+    assert!(refresh.is_some_and(|refresh| refresh_all == Some(refresh.saturating_add(1))));
 
     let app = mock_app();
     assert!(app.is_some());
@@ -460,7 +497,12 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
         app.set_route(Route::Devices);
         let _ = app.dispatch_action(ActionId::ResourceActions);
         assert!(app.tasks.all().is_empty());
-        assert!(app.runtime_error.is_some());
+        assert!(matches!(app.interaction, InteractionMode::Transient(_)));
+        assert!(app.runtime_error.is_none());
+        let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        ))));
         let _ = app.update(Event::Source(SourceEvent::LoadSucceeded {
             generation: 1,
             devices: mock::devices(),

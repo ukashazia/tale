@@ -102,7 +102,7 @@ fn precedence_is_cli_then_environment_then_file_then_default() {
 }
 
 #[test]
-fn theme_is_strict_and_defaults_to_tailscale_dark() {
+fn theme_is_strict_and_defaults_to_terminal() {
     let root = std::env::temp_dir().join(format!("tale-theme-config-{}", std::process::id()));
     let _ = fs::create_dir_all(&root);
     let missing = config::resolve(
@@ -112,7 +112,7 @@ fn theme_is_strict_and_defaults_to_tailscale_dark() {
     );
     assert!(missing.is_ok());
     if let Ok(resolved) = missing {
-        assert_eq!(resolved.ui.theme, ThemeId::TailscaleDark);
+        assert_eq!(resolved.ui.theme, ThemeId::Terminal);
         assert_eq!(resolved.ui.theme_source, ValueSource::Default);
     }
 

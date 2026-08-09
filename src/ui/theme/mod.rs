@@ -85,6 +85,12 @@ impl Theme {
                 .bg(Color::Reset)
                 .add_modifier(role.no_color_modifier());
         }
+        if self.id == ThemeId::Terminal && role == StyleRole::SectionHeading {
+            return Style::default()
+                .fg(Color::Black)
+                .bg(self.project(TokenKind::Focus))
+                .add_modifier(Modifier::BOLD);
+        }
         let spec = role_spec(role);
         let mut style = Style::default().add_modifier(spec.modifier);
         if let Some(fg) = spec.fg {

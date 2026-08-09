@@ -80,9 +80,13 @@ fn bootstrap_and_source_updates_are_typed_and_deterministic() {
         let effects = app.bootstrap_effects();
         assert_eq!(effects.len(), 1);
         assert_eq!(app.devices_resource.generation, 1);
+        // Rendering the loading state must not leave an empty row cache behind
+        // when that same request generation completes.
+        assert!(app.visible_indices().is_empty());
         load_app(&mut app);
         assert_eq!(app.source_mode, SourceMode::Mock);
         assert_eq!(app.devices_resource.snapshot.len(), 14);
+        assert_eq!(app.visible_indices().len(), 14);
         assert!(app.views.devices.selected_id.is_some());
         assert_eq!(app.devices_resource.health.label(), "healthy");
     }

@@ -441,7 +441,7 @@ pub fn resolve(
             request_timeout_source: source_for(file.admin.request_timeout.is_some()),
         },
         ui: UiConfig {
-            theme: file.ui.theme.unwrap_or(ThemeId::TailscaleDark),
+            theme: file.ui.theme.unwrap_or(ThemeId::Terminal),
             color,
             symbols: file.ui.symbols.map_or(SymbolsMode::Auto, |value| value),
             mouse: file.ui.mouse.is_some_and(|value| value),

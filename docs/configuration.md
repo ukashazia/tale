@@ -109,7 +109,7 @@ refresh_interval = "30s"
 request_timeout = "15s"
 
 [ui]
-theme = "tailscale-dark"
+theme = "terminal"
 color = "auto"
 symbols = "auto"
 mouse = false
@@ -141,8 +141,8 @@ All fields are optional except `tailnet`, `credential`, `credential_backend`, an
 the location that backend requires, inside a declared profile. Unknown fields are errors so misspellings cannot silently weaken a
 setting.
 
-`ui.theme` accepts exactly `tailscale-dark` (default), `tailscale-light`, or
-`terminal`. There are no aliases or fallback names. `terminal` preserves the
+`ui.theme` accepts exactly `terminal` (default), `tailscale-dark`, or
+`tailscale-light`. There are no aliases or fallback names. `terminal` preserves the
 terminal's default foreground/background for neutral surfaces while retaining
 semantic accents permitted by `ui.color`. Settings can preview and apply a
 theme for the current process; Tale does not edit this key automatically.
@@ -182,7 +182,7 @@ Tests inject their transport without using user configuration.
 
 | Field | Values | Default |
 | --- | --- | --- |
-| `theme` | `tailscale-dark`, `tailscale-light`, `terminal` | `tailscale-dark` |
+| `theme` | `tailscale-dark`, `tailscale-light`, `terminal` | `terminal` |
 | `color` | `auto`, `none`, `ansi16`, `ansi256`, `truecolor` | `auto` |
 | `symbols` | `auto`, `ascii`, `unicode` | `auto` |
 | `mouse` | bool | `false` |

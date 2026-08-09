@@ -367,9 +367,9 @@ Tailnet Lock signing is a different action and is never offered as â€œapprove.â€
 
 ## Visual language
 
-- `tailscale-dark` is the default warm dark canvas, `tailscale-light` is an
-  explicit warm light canvas, and `terminal` preserves terminal defaults for
-  neutral surfaces. All three support truecolor, ANSI-256, ANSI-16, and
+- `terminal` is the default and preserves terminal defaults for neutral
+  surfaces. `tailscale-dark` and `tailscale-light` remain explicit warm canvas
+  choices. All three support truecolor, ANSI-256, ANSI-16, and
   no-color.
 - Focus is a stronger consistent border/cursor; selection is a filled or
   reversed current-resource marker. They are separate and remain visible when

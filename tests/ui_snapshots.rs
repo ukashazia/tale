@@ -200,11 +200,8 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
                 assert!(lines.iter().any(|line| line.contains("Copy")));
                 assert!(lines.iter().any(|line| line.contains("Esc close")));
                 assert!(lines.iter().any(|line| line.contains("Identity")));
-                assert!(
-                    lines
-                        .last()
-                        .is_some_and(|line| line.contains("copy immediately"))
-                );
+                assert!(!lines.iter().any(|line| line.contains("copy immediately")));
+                assert!(lines.last().is_some_and(|line| line.trim().is_empty()));
             }
 
             press(&mut app, KeyCode::Esc);
@@ -272,8 +269,8 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
             assert!(key.is_some());
             assert!(label.is_some());
             if let (Some(key), Some(label)) = (key, label) {
-                assert_eq!(key.symbol(), "k");
-                assert_eq!(label.symbol(), "u");
+                assert_eq!(key.symbol(), ":");
+                assert_eq!(label.symbol(), "c");
                 if let Some(expected) = app.theme.style(StyleRole::KeyHint).fg {
                     assert_eq!(key.fg, expected);
                 }
@@ -290,7 +287,8 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
 fn route_title_uses_primary_text_and_does_not_inherit_the_border() {
     let app = populated_app();
     assert!(app.is_some());
-    if let Some(app) = app {
+    if let Some(mut app) = app {
+        app.theme = Theme::new(ThemeId::TailscaleDark, ColorCapability::TrueColor);
         let width = 80;
         let height = 24;
         let backend = TestBackend::new(width, height);
@@ -389,7 +387,9 @@ fn required_responsive_frames_render_without_wrapped_rows() {
         if let Some(lines) = lines {
             assert_frame_shape(&lines, 110, 30);
             assert!(lines.iter().any(|line| line.contains('●')));
-            assert!(lines.iter().any(|line| line.contains("inspector")));
+            assert!(lines.iter().any(|line| line.contains(": command")));
+            assert!(lines.iter().any(|line| line.contains("/ filter")));
+            assert!(lines.iter().any(|line| line.contains("? more")));
         }
     }
 
@@ -781,10 +781,13 @@ fn appearance_is_a_choice_menu_reachable_from_any_page() {
     let app = populated_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
-        app.set_route(Route::Devices);
-        // Appearance is a bottom choice menu, not a centered overlay.
-        let effects = app.dispatch_action(ActionId::SettingsAppearance);
+        // Tasks is deliberately empty here. The view-level action must remain
+        // reachable without borrowing a selection from the collection.
+        app.set_route(Route::Tasks);
+        let effects = app.dispatch_action(ActionId::ResourceActions);
         assert!(effects.is_empty());
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('a'));
         assert!(app.overlays.is_empty());
         let lines = lines_at(&app, 100, 32);
         assert!(lines.is_some());
@@ -794,6 +797,63 @@ fn appearance_is_a_choice_menu_reachable_from_any_page() {
             assert!(lines.iter().any(|line| line.contains("terminal")));
         }
     }
+}
+
+#[test]
+fn terminal_group_headings_keep_accent_fill_with_dark_ink() {
+    let heading_is_styled = |app: &App, label: &str| {
+        let mut terminal = match Terminal::new(TestBackend::new(120, 32)) {
+            Ok(terminal) => terminal,
+            Err(_) => return false,
+        };
+        if terminal.draw(|frame| ui::render(frame, app)).is_err() {
+            return false;
+        }
+        let buffer = terminal.backend().buffer();
+        let expected = app.theme.style(StyleRole::SectionHeading);
+        for y in 0_u16..32 {
+            for x in 0_u16..120 {
+                let matches = label.chars().enumerate().all(|(offset, character)| {
+                    let Some(cell) = buffer.cell((x.saturating_add(offset as u16), y)) else {
+                        return false;
+                    };
+                    cell.symbol() == character.to_string()
+                });
+                if matches {
+                    return label.chars().enumerate().all(|(offset, _)| {
+                        buffer
+                            .cell((x.saturating_add(offset as u16), y))
+                            .is_some_and(|cell| {
+                                Some(cell.fg) == expected.fg
+                                    && Some(cell.bg) == expected.bg
+                                    && cell.modifier.contains(ratatui::style::Modifier::BOLD)
+                            })
+                    });
+                }
+            }
+        }
+        false
+    };
+
+    for (key, heading) in [
+        (KeyCode::Char(':'), "Fleet"),
+        (KeyCode::Char('?'), "Navigation"),
+        (KeyCode::Char('a'), "Views"),
+    ] {
+        let Some(mut app) = populated_app() else {
+            return;
+        };
+        app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
+        press(&mut app, key);
+        assert!(heading_is_styled(&app, heading), "unstyled {heading}");
+    }
+
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
+    let _ = app.dispatch_action(ActionId::SettingsAppearance);
+    assert!(heading_is_styled(&app, "Theme"));
 }
 
 #[test]
@@ -918,6 +978,7 @@ fn every_overlay_paints_a_surface_rather_than_showing_the_view_through_it() {
     let Some(mut app) = populated_app() else {
         return;
     };
+    app.theme = Theme::new(ThemeId::TailscaleDark, ColorCapability::TrueColor);
     let Some(raised) = app.theme.style(StyleRole::SurfaceRaised).bg else {
         return;
     };

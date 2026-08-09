@@ -1034,7 +1034,8 @@ struct MenuSection {
 }
 
 /// The shape shared by `a`, `y`, and `?`: a title row, a grouped grid of keys,
-/// and a status row. Keeping one implementation is what keeps them consistent.
+/// and a status row reserved for actionable feedback. Keeping one implementation
+/// is what keeps them consistent.
 fn menu_grid_lines(
     app: &App,
     header: Line<'static>,
@@ -1345,13 +1346,7 @@ fn action_menu_status(app: &App, state: &TransientMenuState) -> Line<'static> {
             ),
         ]);
     }
-    Line::from(vec![
-        Span::styled("Keys", app.theme.style(theme::StyleRole::KeyHint)),
-        Span::styled(
-            " activate immediately",
-            app.theme.style(theme::StyleRole::TextMuted),
-        ),
-    ])
+    Line::default()
 }
 
 /// Height the copy menu needs: one row normally, a listed choice per address
@@ -1497,17 +1492,7 @@ fn choice_menu_status(app: &App, state: &TransientMenuState) -> Line<'static> {
             app.theme.style(theme::StyleRole::StateWarning),
         );
     }
-    Line::from(vec![
-        Span::styled("Keys", app.theme.style(theme::StyleRole::KeyHint)),
-        Span::styled(
-            if state.prefix.is_some() {
-                " apply immediately · Esc goes back"
-            } else {
-                " apply immediately · · marks the current value"
-            },
-            app.theme.style(theme::StyleRole::TextMuted),
-        ),
-    ])
+    Line::default()
 }
 
 fn choice_menu_lines(app: &App, state: &TransientMenuState, area: Rect) -> Vec<Line<'static>> {
@@ -1661,23 +1646,15 @@ fn copy_menu_lines(app: &App, state: &TransientMenuState, area: Rect) -> Vec<Lin
             app.theme.style(theme::StyleRole::TextMuted),
         ),
     ]);
-    let status = state.message.as_ref().map_or_else(
-        || {
-            Line::from(vec![
-                Span::styled("Keys", app.theme.style(theme::StyleRole::KeyHint)),
-                Span::styled(
-                    " copy immediately",
-                    app.theme.style(theme::StyleRole::TextMuted),
-                ),
-            ])
-        },
-        |message| {
+    let status = state
+        .message
+        .as_ref()
+        .map_or_else(Line::default, |message| {
             Line::styled(
                 message.clone(),
                 app.theme.style(theme::StyleRole::StateWarning),
             )
-        },
-    );
+        });
     menu_grid_lines(
         app,
         header,
@@ -1821,7 +1798,7 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     menu_grid_lines(
         app,
         help_header(app),
-        help_status(app),
+        Line::default(),
         &help_grid_sections(app),
         layout::help_menu_columns(area.width),
         area,
@@ -1835,16 +1812,6 @@ fn help_header(app: &App) -> Line<'static> {
         Span::raw("   "),
         Span::styled("Esc", app.theme.style(theme::StyleRole::KeyHint)),
         Span::styled(" close", app.theme.style(theme::StyleRole::TextMuted)),
-    ])
-}
-
-fn help_status(app: &App) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("Keys", app.theme.style(theme::StyleRole::KeyHint)),
-        Span::styled(
-            " activate immediately",
-            app.theme.style(theme::StyleRole::TextMuted),
-        ),
     ])
 }
 
