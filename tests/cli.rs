@@ -78,6 +78,12 @@ fn every_flag_and_subcommand_parses() {
         cli.map(|value| value.command),
         Some(Some(TaleCommand::Doctor(_)))
     ));
+
+    let cli = parse(&["tale", "gen-completions", "--shell", "/bin/zsh"]);
+    assert!(matches!(
+        cli.map(|value| value.command),
+        Some(Some(TaleCommand::GenCompletions(_)))
+    ));
 }
 
 #[test]
@@ -117,6 +123,23 @@ fn non_interactive_binary_commands_do_not_enter_an_alternate_screen() {
         assert!(!stdout.contains("\u{1b}[?1049h"));
     }
     assert!(!config_file.exists());
+}
+
+#[test]
+fn generated_completions_are_available_from_the_binary() {
+    for shell in ["bash", "zsh", "fish"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tale"))
+            .args(["gen-completions", "--shell", shell])
+            .output();
+        assert!(output.is_ok());
+        if let Ok(output) = output {
+            assert!(output.status.success(), "shell: {shell}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains("tale"), "shell: {shell}");
+            assert!(!stdout.contains("--mock"), "shell: {shell}");
+            assert!(!stdout.contains("\u{1b}[?1049h"), "shell: {shell}");
+        }
+    }
 }
 
 #[test]

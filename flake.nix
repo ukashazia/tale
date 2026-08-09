@@ -14,7 +14,7 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in
     {
-      devShells = forAllSystems (system:
+        devShells = forAllSystems (system:
         let
           pkgs = import nixpkgs { inherit system; };
         in

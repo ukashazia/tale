@@ -4,11 +4,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Command, CommandFactory};
-use clap_complete::generate;
-use clap_complete::shells::{Bash, Fish, Zsh};
 use clap_mangen::Man;
 
-use tale::cli::Cli;
+use tale::cli::{self, Cli, CompletionShell};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = output_dir()?;
@@ -17,9 +15,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&completions_dir)?;
     fs::create_dir_all(&man_dir)?;
 
-    write_completion(&completions_dir.join("tale.bash"), Bash)?;
-    write_completion(&completions_dir.join("_tale"), Zsh)?;
-    write_completion(&completions_dir.join("tale.fish"), Fish)?;
+    write_completion(&completions_dir.join("tale.bash"), CompletionShell::Bash)?;
+    write_completion(&completions_dir.join("_tale"), CompletionShell::Zsh)?;
+    write_completion(&completions_dir.join("tale.fish"), CompletionShell::Fish)?;
 
     let man_path = man_dir.join("tale.1");
     let mut man_file = File::create(man_path)?;
@@ -38,35 +36,14 @@ fn output_dir() -> Result<PathBuf, io::Error> {
     }
 }
 
-fn write_completion<S>(path: &Path, shell: S) -> Result<(), io::Error>
-where
-    S: clap_complete::Generator,
-{
-    let mut command = Cli::command();
-    let mut generated = Vec::new();
-    generate(shell, &mut command, "tale", &mut generated);
-    let generated = String::from_utf8(generated)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "completion was not UTF-8"))?;
+fn write_completion(path: &Path, shell: CompletionShell) -> Result<(), io::Error> {
+    let generated = cli::completion(shell)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut file = File::create(path)?;
-    file.write_all(sanitize_completion(&generated).as_bytes())?;
+    file.write_all(generated.as_bytes())?;
     Ok(())
 }
 
 fn artifact_command() -> Command {
     Cli::command()
-}
-
-fn sanitize_completion(generated: &str) -> String {
-    generated
-        .lines()
-        .filter_map(|line| {
-            if line.contains("-l mock") || line.contains("'--mock[]'") {
-                None
-            } else {
-                Some(line.replace(" --mock", "").replace(" mock ", " "))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
 }

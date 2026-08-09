@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            debian: false
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            debian: false
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            debian: true
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            debian: true
+    runs-on: ${{ matrix.runner }}
+    env:
+      SOURCE_DATE_EPOCH: "0"
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install archive tooling
+        run: |
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            brew install zstd
+          else
+            sudo apt-get update
+            sudo apt-get install --yes zstd
+          fi
+
+      - name: Generate command-line artifacts
+        run: cargo run --locked --bin generate-artifacts -- --output-dir .
+
+      - name: Build release binary
+        run: cargo build --locked --release --target "$TARGET"
+
+      - name: Assemble release payload
+        run: |
+          mkdir -p release
+          cargo run --locked --release --bin package-artifact -- --target "$TARGET" --binary "target/$TARGET/release/tale" --output "release/tale-$TARGET.tar" --checksum "release/tale-$TARGET.tar.sha256" --source-date-epoch "$SOURCE_DATE_EPOCH"
+          packaging/release/compress-archive.sh --input "release/tale-$TARGET.tar" --output "release/tale-$TARGET.tar.zst"
+          gzip -n --stdout "release/tale-$TARGET.tar" > "release/tale-$TARGET.tar.gz"
+          cp "target/$TARGET/release/tale" "release/tale-$TARGET"
+          shasum -a 256 "release/tale-$TARGET" > "release/tale-$TARGET.sha256"
+          shasum -a 256 "release/tale-$TARGET.tar.zst" > "release/tale-$TARGET.tar.zst.sha256"
+          shasum -a 256 "release/tale-$TARGET.tar.gz" > "release/tale-$TARGET.tar.gz.sha256"
+          sed "s|@REPOSITORY@|${{ github.repository }}|g" install.sh > release/install.sh
+          chmod 0755 release/install.sh
+
+      - name: Assemble Debian package
+        if: matrix.debian
+        run: |
+          version=${VERSION#v}
+          case "$TARGET" in
+            aarch64-unknown-linux-gnu) architecture=arm64 ;;
+            x86_64-unknown-linux-gnu) architecture=amd64 ;;
+          esac
+          packaging/debian/package-deb.sh --binary "target/$TARGET/release/tale" --target "$TARGET" --version "$version" --output "release/tale_${version}_${architecture}.deb"
+          shasum -a 256 "release/tale_${version}_${architecture}.deb" > "release/tale_${version}_${architecture}.deb.sha256"
+
+      - name: Upload target assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            release/tale-*
+            release/*.deb
+            release/install.sh
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub release
+    needs: package
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Create or refresh published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+            gh release edit "$TAG" --draft=false
+          else
+            gh release create "$TAG" release/* --title "$TAG"
+          fi

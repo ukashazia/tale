@@ -47,6 +47,15 @@ fn config_error(error: config::ConfigError) -> TaleError {
 }
 
 pub fn run(mut cli: Cli) -> Result<(), TaleError> {
+    if let Some(Command::GenCompletions(args)) = cli.command.as_ref() {
+        let completion = crate::cli::completion(args.shell)
+            .map_err(|error| TaleError::Application(error.to_owned()))?;
+        io::stdout()
+            .write_all(completion.as_bytes())
+            .map_err(|error| TaleError::from_message(error, TaleError::Application))?;
+        return Ok(());
+    }
+
     let environment = EnvironmentValues::from_process();
     let path_environment = PathEnvironment::from_process()
         .map_err(|error| TaleError::InvalidConfiguration(error.to_string()))?;
@@ -60,6 +69,7 @@ pub fn run(mut cli: Cli) -> Result<(), TaleError> {
     }
 
     match cli.command.clone() {
+        Some(Command::GenCompletions(_)) => Ok(()),
         Some(Command::Auth { command }) => run_auth(command, &cli, &environment, &path_environment),
         Some(Command::Config {
             command: ConfigCommand::Path,

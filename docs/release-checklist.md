@@ -62,6 +62,22 @@ It writes a fixed-order POSIX tar archive containing only the allowlisted
 release files and a checksum manifest beside it. It does not sign, publish, or
 contact a remote service.
 
+## Tag release automation
+
+Pushing a version tag beginning with `v` starts the
+GitHub release workflow. It builds native `aarch64` and `x86_64` artifacts for
+macOS and Linux, generates the CLI artifacts, creates raw executables and gzip
+and Zstandard payload archives, and builds Linux `.deb` packages. It then
+publishes or refreshes a GitHub release with those assets and their SHA-256
+files. The publish job uses the protected `release` environment; configure its
+required reviewers to retain the approval gate. The workflow uses a fixed
+release-owned `SOURCE_DATE_EPOCH` so archive timestamps do not depend on the
+runner clock.
+
+Tagging is not an authorization to promote an Experimental support row. Before
+approving the protected publish job, a maintainer must verify the assets, sign
+them, and record the evidence required to clear every release blocker.
+
 ## Fifteen acceptance journeys
 
 The mock/fake adapter suite covers the deterministic portions of these journeys;

@@ -25,6 +25,9 @@ _tale() {
             tale,doctor)
                 cmd="tale__subcmd__doctor"
                 ;;
+            tale,gen-completions)
+                cmd="tale__subcmd__gen__subcmd__completions"
+                ;;
             tale__subcmd__auth,add)
                 cmd="tale__subcmd__auth__subcmd__add"
                 ;;
@@ -50,7 +53,7 @@ _tale() {
 
     case "${cmd}" in
         tale)
-            opts="-h -V --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help --version auth config doctor"
+            opts="-h -V --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help --version gen-completions auth config doctor"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -367,6 +370,44 @@ _tale() {
             fi
             case "${prev}" in
                 --output)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --view)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tailscale-socket)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        tale__subcmd__gen__subcmd__completions)
+            opts="-h --shell --profile --config --view --read-only --no-local --tailscale-path --tailscale-socket --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --shell)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

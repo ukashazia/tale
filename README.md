@@ -38,7 +38,43 @@ of you.
   </tr>
 </table>
 
-## Start here
+## Install
+
+Only targets marked Supported in the [support matrix](docs/support.md) are
+release installations. Every channel installs `tale`, `tale(1)`, and Bash/Zsh/
+Fish completions; none installs Tailscale, a service, credentials, or shell
+profile changes.
+
+| System | ARM64 | x86_64 |
+| --- | --- | --- |
+| macOS | `brew install ukashazia/tale/tale` | `brew install ukashazia/tale/tale` |
+| macOS fallback | `tale-aarch64-apple-darwin` release asset | `tale-x86_64-apple-darwin` release asset |
+| Linux / Nix | `nix profile install github:ukashazia/tale?dir=packaging/nix` | `nix profile install github:ukashazia/tale?dir=packaging/nix` |
+| Debian / Ubuntu | `tale_VERSION_arm64.deb` | `tale_VERSION_amd64.deb` |
+| Arch | ARM64 `tale-bin` package | x86_64 `tale-bin` package |
+| Linux fallback | `tale-aarch64-unknown-linux-gnu` release asset | `tale-x86_64-unknown-linux-gnu` release asset |
+
+For Debian/Ubuntu, download the architecture-matched release asset, then run:
+
+```sh
+sudo apt install ./tale_VERSION_ARCHITECTURE.deb
+```
+
+For Arch, install the matching `tale-bin` package from the companion AUR
+repository. The AUR package produces a native `.pkg.tar.zst`; it is not a plain
+archive installation.
+
+The portable installer is the fallback for the raw macOS and Linux binaries:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/ukashazia/tale/releases/latest/download/install.sh | sh
+```
+
+It detects ARM64/x86_64 and macOS/Linux, verifies the matching release payload,
+and installs beneath `~/.local`. Use the [installation guide](docs/install.md)
+for custom prefixes, explicit versions, and completion generation.
+
+## Build from a checkout
 
 You need a stable Rust toolchain, a terminal with alternate-screen support, and
 an installed Tailscale client if you want to inspect or operate the local node.

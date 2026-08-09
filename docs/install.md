@@ -16,7 +16,58 @@ also requires a Control API credential with the least-privilege scopes needed
 for the resources being inspected or changed. Read-only profiles should use
 read-only credentials whenever the Control API permits it.
 
-## Build or install from this checkout
+## Install a release
+
+When a platform row is marked Supported in the support matrix, release assets
+are available for both ARM64 and x86_64 where that operating system supports
+them. Choose the native channel for your system:
+
+- macOS: the project's Homebrew tap installs Tale, `tale(1)`, and Bash/Zsh/Fish
+  completions;
+- Nix: install the package exposed by the separate release flake in
+  `packaging/nix`;
+- Debian-family Linux: install the architecture-matched `.deb` release asset;
+- Arch Linux: install the companion AUR package, which produces a native
+  `.pkg.tar.zst` package;
+- other supported Unix systems: use the matching raw `tale-TARGET` executable.
+
+No distribution channel installs Tailscale, starts a service, modifies shell
+startup files, or handles credentials. Tale requires an installed Tailscale
+client only for local observation or operation.
+
+The current matrix contains no Supported platform rows, so these channels must
+not yet be advertised as production installations.
+
+## Portable installer
+
+Once releases are published, the fallback installer is served directly from the
+repository and downloads a verified payload from the latest GitHub release:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/ukashazia/tale/releases/latest/download/install.sh | sh
+```
+
+The release workflow renders the installer with the repository that published
+the release. It supports macOS and Linux on ARM64 and x86_64. Before installing it downloads
+the matching `.tar.gz` release payload and SHA-256 file, verifies them, then
+installs the executable, man page, and completions beneath `~/.local`. It does
+not use `sudo`, edit shell profiles, install Tailscale, or handle credentials.
+Use `curl --proto '=https' --tlsv1.2 -fsSL URL | TALE_INSTALL_PREFIX=/path sh`
+to choose a prefix, or download and inspect the script before running it.
+
+## Generate shell completions
+
+Tale can generate current completion material from its embedded CLI definition:
+
+```sh
+tale gen-completions --shell "$SHELL"
+```
+
+Supported shells are `bash`, `zsh`, and `fish`; their executable paths are also
+accepted. Redirect the output to a
+shell-specific completion directory when using a custom installation layout.
+
+## Build from this checkout
 
 Use the locked dependency graph:
 

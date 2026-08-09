@@ -1,0 +1,22 @@
+pkgname=tale
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Keyboard-first terminal application for Tailscale networks'
+arch=('@ARCHITECTURE@')
+url='@HOMEPAGE@'
+license=('MIT')
+optdepends=('tailscale: local observation and operations')
+source=("tale-${pkgver}-@TARGET@.tar.zst::@ARCHIVE_URL@")
+sha256sums=('@SHA256@')
+
+package() {
+  local root="${srcdir}/tale-@TARGET@"
+
+  install -Dm755 "${root}/tale" "${pkgdir}/usr/bin/tale"
+  install -Dm644 "${root}/docs/cli/tale.1" "${pkgdir}/usr/share/man/man1/tale.1"
+  install -Dm644 "${root}/completions/tale.bash" "${pkgdir}/usr/share/bash-completion/completions/tale"
+  install -Dm644 "${root}/completions/_tale" "${pkgdir}/usr/share/zsh/site-functions/_tale"
+  install -Dm644 "${root}/completions/tale.fish" "${pkgdir}/usr/share/fish/vendor_completions.d/tale.fish"
+  install -Dm644 "${root}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "${root}/NOTICE" "${pkgdir}/usr/share/licenses/${pkgname}/NOTICE"
+}

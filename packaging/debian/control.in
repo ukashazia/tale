@@ -1,0 +1,9 @@
+Package: tale
+Version: @VERSION@
+Architecture: @ARCHITECTURE@
+Maintainer: Tale maintainers
+Section: net
+Priority: optional
+Suggests: tailscale
+Description: Keyboard-first terminal application for Tailscale networks
+ Tale is a foreground terminal application for local and tailnet administration.

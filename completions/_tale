@@ -35,7 +35,21 @@ _tale() {
         (( CURRENT += 1 ))
         curcontext="${curcontext%:*:*}:tale-command-$line[1]:"
         case $line[1] in
-            (auth)
+            (gen-completions)
+_arguments "${_arguments_options[@]}" : \
+'--shell=[]:SHELL:_default' \
+'--profile=[]:NAME:_default' \
+'--config=[]:PATH:_files' \
+'--view=[]:ROUTE:_default' \
+'--tailscale-path=[]:PATH:_files' \
+'--tailscale-socket=[]:PATH:_files' \
+'--read-only[]' \
+'--no-local[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(auth)
 _arguments "${_arguments_options[@]}" : \
 '--profile=[]:NAME:_default' \
 '--config=[]:PATH:_files' \
@@ -190,6 +204,7 @@ esac
 (( $+functions[_tale_commands] )) ||
 _tale_commands() {
     local commands; commands=(
+'gen-completions:Print shell completion instructions to standard output' \
 'auth:' \
 'config:' \
 'doctor:' \
@@ -248,6 +263,11 @@ _tale__subcmd__config__subcmd__show_commands() {
 _tale__subcmd__doctor_commands() {
     local commands; commands=()
     _describe -t commands 'tale doctor commands' commands "$@"
+}
+(( $+functions[_tale__subcmd__gen-completions_commands] )) ||
+_tale__subcmd__gen-completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'tale gen-completions commands' commands "$@"
 }
 
 if [ "$funcstack[1]" = "_tale" ]; then

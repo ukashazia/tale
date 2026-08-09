@@ -33,9 +33,19 @@ complete -c tale -n "__fish_tale_needs_command" -l read-only
 complete -c tale -n "__fish_tale_needs_command" -l no-local
 complete -c tale -n "__fish_tale_needs_command" -s h -l help -d 'Print help'
 complete -c tale -n "__fish_tale_needs_command" -s V -l version -d 'Print version'
+complete -c tale -n "__fish_tale_needs_command" -f -a "gen-completions" -d 'Print shell completion instructions to standard output'
 complete -c tale -n "__fish_tale_needs_command" -f -a "auth"
 complete -c tale -n "__fish_tale_needs_command" -f -a "config"
 complete -c tale -n "__fish_tale_needs_command" -f -a "doctor"
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l shell -r
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l profile -r
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l config -r -F
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l view -r
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l tailscale-path -r -F
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l tailscale-socket -r -F
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l read-only
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -s h -l help -d 'Print help'
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l profile -r
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l config -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l view -r

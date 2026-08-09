@@ -1,6 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::generate;
+use clap_complete::shells::{Bash, Fish, Zsh};
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -41,6 +43,8 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Print shell completion instructions to standard output.
+    GenCompletions(GenCompletionsArgs),
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
@@ -50,6 +54,56 @@ pub enum Command {
         command: ConfigCommand,
     },
     Doctor(DoctorArgs),
+}
+
+#[derive(Debug, Clone, Copy, Args)]
+pub struct GenCompletionsArgs {
+    #[arg(long, value_parser = parse_completion_shell)]
+    pub shell: CompletionShell,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+fn parse_completion_shell(value: &str) -> Result<CompletionShell, String> {
+    match Path::new(value).file_name().and_then(|name| name.to_str()) {
+        Some("bash") => Ok(CompletionShell::Bash),
+        Some("zsh") => Ok(CompletionShell::Zsh),
+        Some("fish") => Ok(CompletionShell::Fish),
+        _ => Err("shell must be bash, zsh, or fish".to_owned()),
+    }
+}
+
+pub fn completion(shell: CompletionShell) -> Result<String, String> {
+    let mut command = Cli::command();
+    let mut generated = Vec::new();
+    match shell {
+        CompletionShell::Bash => generate(Bash, &mut command, "tale", &mut generated),
+        CompletionShell::Zsh => generate(Zsh, &mut command, "tale", &mut generated),
+        CompletionShell::Fish => generate(Fish, &mut command, "tale", &mut generated),
+    }
+    let generated = String::from_utf8(generated)
+        .map_err(|_| "generated completion was not UTF-8".to_owned())?;
+    Ok(sanitize_completion(&generated))
+}
+
+fn sanitize_completion(generated: &str) -> String {
+    generated
+        .lines()
+        .filter_map(|line| {
+            if line.contains("-l mock") || line.contains("'--mock[]'") {
+                None
+            } else {
+                Some(line.replace(" --mock", "").replace(" mock ", " "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 #[derive(Debug, Clone, Subcommand)]
