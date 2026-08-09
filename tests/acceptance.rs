@@ -119,7 +119,7 @@ fn all_acceptance_journeys_have_explicit_evidence_status() {
         for journey in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] {
             assert!(
                 matrix.contains(&format!("| {journey} —")),
-                "missing Specification 14 journey {journey}"
+                "missing integrated journey {journey}"
             );
         }
     }

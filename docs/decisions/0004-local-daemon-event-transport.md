@@ -1,17 +1,16 @@
 # Decision 0004: local daemon event transport
 
-Status: accepted for Specification 11
+Status: accepted
 
 Date: 2026-08-05
 
 ## Context
 
-Specification 11 replaces periodic CLI status reads and the preferences-only
-transport with one read-only LocalAPI observation path. The contract must be
-pinned to the exact client family represented by Decision 0003. Tailscale's
+Tale uses one read-only LocalAPI observation path instead of periodic CLI
+status reads and a separate preferences-only transport. The contract is pinned
+to the exact client family represented by the fixture manifest. Tailscale's
 LocalAPI is not a general-purpose compatibility promise, so the request shape,
-watch mask, framing, and platform connection rules are recorded here before
-the implementation uses them.
+watch mask, framing, and platform connection rules are recorded here.
 
 ## Contract decision
 

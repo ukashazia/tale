@@ -6,11 +6,11 @@ Date: 2026-08-04
 
 ## Context
 
-Specification 06 lists device IP assignment and key operations as possible
-Control API mutations. Endpoint names are not sufficient evidence for a safe
-operator action. Tale needs an exact request and response contract, valid-input
-and conflict behavior, connectivity effects, recovery, and an authoritative
-verification read before exposing either operation.
+Tale exposes device IP assignment and key operations only where the documented
+Control API contract proves them safe. Endpoint names are not sufficient for a
+safe operator action. Tale needs an exact request and response contract,
+valid-input and conflict behavior, connectivity effects, recovery, and an
+authoritative verification read before exposing either operation.
 
 The contract was checked against the current interactive schema returned by
 `https://api.tailscale.com/api/v2?outputOpenapiSchema=true` on 2026-08-04 and

@@ -1,6 +1,6 @@
 # LocalAPI contract ledger: Tailscale 1.98.9
 
-Status: pinned for Tale Specification 11
+Status: pinned for Tale's local daemon observer
 
 Source tag inspected: `v1.98.9`
 

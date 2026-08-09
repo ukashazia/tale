@@ -1,6 +1,6 @@
 # Decision 0001: local preference transport
 
-Status: accepted for Specification 03
+Status: accepted
 
 Date: 2026-08-03
 
@@ -12,7 +12,7 @@ must remain distinguishable from a false preference value. The transport must
 also be narrow enough that Tale does not depend on undocumented LocalAPI
 surface or scrape human-oriented command output.
 
-The Phase 3 command contract is the Tailscale CLI documented for the 1.98.9
+The local mutation contract is the Tailscale CLI documented for the 1.98.9
 client family. Preference fixtures and compatibility checks therefore use
 that version's wire field names and response shape. A version is not treated
 as supported merely because its output happens to look similar.
@@ -61,7 +61,7 @@ fallback header behavior.
 
 ## Preference field mapping
 
-The DTO maps only fields needed by Specification 03:
+The DTO maps only fields used by Tale's local preference controls:
 
 | Operator field | LocalAPI preference field | Missing-value rule |
 | --- | --- | --- |
@@ -99,8 +99,8 @@ daemon response shape.
 
 ## Mutation boundary
 
-The LocalAPI is read-only in Tale. All writes use the exact typed CLI command
-specified by Specification 03:
+The LocalAPI is read-only in Tale. All writes use these exact typed CLI
+commands:
 
 - `tailscale up` with no flags to connect;
 - `tailscale down`, or the explicit `--accept-risk=lose-ssh` form when the
@@ -114,10 +114,10 @@ uses a partial `tailscale up` command as a preference writer.
 ## Rejected alternatives
 
 - `tailscale debug prefs` is explicitly rejected. It is not the documented
-  structured preference-read contract required by this phase.
+  structured preference-read contract required by Tale.
 - `tailscale status --json` is rejected for preference reads. It is a
   documented structured status surface, but it does not provide the complete
-  preference set required by Specification 03 and its output is not a
+  preference set required by the local controls and its output is not a
   preference contract.
 - `tailscale set` and `tailscale up` are mutation surfaces, not current-value
   reads.
@@ -149,6 +149,6 @@ official sources on 2026-08-03:
 - 1.98.9 LocalAPI client transport:
   https://raw.githubusercontent.com/tailscale/tailscale/v1.98.9/client/local/local.go
 
-This decision authorizes implementation of the Phase 3 preference gate. It
-does not authorize preference mutation through LocalAPI, control of another
-node, policy editing, Serve, Funnel, transfers, or any later-phase control.
+This decision authorizes preference reads for local mutation previews and
+verification. It does not authorize preference mutation through LocalAPI,
+control of another node, policy editing, Serve, Funnel, or transfers.

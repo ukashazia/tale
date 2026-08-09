@@ -8,41 +8,26 @@ Tale is an implementation-stage terminal application. The hardening work keeps
 support claims evidence-based; see `docs/support.md` before treating any
 platform or client combination as supported.
 
-## Design documents
+## Project documents
 
-- [Research and constraints](docs/research.md)
+These documents describe the product and its current contracts. Completed
+implementation plans and point-in-time build evidence are intentionally not
+kept in the main documentation set.
+
+- [Design principles](DESIGN.md)
 - [Product definition and feature catalog](docs/product.md)
-- [Interaction and user-flow specification](docs/ux.md)
+- [Interaction and user flows](docs/ux.md)
 - [Application architecture](docs/architecture.md)
 - [Configuration contract](docs/configuration.md)
-- [End-to-end feature plan](docs/roadmap.md)
+- [Architectural decisions](docs/decisions)
+- [Control API contract ledger](docs/contracts/control-api-2026-08-03.md)
+- [LocalAPI contract ledger](docs/contracts/localapi-1.98.9.md)
 - [Support matrix](docs/support.md)
 - [Installation](docs/install.md)
 - [Security review](docs/security.md)
 - [Troubleshooting and recovery](docs/troubleshooting.md)
 - [Release checklist](docs/release-checklist.md)
 - [`tale(1)` man page](docs/cli/tale.1)
-
-## Implementation specifications
-
-- [01 — TUI foundation](docs/specs/01-tui-foundation.md)
-- [02 — Local observer](docs/specs/02-local-observer.md)
-- [03 — Local operator](docs/specs/03-local-operator.md)
-- [04 — Local services](docs/specs/04-local-services.md)
-- [05 — Admin observer](docs/specs/05-admin-observer.md)
-- [06 — Admin operator](docs/specs/06-admin-operator.md)
-- [07 — Access, credentials, and audit security](docs/specs/07-access-security.md)
-- [08 — Operational depth](docs/specs/08-operational-depth.md)
-- [09 — Tale 1.0 hardening](docs/specs/09-one-zero-hardening.md)
-- [10 — Tale 1.0 independent release audit](docs/specs/10-v1-release-audit.md)
-- [11 — Local daemon event transport](docs/specs/11-local-daemon-event-transport.md)
-- [12 — Interaction shell and navigation](docs/specs/12-interaction-shell-and-navigation.md)
-- [13 — Semantic theme system](docs/specs/13-semantic-theme-system.md)
-- [14 — Post-1.0 integration hardening](docs/specs/14-post-v1-integration-hardening.md)
-
-Each specification is an implementation contract for one roadmap phase. It
-defines feature behavior, code ownership, adapter boundaries, actions, error
-states, tests, manual journeys, and the phase exit gate.
 
 ## Product boundary
 

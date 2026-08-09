@@ -1,8 +1,8 @@
 # Tale support matrix
 
-This is the sole document that makes a support claim. Evidence was reviewed on
-2026-08-06. A row is not Supported unless its complete core-flow matrix has
-passed on the named target, client, keyring, and terminal combination.
+This is the sole document that makes a support claim. A row is not Supported
+unless its complete core-flow matrix has passed on the named target, client,
+keyring, and terminal combination.
 
 ## Current claim
 
@@ -17,10 +17,7 @@ advertised as cross-platform or as supporting a real Tailscale client family.
 | `x86_64-apple-darwin` | Omitted | No target evidence | Build and core-flow evidence required before inclusion |
 | `x86_64-pc-windows-msvc` | Omitted | No Windows runner or signal/keyring/terminal evidence | Unix behavior is not emulated on Windows |
 
-The host observed for this review was macOS on `aarch64-apple-darwin`, with
-Cargo 1.97.1 and macOS 26.6.0. `tailscale version` reported 1.98.9; no LocalAPI
-connection, tailnet read, or mutation was authorized or performed. The
-committed fixture family remains Tailscale 1.98.9 on Linux. It is fictional or
+The committed fixture family is Tailscale 1.98.9 on Linux. It is fictional or
 reviewed redacted test data, not a live tailnet capture. The LocalAPI contract,
 watch framing, monotonic reconnect generations, and cancellation are exercised
 by a Unix-socket fake daemon.
@@ -41,17 +38,10 @@ fixture directly.
 
 ## Terminal and keyring scope
 
-The terminal capability observed during this review is `TERM=dumb`; no evidence
-was available for a named terminal emulator, tmux, alternate-screen behavior,
-clipboard, paste, or Unicode rendering. Therefore no terminal is Supported.
-The dated matrix is recorded in
-`docs/terminal-evidence-2026-08-05.md`.
-
-Specification 13's sanitized 48-frame semantic-theme buffer matrix is recorded
-in `docs/theme-evidence-2026-08-05.md`. It proves deterministic Ratatui cell
-output for the three built-ins and four projections, including Reset-only
-no-color. It is not named-emulator manual evidence and does not promote any
-platform or terminal to Supported.
+No named terminal emulator, tmux environment, alternate-screen behavior,
+clipboard, paste, or Unicode rendering combination is Supported. Automated
+Ratatui buffer tests cover the built-in themes and color projections, but they
+do not replace named-emulator manual evidence or promote a platform row.
 
 The `keyring` dependency is covered by isolated fake-store contract tests. No
 real macOS, Linux, or Windows keyring backend is Supported. External-editor

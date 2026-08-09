@@ -68,75 +68,23 @@ Required properties:
 - terminal cleanup is owned by an RAII session guard and also runs on ordinary
   errors and signals.
 
-## Planned module boundaries
+## Module boundaries
 
-```text
-src/
-  main.rs                 process entry, error reporting
-  cli.rs                  Tale command-line arguments
-  config.rs               paths, parsing, validation, precedence
-  app.rs                  App state and update reducer
-  event.rs                input/tick/task event types
-  effect.rs               effect types and dispatcher
-  task.rs                 lifecycle, cancellation, progress, redaction
-  action.rs               action registry, capability and risk metadata
-  terminal.rs             setup, restore, resize, child handoff
-  domain/
-    mod.rs
-    capability.rs
-    device.rs
-    user.rs
-    route.rs
-    dns.rs
-    policy.rs
-    service.rs
-    credential.rs
-    activity.rs
-    health.rs
-  local/
-    mod.rs
-    daemon.rs              LocalAPI HTTP/1 snapshots and watch transport
-    ipn.rs                 bounded watch framing and invalidation scheduling
-    client.rs              typed tailscale argv construction
-    dto.rs                 versioned CLI output boundary
-    process.rs            bounded non-shell runner
-  admin/
-    mod.rs
-    client.rs             HTTP, pagination, response metadata
-    auth.rs               keyring and OAuth token lifecycle
-    dto.rs                API wire types
-  ui/
-    mod.rs
-    layout.rs
-    theme/
-      mod.rs              immutable theme and typed composition
-      role.rs             exhaustive roles and non-color signals
-      projection.rs       private projection tokens
-    text.rs
-    components/
-      table.rs
-      inspector.rs
-      interaction_shell.rs
-      form.rs
-      grid.rs
-      confirm.rs
-    views/
-      overview.rs
-      local.rs
-      devices.rs
-      users.rs
-      routes.rs
-      dns.rs
-      access.rs
-      services.rs
-      credentials.rs
-      tasks.rs
-      audit.rs
-      settings.rs
-```
+The top-level modules follow the runtime boundaries:
 
-A file is added only when its phase introduces the concern. The tree is a target
-boundary, not permission to generate empty modules.
+- `app`, `event`, `effect`, `task`, and `action` own state transitions and
+  effect dispatch;
+- `domain` owns source-independent identities, snapshots, mutations, and
+  redaction rules;
+- `local` owns LocalAPI observation and typed direct-process operations;
+- `admin` owns authentication and endpoint-specific Control API operations;
+- `ui` owns layout, reusable components, semantic themes, and route views;
+- `config`, `paths`, `secrets`, `terminal`, and `runtime` own process-wide
+  infrastructure.
+
+Dependency direction points inward: adapters convert wire/process values into
+domain values, the reducer consumes domain results, and views read reducer
+state. UI code does not call adapters, and adapters do not own UI state.
 
 ## Core state
 
@@ -370,9 +318,9 @@ Mandatory implementation rules:
 - add dependencies only after checking existing dependencies, current docs,
   maintenance, license, and whether they reduce total complexity.
 
-Likely foundation crates are Ratatui, Crossterm, Tokio, Reqwest, Serde, a TOML
-parser, tracing, URL/IP types, and a cross-platform keyring library. This is not
-a locked dependency list. Each is selected in the phase that first needs it.
+The foundation crates are Ratatui, Crossterm, Tokio, Reqwest, Serde, TOML,
+tracing, URL/IP types, and a cross-platform keyring library. `Cargo.toml` and
+`Cargo.lock` are the authoritative dependency list.
 
 ## Verification strategy
 

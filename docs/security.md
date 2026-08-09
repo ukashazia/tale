@@ -1,8 +1,8 @@
 # Tale security review
 
-Reviewed 2026-08-06. Secret memory is zeroized on drop where the owning type
-uses `zeroize`; zeroization is best-effort and is not presented as protection
-from an already privileged process, allocator copies, or OS paging.
+Secret memory is zeroized on drop where the owning type uses `zeroize`;
+zeroization is best-effort and is not presented as protection from an already
+privileged process, allocator copies, or OS paging.
 
 ## Secret-flow inventory
 
@@ -69,7 +69,6 @@ executable source by the scanner.
 
 `Cargo.lock` is committed. `deny.toml` is the policy input for `cargo-deny`:
 unknown registries and git sources are denied, and only reviewed permissive
-licenses are allowed. The 2026-08-06 run passes advisory and source checks but
-has four explicit transitive license decisions pending; see
-`docs/dependencies-2026-08-05.md`. An unavailable advisory database or checker
-is a release blocker; it is not silently treated as a pass.
+licenses are allowed. Advisory, source, and license checks must pass for the
+candidate being released. An unavailable advisory database or checker is a
+release blocker; it is not silently treated as a pass.

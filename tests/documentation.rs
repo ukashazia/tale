@@ -15,19 +15,18 @@ fn markdown_files(root: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> 
 }
 
 #[test]
-fn phase_nine_documentation_deliverables_and_local_links_exist() {
+fn current_documentation_and_local_links_exist() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for relative in [
-        "docs/decisions/0003-supported-platform-client-matrix.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/product.md",
+        "docs/ux.md",
         "docs/support.md",
         "docs/install.md",
         "docs/security.md",
         "docs/troubleshooting.md",
         "docs/release-checklist.md",
-        "docs/benchmarks/phase9-2026-08-05.md",
-        "docs/dependencies-2026-08-05.md",
-        "docs/terminal-evidence-2026-08-05.md",
-        "docs/phase-gates-2026-08-05.md",
         "docs/cli/tale.1",
         "completions/tale.bash",
         "completions/_tale",
@@ -60,7 +59,6 @@ fn phase_nine_documentation_deliverables_and_local_links_exist() {
     assert!(support.is_ok());
     if let Ok(support) = support {
         assert!(support.contains("There are no Supported 1.0 platform rows yet"));
-        assert!(support.contains("2026-08-05"));
         assert!(support.contains("x86_64-unknown-linux-gnu"));
         assert!(support.contains("x86_64-pc-windows-msvc"));
     }
@@ -109,12 +107,11 @@ fn local_markdown_links_resolve_without_network_access() {
 }
 
 #[test]
-fn semantic_theme_decision_ledger_and_evidence_are_present() {
+fn semantic_theme_decision_and_token_ledger_are_present() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for relative in [
         "docs/decisions/0005-semantic-theme-system.md",
         "docs/design/theme-token-ledger.md",
-        "docs/theme-evidence-2026-08-05.md",
     ] {
         let contents = fs::read_to_string(root.join(relative));
         assert!(contents.is_ok(), "missing {relative}");

@@ -3,22 +3,21 @@
 This ledger records only contracts checked against Tailscale's current public
 documentation and the interactive OpenAPI document returned by
 `https://api.tailscale.com/api/v2?outputOpenapiSchema=true` on 2026-08-03 and
-rechecked on 2026-08-04 before Phase 6 adoption. It is not generated client
-code. The Phase 5 entries are read-only; the Phase 6 entries below are the
+rechecked on 2026-08-04 before mutation adoption. It is not generated client
+code. The inventory entries are read-only; the mutation entries below are the
 complete set of mutation contracts Tale adopts.
 
 The fixed production origin is `https://api.tailscale.com`. Every path segment
 and query value is encoded structurally. Requests use `Authorization: Bearer`
 and `Accept`/`Content-Type` only where an entry below requires them.
 
-The Phase 7 entries below are the complete adopted policy and credential
-workflow contract. Policy request bodies are sent as the original HuJSON bytes;
-they are never passed through a JSON serializer. The schema also documents an
-optional policy `ETag`/`If-Match` conditional write. Phase 7 deliberately does
-not adopt that token: adding it to the save protocol requires a separate
-ledger decision. Byte/hash comparison before validation and immediately before
-save therefore remains mandatory, and is not a server-atomic compare-and-swap
-claim.
+The entries below are the complete adopted policy and credential workflow
+contract. Policy request bodies are sent as the original HuJSON bytes; they are
+never passed through a JSON serializer. The schema also documents an optional
+policy `ETag`/`If-Match` conditional write. Tale deliberately does not adopt
+that token: adding it to the save protocol requires a separate ledger decision.
+Byte/hash comparison before validation and immediately before save therefore
+remains mandatory, and is not a server-atomic compare-and-swap claim.
 
 ## Evidence
 
@@ -89,8 +88,8 @@ available, with no name/address/user fallback.
 | search paths | `GET /api/v2/tailnet/{tailnet}/dns/searchpaths` | `dns:read` | no query | 200 `application/json`; `{searchPaths: string[]}` | 404, 500 | ordered search paths |
 | split DNS | `GET /api/v2/tailnet/{tailnet}/dns/split-dns` | `dns:read` | no query | 200 `application/json`; object mapping domain to `string[]` or `null` | 404, 500 | exact ordered domain-to-resolver mapping |
 
-The API currently also exposes `/dns/configuration`, but it is not in the
-Phase 5 inventory and is not adopted. No DNS method is paginated.
+The API currently also exposes `/dns/configuration`, but Tale does not adopt it.
+No DNS method is paginated.
 
 ### Access policy
 
@@ -98,26 +97,25 @@ Phase 5 inventory and is not adopted. No DNS method is paginated.
 | --- | --- | --- | --- | --- | --- | --- |
 | policy source | `GET /api/v2/tailnet/{tailnet}/acl` | `policy_file:read` (the scope also requires `devices:posture_attributes:read` and `devices:core:read`) | `Accept: application/hujson`; no query parameters | 200 `application/hujson`; exact response bytes | 400, 403, 404, 500 | bytes, content type, observed time, content hash, optional `ETag` response header |
 
-The JSON/details representation is not used because Phase 5 must preserve
-HuJSON bytes, comments, line endings, and the trailing newline exactly.
+The JSON/details representation is not used because Tale must preserve HuJSON
+bytes, comments, line endings, and the trailing newline exactly.
 
-### Adopted Phase 7 policy and credential methods
+### Adopted policy and credential methods
 
-These entries were added before the Phase 7 adapters. The request body for
-each policy operation is the exact candidate byte sequence supplied by the
-workflow. Tailscale's `application/json` request alternative is intentionally
-not used because serializing a HuJSON candidate would lose comments and source
-formatting. Policy validation and preview responses are JSON envelopes; policy
-fetch and save responses are raw HuJSON bytes.
+The request body for each policy operation is the exact candidate byte sequence
+supplied by the workflow. Tailscale's `application/json` request alternative is
+intentionally not used because serializing a HuJSON candidate would lose
+comments and source formatting. Policy validation and preview responses are
+JSON envelopes; policy fetch and save responses are raw HuJSON bytes.
 
 | Operation | Method and path | Scope | Request headers, query, and body | Success and response | Documented errors | Verification/semantic contract |
 | --- | --- | --- | --- | --- | --- | --- |
 | validate policy and run declared tests | `POST /api/v2/tailnet/{tailnet}/acl/validate` | `policy_file:read` | `Accept: application/json`; `Content-Type: application/hujson`; no query; exact candidate HuJSON bytes | 200 `application/json`; `{}` means validation/tests passed; otherwise optional `message` and `data[]` entries may include `user`, `errors[]`, and `warnings[]` | 400, 403, 404, 500; common JSON error body | The object mode validates the hypothetical candidate and evaluates its declared tests without modifying the remote policy. The result is bound to the candidate hash by Tale. Unknown detail fields are bounded and safe-redacted. |
 | preview policy rule matches | `POST /api/v2/tailnet/{tailnet}/acl/preview` | `policy_file:read` | `Accept: application/json`; `Content-Type: application/hujson`; required query `type=user|ipport` and `previewFor`; exact candidate HuJSON bytes | 200 `application/json`; `{matches:[{users:string[],ports:string[],lineNumber:integer}],type,previewFor}` | 400, 403, 404, 500; common JSON error body | Only the documented `user` and `ipport` selectors are exposed. Returned destinations/ports and line numbers are authoritative; omitted dimensions are rendered as unavailable. The result is bound to the candidate hash and selector by Tale. |
-| save policy | `POST /api/v2/tailnet/{tailnet}/acl` | `policy_file` (also requires the documented policy read dependencies) | `Accept: application/hujson`; `Content-Type: application/hujson`; no query; exact candidate HuJSON bytes; documented optional `If-Match` is not sent by Phase 7 | 200 `application/hujson`; raw server-returned policy bytes | 400 validation/test failure, 403, 404, 412 If-Match mismatch, 500; common JSON error body | Tailscale validates and runs declared tests on save. Tale sends exactly one request only after fresh hash/validation guards, then fetches raw remote bytes and compares them byte-for-byte with the candidate. |
+| save policy | `POST /api/v2/tailnet/{tailnet}/acl` | `policy_file` (also requires the documented policy read dependencies) | `Accept: application/hujson`; `Content-Type: application/hujson`; no query; exact candidate HuJSON bytes; documented optional `If-Match` is not sent | 200 `application/hujson`; raw server-returned policy bytes | 400 validation/test failure, 403, 404, 412 If-Match mismatch, 500; common JSON error body | Tailscale validates and runs declared tests on save. Tale sends exactly one request only after fresh hash/validation guards, then fetches raw remote bytes and compares them byte-for-byte with the candidate. |
 | create auth key | `POST /api/v2/tailnet/{tailnet}/keys` | `auth_keys` | `Accept: application/json`; `Content-Type: application/json`; no query; JSON object with explicit `keyType:"auth"`, optional `description`, `expirySeconds` for 1–90 days, and complete `capabilities.devices.create` fields `reusable`, `ephemeral`, `preauthorized`, and `tags[]` | 200 `application/json`; `Key` object; the one-time secret is only the response `key` field | 404, 500, plus authorization/scope failures classified by status; common JSON error body | The request must preserve every selected capability and tag. The response must contain a non-empty `key` and `keyType:"auth"`; the secret is moved directly to the ephemeral result and is never recoverable from a list/detail call. |
 | inspect credential | `GET /api/v2/tailnet/{tailnet}/keys/{key_id}` | matching `auth_keys:read`, `api_access_tokens:read`, `oauth_keys:read`, or `federated_keys:read` (or `all:read`) | `Accept: application/json`; no query; bearer header | 200 `application/json`; `Key` metadata; `invalid:true` means revoked/deleted or expired; a returned `key` field is rejected | 404, 500, plus authorization/scope failures classified by status | Detail is fetched immediately before revocation confirmation. Tale preserves exact ID/type and only renders documented metadata; no secret is decoded into domain state. |
-| revoke credential | `DELETE /api/v2/tailnet/{tailnet}/keys/{key_id}` | `auth_keys` for `auth`, `api_access_tokens` for `api`, `oauth_keys` for `client`, `federated_keys` for `federated`, or `all` | `Accept: application/json`; no query or body | 200 with an empty response body | 403 insufficient access, 404 tailnet/key, 500; common JSON error body | The endpoint deletes auth/API keys and supported trust credentials. Tale supports documented non-federated types in Phase 7; federated/workload-identity revocation remains explicitly unsupported. Verify by detail: 404 or documented `invalid:true` is revoked; existing valid metadata is not success. |
+| revoke credential | `DELETE /api/v2/tailnet/{tailnet}/keys/{key_id}` | `auth_keys` for `auth`, `api_access_tokens` for `api`, `oauth_keys` for `client`, `federated_keys` for `federated`, or `all` | `Accept: application/json`; no query or body | 200 with an empty response body | 403 insufficient access, 404 tailnet/key, 500; common JSON error body | The endpoint deletes auth/API keys and supported trust credentials. Tale supports documented non-federated types; federated/workload-identity revocation remains explicitly unsupported. Verify by detail: 404 or documented `invalid:true` is revoked; existing valid metadata is not success. |
 
 ### Credentials
 
@@ -129,7 +127,7 @@ fetch and save responses are raw HuJSON bytes.
 The API documents `all` as the broad listing switch. Tale sends `all=false`
 and never requests the `all` or `all:read` scope automatically.
 
-## Adopted Phase 6 mutation methods
+## Adopted mutation methods
 
 These entries were added before the corresponding adapter methods. The
 interactive schema describes the common error response as JSON
@@ -242,9 +240,9 @@ The documented retention is the most recent 90 days. Tale defaults to the
 previous 24 hours ending at refresh start and bounds decoded events at 50,000.
 This endpoint is explicitly non-paginated.
 
-## Adopted Phase 8 operational methods
+## Adopted operational methods
 
-Phase 8 adopts only the endpoint shapes verified in the current interactive
+Tale adopts only the endpoint shapes verified in the current interactive
 OpenAPI schema and the public logging/webhook documentation. These methods are
 not generic repository access: each adapter has a typed request and response,
 an endpoint-specific scope, and a verification read where the mutation can
@@ -271,7 +269,7 @@ errors; a plan-restricted 403 is classified as plan restricted.
 | Operation | Method and path | Scope | Request | Success and response | Mutation protocol |
 | --- | --- | --- | --- | --- | --- |
 | list endpoints | `GET /api/v2/tailnet/{tailnet}/webhooks` | `webhooks:read` | no query | 200 `{webhooks: Webhook[]}` | no pagination; secrets are never inventory data |
-| create endpoint | `POST /api/v2/tailnet/{tailnet}/webhooks` | `webhooks` | JSON `{endpointUrl, providerType, subscriptions}` | 200 `Webhook` | one request; returned write-only secret is moved directly to the Phase 7 view-once result; verify with list/detail |
+| create endpoint | `POST /api/v2/tailnet/{tailnet}/webhooks` | `webhooks` | JSON `{endpointUrl, providerType, subscriptions}` | 200 `Webhook` | one request; returned write-only secret is moved directly to the view-once result; verify with list/detail |
 | edit subscriptions | `PATCH /api/v2/webhooks/{endpointId}` | `webhooks` | JSON `{subscriptions}` only | 200 `Webhook` | the public schema does not document URL/provider replacement; Tale marks those fields unsupported rather than emulating a console-only edit; unknown subscription values survive editing |
 | test endpoint | `POST /api/v2/webhooks/{endpointId}/test` | `webhooks` | empty body | 202 empty response; queued acknowledgement | no false delivery claim; refresh detail/status after acknowledgement |
 | rotate secret | `POST /api/v2/webhooks/{endpointId}/rotate` | `webhooks` | empty body | 200 `Webhook` | one request; returned secret is view-once only; verify with list/detail |

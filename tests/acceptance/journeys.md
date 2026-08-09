@@ -39,7 +39,7 @@ Automated rows are run with fictional data and no operator credentials. The
 remaining real-environment evidence is a release blocker and is not converted
 to a pass by this file.
 
-## Specification 14 integrated journeys
+## Integrated journeys
 
 These scripted rows compose reducer, fake-adapter, rendered-buffer, and cleanup
 assertions. They do not claim real platform support.

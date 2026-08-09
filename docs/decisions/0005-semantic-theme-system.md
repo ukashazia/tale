@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-05
-- Scope: Specification 13
+- Scope: semantic theme system
 
 ## Decision
 
@@ -67,8 +67,8 @@ the retrieval record and because the blog post remains the public rationale for
 the semantic structure. Where a CSS value and a toolkit value describe the same
 token, the toolkit value is used.
 
-The Tale role assignments remain Tale-specific choices from the Specification 13
-proposal and are not represented as copied Tailscale tokens. Two surface values,
+The Tale role assignments remain Tale-specific choices and are not represented
+as copied Tailscale tokens. Two surface values,
 `#2A2929` and `#353434`, are interpolated: the toolkit publishes no step between
 `Gray900` and `Gray600`, and Tale needs two elevation levels across that gap.
 `selection-ink` is a Tale role name carrying the toolkit's `Gray900`. The
@@ -108,4 +108,3 @@ layer replaces foreground or background.
   plugins, runtime palette downloads, or fallback theme names.
 - Opacity and animation are unsuitable for terminal cells and would weaken
   deterministic buffer evidence.
-

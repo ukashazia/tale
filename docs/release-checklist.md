@@ -1,20 +1,9 @@
 # Tale release checklist
 
-This checklist is an evidence record, not a publication command. Reviewed
-2026-08-06. The current candidate is blocked from a Supported 1.0 claim until
-the missing platform, client, terminal, keyring, memory, and release-runner
-evidence is supplied.
-
-The prior phase evidence is recorded in
-`docs/phase-gates-2026-08-05.md`.
-Post-v1 integration evidence is recorded in
-`docs/phase-gates-2026-08-06-post-v1.md`.
-
-The local benchmark record is
-[phase9-2026-08-05.md](benchmarks/phase9-2026-08-05.md).
-The dependency evidence is
-[dependencies-2026-08-05.md](dependencies-2026-08-05.md); its four pending
-license decisions keep the candidate blocked.
+This checklist defines the verification and custody required for a release. It
+does not authorize publication. A candidate is blocked from a Supported 1.0
+claim until every applicable support-matrix row has current platform, client,
+terminal, keyring, memory, and release-runner evidence.
 
 ## Required verification
 
@@ -39,7 +28,7 @@ unavailable, the release remains blocked.
 ## Artifact process
 
 1. Start from an exact source revision with the committed `Cargo.lock` and the
-   pinned stable toolchain recorded in the evidence report.
+   toolchain pinned in `rust-toolchain.toml`.
 2. Generate completions and the man page from the typed CLI definition.
 3. Build only target rows that are Supported in `docs/support.md`, using
    isolated target directories and `--locked`.
