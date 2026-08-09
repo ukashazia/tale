@@ -1,7 +1,9 @@
 {
-  "Machine": {
-    "ID": "nodekey:direct",
-    "Name": "build fixture",
+  "Node": {
+    "ID": 6188614605781798,
+    "StableID": "nodekey:direct",
+    "Name": "build-fixture.example.ts.net.",
+    "User": 3691030335535993,
     "Addresses": [
       "100.64.0.11",
       "fd7a:115c:a1e0::11"
@@ -10,10 +12,14 @@
       "tag:server"
     ]
   },
-  "User": "alice@example.com",
-  "Capabilities": [
-    "ssh",
-    "subnet-router"
-  ],
+  "UserProfile": {
+    "ID": 3691030335535993,
+    "LoginName": "alice@example.com",
+    "DisplayName": "Alice Example"
+  },
+  "CapMap": {
+    "ssh": null,
+    "subnet-router": null
+  },
   "unknownFutureWhoisField": "accepted"
 }

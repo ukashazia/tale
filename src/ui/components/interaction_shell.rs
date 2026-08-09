@@ -1256,13 +1256,13 @@ fn action_grid_sections(app: &App, state: &TransientMenuState) -> Vec<MenuSectio
                                 theme::StyleRole::KeyHintDisabled
                             } else if item.risk == action::Risk::Observe {
                                 theme::StyleRole::KeyHint
+                            } else if item.risk == action::Risk::DestructiveOrSecret {
+                                theme::StyleRole::StateDanger
                             } else {
                                 item.risk.style_role()
                             },
                             label_role: if disabled {
                                 theme::StyleRole::TextDisabled
-                            } else if item.risk == action::Risk::DestructiveOrSecret {
-                                theme::StyleRole::RiskDestructive
                             } else {
                                 theme::StyleRole::TextMuted
                             },

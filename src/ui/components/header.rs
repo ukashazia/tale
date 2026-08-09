@@ -139,7 +139,10 @@ fn status_block(app: &App) -> Vec<Vec<Span<'static>>> {
     // Freshness and running work belong with the state they qualify, not on a
     // row of their own below two identities they say nothing about. Both stay
     // silent while there is nothing wrong.
-    for (note, role) in [staleness(app), task_state(app)].into_iter().flatten() {
+    for (note, role) in [staleness(app), profile_loading(app), task_state(app)]
+        .into_iter()
+        .flatten()
+    {
         first.push(Span::styled(
             "   ",
             app.theme.style(theme::StyleRole::Surface),
@@ -310,7 +313,10 @@ fn compact_line(app: &App) -> Line<'static> {
     if app.admin.profile.is_some() {
         push(&mut spans, "profile", profile_identity(app));
     }
-    for (note, role) in [staleness(app), task_state(app)].into_iter().flatten() {
+    for (note, role) in [staleness(app), profile_loading(app), task_state(app)]
+        .into_iter()
+        .flatten()
+    {
         spans.push(Span::styled(
             "   ",
             app.theme.style(theme::StyleRole::Surface),
@@ -426,4 +432,13 @@ fn task_state(app: &App) -> Option<(String, theme::StyleRole)> {
         ));
     }
     None
+}
+
+fn profile_loading(app: &App) -> Option<(String, theme::StyleRole)> {
+    (app.admin.profile.is_some() && app.admin.is_loading()).then(|| {
+        (
+            "loading profile data".to_owned(),
+            theme::StyleRole::StatePending,
+        )
+    })
 }

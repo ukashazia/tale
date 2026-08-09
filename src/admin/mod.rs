@@ -385,6 +385,12 @@ impl AdminSnapshot {
         self.activity.clear_profile(profile);
     }
 
+    pub fn is_loading(&self) -> bool {
+        self.resource_entries()
+            .into_iter()
+            .any(|(_, state)| state == AdminResourceState::Loading)
+    }
+
     pub fn overview_queues(&self, now: Timestamp) -> OverviewQueues {
         let mut queues = OverviewQueues {
             devices_awaiting_approval: Vec::new(),
@@ -478,8 +484,8 @@ impl AdminSnapshot {
         }
     }
 
-    fn resource_entries(&self) -> Vec<(&'static str, AdminResourceState)> {
-        vec![
+    fn resource_entries(&self) -> [(&'static str, AdminResourceState); 13] {
+        [
             ("devices", self.devices.state),
             ("users", self.users.state),
             ("routes", self.routes.state),

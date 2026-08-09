@@ -1,14 +1,19 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::style::Modifier;
 
 mod common;
 
 use tale::action::{self, ActionContext, ActionId, Binding};
-use tale::app::{App, InteractionMode, Route};
+use tale::app::{App, InteractionMode, Overlay, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::event::{Event, InputEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
+use tale::ui;
+use tale::ui::theme::{ColorCapability, StyleRole, Theme, ThemeId};
 
 fn mock_app() -> Option<App> {
     let root = std::path::PathBuf::from("/fictional/tale-actions");
@@ -58,7 +63,7 @@ fn local_app(with_admin_profile: bool) -> Option<App> {
     if with_admin_profile
         && std::fs::write(
             &config_path,
-            "[profiles.audit]\ntailnet = \"example.test\"\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
+            "[profiles.audit]\ntailnet = \"example.test\"\nread_only = false\ncredential = \"audit\"\ncredential_backend = \"file\"\ncredential_file = \"credentials.toml\"\n",
         )
         .is_err()
     {
@@ -201,6 +206,72 @@ fn the_devices_menu_carries_admin_and_local_actions_together() {
     assert!(actions.contains(&ActionId::LocalSshOpen));
     assert!(actions.contains(&ActionId::DevicesTaildropSend));
     assert!(action::validate_transient_sequences(&actions).is_ok());
+}
+
+#[test]
+fn device_rename_starts_with_the_short_machine_name() {
+    let Some(mut app) = local_app(true) else {
+        return;
+    };
+    app.set_route(Route::Devices);
+    let effects = app.dispatch_action(ActionId::AdminDeviceRename);
+    assert!(effects.is_empty());
+    assert!(matches!(
+        app.overlays.last(),
+        Some(Overlay::Form(state)) if state.value("name") == "node-01"
+    ));
+}
+
+#[test]
+fn danger_menu_limits_destructive_fill_to_the_heading() {
+    let Some(mut app) = local_app(true) else {
+        return;
+    };
+    app.set_route(Route::Devices);
+    app.theme = Theme::new(ThemeId::TailscaleDark, ColorCapability::TrueColor);
+    let _ = app.dispatch_action(ActionId::ResourceActions);
+
+    let backend = TestBackend::new(200, 50);
+    let terminal = Terminal::new(backend).ok();
+    assert!(terminal.is_some());
+    let Some(mut terminal) = terminal else {
+        return;
+    };
+    assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+    let buffer = terminal.backend().buffer();
+    let destructive = app.theme.style(StyleRole::RiskDestructive);
+    let danger = app.theme.style(StyleRole::StateDanger);
+    let muted = app.theme.style(StyleRole::TextMuted);
+    let mut heading_checked = false;
+    let mut entry_checked = false;
+
+    for y in 0..50 {
+        let row = (0..200)
+            .filter_map(|x| buffer.cell((x, y)))
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        if let Some(start) = row.find(" Danger ")
+            && let Ok(x) = u16::try_from(start.saturating_add(1))
+            && let Some(cell) = buffer.cell((x, y))
+        {
+            assert_eq!(Some(cell.fg), destructive.fg);
+            assert!(cell.modifier.contains(Modifier::REVERSED));
+            heading_checked = true;
+        }
+        if let Some(start) = row.find("revoke device approval")
+            && let Ok(label_x) = u16::try_from(start)
+            && let Some(key_x) = label_x.checked_sub(2)
+            && let (Some(label), Some(key)) = (buffer.cell((label_x, y)), buffer.cell((key_x, y)))
+        {
+            assert_eq!(Some(label.fg), muted.fg);
+            assert!(!label.modifier.contains(Modifier::REVERSED));
+            assert_eq!(Some(key.fg), danger.fg);
+            assert!(!key.modifier.contains(Modifier::REVERSED));
+            entry_checked = true;
+        }
+    }
+    assert!(heading_checked, "the Danger heading was not rendered");
+    assert!(entry_checked, "the destructive action row was not rendered");
 }
 
 #[test]
@@ -431,6 +502,14 @@ fn transient_sequences_and_reserved_history_bindings_are_stable() {
     assert_eq!(
         action::transient_sequence(ActionId::LocalAccountSwitch),
         Some("as")
+    );
+    assert_eq!(
+        action::transient_sequence(ActionId::LocalSshOpen),
+        Some("ss")
+    );
+    assert_eq!(
+        action::transient_sequence(ActionId::LocalNcOpen),
+        Some("nc")
     );
     assert_eq!(
         action::action_for_key(

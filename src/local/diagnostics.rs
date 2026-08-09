@@ -351,28 +351,77 @@ pub fn parse_whois(
 ) -> Result<WhoisResult, String> {
     let value: Value =
         serde_json::from_str(input).map_err(|error| format!("invalid whois JSON: {error}"))?;
-    let machine = get(&value, &["Machine", "Node", "machine"]);
-    let machine_id = machine
-        .and_then(|value| first_string(value, &["ID", "Id", "NodeID"]))
-        .or_else(|| first_string(&value, &["ID", "NodeID"]));
-    let machine_name = machine
-        .and_then(|value| first_string(value, &["Name", "HostName", "DNSName"]))
-        .or_else(|| first_string(&value, &["Name", "HostName", "DNSName"]));
+    let machine = get(&value, &["Node"])
+        .filter(|machine| machine.is_object())
+        .ok_or_else(|| "whois response did not contain a node".to_owned())?;
+    let user = get(&value, &["UserProfile"]);
+    let mut capabilities = get(&value, &["CapMap"])
+        .and_then(Value::as_object)
+        .map_or_else(Vec::new, |capabilities| {
+            capabilities.keys().cloned().collect()
+        });
+    capabilities.sort();
     Ok(WhoisResult {
         query,
-        machine_id,
-        machine_name,
-        addresses: machine
-            .and_then(|value| get(value, &["Addresses", "TailscaleIPs", "IPs"]))
-            .map_or_else(Vec::new, |value| parse_strings(Some(value))),
-        tags: machine
-            .and_then(|value| get(value, &["Tags"]))
-            .map_or_else(Vec::new, |value| parse_strings(Some(value))),
-        user_identity: first_string(&value, &["User", "UserName", "LoginName", "Email"]),
-        capabilities: parse_strings(get(&value, &["Capabilities", "capabilities"])),
+        machine_id: first_string(machine, &["StableID"]),
+        machine_name: first_string(machine, &["Name"]),
+        addresses: parse_strings(get(machine, &["Addresses"])),
+        tags: parse_strings(get(machine, &["Tags"])),
+        user_identity: user.and_then(|user| first_string(user, &["LoginName", "DisplayName"])),
+        capabilities,
         observed_at,
         raw_detail: bounded_json(&value),
     })
+}
+
+pub fn whois_summary(value: &WhoisResult) -> String {
+    format!("whois found {}", whois_device_name(value))
+}
+
+pub fn format_whois_detail(value: &WhoisResult) -> String {
+    let mut lines = vec![
+        format!("device        {}", whois_device_name(value)),
+        format!("query         {}", value.query),
+    ];
+    if let Some(name) = value.machine_name.as_deref()
+        && name.trim_end_matches('.') != whois_device_name(value)
+    {
+        lines.push(format!("DNS name      {}", name.trim_end_matches('.')));
+    }
+    lines.extend([
+        format!(
+            "user          {}",
+            optional_text(value.user_identity.as_deref())
+        ),
+        format!("addresses     {}", list_or_none(&value.addresses)),
+        format!("tags          {}", list_or_none(&value.tags)),
+        format!("capabilities  {}", list_or_none(&value.capabilities)),
+    ]);
+    lines.join("\n")
+}
+
+fn whois_device_name(value: &WhoisResult) -> &str {
+    value
+        .machine_name
+        .as_deref()
+        .map_or(value.query.as_str(), |name| {
+            let name = name.trim_end_matches('.');
+            name.split_once('.').map_or(name, |(device, _)| device)
+        })
+}
+
+fn optional_text(value: Option<&str>) -> &str {
+    value
+        .filter(|value| !value.is_empty())
+        .map_or("not returned", |value| value)
+}
+
+fn list_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_owned()
+    } else {
+        values.join(", ")
+    }
 }
 
 fn parse_netcheck_value(

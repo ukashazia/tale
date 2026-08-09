@@ -89,7 +89,7 @@ fn assert_frame_shape(lines: &[String], width: u16, height: u16) {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("Status:") || line.contains("Simulated data"))
+            .any(|line| line.contains("Status:") || line.contains("simulated data"))
     );
     assert!(
         lines
@@ -382,18 +382,18 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
         }
     }
 
-    let reducer_notice = populated_app();
-    assert!(reducer_notice.is_some());
-    if let Some(mut reducer_notice) = reducer_notice {
-        reducer_notice.runtime_error =
-            Some("selected resource no longer exists; selection was repaired".to_owned());
-        let lines = lines_at(&reducer_notice, 80, 24);
+    let loading_profile = populated_app();
+    assert!(loading_profile.is_some());
+    if let Some(mut loading_profile) = loading_profile {
+        loading_profile.admin.profile = Some("fictional".to_owned());
+        loading_profile.admin.devices.begin(1);
+        let lines = lines_at(&loading_profile, 80, 24);
         assert!(lines.is_some());
         if let Some(lines) = lines {
             assert!(
                 lines
                     .iter()
-                    .any(|line| line.contains("selection was repaired"))
+                    .any(|line| line.contains("loading profile data"))
             );
         }
     }

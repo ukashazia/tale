@@ -5511,9 +5511,8 @@ impl App {
         match action_id {
             ActionId::AdminDeviceRename => {
                 let device = self.selected_admin_device();
-                let current = device
-                    .and_then(|device| device.name.clone().or_else(|| device.hostname.clone()))
-                    .unwrap_or_default();
+                let current =
+                    device.map_or_else(String::new, |device| device.display_name().to_owned());
                 Some(FormShape::new(
                     "Rename a device",
                     self.admin_device_subject(),
@@ -14507,10 +14506,6 @@ impl App {
             self.views.devices.selected_id = devices
                 .get(target.min(devices.len().saturating_sub(1)))
                 .map(|device| device.id.clone());
-            if selected_id.is_some() {
-                self.runtime_error =
-                    Some("selected resource no longer exists; selection was repaired".to_owned());
-            }
         } else {
             let visible = self.visible_indices();
             if let Some(id) = selected_id

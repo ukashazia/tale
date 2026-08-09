@@ -325,10 +325,7 @@ fn refresh_removal_repairs_selection_without_discarding_active_input() {
                     && state.generation == before.2
         ));
         assert_ne!(app.views.devices.selected_id, selected);
-        assert_eq!(
-            app.runtime_error.as_deref(),
-            Some("selected resource no longer exists; selection was repaired")
-        );
+        assert!(app.runtime_error.is_none());
     }
 }
 

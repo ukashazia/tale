@@ -92,29 +92,32 @@ impl Redactor {
     }
 
     pub fn text(&mut self, value: &str) -> String {
-        let mut value = self.replace_known(value);
-        value = value
-            .split_whitespace()
-            .map(|token| {
-                let trimmed = token.trim_matches(|character: char| {
-                    matches!(character, ',' | '.' | ';' | ':' | '(' | ')' | '[' | ']')
-                });
-                if trimmed.contains('@') {
-                    self.identity(trimmed)
-                } else if is_ip_like(trimmed) {
-                    self.address(trimmed)
-                } else if trimmed.starts_with('/')
-                    || trimmed.starts_with("~/")
-                    || trimmed.contains('\\')
-                {
-                    self.path(trimmed)
-                } else {
-                    token.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        value
+        let value = self.replace_known(value);
+        let mut redacted = String::with_capacity(value.len());
+        for chunk in value.split_inclusive(char::is_whitespace) {
+            let boundary = chunk
+                .find(char::is_whitespace)
+                .map_or(chunk.len(), |boundary| boundary);
+            let (token, whitespace) = chunk.split_at(boundary);
+            redacted.push_str(&self.token(token));
+            redacted.push_str(whitespace);
+        }
+        redacted
+    }
+
+    fn token(&mut self, token: &str) -> String {
+        let trimmed = token.trim_matches(|character: char| {
+            matches!(character, ',' | '.' | ';' | ':' | '(' | ')' | '[' | ']')
+        });
+        if trimmed.contains('@') {
+            self.identity(trimmed)
+        } else if is_ip_like(trimmed) {
+            self.address(trimmed)
+        } else if trimmed.starts_with('/') || trimmed.starts_with("~/") || trimmed.contains('\\') {
+            self.path(trimmed)
+        } else {
+            token.to_owned()
+        }
     }
 
     fn replace_known(&self, value: &str) -> String {

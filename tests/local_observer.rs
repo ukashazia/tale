@@ -5,7 +5,7 @@ use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::ConnectionPath;
 use tale::domain::diagnostic::DiagnosticPath;
-use tale::domain::redaction::{DiagnosticReportInput, redact_diagnostic_report};
+use tale::domain::redaction::{DiagnosticReportInput, Redactor, redact_diagnostic_report};
 use tale::domain::source::{
     ExecutableSource, LocalCapabilities, LocalCliState, LocalExecutable, LocalFailure,
     LocalFailureKind, LocalResource, LocalResourceStatus, LocalState,
@@ -17,9 +17,9 @@ use tale::local::client::{
 };
 use tale::local::daemon::decode_status;
 use tale::local::diagnostics::{
-    DnsRecordType, WhoisProtocol, parse_dns_query, parse_dns_status, parse_netcheck_json,
-    parse_netcheck_lines, parse_ping_line, parse_whois, summarize_ping, validate_dns_query,
-    validate_whois_target,
+    DnsRecordType, WhoisProtocol, format_whois_detail, parse_dns_query, parse_dns_status,
+    parse_netcheck_json, parse_netcheck_lines, parse_ping_line, parse_whois, summarize_ping,
+    validate_dns_query, validate_whois_target,
 };
 use tale::local::dto::decode_version;
 use tale::local::process::LocalProcessError;
@@ -36,6 +36,15 @@ const WHOIS: &str = include_str!("fixtures/tailscale/1.98.9/linux/whois.json");
 
 fn timestamp() -> u64 {
     1_754_000_000
+}
+
+#[test]
+fn diagnostic_redaction_preserves_multiline_field_layout() {
+    let mut redactor = Redactor::new();
+    assert_eq!(
+        redactor.text("device        peer-1\naddress       100.64.0.11"),
+        "device        peer-1\naddress       address-1"
+    );
 }
 
 #[test]
@@ -372,8 +381,18 @@ fn dns_and_whois_fixtures_preserve_observable_results() {
     assert!(whois.is_ok());
     if let Ok(whois) = whois {
         assert_eq!(whois.machine_id.as_deref(), Some("nodekey:direct"));
+        assert_eq!(
+            whois.machine_name.as_deref(),
+            Some("build-fixture.example.ts.net.")
+        );
         assert_eq!(whois.addresses.len(), 2);
         assert_eq!(whois.user_identity.as_deref(), Some("alice@example.com"));
+        assert_eq!(whois.capabilities, ["ssh", "subnet-router"]);
+        let detail = format_whois_detail(&whois);
+        assert!(detail.contains("device        build-fixture"));
+        assert!(detail.contains("DNS name      build-fixture.example.ts.net"));
+        assert!(detail.contains("user          alice@example.com"));
+        assert!(!detail.contains("{\""));
     }
     for target in ["192.0.2.1", "::1", "[fd7a::1]:41641", "192.0.2.1:80"] {
         assert!(validate_whois_target(target).is_ok());

@@ -7219,13 +7219,19 @@ async fn run_collected_diagnostic(
     match parsed {
         Ok(result) => {
             let summary = diagnostic_result_summary(&result);
+            let detail = match &result {
+                crate::domain::diagnostic::DiagnosticResult::Whois(value) => {
+                    diagnostics::format_whois_detail(value)
+                }
+                _ => raw_detail,
+            };
             queue
                 .send(local_event(LocalEvent::DiagnosticResult {
                     task_id,
                     result,
                 }))
                 .await;
-            finish_diagnostic_success(queue, task_id, &summary, &raw_detail).await;
+            finish_diagnostic_success(queue, task_id, &summary, &detail).await;
         }
         Err(error) => {
             finish_diagnostic_failure(queue, task_id, "unsupported diagnostic output", &error).await
@@ -7294,18 +7300,7 @@ fn diagnostic_result_summary(result: &crate::domain::diagnostic::DiagnosticResul
             format!("DNS {}: {} answers", value.record_type, value.answers.len())
         }
         crate::domain::diagnostic::DiagnosticResult::Whois(value) => {
-            format!(
-                "whois: id={} name={} addresses={} tags={} user={} capabilities={}",
-                value.machine_id.as_deref().map_or("unknown", |id| id),
-                value.machine_name.as_deref().map_or("unknown", |name| name),
-                value.addresses.len(),
-                value.tags.len(),
-                value
-                    .user_identity
-                    .as_deref()
-                    .map_or("unknown", |user| user),
-                value.capabilities.len(),
-            )
+            diagnostics::whois_summary(value)
         }
         crate::domain::diagnostic::DiagnosticResult::Ping(value) => format_ping_summary(value),
         crate::domain::diagnostic::DiagnosticResult::Netcheck(value) => {
