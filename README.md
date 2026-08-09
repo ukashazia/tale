@@ -43,6 +43,15 @@ nix develop
 
 The script builds Tale, drives the deterministic mock TUI, and replaces all
 three PNGs. The Nix development shell provides the pinned capture toolchain.
+Pass an image to place an arbitrary wallpaper behind a blurred, translucent
+terminal window:
+
+```sh
+./scripts/capture-readme-screenshots.sh /path/to/wallpaper.jpg
+```
+
+The wallpaper is center-cropped to each screenshot's dimensions. Omitting it
+keeps the solid background defined by the VHS tapes.
 
 </details>
 
