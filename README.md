@@ -37,12 +37,12 @@ platform or client combination as supported.
 <summary>Regenerate these screenshots</summary>
 
 ```sh
+nix develop
 ./scripts/capture-readme-screenshots.sh
 ```
 
 The script builds Tale, drives the deterministic mock TUI, and replaces all
-three PNGs. It uses installed `vhs` and `ffmpeg` commands or obtains the pinned
-capture toolchain through Nix.
+three PNGs. The Nix development shell provides the pinned capture toolchain.
 
 </details>
 
