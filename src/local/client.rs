@@ -626,11 +626,9 @@ async fn probe_capabilities(
     let syspolicy = help_available(path, "syspolicy", timeout, cancellation, socket_path).await;
     let ssh = help_available(path, "ssh", timeout, cancellation, socket_path).await;
     let nc = help_available(path, "nc", timeout, cancellation, socket_path).await;
-    let serve_help = help_output(path, "serve", timeout, cancellation, socket_path).await;
-    let serve = serve_help.is_some()
+    let serve = help_available(path, "serve", timeout, cancellation, socket_path).await
         && help_available(path, "serve status", timeout, cancellation, socket_path).await;
-    let funnel_help = help_output(path, "funnel", timeout, cancellation, socket_path).await;
-    let funnel = funnel_help.is_some()
+    let funnel = help_available(path, "funnel", timeout, cancellation, socket_path).await
         && help_available(path, "funnel status", timeout, cancellation, socket_path).await;
     let taildrop = help_available(path, "file cp", timeout, cancellation, socket_path).await
         && help_available(path, "file get", timeout, cancellation, socket_path).await;
@@ -659,28 +657,7 @@ async fn probe_capabilities(
         ssh,
         nc,
         serve,
-        serve_https: serve_help
-            .as_deref()
-            .is_some_and(|output| help_mentions_flag(output, "--https")),
-        serve_http: serve_help
-            .as_deref()
-            .is_some_and(|output| help_mentions_flag(output, "--http")),
-        serve_tcp: serve_help
-            .as_deref()
-            .is_some_and(|output| help_mentions_flag(output, "--tcp")),
-        serve_tls_terminated_tcp: serve_help
-            .as_deref()
-            .is_some_and(|output| help_mentions_flag(output, "--tls-terminated-tcp")),
         funnel,
-        funnel_https: funnel_help
-            .as_deref()
-            .is_some_and(|output| help_mentions_flag(output, "--https")),
-        funnel_tcp: funnel_help
-            .as_deref()
-            .is_some_and(|output| help_mentions_flag(output, "--tcp")),
-        funnel_tls_terminated_tcp: funnel_help
-            .as_deref()
-            .is_some_and(|output| help_mentions_flag(output, "--tls-terminated-tcp")),
         taildrop,
         drive,
         certificate,
@@ -726,14 +703,6 @@ async fn help_output(
         }
         _ => None,
     }
-}
-
-fn help_mentions_flag(output: &str, flag: &str) -> bool {
-    output.split_ascii_whitespace().any(|token| {
-        token == flag
-            || token.starts_with(&format!("{flag}="))
-            || token.starts_with(&format!("{flag}<"))
-    })
 }
 
 fn resolve_explicit_or_path(

@@ -5169,11 +5169,7 @@ async fn run_service_task(
     };
     let result = match request {
         ServiceActionRequest::Serve { mapping, .. } => {
-            if !executable.capabilities.serve
-                || !executable
-                    .capabilities
-                    .supports_service_listener(&mapping.listener, false)
-            {
+            if !executable.capabilities.serve {
                 Err(unsupported_service(
                     "serve",
                     "Serve is not advertised by this CLI",
@@ -5261,11 +5257,7 @@ async fn run_service_task(
             }
         }
         ServiceActionRequest::FunnelUnpublish { mapping } => {
-            if !executable.capabilities.serve
-                || !executable
-                    .capabilities
-                    .supports_service_listener(&mapping.listener, false)
-            {
+            if !executable.capabilities.serve {
                 Err(unsupported_service(
                     "serve",
                     "Serve is not advertised by this CLI",
@@ -5302,11 +5294,7 @@ async fn run_service_task(
             }
         }
         ServiceActionRequest::Funnel { mapping, .. } => {
-            if !executable.capabilities.funnel
-                || !executable
-                    .capabilities
-                    .supports_service_listener(&mapping.listener, true)
-            {
+            if !executable.capabilities.funnel {
                 Err(unsupported_service(
                     "funnel",
                     "Funnel is not advertised by this CLI",

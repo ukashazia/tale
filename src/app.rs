@@ -13063,7 +13063,6 @@ impl App {
             "tls-terminated-tcp" | "tls_terminated_tcp" => Listener::TlsTerminatedTcp(port),
             _ => return Err("listener is unsupported for this section".to_owned()),
         };
-        let is_public = exposure == Exposure::Public;
         let mount = PathMount::parse(optional_field(fields, "path").unwrap_or("/"))
             .map_err(|error| error.to_string())?;
         let backend = Backend::parse(required_field(fields, "backend")?)
@@ -13082,15 +13081,6 @@ impl App {
             proxy_protocol,
             hostname: optional_field(fields, "hostname").map(str::to_owned),
         };
-        if !self
-            .local_capabilities
-            .supports_service_listener(&mapping.listener, is_public)
-        {
-            return Err(format!(
-                "{} listeners are unsupported by this CLI",
-                mapping.listener.label()
-            ));
-        }
         mapping.validate().map_err(|error| error.to_string())?;
         Ok(mapping)
     }
@@ -13303,14 +13293,8 @@ impl App {
                 if mapping.exposure != Exposure::Tailnet {
                     return Err("Serve requests must remain tailnet-only".to_owned());
                 }
-                if !self
-                    .local_capabilities
-                    .supports_service_listener(&mapping.listener, false)
-                {
-                    return Err(format!(
-                        "{} Serve listeners are unsupported by this CLI",
-                        mapping.listener.label()
-                    ));
+                if !self.local_capabilities.serve {
+                    return Err("Serve is unsupported by this CLI".to_owned());
                 }
                 if *edit
                     && !self
@@ -13341,14 +13325,8 @@ impl App {
                 if matches!(mapping.listener, Listener::Http(_)) {
                     return Err("HTTP is not offered as a public Funnel listener".to_owned());
                 }
-                if !self
-                    .local_capabilities
-                    .supports_service_listener(&mapping.listener, true)
-                {
-                    return Err(format!(
-                        "{} Funnel listeners are unsupported by this CLI",
-                        mapping.listener.label()
-                    ));
+                if !self.local_capabilities.funnel {
+                    return Err("Funnel is unsupported by this CLI".to_owned());
                 }
                 if *edit
                     && !self
@@ -13385,14 +13363,8 @@ impl App {
                 if mapping.exposure != Exposure::Public {
                     return Err("only a public mapping can stop being published".to_owned());
                 }
-                if !self
-                    .local_capabilities
-                    .supports_service_listener(&mapping.listener, false)
-                {
-                    return Err(format!(
-                        "{} Serve listeners are unsupported by this CLI",
-                        mapping.listener.label()
-                    ));
+                if !self.local_capabilities.serve {
+                    return Err("Serve is unsupported by this CLI".to_owned());
                 }
                 if !self.service_mapping_is_current(mapping) {
                     return Err(

@@ -688,6 +688,34 @@ fn service_forms_ask_field_by_field_and_never_show_their_serialization() {
     }
 }
 
+/// Listener support belongs to the Serve command itself. Human-readable help
+/// output is not a capability contract, so a standard HTTPS mapping must reach
+/// confirmation whenever Serve is available.
+#[test]
+fn https_mapping_is_not_gated_by_listener_help_text() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    let _ = app.dispatch_action(ActionId::ServicesServeCreate);
+
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Char('j'));
+    }
+    press(&mut app, KeyCode::Enter);
+    for character in "4321".chars() {
+        press(&mut app, KeyCode::Char(character));
+    }
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Enter);
+
+    assert!(matches!(
+        app.overlays.last(),
+        Some(tale::app::Overlay::Confirmation(_))
+    ));
+}
+
 /// Editing acts on whichever row is selected, so it must not fail merely
 /// because the top of the table happens to be a public mapping.
 #[test]
