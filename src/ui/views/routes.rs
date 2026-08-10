@@ -40,20 +40,13 @@ fn render_admin_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let observations = app.admin.route_observations();
     let lines = if observations.is_empty() {
         text::empty_state(
+            app.theme,
             "routes",
             "routes",
             app.admin.profile.is_some(),
             resource.state,
             resource.error.as_deref(),
         )
-        .into_iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                line,
-                app.theme.style(theme::StyleRole::TextMuted),
-            ))
-        })
-        .collect()
     } else {
         let columns = ADMIN_COLUMNS
             .iter()

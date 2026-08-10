@@ -17,10 +17,14 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     );
     let layout = layout::compute(area, app);
     if layout.minimum {
-        let message = format!(
-            "Tale needs at least 60 columns and 18 rows.\nCurrent terminal: {}x{}\nResize the terminal or press q to quit.",
-            area.width, area.height
-        );
+        let message = vec![
+            text::muted_help(app.theme, "Tale needs at least 60 columns and 18 rows."),
+            text::muted_help(
+                app.theme,
+                format!("Current terminal: {}x{}", area.width, area.height),
+            ),
+            text::inline_action(app.theme, "Resize the terminal or press ", "q", " to quit."),
+        ];
         components::panel::render(frame, app, area, "minimum size", message);
         components::interaction_shell::render_minimum(frame, app, area);
         return;

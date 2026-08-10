@@ -58,14 +58,6 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let tasks = app.tasks.filtered(&app.task_filter).collect::<Vec<_>>();
     let lines = if tasks.is_empty() {
         empty_state(app)
-            .into_iter()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line,
-                    app.theme.style(theme::StyleRole::TextMuted),
-                ))
-            })
-            .collect()
     } else {
         let shows = |tier: Tier| match tier {
             Tier::Always => true,
@@ -97,20 +89,31 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 /// Nothing here is fetched, so an empty page means either that this session has
 /// not run anything yet or that the filter excluded what it did run.
-fn empty_state(app: &App) -> Vec<String> {
+fn empty_state(app: &App) -> Vec<Line<'static>> {
     if app.tasks.all().is_empty() {
         return vec![
-            "No tasks yet".to_owned(),
-            String::new(),
-            "Every action that runs in the background records itself here:".to_owned(),
-            "what ran, against what, and what came back.".to_owned(),
+            text::muted_help(app.theme, "No tasks yet"),
+            Line::default(),
+            text::muted_help(
+                app.theme,
+                "Every action that runs in the background records itself here:",
+            ),
+            text::muted_help(app.theme, "what ran, against what, and what came back."),
         ];
     }
     vec![
-        "No tasks match the filter".to_owned(),
-        String::new(),
-        format!("  filter           /{}", app.task_filter),
-        "  clear it         / then Enter on an empty line".to_owned(),
+        text::muted_help(app.theme, "No tasks match the filter"),
+        Line::default(),
+        text::action_hint(
+            app.theme,
+            "  filter           ",
+            format!("/{}", app.task_filter),
+        ),
+        text::action_hint(
+            app.theme,
+            "  clear it         ",
+            "/ then Enter on an empty line",
+        ),
     ]
 }
 

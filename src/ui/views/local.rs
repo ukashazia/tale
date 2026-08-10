@@ -242,14 +242,14 @@ fn render_without_snapshot(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 "The daemon is connected but has not answered yet.",
             ));
             lines.push(Line::default());
-            lines.push(Line::from("  retry   r"));
+            lines.push(text::action_hint(app.theme, "  retry   ", "r"));
         }
         LocalDaemonState::PermissionDenied { detail }
         | LocalDaemonState::Unsupported { detail }
         | LocalDaemonState::Unavailable { detail } => {
             lines.push(Line::from(detail.clone()));
             lines.push(Line::default());
-            lines.push(Line::from("  retry   r"));
+            lines.push(text::action_hint(app.theme, "  retry   ", "r"));
         }
     }
     panel::render(frame, app, area, "local", lines);

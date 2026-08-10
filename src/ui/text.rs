@@ -1,3 +1,7 @@
+use ratatui::text::{Line, Span};
+
+use crate::ui::theme::{StyleRole, Theme};
+
 pub fn ellipsize(value: &str, width: usize) -> String {
     if value.chars().count() <= width {
         return value.to_owned();
@@ -61,45 +65,109 @@ pub fn view_title(base: &str, shown: usize, total: usize, detail: &[String]) -> 
 /// What to say when a view has nothing in it. An empty box is a dead end; this
 /// names the reason and the next step, the way a good empty screen should.
 pub fn empty_state(
+    theme: Theme,
     resource: &str,
     route: &str,
     admin_active: bool,
     state: crate::admin::AdminResourceState,
     error: Option<&str>,
-) -> Vec<String> {
+) -> Vec<Line<'static>> {
     use crate::admin::AdminResourceState as State;
-    let mut lines = vec![format!("No {resource} to show"), String::new()];
+    let mut lines = vec![
+        muted_help(theme, format!("No {resource} to show")),
+        Line::default(),
+    ];
     if !admin_active {
-        lines.push(format!(
-            "An active admin profile is required to show {resource}."
+        lines.push(muted_help(
+            theme,
+            format!("An active admin profile is required to show {resource}."),
         ));
-        lines.push(String::new());
-        lines.push("  choose one       :profiles".to_owned());
-        lines.push("  or add one       tale auth add <name>".to_owned());
-        lines.push(format!("  then reopen      :{route}"));
+        lines.push(Line::default());
+        lines.push(action_hint(theme, "  choose one       ", ":profiles"));
+        lines.push(action_hint(
+            theme,
+            "  or add one       ",
+            "tale auth add <name>",
+        ));
+        lines.push(action_hint(
+            theme,
+            "  then reopen      ",
+            format!(":{route}"),
+        ));
         return lines;
     }
     if let Some(error) = error {
-        lines.push(error.to_owned());
-        lines.push(String::new());
-        lines.push("  retry            r".to_owned());
+        lines.push(muted_help(theme, error));
+        lines.push(Line::default());
+        lines.push(action_hint(theme, "  retry            ", "r"));
         return lines;
     }
     lines.push(match state {
-        State::Loading => format!("Loading {resource}…"),
-        State::Idle => format!("Not requested yet. Press r to load {resource}."),
-        State::Forbidden => {
-            format!("This credential is not allowed to read {resource}.")
+        State::Idle => inline_action(
+            theme,
+            "Not requested yet. Press ",
+            "r",
+            format!(" to load {resource}."),
+        ),
+        State::Unauthenticated => inline_action(
+            theme,
+            "The admin credential was not accepted. Re-authenticate with ",
+            "tale auth",
+            ".",
+        ),
+        State::Failed => inline_action(
+            theme,
+            format!("Loading {resource} failed. Press "),
+            "r",
+            " to retry.",
+        ),
+        State::Loading => muted_help(theme, format!("Loading {resource}…")),
+        State::Forbidden => muted_help(
+            theme,
+            format!("This credential is not allowed to read {resource}."),
+        ),
+        State::PlanRestricted => muted_help(
+            theme,
+            format!("This tailnet's plan does not include {resource}."),
+        ),
+        State::Unsupported => muted_help(theme, format!("The server did not return {resource}.")),
+        State::Ready | State::Stale => {
+            muted_help(theme, format!("This tailnet has no {resource}."))
         }
-        State::PlanRestricted => format!("This tailnet's plan does not include {resource}."),
-        State::Unauthenticated => {
-            "The admin credential was not accepted. Re-authenticate with tale auth.".to_owned()
-        }
-        State::Unsupported => format!("The server did not return {resource}."),
-        State::Failed => format!("Loading {resource} failed. Press r to retry."),
-        State::Ready | State::Stale => format!("This tailnet has no {resource}."),
     });
     lines
+}
+
+/// Explanatory copy with one actionable token. Commands, routes, and key hints
+/// share the accent role so a reader can find the next step before reading the
+/// surrounding sentence.
+pub fn inline_action(
+    theme: Theme,
+    before: impl Into<String>,
+    action: impl Into<String>,
+    after: impl Into<String>,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(before.into(), theme.style(StyleRole::TextMuted)),
+        Span::styled(action.into(), theme.style(StyleRole::KeyHint)),
+        Span::styled(after.into(), theme.style(StyleRole::TextMuted)),
+    ])
+}
+
+/// A two-column hint whose right-hand side is the action the user can take.
+pub fn action_hint(
+    theme: Theme,
+    label: impl Into<String>,
+    action: impl Into<String>,
+) -> Line<'static> {
+    inline_action(theme, label, action, "")
+}
+
+pub fn muted_help(theme: Theme, value: impl Into<String>) -> Line<'static> {
+    Line::from(Span::styled(
+        value.into(),
+        theme.style(StyleRole::TextMuted),
+    ))
 }
 
 /// Joins the capabilities a device actually has. A device with none says so
@@ -186,5 +254,60 @@ impl Freshness {
             Self::Unavailable => StyleRole::StateDanger,
             Self::Unconfigured => StyleRole::TextMuted,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{action_hint, empty_state, inline_action};
+    use crate::admin::AdminResourceState;
+    use crate::ui::theme::{ColorCapability, StyleRole, Theme, ThemeId};
+
+    fn theme() -> Theme {
+        Theme::new(ThemeId::TailscaleDark, ColorCapability::TrueColor)
+    }
+
+    #[test]
+    fn inline_actions_use_the_accent_role() {
+        let theme = theme();
+        let line = inline_action(theme, "Open ", ":profiles", " to choose one");
+
+        assert_eq!(
+            line.spans.get(1).map(|span| span.style),
+            Some(theme.style(StyleRole::KeyHint))
+        );
+    }
+
+    #[test]
+    fn empty_state_routes_commands_and_action_hints_use_the_accent_role() {
+        let theme = theme();
+        let lines = empty_state(
+            theme,
+            "access policy",
+            "access",
+            false,
+            AdminResourceState::Idle,
+            None,
+        );
+        let actions = lines
+            .iter()
+            .filter_map(|line| line.spans.get(1))
+            .map(|span| (span.content.as_ref(), span.style))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            actions,
+            vec![
+                (":profiles", theme.style(StyleRole::KeyHint)),
+                ("tale auth add <name>", theme.style(StyleRole::KeyHint)),
+                (":access", theme.style(StyleRole::KeyHint)),
+            ]
+        );
+
+        let hint = action_hint(theme, "  retry   ", "r");
+        assert_eq!(
+            hint.spans.get(1).map(|span| span.style),
+            Some(theme.style(StyleRole::KeyHint))
+        );
     }
 }

@@ -135,12 +135,7 @@ fn render_collection(frame: &mut Frame<'_>, app: &App, area: Rect) {
         grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
     };
     if body.is_empty() {
-        lines.extend(section_empty_message(app).into_iter().map(|line| {
-            Line::from(Span::styled(
-                line,
-                app.theme.style(theme::StyleRole::TextMuted),
-            ))
-        }));
+        lines.extend(section_empty_message(app));
     } else {
         lines.extend(body);
     }
@@ -310,40 +305,46 @@ fn section_failure(app: &App) -> Option<&crate::domain::service::ServiceFailure>
 }
 
 /// An empty box is a dead end. Name the reason and the next step.
-fn section_empty_message(app: &App) -> Vec<String> {
+fn section_empty_message(app: &App) -> Vec<Line<'static>> {
     let section = app.views.services.section;
     let noun = section.noun();
     if section == ServiceSection::Taildrive && !app.alpha_local_features {
         return vec![
-            "Taildrive is alpha and off for this run".to_owned(),
-            String::new(),
-            "  enable for this run    a e".to_owned(),
+            text::muted_help(app.theme, "Taildrive is alpha and off for this run"),
+            Line::default(),
+            text::action_hint(app.theme, "  enable for this run    ", "a e"),
         ];
     }
     if section == ServiceSection::Serve && !app.views.services.filter_draft.trim().is_empty() {
         return vec![
-            format!("No {noun} match this filter"),
-            String::new(),
-            "  clear the filter       / then Esc".to_owned(),
+            text::muted_help(app.theme, format!("No {noun} match this filter")),
+            Line::default(),
+            text::action_hint(app.theme, "  clear the filter       ", "/ then Esc"),
         ];
     }
     match section_status(app) {
         ServiceResourceStatus::Idle => vec![
-            format!("No {noun} loaded yet"),
-            String::new(),
-            "  load                   r".to_owned(),
+            text::muted_help(app.theme, format!("No {noun} loaded yet")),
+            Line::default(),
+            text::action_hint(app.theme, "  load                   ", "r"),
         ],
-        ServiceResourceStatus::Loading => vec![format!("Loading {noun}…")],
-        ServiceResourceStatus::Unsupported => vec![format!(
-            "This version of the Tailscale client does not report {noun}."
+        ServiceResourceStatus::Loading => {
+            vec![text::muted_help(app.theme, format!("Loading {noun}…"))]
+        }
+        ServiceResourceStatus::Unsupported => vec![text::muted_help(
+            app.theme,
+            format!("This version of the Tailscale client does not report {noun}."),
         )],
         ServiceResourceStatus::Failed => vec![
-            format!("Reading {noun} failed"),
-            String::new(),
-            "  retry                  r".to_owned(),
+            text::muted_help(app.theme, format!("Reading {noun} failed")),
+            Line::default(),
+            text::action_hint(app.theme, "  retry                  ", "r"),
         ],
         ServiceResourceStatus::Ready | ServiceResourceStatus::Stale => {
-            vec![format!("This machine has no {noun}")]
+            vec![text::muted_help(
+                app.theme,
+                format!("This machine has no {noun}"),
+            )]
         }
     }
 }

@@ -50,20 +50,13 @@ fn render_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let resource = &app.admin.activity;
     let Some(snapshot) = resource.snapshot.as_ref() else {
         let lines = text::empty_state(
+            app.theme,
             "audit events",
             "audit",
             app.admin.profile.is_some(),
             resource.state,
             resource.error.as_deref(),
-        )
-        .into_iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                line,
-                app.theme.style(theme::StyleRole::TextMuted),
-            ))
-        })
-        .collect::<Vec<_>>();
+        );
         panel::render(frame, app, area, "audit", lines);
         return;
     };

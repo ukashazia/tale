@@ -59,20 +59,13 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let users = resource.snapshot.as_deref().unwrap_or_default();
     let lines = if users.is_empty() {
         text::empty_state(
+            app.theme,
             "users",
             "users",
             app.admin.profile.is_some(),
             resource.state,
             resource.error.as_deref(),
         )
-        .into_iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                line,
-                app.theme.style(theme::StyleRole::TextMuted),
-            ))
-        })
-        .collect()
     } else {
         let shows = |tier: Tier| match tier {
             Tier::Always => true,

@@ -11,6 +11,7 @@ use tale::config::{self, ColorMode, EnvironmentValues, SymbolsMode};
 use tale::event::{Event, InputEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
+use tale::task::{Notification, TaskId, TaskResultKind};
 use tale::ui;
 use tale::ui::theme::{ColorCapability, StyleRole, Theme, ThemeId};
 
@@ -280,6 +281,96 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
                 assert_ne!(key.modifier, label.modifier);
             }
         }
+    }
+}
+
+#[test]
+fn inline_help_routes_commands_and_action_hints_use_the_accent_color() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
+    app.set_route(Route::Access);
+    app.admin.profile = None;
+    app.admin.policy.snapshot = None;
+    let backend = TestBackend::new(100, 30);
+    let Some(mut terminal) = Terminal::new(backend).ok() else {
+        return;
+    };
+    assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+    let buffer = terminal.backend().buffer();
+    let expected = app.theme.style(StyleRole::KeyHint).fg;
+    let rendered = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .filter_map(|x| buffer.cell((x, y)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+    for token in [":profiles", "tale auth add", ":access"] {
+        let mut found = false;
+        for (y, line) in rendered.iter().enumerate() {
+            let Some(x) = line.find(token).and_then(|x| u16::try_from(x).ok()) else {
+                continue;
+            };
+            let cell = u16::try_from(y).ok().and_then(|y| buffer.cell((x, y)));
+            assert_eq!(cell.map(|cell| cell.fg), expected);
+            found = true;
+            break;
+        }
+        assert!(
+            found,
+            "missing inline help token: {token}\n{}",
+            rendered.join("\n")
+        );
+    }
+}
+
+#[test]
+fn status_hints_use_their_semantic_colors() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
+    let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+
+    app.copied_value = Some("device.example.ts.net:443".to_owned());
+    assert_notification_role(&app, area, StyleRole::StateInfo);
+
+    for (kind, role) in [
+        (TaskResultKind::Success, StyleRole::TaskSucceeded),
+        (TaskResultKind::Failure, StyleRole::TaskFailed),
+        (TaskResultKind::Cancelled, StyleRole::TaskCancelled),
+    ] {
+        app.notifications = vec![Notification {
+            task_id: TaskId(1),
+            message: "task status".to_owned(),
+            kind,
+            expires_at: app.now.saturating_add(5),
+        }];
+        assert_notification_role(&app, area, role);
+    }
+
+    app.runtime_error = Some("runtime failed".to_owned());
+    assert_notification_role(&app, area, StyleRole::StateDanger);
+}
+
+fn assert_notification_role(app: &App, area: ratatui::layout::Rect, role: StyleRole) {
+    let mut terminal = match Terminal::new(TestBackend::new(area.width, area.height)) {
+        Ok(terminal) => terminal,
+        Err(error) => match error {},
+    };
+    assert!(terminal.draw(|frame| ui::render(frame, app)).is_ok());
+    let layout = tale::ui::layout::compute(area, app);
+    let cell = terminal
+        .backend()
+        .buffer()
+        .cell((layout.notification.x, layout.notification.y));
+    assert!(cell.is_some());
+    if let Some(cell) = cell {
+        assert_eq!(Some(cell.fg), app.theme.style(role).fg);
     }
 }
 

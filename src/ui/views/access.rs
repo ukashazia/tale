@@ -10,20 +10,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let resource = &app.admin.policy;
     let Some(policy) = resource.snapshot.as_ref() else {
         let lines = text::empty_state(
+            app.theme,
             "access policy",
             "access",
             app.admin.profile.is_some(),
             resource.state,
             resource.error.as_deref(),
-        )
-        .into_iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                line,
-                app.theme.style(theme::StyleRole::TextMuted),
-            ))
-        })
-        .collect::<Vec<_>>();
+        );
         panel::render(frame, app, area, "access · policy", lines);
         return;
     };

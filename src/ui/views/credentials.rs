@@ -45,20 +45,13 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .map_or(&[][..], |snapshot| snapshot.records.as_slice());
     let lines = if credentials.is_empty() {
         text::empty_state(
+            app.theme,
             "credentials",
             "credentials",
             app.admin.profile.is_some(),
             resource.state,
             resource.error.as_deref(),
         )
-        .into_iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                line,
-                app.theme.style(theme::StyleRole::TextMuted),
-            ))
-        })
-        .collect()
     } else {
         let columns = COLUMNS
             .iter()

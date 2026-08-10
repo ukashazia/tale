@@ -134,9 +134,17 @@ fn status_block(app: &App) -> Vec<Vec<Span<'static>>> {
             app.theme.style(role).add_modifier(Modifier::REVERSED),
         ),
     ];
-    if let Some(hint) = hint {
+    if let Some((before, action, after)) = hint {
         first.push(Span::styled(
-            format!("  ({hint})"),
+            format!("  ({before}"),
+            app.theme.style(theme::StyleRole::TextMuted),
+        ));
+        first.push(Span::styled(
+            action,
+            app.theme.style(theme::StyleRole::KeyHint),
+        ));
+        first.push(Span::styled(
+            format!("{after})"),
             app.theme.style(theme::StyleRole::TextMuted),
         ));
     }
@@ -173,6 +181,16 @@ fn labelled_row(app: &App, label: &str, value: IdentityRow) -> Vec<Span<'static>
             theme::StyleRole::TextMuted
         }),
     ));
+    if let Some(action) = value.action {
+        spans.push(Span::styled(
+            action,
+            app.theme.style(theme::StyleRole::KeyHint),
+        ));
+        spans.push(Span::styled(
+            value.action_suffix,
+            app.theme.style(theme::StyleRole::TextMuted),
+        ));
+    }
     if let Some(secondary) = value.secondary {
         spans.push(Span::styled(
             format!(" · {secondary}"),
@@ -186,6 +204,8 @@ fn labelled_row(app: &App, label: &str, value: IdentityRow) -> Vec<Span<'static>
 /// mistaken for a second name if it were shown on its own.
 struct IdentityRow {
     primary: String,
+    action: Option<String>,
+    action_suffix: String,
     secondary: Option<String>,
     present: bool,
 }
@@ -194,6 +214,18 @@ impl IdentityRow {
     fn absent(reason: &str) -> Self {
         Self {
             primary: reason.to_owned(),
+            action: None,
+            action_suffix: String::new(),
+            secondary: None,
+            present: false,
+        }
+    }
+
+    fn absent_with_action(before: &str, action: &str, after: &str) -> Self {
+        Self {
+            primary: before.to_owned(),
+            action: Some(action.to_owned()),
+            action_suffix: after.to_owned(),
             secondary: None,
             present: false,
         }
@@ -225,6 +257,8 @@ fn local_identity(app: &App) -> IdentityRow {
     {
         Some(tailnet) => IdentityRow {
             primary: tailnet.to_owned(),
+            action: None,
+            action_suffix: String::new(),
             // Some tailnets are named after their suffix. Printing it twice
             // reads as two facts when there is one.
             secondary: suffix.filter(|suffix| !suffix.eq_ignore_ascii_case(tailnet)),
@@ -235,6 +269,8 @@ fn local_identity(app: &App) -> IdentityRow {
         None => match suffix {
             Some(suffix) => IdentityRow {
                 primary: suffix,
+                action: None,
+                action_suffix: String::new(),
                 secondary: None,
                 present: true,
             },
@@ -248,7 +284,7 @@ fn local_identity(app: &App) -> IdentityRow {
 /// they are one, and the header has no business deciding which one to show.
 fn profile_identity(app: &App) -> IdentityRow {
     let Some(profile) = app.admin.profile.as_deref() else {
-        return IdentityRow::absent("none · :profiles to choose one");
+        return IdentityRow::absent_with_action("none · ", ":profiles", " to choose one");
     };
     // `tailnet = "-"` is a request parameter meaning "this credential's own
     // tailnet", so it identifies nothing; what the API returned does.
@@ -262,6 +298,8 @@ fn profile_identity(app: &App) -> IdentityRow {
         .or_else(|| app.admin_tailnet_suffix().map(str::to_owned));
     IdentityRow {
         primary: profile.to_owned(),
+        action: None,
+        action_suffix: String::new(),
         secondary: Some(tailnet.unwrap_or_else(|| "tailnet not read yet".to_owned())),
         present: true,
     }
@@ -355,7 +393,13 @@ fn staleness(app: &App) -> Option<(String, theme::StyleRole)> {
 }
 
 /// The label, its meaning, and the key that acts on it when there is one.
-fn connection_state(app: &App) -> (String, theme::StyleRole, Option<&'static str>) {
+fn connection_state(
+    app: &App,
+) -> (
+    String,
+    theme::StyleRole,
+    Option<(&'static str, &'static str, &'static str)>,
+) {
     use crate::domain::source::LocalDaemonState;
     match app.source_mode {
         crate::app::SourceMode::Mock => (
@@ -397,7 +441,7 @@ fn connection_state(app: &App) -> (String, theme::StyleRole, Option<&'static str
             LocalDaemonState::PermissionDenied { .. } => (
                 "local access denied".to_owned(),
                 theme::StyleRole::StateDanger,
-                Some("press a d for diagnostics"),
+                Some(("press ", "a d", " for diagnostics")),
             ),
             LocalDaemonState::Unsupported { .. } => (
                 "local client unsupported".to_owned(),
@@ -407,7 +451,7 @@ fn connection_state(app: &App) -> (String, theme::StyleRole, Option<&'static str
             LocalDaemonState::Unavailable { .. } => (
                 "local daemon unreachable".to_owned(),
                 theme::StyleRole::StateDanger,
-                Some("press r to retry"),
+                Some(("press ", "r", " to retry")),
             ),
         },
     }

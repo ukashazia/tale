@@ -170,10 +170,7 @@ fn admin_summary(app: &App, compact: bool) -> Vec<Line<'static>> {
                     if compact { "Admin" } else { "Profile" }
                 ),
             ),
-            Line::from(Span::styled(
-                "Open :profiles to activate a credential",
-                app.theme.style(theme::StyleRole::TextMuted),
-            )),
+            text::inline_action(app.theme, "Open ", ":profiles", " to activate a credential"),
         ];
     };
     let role = admin_status_role(app.admin.devices.state);
@@ -265,10 +262,12 @@ fn render_attention(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     app.theme.style(theme::StyleRole::TextPrimary),
                 )),
                 Line::default(),
-                Line::from(Span::styled(
-                    "Activate a credential in :profiles to evaluate tailnet health.",
-                    app.theme.style(theme::StyleRole::TextMuted),
-                )),
+                text::inline_action(
+                    app.theme,
+                    "Activate a credential in ",
+                    ":profiles",
+                    " to evaluate tailnet health.",
+                ),
             ]
         };
         panel::render(frame, app, area, &title, message);
@@ -399,14 +398,27 @@ fn render_finding(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }));
     }
     lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        if finding.suggested_action_ids.is_empty() {
-            "Enter opens details · no suggested action"
-        } else {
-            "Enter opens details · a for suggested action"
-        },
-        app.theme.style(theme::StyleRole::TextMuted),
-    )));
+    lines.push(if finding.suggested_action_ids.is_empty() {
+        text::inline_action(
+            app.theme,
+            "",
+            "Enter",
+            " opens details · no suggested action",
+        )
+    } else {
+        Line::from(vec![
+            Span::styled("Enter", app.theme.style(theme::StyleRole::KeyHint)),
+            Span::styled(
+                " opens details · ",
+                app.theme.style(theme::StyleRole::TextMuted),
+            ),
+            Span::styled("a", app.theme.style(theme::StyleRole::KeyHint)),
+            Span::styled(
+                " for suggested action",
+                app.theme.style(theme::StyleRole::TextMuted),
+            ),
+        ])
+    });
     panel::render_focusable(
         frame,
         app,

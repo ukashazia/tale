@@ -36,11 +36,11 @@ pub fn metrics_lines(app: &App, viewport: u16) -> Vec<Line<'static>> {
             ServiceResourceStatus::Loading => vec![muted(app, "Reading metrics…")],
             ServiceResourceStatus::Failed => vec![
                 muted(app, "Reading metrics failed"),
-                muted(app, "  retry                  r"),
+                text::action_hint(app.theme, "  retry                  ", "r"),
             ],
             _ => vec![
                 muted(app, "Metrics are read on request"),
-                muted(app, "  read now               a m"),
+                text::action_hint(app.theme, "  read now               ", "a m"),
             ],
         };
     };
@@ -80,7 +80,7 @@ pub fn bug_report_lines(app: &App) -> Vec<Line<'static>> {
         || {
             vec![
                 muted(app, "No report created yet"),
-                muted(app, "  create one             a c"),
+                text::action_hint(app.theme, "  create one             ", "a c"),
             ]
         },
         |report| {
