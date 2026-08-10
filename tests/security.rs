@@ -256,9 +256,6 @@ fn post_v1_obsolete_runtime_and_documentation_paths_are_absent() {
 
     for relative in [
         "README.md",
-        "docs/product.md",
-        "docs/architecture.md",
-        "docs/ux.md",
         "docs/configuration.md",
         "docs/support.md",
         "docs/security.md",

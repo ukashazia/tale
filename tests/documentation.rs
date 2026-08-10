@@ -18,10 +18,7 @@ fn markdown_files(root: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> 
 fn current_documentation_and_local_links_exist() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for relative in [
-        "docs/architecture.md",
         "docs/configuration.md",
-        "docs/product.md",
-        "docs/ux.md",
         "docs/support.md",
         "docs/install.md",
         "docs/security.md",
@@ -34,7 +31,6 @@ fn current_documentation_and_local_links_exist() {
         "LICENSE",
         "NOTICE",
         "deny.toml",
-        "release/README.md",
         "tests/acceptance/journeys.md",
     ] {
         assert!(root.join(relative).is_file(), "missing {relative}");
@@ -102,22 +98,6 @@ fn local_markdown_links_resolve_without_network_access() {
                     file.display()
                 );
             }
-        }
-    }
-}
-
-#[test]
-fn semantic_theme_decision_and_token_ledger_are_present() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for relative in [
-        "docs/decisions/0005-semantic-theme-system.md",
-        "docs/design/theme-token-ledger.md",
-    ] {
-        let contents = fs::read_to_string(root.join(relative));
-        assert!(contents.is_ok(), "missing {relative}");
-        if let Ok(contents) = contents {
-            assert!(contents.contains("tailscale-dark"));
-            assert!(contents.contains("no-color") || contents.contains("no color"));
         }
     }
 }

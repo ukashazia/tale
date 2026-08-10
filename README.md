@@ -92,7 +92,6 @@ redacts its output.
 
 - [Installation](docs/install.md)
 - [Configuration](docs/configuration.md)
-- [Keyboard navigation and user flows](docs/ux.md)
 - [Support matrix](docs/support.md)
 - [Security](docs/security.md)
 - [Troubleshooting and recovery](docs/troubleshooting.md)
@@ -100,8 +99,6 @@ redacts its output.
 
 ## Developing Tale
 
-Contributors can find the project’s [design principles](DESIGN.md),
-[architecture](docs/architecture.md), [feature catalog](docs/product.md), and
-[release checklist](docs/release-checklist.md) in the documentation. To refresh
-the screenshots above, use the instructions in
+Release maintainers should follow the [release checklist](docs/release-checklist.md).
+To refresh the screenshots above, use the instructions in
 [`scripts/capture-readme-screenshots.sh`](scripts/capture-readme-screenshots.sh).

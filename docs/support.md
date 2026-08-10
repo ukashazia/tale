@@ -31,10 +31,8 @@ Unknown additive JSON fields are accepted only by DTOs that already allow them;
 missing required fields produce `UnsupportedOutput` and retain the last-good
 state. There is no legacy parser chain.
 
-The Control API ledger is frozen at the source date recorded in
-`docs/contracts/control-api-2026-08-03.md`. Tale does not version-pin the hosted
-API. A decode failure is isolated to its resource and must update the ledger and
-fixture directly.
+Tale does not version-pin the hosted API. A decode failure is isolated to its
+resource and must update the fixture directly.
 
 ## Terminal and keyring scope
 
