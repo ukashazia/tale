@@ -18,7 +18,7 @@ Set Framerate 15
 Set TypingSpeed 1ms
 
 Hide
-Type "env -u NO_COLOR COLORTERM=truecolor TERM=xterm-256color ./target/debug/tale --config /dev/null --view devices --mock"
+Type "printf '\033]4;0;#202020\007'; env -u NO_COLOR COLORTERM=truecolor TERM=xterm-256color ./target/debug/tale --config /dev/null --view devices --mock"
 Enter
 Sleep 1400ms
 Type "/"

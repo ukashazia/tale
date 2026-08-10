@@ -106,14 +106,16 @@ extract_frame() {
     -i "${video}" \
     -filter_complex \
     "[0:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},format=rgba,split=2[wall][blur_source]; \
-     [blur_source]gblur=sigma=64,colorchannelmixer=rr=0.80:gg=0.80:bb=0.80[blurred]; \
-     [1:v]setpts=PTS-STARTPTS,format=rgba,colorkey=0xE8E1DF:0.035:0.08,split=2[mask_source][terminal]; \
-     [mask_source]alphaextract[mask]; \
-     [blurred][mask]alphamerge[blurred_window]; \
+     [blur_source]gblur=sigma=64,colorchannelmixer=rr=0.50:gg=0.50:bb=0.50[blurred]; \
+     [1:v]setpts=PTS-STARTPTS,format=rgba,colorkey=0xE8E1DF:0.035:0.08,split=3[window_source][outer_mask_source][foreground_source]; \
+     [outer_mask_source]alphaextract,split=2[blur_mask][outer_mask]; \
+     [blurred][blur_mask]alphamerge[blurred_window]; \
      [wall][blurred_window]overlay=format=auto[wall_with_blur]; \
-     color=c=black:s=${width}x${height}[black]; \
-     [black][terminal]overlay=format=auto[terminal_on_black]; \
-     [wall_with_blur][terminal_on_black]blend=all_mode=screen,format=rgb24[out]" \
+     [foreground_source]colorkey=0x000000:0.025:0.04,alphaextract[black_mask]; \
+     [outer_mask][black_mask]lut2=c0='x*y/255'[foreground_mask]; \
+     [window_source]format=rgb24[foreground_rgb]; \
+     [foreground_rgb][foreground_mask]alphamerge[foreground]; \
+     [wall_with_blur][foreground]overlay=format=auto,format=rgb24[out]" \
     -map '[out]' \
     -frames:v 1 \
     -map_metadata -1 \

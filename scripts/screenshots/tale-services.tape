@@ -17,7 +17,7 @@ Set WindowBarSize 44
 Set Framerate 15
 
 Hide
-Type "env -u NO_COLOR COLORTERM=truecolor TERM=xterm-256color ./target/debug/tale --config /dev/null --view services --mock"
+Type "printf '\033]4;0;#202020\007'; env -u NO_COLOR COLORTERM=truecolor TERM=xterm-256color ./target/debug/tale --config /dev/null --view services --mock"
 Enter
 Sleep 2s
 Show
