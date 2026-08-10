@@ -293,7 +293,6 @@ pub struct NavigationCandidate {
     pub route: Route,
     pub label: String,
     pub description: String,
-    pub label_matches: Vec<u32>,
     pub description_matches: Vec<u32>,
     score: u32,
 }
@@ -16855,7 +16854,6 @@ fn navigation_candidates(query: &str) -> Vec<NavigationCandidate> {
                     route,
                     label: label.to_owned(),
                     description: description.to_owned(),
-                    label_matches: Vec::new(),
                     description_matches: Vec::new(),
                     score: 0,
                 });
@@ -16869,11 +16867,6 @@ fn navigation_candidates(query: &str) -> Vec<NavigationCandidate> {
             indices.dedup();
             let label_length = u32::try_from(label.chars().count()).map_or(u32::MAX, |value| value);
             let description_offset = label_length.saturating_add(1);
-            let label_matches = indices
-                .iter()
-                .copied()
-                .filter(|index| *index < label_length)
-                .collect();
             let description_matches = indices
                 .into_iter()
                 .filter_map(|index| index.checked_sub(description_offset))
@@ -16882,7 +16875,6 @@ fn navigation_candidates(query: &str) -> Vec<NavigationCandidate> {
                 route,
                 label: label.to_owned(),
                 description: description.to_owned(),
-                label_matches,
                 description_matches,
                 score,
             })

@@ -285,20 +285,15 @@ fn navigation_cell(
     let description = text::ellipsize(&candidate.description, description_budget);
     let used = prefix_width.saturating_add(description.chars().count());
     let mut spans = Vec::new();
-    for (index, character) in candidate.label.chars().enumerate() {
-        let style = if candidate
-            .label_matches
-            .contains(&u32::try_from(index).map_or(u32::MAX, |i| i))
-        {
-            app.theme.style(theme::StyleRole::KeyHint)
-        } else {
-            app.theme.style(theme::StyleRole::TextPrimary)
-        };
-        spans.push(Span::styled(character.to_string(), style));
+    for character in candidate.label.chars() {
+        spans.push(Span::styled(
+            character.to_string(),
+            app.theme.style(theme::StyleRole::KeyHint),
+        ));
     }
     spans.push(Span::styled(
         " ".repeat(command_width.saturating_sub(label_length)),
-        app.theme.style(theme::StyleRole::TextPrimary),
+        app.theme.style(theme::StyleRole::KeyHint),
     ));
     spans.push(Span::styled(
         " ",
