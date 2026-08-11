@@ -149,6 +149,9 @@ pub enum Route {
 }
 
 impl Route {
+    pub const DEFAULT: Self = Self::Devices;
+    pub const UNAVAILABLE_FALLBACK: Self = Self::Overview;
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Overview => "overview",
@@ -196,6 +199,14 @@ impl Route {
             self,
             Self::Users | Self::Routes | Self::Access | Self::Credentials | Self::Audit
         )
+    }
+
+    pub const fn requires_local_daemon(self) -> bool {
+        matches!(self, Self::Local | Self::Services | Self::Diagnostics)
+    }
+
+    pub const fn requires_observation_source(self) -> bool {
+        matches!(self, Self::Devices | Self::Dns)
     }
 }
 
@@ -1669,8 +1680,13 @@ impl App {
             Ok(value) => (Some(value), None),
             Err(error) => (None, Some(format!("saved-view state is invalid: {error}"))),
         };
+        let initial_route = if source_mode == SourceMode::Unavailable && admin.profile.is_none() {
+            Route::UNAVAILABLE_FALLBACK
+        } else {
+            Route::DEFAULT
+        };
         Self {
-            view_history: ViewHistory::new(Route::Devices),
+            view_history: ViewHistory::new(initial_route),
             interaction: InteractionMode::Normal,
             next_completion_generation: 0,
             focus: Focus::Collection,
@@ -3947,9 +3963,9 @@ impl App {
     }
 
     fn open_navigation_route(&mut self, route: Route) -> Vec<Effect> {
-        if route.requires_admin_profile() && self.admin.profile.is_none() {
+        if let Some(reason) = self.route_unavailable_reason(route) {
             if let InteractionMode::CommandLine(state) = &mut self.interaction {
-                state.error = Some("Select an administration profile to open this view".to_owned());
+                state.error = Some(reason.to_owned());
             }
             return Vec::new();
         }
@@ -3960,6 +3976,38 @@ impl App {
         }
         self.navigate(route);
         Vec::new()
+    }
+
+    pub fn route_unavailable_reason(&self, route: Route) -> Option<&'static str> {
+        if route.requires_admin_profile() && self.admin.profile.is_none() {
+            return Some("Select an administration profile to open this view");
+        }
+        if route.requires_local_daemon() && !self.local_routes_available() {
+            return Some("Connect to the local daemon to open this view");
+        }
+        if route.requires_observation_source()
+            && !self.local_routes_available()
+            && self.admin.profile.is_none()
+        {
+            return Some("Connect to the local daemon or select an administration profile");
+        }
+        None
+    }
+
+    fn local_routes_available(&self) -> bool {
+        matches!(
+            self.local_daemon_state,
+            LocalDaemonState::Mock | LocalDaemonState::Connecting | LocalDaemonState::Live
+        )
+    }
+
+    fn leave_unavailable_route(&mut self) {
+        if self
+            .route_unavailable_reason(self.current_route())
+            .is_some()
+        {
+            self.set_route(Route::UNAVAILABLE_FALLBACK);
+        }
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
@@ -5427,11 +5475,11 @@ impl App {
     }
 
     fn local_action_available(&self, action_id: ActionId) -> bool {
-        if matches!(
-            action_id,
-            ActionId::ViewServices | ActionId::ViewDiagnostics
-        ) {
-            return true;
+        if action_id == ActionId::ViewServices {
+            return self.route_unavailable_reason(Route::Services).is_none();
+        }
+        if action_id == ActionId::ViewDiagnostics {
+            return self.route_unavailable_reason(Route::Diagnostics).is_none();
         }
         if is_local_service_action(action_id) && self.source_mode != SourceMode::Local {
             return false;
@@ -14549,6 +14597,7 @@ impl App {
                 self.services_snapshot
                     .certificate_domains
                     .fail(self.services_snapshot.generation, service_failure);
+                self.leave_unavailable_route();
             }
             LocalEvent::PreferencesStarted {
                 generation,
@@ -14617,6 +14666,7 @@ impl App {
                 // The list itself is unchanged by a dropped watcher; only the
                 // reason it has stopped moving is new.
                 self.devices_resource.error = Some(failure.detail);
+                self.leave_unavailable_route();
             }
             LocalEvent::AccountsSucceeded { accounts } => {
                 self.local_accounts = accounts;

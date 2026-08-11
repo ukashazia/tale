@@ -285,11 +285,14 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
 }
 
 #[test]
-fn navigation_mutes_admin_only_views_without_an_active_profile() {
+fn navigation_mutes_views_without_their_required_source() {
     let Some(mut app) = mock_app() else {
         return;
     };
     app.admin.profile = None;
+    app.local_daemon_state = tale::domain::source::LocalDaemonState::Unavailable {
+        detail: "fixture daemon unavailable".to_owned(),
+    };
     app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
     app.set_terminal_size(140, 30);
     press(&mut app, KeyCode::Char(':'));
@@ -307,23 +310,37 @@ fn navigation_mutes_admin_only_views_without_an_active_profile() {
                 .collect::<String>()
         })
         .collect::<Vec<_>>();
-    let cell_for = |label: &str| {
+    let cell_for = |label: &str, description: &str| {
         rendered.iter().enumerate().find_map(|(row, line)| {
+            if !line.contains(description) {
+                return None;
+            }
             let column = line.find(label)?;
             buffer.cell((u16::try_from(column).ok()?, u16::try_from(row).ok()?))
         })
     };
 
     let disabled = app.theme.style(StyleRole::KeyHintDisabled);
-    for label in ["users", "routes", "access", "credentials", "audit"] {
-        let cell = cell_for(label);
+    for (label, description) in [
+        ("users", "members"),
+        ("routes", "network routes"),
+        ("access", "policies"),
+        ("credentials", "keys & tokens"),
+        ("audit", "tailnet log"),
+        ("local", "this machine"),
+        ("services", "serve, funnel"),
+        ("diagnostics", "client metrics"),
+        ("devices", "machines & status"),
+        ("dns", "name resolution"),
+    ] {
+        let cell = cell_for(label, description);
         assert_eq!(cell.map(|cell| cell.fg), disabled.fg, "{label}");
         assert!(cell.is_some_and(|cell| cell.modifier.contains(disabled.add_modifier)));
     }
 
-    let dns = cell_for("dns");
+    let profiles = cell_for("profiles", "which source");
     assert_eq!(
-        dns.map(|cell| cell.fg),
+        profiles.map(|cell| cell.fg),
         app.theme.style(StyleRole::KeyHint).fg
     );
 }

@@ -527,6 +527,7 @@ fn no_local_bootstrap_has_no_local_effect() {
     if let Ok(config) = config {
         let mut app = App::new(config);
         assert_eq!(app.source_mode, SourceMode::Unavailable);
+        assert_eq!(app.current_route(), tale::app::Route::Overview);
         assert!(app.bootstrap_effects().is_empty());
         let _ = app.update(Event::Tick(std::time::Instant::now()));
     }

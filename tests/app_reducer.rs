@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use tale::action::{self, ActionContext, Binding};
+use tale::action::{self, ActionContext, ActionId, Binding};
 use tale::app::{
     App, Focus, InteractionMode, Route, ShutdownState, SourceMode, ViewFrame, ViewHistory,
 };
@@ -175,6 +175,7 @@ fn stale_watcher_generation_cannot_replace_current_connection_state() {
             app.local_daemon_state,
             tale::domain::source::LocalDaemonState::Connecting
         ));
+        assert_eq!(app.current_route(), Route::Devices);
 
         let failure = tale::domain::source::LocalFailure::new(
             tale::domain::source::LocalFailureKind::DaemonUnavailable,
@@ -199,6 +200,9 @@ fn stale_watcher_generation_cannot_replace_current_connection_state() {
             app.local_daemon_state,
             tale::domain::source::LocalDaemonState::Reconnecting
         ));
+        assert_eq!(app.current_route(), Route::Overview);
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(app.current_route(), Route::Overview);
     }
 }
 
@@ -250,6 +254,7 @@ fn navigation_palette_is_canonical_and_fuzzy() {
     let app = mock_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
+        assert_eq!(app.current_route(), Route::DEFAULT);
         app.terminal_width = 140;
         press(&mut app, KeyCode::Char(':'));
         assert!(matches!(
@@ -315,6 +320,31 @@ fn navigation_requires_an_active_profile_for_admin_only_views() {
         InteractionMode::CommandLine(state)
             if state.error.as_deref()
                 == Some("Select an administration profile to open this view")
+    ));
+}
+
+#[test]
+fn navigation_requires_a_reachable_daemon_for_local_only_views() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.local_daemon_state = tale::domain::source::LocalDaemonState::Unavailable {
+        detail: "fixture daemon unavailable".to_owned(),
+    };
+    app.set_route(Route::Overview);
+
+    assert_eq!(app.current_route(), Route::Overview);
+    assert!(app.route_unavailable_reason(Route::Local).is_some());
+    assert!(!app.action_is_available(ActionId::ViewServices));
+    press(&mut app, KeyCode::Char(':'));
+    let _ = app.update(Event::Input(InputEvent::Paste("services".to_owned())));
+    press(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.current_route(), Route::Overview);
+    assert!(matches!(
+        &app.interaction,
+        InteractionMode::CommandLine(state)
+            if state.error.as_deref() == Some("Connect to the local daemon to open this view")
     ));
 }
 

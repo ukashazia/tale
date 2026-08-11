@@ -279,7 +279,7 @@ fn navigation_cell(
     command_width: usize,
     width: usize,
 ) -> Vec<Span<'static>> {
-    let disabled = candidate.route.requires_admin_profile() && app.admin.profile.is_none();
+    let disabled = app.route_unavailable_reason(candidate.route).is_some();
     let key_role = if disabled {
         theme::StyleRole::KeyHintDisabled
     } else {
