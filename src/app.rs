@@ -80,7 +80,7 @@ use crate::domain::source::{
 };
 use crate::domain::transfer::{
     TaildriveShare, TaildropConflict, TaildropReceiveRequest, TaildropSendRequest, TaildropTarget,
-    normalize_share_name, validate_receive_directory, validate_regular_file,
+    expand_home_path, normalize_share_name, validate_receive_directory, validate_regular_file,
 };
 use crate::domain::webhook::{
     DestinationType, SubscriptionSet, WebhookDraft, WebhookEndpoint, WebhookMutation,
@@ -12609,8 +12609,8 @@ impl App {
                     vec![FormField::text(
                         "files",
                         "Files",
-                        "Full paths, separated by commas",
-                        "/path/to/file",
+                        "Full paths or ~/ paths, separated by commas",
+                        "~/path/to/file",
                         String::new(),
                     )],
                 );
@@ -12920,12 +12920,14 @@ impl App {
                 if !target.available() {
                     return Err("the selected Taildrop target is unavailable".to_owned());
                 }
+                let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
                 let files = required_field(&fields, "files")?
                     .split(',')
                     .map(str::trim)
                     .filter(|path| !path.is_empty())
                     .map(std::path::PathBuf::from)
-                    .map(|path| validate_regular_file(&path))
+                    .map(|path| expand_home_path(&path, home.as_deref()))
+                    .map(|path| path.and_then(|path| validate_regular_file(&path)))
                     .collect::<Result<Vec<_>, _>>()?;
                 if files.is_empty() {
                     return Err("select at least one existing regular file".to_owned());
@@ -13205,6 +13207,15 @@ impl App {
             preview.push(format!(
                 "\"{input_name}\" is not a usable share name; it will be shared as \"{normalized_name}\"."
             ));
+        }
+        if let ServiceActionRequest::TaildropSend(request) = request {
+            preview.push("Resolved files:".to_owned());
+            preview.extend(
+                request
+                    .files
+                    .iter()
+                    .map(|file| format!("  {}", file.path.display())),
+            );
         }
         Some((preview, argv))
     }

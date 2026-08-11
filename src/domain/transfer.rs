@@ -83,6 +83,14 @@ pub struct TaildriveShare {
     pub as_user: Option<String>,
 }
 
+pub fn expand_home_path(path: &Path, home: Option<&Path>) -> Result<PathBuf, String> {
+    let Ok(relative) = path.strip_prefix("~") else {
+        return Ok(path.to_path_buf());
+    };
+    let home = home.ok_or_else(|| "cannot expand '~' because HOME is not set".to_owned())?;
+    Ok(home.join(relative))
+}
+
 pub fn validate_regular_file(path: &Path) -> Result<TransferFile, String> {
     if path.as_os_str() == "-" {
         return Err("standard input '-' is not a file selection".to_owned());
@@ -150,6 +158,35 @@ pub fn normalize_share_name(input: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expands_home_shorthand_without_changing_other_paths() {
+        let home = Path::new("/home/alice");
+        assert_eq!(
+            expand_home_path(Path::new("~/documents/report.pdf"), Some(home)),
+            Ok(PathBuf::from("/home/alice/documents/report.pdf"))
+        );
+        assert_eq!(
+            expand_home_path(Path::new("~"), Some(home)),
+            Ok(PathBuf::from("/home/alice"))
+        );
+        assert_eq!(
+            expand_home_path(Path::new("/tmp/report.pdf"), Some(home)),
+            Ok(PathBuf::from("/tmp/report.pdf"))
+        );
+        assert_eq!(
+            expand_home_path(Path::new("~someone/report.pdf"), Some(home)),
+            Ok(PathBuf::from("~someone/report.pdf"))
+        );
+    }
+
+    #[test]
+    fn reports_when_home_is_unavailable_for_shorthand() {
+        assert_eq!(
+            expand_home_path(Path::new("~/report.pdf"), None),
+            Err("cannot expand '~' because HOME is not set".to_owned())
+        );
+    }
 
     /// A writable directory has to read as writable however many checks are
     /// running against it. A fixed probe name made the second one fail, which

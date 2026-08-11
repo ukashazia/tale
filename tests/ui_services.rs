@@ -407,6 +407,48 @@ fn the_send_form_takes_its_target_from_the_selected_device() {
     );
 }
 
+#[test]
+fn the_send_review_expands_home_paths_and_shows_the_resolved_file() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let Ok(current_dir) = std::env::current_dir() else {
+        return;
+    };
+    let Ok(relative_dir) = current_dir.strip_prefix(&home) else {
+        return;
+    };
+    let file = current_dir.join("Cargo.toml");
+    if !file.is_file() {
+        return;
+    }
+    let shorthand = PathBuf::from("~").join(relative_dir).join("Cargo.toml");
+
+    app.set_route(Route::Devices);
+    let _ = app.dispatch_action(ActionId::DevicesTaildropSend);
+    if let Some(tale::app::Overlay::Form(state)) = app.overlays.last_mut() {
+        if let Some(field) = state.fields.iter_mut().find(|field| field.key == "files") {
+            field.value = shorthand.display().to_string();
+        }
+        state.selected = state.fields.len();
+    }
+    press(&mut app, KeyCode::Enter);
+
+    let lines = render_lines(&app, 140, 40);
+    assert!(lines.is_some());
+    if let Some(lines) = lines {
+        assert!(lines.iter().any(|line| line.contains("Resolved files:")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&file.display().to_string()))
+        );
+    }
+}
+
 fn office_laptop() -> Device {
     Device {
         id: DeviceId::new("office-laptop"),
