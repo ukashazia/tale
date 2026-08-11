@@ -1,3 +1,21 @@
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum LocalSection {
+    #[default]
+    Client,
+    Accounts,
+}
+
+impl LocalSection {
+    pub const ALL: [Self; 2] = [Self::Client, Self::Accounts];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Client => "Client",
+            Self::Accounts => "Accounts",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct LocalAccount {
     pub id: String,

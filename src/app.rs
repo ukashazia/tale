@@ -24,7 +24,7 @@ use crate::config::{
     ResolvedConfig, SettingDisplay, SettingSortField, SettingSortSpec, ValueSource,
 };
 use crate::domain::access_explorer::{AccessQuestion, AccessResult, PolicySource};
-use crate::domain::account::LocalAccount;
+use crate::domain::account::{LocalAccount, LocalSection};
 use crate::domain::activity::AuditFilters;
 use crate::domain::admin_mutation::{
     AdminChange, AdminMutationState, AdminResourceLocks, AuditCorrelation, BatchMutation,
@@ -388,10 +388,6 @@ pub enum ChoiceOutcome {
     ServiceSort(ServiceSortSpec),
     ProfileSort(ProfileSortSpec),
     ConfigSort(SettingSortSpec),
-    Account {
-        action_id: ActionId,
-        account_id: String,
-    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1066,6 +1062,7 @@ pub struct ViewFrame {
     pub task_filter: String,
     pub sort: SortSpec,
     pub section: Option<ServiceSection>,
+    pub local_section: Option<LocalSection>,
     pub saved_view: Option<String>,
 }
 
@@ -1081,6 +1078,7 @@ impl ViewFrame {
             task_filter: String::new(),
             sort: SortSpec::default(),
             section: None,
+            local_section: None,
             saved_view: None,
         }
     }
@@ -1229,6 +1227,7 @@ struct DeviceVisibleCache {
 #[derive(Debug, Clone)]
 pub struct Views {
     pub overview: OverviewViewState,
+    pub local: LocalViewState,
     pub devices: DeviceViewState,
     pub services: ServiceViewState,
     pub diagnostics: DiagnosticsViewState,
@@ -1239,6 +1238,13 @@ pub struct Views {
     pub tasks: TaskViewState,
     pub profiles: ProfileViewState,
     pub config: ConfigViewState,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LocalViewState {
+    pub section: LocalSection,
+    pub selected: usize,
+    pub scroll: usize,
 }
 
 /// What `:config` remembers while its resolved settings are projected as rows.
@@ -1554,6 +1560,7 @@ pub struct App {
     pub service_locks: Vec<(ServiceConflictKey, TaskId)>,
     pub local_preferences: LocalPreferences,
     pub local_accounts: Vec<LocalAccount>,
+    pub local_accounts_failure: Option<LocalFailure>,
     pub system_policy: Vec<SystemPolicyEntry>,
     pub system_policy_failure: Option<LocalFailure>,
     pub local_diagnostics: BTreeMap<TaskId, DiagnosticState>,
@@ -1670,6 +1677,7 @@ impl App {
             overlays: Vec::new(),
             views: Views {
                 overview: OverviewViewState::default(),
+                local: LocalViewState::default(),
                 devices: DeviceViewState::default(),
                 services: ServiceViewState::default(),
                 diagnostics: DiagnosticsViewState::default(),
@@ -1750,6 +1758,7 @@ impl App {
                 LocalPreferences::empty(0)
             },
             local_accounts: Vec::new(),
+            local_accounts_failure: None,
             system_policy: Vec::new(),
             system_policy_failure: None,
             local_diagnostics: if config.mock {
@@ -2548,6 +2557,9 @@ impl App {
     /// the footer, and contextual help all read it, so they cannot disagree.
     pub fn action_context(&self) -> ActionContext {
         match self.current_route() {
+            Route::Local if self.views.local.section == LocalSection::Accounts => {
+                ActionContext::Collection
+            }
             Route::Local | Route::Dns | Route::Access | Route::Diagnostics => ActionContext::Detail,
             Route::Audit if self.focus != Focus::Inspector => ActionContext::Audit,
             Route::Overview
@@ -2656,6 +2668,9 @@ impl App {
                 Route::Routes | Route::Credentials | Route::Tasks | Route::Config => {
                     area.y.saturating_add(2)
                 }
+                Route::Local if self.views.local.section == LocalSection::Accounts => {
+                    area.y.saturating_add(3)
+                }
                 Route::Services => area.y.saturating_add(3),
                 _ => return,
             };
@@ -2693,6 +2708,10 @@ impl App {
                     if usize::from(position) < length {
                         self.admin_credential_selected = usize::from(position);
                     }
+                }
+                Route::Local if usize::from(position) < self.local_accounts.len() => {
+                    self.views.local.selected = usize::from(position);
+                    self.views.local.scroll = self.views.local.selected;
                 }
                 Route::Services if usize::from(position) < self.service_row_count() => {
                     self.views.services.selected = usize::from(position);
@@ -3700,46 +3719,24 @@ impl App {
                             return Some(Vec::new());
                         }
                         KeyCode::Esc => state.abandon_edit(),
-                        KeyCode::Left | KeyCode::Char('b')
-                            if state.selected_field().is_some_and(FormField::is_text)
-                                && (key.code == KeyCode::Left
-                                    || key.modifiers.contains(KeyModifiers::CONTROL)) =>
-                        {
+                        KeyCode::Left if state.selected_field().is_some_and(FormField::is_text) => {
                             if let Some(field) = state.selected_field() {
-                                state.cursor = if key
-                                    .modifiers
-                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                                {
+                                state.cursor = if key.modifiers.contains(KeyModifiers::ALT) {
                                     previous_word_boundary(&field.value, state.cursor)
                                 } else {
                                     previous_scalar_boundary(&field.value, state.cursor)
                                 };
                             }
                         }
-                        KeyCode::Right | KeyCode::Char('f')
-                            if state.selected_field().is_some_and(FormField::is_text)
-                                && (key.code == KeyCode::Right
-                                    || key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                        KeyCode::Right
+                            if state.selected_field().is_some_and(FormField::is_text) =>
                         {
                             if let Some(field) = state.selected_field() {
-                                state.cursor = if key
-                                    .modifiers
-                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                                {
+                                state.cursor = if key.modifiers.contains(KeyModifiers::ALT) {
                                     next_word_boundary(&field.value, state.cursor)
                                 } else {
                                     next_scalar_boundary(&field.value, state.cursor)
                                 };
-                            }
-                        }
-                        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
-                            if let Some(field) = state.selected_field() {
-                                state.cursor = previous_word_boundary(&field.value, state.cursor);
-                            }
-                        }
-                        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
-                            if let Some(field) = state.selected_field() {
-                                state.cursor = next_word_boundary(&field.value, state.cursor);
                             }
                         }
                         KeyCode::Home if state.selected_field().is_some_and(FormField::is_text) => {
@@ -4067,6 +4064,7 @@ impl App {
             _ => None,
         };
         let section = (route == Route::Services).then_some(self.views.services.section);
+        let local_section = (route == Route::Local).then_some(self.views.local.section);
         ViewFrame {
             route,
             focus: self.focus,
@@ -4089,6 +4087,7 @@ impl App {
             },
             sort: self.views.devices.sort,
             section,
+            local_section,
             saved_view: None,
         }
     }
@@ -4123,6 +4122,11 @@ impl App {
             self.views.services.section = frame.section.unwrap_or(ServiceSection::Serve);
             self.views.services.selected = 0;
             self.views.services.scroll = 0;
+        }
+        if frame.route == Route::Local {
+            self.views.local.section = frame.local_section.unwrap_or(LocalSection::Client);
+            self.views.local.selected = 0;
+            self.views.local.scroll = 0;
         }
         if frame.route == Route::Tasks {
             self.task_filter = frame.task_filter.clone();
@@ -4170,7 +4174,10 @@ impl App {
                 || (self.current_route() == Route::Routes && self.selected_admin_route().is_none())
                 || (self.current_route() == Route::Profiles
                     && self.selected_profile_row().is_none())
-                || (self.current_route() == Route::Config && self.selected_config_row().is_none()))
+                || (self.current_route() == Route::Config && self.selected_config_row().is_none())
+                || (self.current_route() == Route::Local
+                    && self.views.local.section == LocalSection::Accounts
+                    && self.selected_local_account().is_none()))
         {
             self.runtime_error = Some("select a resource before running this action".to_owned());
             return Vec::new();
@@ -4430,6 +4437,8 @@ impl App {
                     self.tasks.select_next_filtered(&self.task_filter, -1);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(-1);
+                } else if self.current_route() == Route::Local {
+                    self.move_local_account_selection(-1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-1);
                 } else if self.current_route() == Route::Diagnostics {
@@ -4460,6 +4469,8 @@ impl App {
                     self.tasks.select_next_filtered(&self.task_filter, 1);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(1);
+                } else if self.current_route() == Route::Local {
+                    self.move_local_account_selection(1);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(1);
                 } else if self.current_route() == Route::Diagnostics {
@@ -4490,6 +4501,9 @@ impl App {
                     self.tasks.select_filtered_first(&self.task_filter);
                 } else if self.current_route() == Route::Audit {
                     self.admin_activity_selected = 0;
+                } else if self.current_route() == Route::Local {
+                    self.views.local.selected = 0;
+                    self.views.local.scroll = 0;
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = 0;
                     self.views.services.scroll = 0;
@@ -4519,6 +4533,9 @@ impl App {
                     self.tasks.select_filtered_last(&self.task_filter);
                 } else if self.current_route() == Route::Audit {
                     self.admin_activity_selected = self.audit_event_count().saturating_sub(1);
+                } else if self.current_route() == Route::Local {
+                    self.views.local.selected = self.local_accounts.len().saturating_sub(1);
+                    self.views.local.scroll = self.views.local.selected;
                 } else if self.current_route() == Route::Services {
                     self.views.services.selected = self.service_row_count().saturating_sub(1);
                     self.views.services.scroll = self.views.services.selected;
@@ -4552,6 +4569,8 @@ impl App {
                     self.tasks.select_next_filtered(&self.task_filter, -5);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(-5);
+                } else if self.current_route() == Route::Local {
+                    self.move_local_account_selection(-5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(-5);
                 } else if self.current_route() == Route::Diagnostics {
@@ -4582,6 +4601,8 @@ impl App {
                     self.tasks.select_next_filtered(&self.task_filter, 5);
                 } else if self.current_route() == Route::Audit {
                     self.move_admin_activity_selection(5);
+                } else if self.current_route() == Route::Local {
+                    self.move_local_account_selection(5);
                 } else if self.current_route() == Route::Services {
                     self.move_service_selection(5);
                 } else if self.current_route() == Route::Diagnostics {
@@ -4807,21 +4828,21 @@ impl App {
             ActionId::LocalRoutesEditAdvertisements => {
                 self.open_operator_form(ActionId::LocalRoutesEditAdvertisements)
             }
-            ActionId::LocalAccountSwitch => self.open_account_picker(ActionId::LocalAccountSwitch),
+            ActionId::LocalAccountSwitch => self.open_selected_account_confirmation(false),
             ActionId::LocalAccountLogin => self.open_login_confirmation(),
             ActionId::LocalAccountLogout => self.open_logout_confirmation(),
-            ActionId::LocalAccountRemove => self.open_account_picker(ActionId::LocalAccountRemove),
+            ActionId::LocalAccountRemove => self.open_selected_account_confirmation(true),
             ActionId::LocalSshOpen => self.open_handoff_form(ActionId::LocalSshOpen),
             ActionId::LocalNcOpen => self.open_handoff_form(ActionId::LocalNcOpen),
             ActionId::LocalSyspolicyReload => {
                 self.open_mutation_confirmation(LocalMutation::SyspolicyReload)
             }
-            ActionId::ServicesSectionNext => {
-                self.change_service_section(1);
+            ActionId::SectionNext => {
+                self.change_route_section(1);
                 Vec::new()
             }
-            ActionId::ServicesSectionPrevious => {
-                self.change_service_section(-1);
+            ActionId::SectionPrevious => {
+                self.change_route_section(-1);
                 Vec::new()
             }
             ActionId::ServicesServeRefresh
@@ -7044,22 +7065,20 @@ impl App {
         }
     }
 
-    fn open_account_picker(&mut self, action_id: ActionId) -> Vec<Effect> {
-        if self.local_accounts.is_empty() {
-            self.runtime_error = Some("no local account profiles were returned".to_owned());
+    fn open_selected_account_confirmation(&mut self, remove: bool) -> Vec<Effect> {
+        let Some(account_id) = self
+            .selected_local_account()
+            .map(|account| account.id.clone())
+        else {
+            self.runtime_error = Some("select an account before running this action".to_owned());
             return Vec::new();
-        }
-        self.interaction = InteractionMode::Transient(TransientMenuState {
-            kind: TransientKind::Choice,
-            title: "Account",
-            actions: Vec::new(),
-            choices: self.account_choices(action_id, &self.local_accounts),
-            fields: Vec::new(),
-            addresses: Vec::new(),
-            prefix: None,
-            message: None,
-        });
-        Vec::new()
+        };
+        let mutation = if remove {
+            LocalMutation::AccountRemove { account_id }
+        } else {
+            LocalMutation::AccountSwitch { account_id }
+        };
+        self.open_mutation_confirmation(mutation)
     }
 
     fn admin_policy_context(&self) -> Option<(String, String, String)> {
@@ -10390,6 +10409,16 @@ impl App {
         } else {
             self.start_admin_selected_refresh()
         };
+        if self.current_route() == Route::Local
+            && self.views.local.section == LocalSection::Accounts
+            && self.local_capabilities.accounts
+            && let Some(executable) = self.local_executable.as_ref()
+        {
+            effects.push(Effect::StartLocalAccounts {
+                executable: executable.clone(),
+                timeout: self.resolved_config.local.command_timeout,
+            });
+        }
         if self.current_route() == Route::Services {
             effects.extend(self.start_services_refresh());
             return effects;
@@ -12316,6 +12345,31 @@ impl App {
     }
 
     /// Tab moves to the next tab and wraps, which is what a tab strip implies.
+    fn change_route_section(&mut self, offset: isize) {
+        match self.current_route() {
+            Route::Local => self.change_local_section(offset),
+            Route::Services => self.change_service_section(offset),
+            _ => {}
+        }
+    }
+
+    fn change_local_section(&mut self, offset: isize) {
+        let sections = LocalSection::ALL;
+        let length = sections.len();
+        let current = sections
+            .iter()
+            .position(|section| *section == self.views.local.section)
+            .unwrap_or(0);
+        let step = offset.rem_euclid(length as isize).unsigned_abs();
+        let next = current.saturating_add(step) % length;
+        self.views.local.section = sections.get(next).copied().unwrap_or(LocalSection::Client);
+        self.views.local.selected = 0;
+        self.views.local.scroll = 0;
+        self.detail_search.clear();
+        self.detail_search_match = None;
+        self.focus = Focus::Collection;
+    }
+
     fn change_service_section(&mut self, offset: isize) {
         let sections = ServiceSection::ALL;
         let length = sections.len();
@@ -12358,6 +12412,33 @@ impl App {
                 .min(count.saturating_sub(1))
         };
         self.views.services.scroll = self.views.services.selected;
+    }
+
+    fn move_local_account_selection(&mut self, offset: isize) {
+        let count = self.local_accounts.len();
+        if count == 0 {
+            self.views.local.selected = 0;
+            self.views.local.scroll = 0;
+            return;
+        }
+        self.views.local.selected = move_bounded_index(self.views.local.selected, count, offset);
+        self.views.local.scroll = self.views.local.selected;
+    }
+
+    pub fn selected_local_account(&self) -> Option<&LocalAccount> {
+        if self.views.local.section != LocalSection::Accounts {
+            return None;
+        }
+        self.local_accounts.get(self.views.local.selected)
+    }
+
+    fn reconcile_local_account_selection(&mut self) {
+        self.views.local.selected = self
+            .views
+            .local
+            .selected
+            .min(self.local_accounts.len().saturating_sub(1));
+        self.views.local.scroll = self.views.local.selected;
     }
 
     /// Serve and Funnel as one table: filtered, then ordered by the chosen
@@ -12553,19 +12634,29 @@ impl App {
             return Vec::new();
         }
         match self.current_route() {
-            // This machine: connecting it, its preferences, its accounts.
-            Route::Local => vec![
+            // This machine: connecting it, its preferences, and local policy.
+            Route::Local if self.views.local.section == LocalSection::Client => vec![
                 ActionId::LocalConnect,
                 ActionId::LocalDisconnect,
                 ActionId::LocalPreferencesEdit,
                 ActionId::LocalExitNodeSelect,
                 ActionId::LocalRoutesEditAdvertisements,
-                ActionId::LocalAccountSwitch,
-                ActionId::LocalAccountLogin,
-                ActionId::LocalAccountLogout,
-                ActionId::LocalAccountRemove,
                 ActionId::LocalSyspolicyReload,
             ],
+            // Account actions live with the account rows they act on.
+            Route::Local => {
+                let mut actions = Vec::new();
+                let has_selection = self.selected_local_account().is_some();
+                if has_selection {
+                    actions.push(ActionId::LocalAccountSwitch);
+                }
+                actions.push(ActionId::LocalAccountLogin);
+                actions.push(ActionId::LocalAccountLogout);
+                if has_selection {
+                    actions.push(ActionId::LocalAccountRemove);
+                }
+                actions
+            }
             // Every one of these acts on the selected row: it pings it, looks
             // it up, opens a session to it, or sends it a file. All of them go
             // through the local daemon, so they are withheld when the rows on
@@ -14529,9 +14620,11 @@ impl App {
             }
             LocalEvent::AccountsSucceeded { accounts } => {
                 self.local_accounts = accounts;
+                self.local_accounts_failure = None;
+                self.reconcile_local_account_selection();
             }
             LocalEvent::AccountsFailed { failure } => {
-                self.devices_resource.error = Some(failure.detail);
+                self.local_accounts_failure = Some(failure);
             }
             LocalEvent::PolicySucceeded { entries } => {
                 self.system_policy = entries;
@@ -14615,6 +14708,8 @@ impl App {
                 }
                 if let Some(accounts) = accounts {
                     self.local_accounts = accounts;
+                    self.local_accounts_failure = None;
+                    self.reconcile_local_account_selection();
                 }
                 if let Some(policy) = policy {
                     self.system_policy = policy;
@@ -15960,30 +16055,6 @@ impl App {
             .collect()
     }
 
-    fn account_choices(&self, action_id: ActionId, accounts: &[LocalAccount]) -> Vec<MenuChoice> {
-        accounts
-            .iter()
-            .enumerate()
-            .take(9)
-            .map(|(index, account)| MenuChoice {
-                sequence: char::from_digit(
-                    u32::try_from(index.saturating_add(1)).map_or(1, |value| value),
-                    10,
-                )
-                .map_or('1', |key| key)
-                .to_string(),
-                group: "Account".to_owned(),
-                subject: String::new(),
-                label: account.display_label().to_owned(),
-                active: account.active,
-                outcome: ChoiceOutcome::Account {
-                    action_id,
-                    account_id: account.id.clone(),
-                },
-            })
-            .collect()
-    }
-
     fn apply_choice(&mut self, outcome: ChoiceOutcome) -> Vec<Effect> {
         match outcome {
             ChoiceOutcome::Sort(sort) => {
@@ -16006,18 +16077,6 @@ impl App {
                 self.views.config.selected = 0;
                 Vec::new()
             }
-            ChoiceOutcome::Account {
-                action_id,
-                account_id,
-            } => match action_id {
-                ActionId::LocalAccountSwitch => {
-                    self.open_mutation_confirmation(LocalMutation::AccountSwitch { account_id })
-                }
-                ActionId::LocalAccountRemove => {
-                    self.open_mutation_confirmation(LocalMutation::AccountRemove { account_id })
-                }
-                _ => Vec::new(),
-            },
         }
     }
 
@@ -16312,6 +16371,7 @@ impl App {
     fn collection_subject_available(&self) -> bool {
         match self.current_route() {
             Route::Overview => self.selected_overview_finding().is_some(),
+            Route::Local => self.selected_local_account().is_some(),
             Route::Devices => self.selected_device().is_some(),
             Route::Users => self.selected_admin_user().is_some(),
             Route::Routes => self.selected_admin_route().is_some(),
@@ -17688,7 +17748,7 @@ fn edit_line(editor: &mut LineEditorState, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Left, modifiers) => {
-            editor.cursor = if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            editor.cursor = if modifiers.contains(KeyModifiers::ALT) {
                 previous_word_boundary(&editor.input, editor.cursor)
             } else {
                 previous_scalar_boundary(&editor.input, editor.cursor)
@@ -17696,27 +17756,11 @@ fn edit_line(editor: &mut LineEditorState, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Right, modifiers) => {
-            editor.cursor = if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            editor.cursor = if modifiers.contains(KeyModifiers::ALT) {
                 next_word_boundary(&editor.input, editor.cursor)
             } else {
                 next_scalar_boundary(&editor.input, editor.cursor)
             };
-            true
-        }
-        (KeyCode::Char('b'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-            editor.cursor = previous_scalar_boundary(&editor.input, editor.cursor);
-            true
-        }
-        (KeyCode::Char('f'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-            editor.cursor = next_scalar_boundary(&editor.input, editor.cursor);
-            true
-        }
-        (KeyCode::Char('b'), modifiers) if modifiers.contains(KeyModifiers::ALT) => {
-            editor.cursor = previous_word_boundary(&editor.input, editor.cursor);
-            true
-        }
-        (KeyCode::Char('f'), modifiers) if modifiers.contains(KeyModifiers::ALT) => {
-            editor.cursor = next_word_boundary(&editor.input, editor.cursor);
             true
         }
         (KeyCode::Home, _) => {

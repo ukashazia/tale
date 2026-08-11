@@ -9,3 +9,4 @@ pub mod notification;
 pub mod overlay;
 pub mod panel;
 pub mod table;
+pub mod tabs;

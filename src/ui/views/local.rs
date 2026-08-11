@@ -3,16 +3,24 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
 use crate::app::App;
+use crate::domain::account::LocalSection;
 use crate::domain::preference::ObservedPreference;
-use crate::ui::components::{grid, panel};
+use crate::ui::components::{grid, panel, tabs};
 use crate::ui::{text, theme};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    match app.views.local.section {
+        LocalSection::Client => render_client(frame, app, area),
+        LocalSection::Accounts => render_accounts(frame, app, area),
+    }
+}
+
+fn render_client(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(snapshot) = app.local_resource.snapshot.as_ref() else {
         render_without_snapshot(frame, app, area);
         return;
     };
-    let mut lines = Vec::new();
+    let mut lines = vec![tab_line(app), Line::default()];
     section(app, &mut lines, "Client");
     let mut client = vec![
         ("daemon", local_daemon_label(app).to_owned()),
@@ -133,6 +141,114 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+fn render_accounts(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut lines = vec![tab_line(app), Line::default()];
+    if app.resolved_config.read_only {
+        lines.push(Line::from(Span::styled(
+            "Read-only: accounts cannot be changed",
+            app.theme.style(theme::StyleRole::StateDisabled),
+        )));
+    }
+    if let Some(failure) = app.local_accounts_failure.as_ref() {
+        lines.push(Line::from(Span::styled(
+            format!("{} · {}", failure.summary, failure.detail),
+            app.theme.style(theme::StyleRole::StateDanger),
+        )));
+    }
+    let columns = vec![
+        grid::Column::fixed("STATUS", 8),
+        grid::Column::fill("PROFILE", 1),
+        grid::Column::fill("ACCOUNT", 2),
+        grid::Column::fill("TAILNET", 2),
+    ];
+    let mut rows = app
+        .local_accounts
+        .iter()
+        .map(|account| {
+            let status = grid::Cell::new(if account.active { "active" } else { "" });
+            let status = if account.active {
+                status.with_role(theme::StyleRole::StateHealthy)
+            } else {
+                status
+            };
+            grid::Row::new(vec![
+                status,
+                grid::Cell::new(account.display_label()),
+                grid::Cell::new(account.account_name.as_deref().unwrap_or("not returned")),
+                grid::Cell::new(account.tailnet_name.as_deref().unwrap_or("not returned")),
+            ])
+        })
+        .collect::<Vec<_>>();
+    if let Some(row) = rows.get_mut(app.views.local.selected) {
+        row.selected = true;
+    }
+    if rows.is_empty() {
+        lines.extend(accounts_empty_message(app));
+    } else {
+        lines.extend(grid::lines(
+            app,
+            &columns,
+            &rows,
+            area.width.saturating_sub(4),
+        ));
+    }
+    let active = app
+        .local_accounts
+        .iter()
+        .filter(|account| account.active)
+        .count();
+    let detail = (active > 0)
+        .then(|| format!("{active} active"))
+        .into_iter()
+        .collect::<Vec<_>>();
+    panel::render_view(
+        frame,
+        app,
+        area,
+        text::view_title(
+            app.theme,
+            "accounts",
+            app.local_accounts.len(),
+            app.local_accounts.len(),
+            &detail,
+        ),
+        lines,
+    );
+}
+
+fn tab_line(app: &App) -> Line<'static> {
+    let current = app.views.local.section;
+    tabs::line(
+        app,
+        LocalSection::ALL.map(|section| (section.label(), section == current)),
+    )
+}
+
+fn accounts_empty_message(app: &App) -> Vec<Line<'static>> {
+    if app.local_accounts_failure.is_some() {
+        return vec![
+            text::muted_help(app.theme, "Account profiles could not be loaded"),
+            Line::default(),
+            text::action_hint(app.theme, "  retry                   ", "r"),
+        ];
+    }
+    let message = if app.local_capabilities.accounts {
+        "This machine has no saved account profiles"
+    } else {
+        "This Tailscale client does not report account profiles"
+    };
+    let mut lines = vec![text::muted_help(app.theme, message)];
+    if app.local_capabilities.account_login && !app.resolved_config.read_only {
+        lines.push(Line::default());
+        lines.push(text::action_hint(
+            app.theme,
+            "  add an account          ",
+            "a al",
+        ));
+    }
+    lines
+}
+
 fn section(app: &App, lines: &mut Vec<Line<'static>>, title: &str) {
     if !lines.is_empty() {
         lines.push(Line::default());
@@ -226,7 +342,12 @@ fn push_toggle(
 /// omitted it. The empty state says what Tale actually knows and what to do.
 fn render_without_snapshot(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::domain::source::LocalDaemonState;
-    let mut lines = vec![Line::from("No local node details to show"), Line::default()];
+    let mut lines = vec![
+        tab_line(app),
+        Line::default(),
+        Line::from("No local node details to show"),
+        Line::default(),
+    ];
     match &app.local_daemon_state {
         LocalDaemonState::Mock => lines.push(Line::from(
             "The simulated local snapshot is unavailable. Restart mock mode to reload it.",

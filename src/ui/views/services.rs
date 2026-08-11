@@ -1,11 +1,10 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use crate::app::{App, Focus};
 use crate::domain::service::{ServiceMapping, ServiceResourceStatus, ServiceSection};
-use crate::ui::components::{grid, panel};
+use crate::ui::components::{grid, panel, tabs};
 use crate::ui::text;
 use crate::ui::theme;
 
@@ -35,25 +34,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector: Opti
 /// the app, so it is drawn inside that pane's border.
 fn tab_line(app: &App) -> Line<'static> {
     let current = app.views.services.section;
-    let mut spans = Vec::new();
-    for section in ServiceSection::ALL {
-        let selected = section == current;
-        spans.push(Span::styled(
-            format!(" {} ", section.label()),
-            if selected {
-                app.theme
-                    .style(theme::StyleRole::Focus)
-                    .add_modifier(Modifier::REVERSED)
-            } else {
-                app.theme.style(theme::StyleRole::TextMuted)
-            },
-        ));
-        spans.push(Span::styled(
-            " ",
-            app.theme.style(theme::StyleRole::Surface),
-        ));
-    }
-    Line::from(spans)
+    tabs::line(
+        app,
+        ServiceSection::ALL.map(|section| (section.label(), section == current)),
+    )
 }
 
 /// The route's own context, in the border where every other view keeps it.

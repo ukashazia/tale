@@ -56,8 +56,8 @@ pub enum ActionId {
     LocalSyspolicyReload,
     ViewServices,
     ViewDiagnostics,
-    ServicesSectionNext,
-    ServicesSectionPrevious,
+    SectionNext,
+    SectionPrevious,
     ServicesServeRefresh,
     ServicesServeCreate,
     ServicesServeEdit,
@@ -213,8 +213,8 @@ impl ActionId {
             Self::LocalSyspolicyReload => "local.syspolicy.reload",
             Self::ViewServices => "view.services",
             Self::ViewDiagnostics => "view.diagnostics",
-            Self::ServicesSectionNext => "services.section.next",
-            Self::ServicesSectionPrevious => "services.section.previous",
+            Self::SectionNext => "section.next",
+            Self::SectionPrevious => "section.previous",
             Self::ServicesServeRefresh => "services.serve.refresh",
             Self::ServicesServeCreate => "services.serve.create",
             Self::ServicesServeEdit => "services.serve.edit",
@@ -367,8 +367,8 @@ impl ActionId {
             Self::LocalSyspolicyReload,
             Self::ViewServices,
             Self::ViewDiagnostics,
-            Self::ServicesSectionNext,
-            Self::ServicesSectionPrevious,
+            Self::SectionNext,
+            Self::SectionPrevious,
             Self::ServicesServeRefresh,
             Self::ServicesServeCreate,
             Self::ServicesServeEdit,
@@ -1386,8 +1386,8 @@ pub fn footer_actions_filtered(
 /// no columns and `S section` never appeared on the one screen that has them.
 pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
     match id {
-        ActionId::ServicesSectionNext | ActionId::ServicesSectionPrevious => {
-            matches!(route, Route::Services)
+        ActionId::SectionNext | ActionId::SectionPrevious => {
+            matches!(route, Route::Local | Route::Services)
         }
         ActionId::CollectionWideColumns => matches!(route, Route::Devices),
         ActionId::DetailSearch => matches!(
@@ -1440,7 +1440,9 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         }
         // Diagnostics is one scrolling body: nothing to open into, no rows to
         // filter, no columns to order by.
-        ActionId::CollectionOpen => !matches!(route, Route::Config | Route::Diagnostics),
+        ActionId::CollectionOpen => {
+            !matches!(route, Route::Local | Route::Config | Route::Diagnostics)
+        }
         ActionId::ViewFilter => {
             matches!(
                 route,
@@ -1480,8 +1482,8 @@ const fn footer_priority(id: ActionId) -> u8 {
         ActionId::CollectionMoveDown => 11,
         ActionId::CollectionOpen => 12,
         ActionId::CollectionBack | ActionId::TaskCancel => 13,
-        ActionId::ServicesSectionNext | ActionId::DeviceDetailNextMatch => 14,
-        ActionId::ServicesSectionPrevious | ActionId::DeviceDetailPreviousMatch => 15,
+        ActionId::SectionNext | ActionId::DeviceDetailNextMatch => 14,
+        ActionId::SectionPrevious | ActionId::DeviceDetailPreviousMatch => 15,
         ActionId::CollectionSort => 16,
         ActionId::CollectionWideColumns => 17,
         ActionId::CollectionInspect => 18,
@@ -1526,8 +1528,8 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
         ActionId::ResourceActions => Some("actions"),
         ActionId::ResourceCopy => Some("copy"),
         ActionId::TaskCancel => Some("cancel"),
-        ActionId::ServicesSectionNext => Some("next tab"),
-        ActionId::ServicesSectionPrevious => Some("previous tab"),
+        ActionId::SectionNext => Some("next tab"),
+        ActionId::SectionPrevious => Some("previous tab"),
         _ => None,
     }
 }
@@ -1712,7 +1714,7 @@ pub fn local_operator_actions() -> Vec<ActionSpec> {
                 ActionContext::Collection,
                 ActionContext::Detail,
             ],
-            selection_rule: SelectionRule::None,
+            selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
             risk: Risk::Reversible,
@@ -1754,7 +1756,7 @@ pub fn local_operator_actions() -> Vec<ActionSpec> {
                 ActionContext::Collection,
                 ActionContext::Detail,
             ],
-            selection_rule: SelectionRule::None,
+            selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
             risk: Risk::DestructiveOrSecret,
@@ -1801,7 +1803,7 @@ const SERVICES: &[ActionContext] = &[
     ActionContext::Collection,
     ActionContext::Detail,
 ];
-const SERVICES_NAVIGATION: &[ActionContext] = &[ActionContext::Collection, ActionContext::Detail];
+const TABBED_NAVIGATION: &[ActionContext] = &[ActionContext::Collection, ActionContext::Detail];
 
 pub fn local_service_actions() -> Vec<ActionSpec> {
     vec![
@@ -1826,20 +1828,20 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
             risk: Risk::Observe,
         },
         ActionSpec {
-            id: ActionId::ServicesSectionNext,
+            id: ActionId::SectionNext,
             label: "Next tab",
-            description: "Move to the next local service tab",
-            contexts: SERVICES_NAVIGATION,
+            description: "Move to the next tab",
+            contexts: TABBED_NAVIGATION,
             selection_rule: SelectionRule::None,
             default_bindings: &[Binding::Tab],
             capability: Capability::Available,
             risk: Risk::Observe,
         },
         ActionSpec {
-            id: ActionId::ServicesSectionPrevious,
+            id: ActionId::SectionPrevious,
             label: "Previous tab",
-            description: "Move to the previous local service tab",
-            contexts: SERVICES_NAVIGATION,
+            description: "Move to the previous tab",
+            contexts: TABBED_NAVIGATION,
             selection_rule: SelectionRule::None,
             default_bindings: &[Binding::BackTab],
             capability: Capability::Available,

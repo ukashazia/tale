@@ -124,6 +124,7 @@ printf '%s' "$TOKEN" |
 | `/` | Filter the current view |
 | `a` | Show available actions |
 | `Enter` | Open or focus the selected item |
+| `Tab` / `Shift-Tab` | Move between tabs in Local and Services |
 | `[` / `]` | Go backward / forward |
 | `r` / `R` | Refresh this view / all sources |
 | `?` | Show contextual help |

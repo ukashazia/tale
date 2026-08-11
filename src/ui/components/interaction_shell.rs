@@ -1740,8 +1740,8 @@ fn help_group(id: ActionId) -> Option<HelpGroup> {
         | ActionId::CollectionPageUp
         | ActionId::CollectionPageDown
         | ActionId::CollectionOpen
-        | ActionId::ServicesSectionNext
-        | ActionId::ServicesSectionPrevious => Some(HelpGroup::Navigation),
+        | ActionId::SectionNext
+        | ActionId::SectionPrevious => Some(HelpGroup::Navigation),
         ActionId::CollectionSort
         | ActionId::CollectionWideColumns
         | ActionId::CollectionInspect

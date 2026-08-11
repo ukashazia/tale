@@ -9,6 +9,7 @@ use tale::action::{self, ActionContext, ActionId, Binding};
 use tale::app::{App, InteractionMode, Overlay, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
+use tale::domain::account::{LocalAccount, LocalSection};
 use tale::domain::policy_workflow::{
     PolicyDocument, PolicyPreview, PolicySelectorType, PolicyWorkflow,
 };
@@ -147,23 +148,44 @@ fn local_actions_are_offered_only_where_their_subject_is() {
         }
     }
 
-    // The machine's own route keeps the machine's verbs.
+    // The client tab keeps the machine's verbs and does not mix in account rows.
     app.set_route(Route::Local);
     let local = app.contextual_actions();
     for id in [
         ActionId::LocalConnect,
         ActionId::LocalDisconnect,
         ActionId::LocalPreferencesEdit,
-        ActionId::LocalAccountSwitch,
-        ActionId::LocalAccountRemove,
         ActionId::LocalSyspolicyReload,
     ] {
         assert!(local.contains(&id), "the local route lost {id:?}");
     }
+    assert!(!local.contains(&ActionId::LocalAccountSwitch));
+    assert!(!local.contains(&ActionId::LocalAccountRemove));
     assert!(
         !local.contains(&ActionId::LocalSshOpen),
         "a session to the selected device is not an action on this machine"
     );
+
+    // The accounts tab owns account actions, targeting its selected row.
+    app.local_accounts.push(LocalAccount {
+        id: "profile-work".to_owned(),
+        tailnet_name: Some("example.ts.net".to_owned()),
+        account_name: Some("operator@example.com".to_owned()),
+        display_name: None,
+        profile_name: Some("work".to_owned()),
+        active: true,
+    });
+    app.views.local.section = LocalSection::Accounts;
+    let accounts = app.contextual_actions();
+    for id in [
+        ActionId::LocalAccountSwitch,
+        ActionId::LocalAccountLogin,
+        ActionId::LocalAccountLogout,
+        ActionId::LocalAccountRemove,
+    ] {
+        assert!(accounts.contains(&id), "the accounts tab lost {id:?}");
+    }
+    assert!(!accounts.contains(&ActionId::LocalConnect));
 
     // Everything that acts on a selected row lives where the rows are.
     app.set_route(Route::Devices);
@@ -516,8 +538,8 @@ fn every_local_service_action_is_registered_with_required_risk_metadata() {
     for id in [
         ActionId::ViewServices,
         ActionId::ViewDiagnostics,
-        ActionId::ServicesSectionNext,
-        ActionId::ServicesSectionPrevious,
+        ActionId::SectionNext,
+        ActionId::SectionPrevious,
         ActionId::ServicesServeRefresh,
         ActionId::ServicesServeCreate,
         ActionId::ServicesServeEdit,
