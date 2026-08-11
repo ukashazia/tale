@@ -17,8 +17,8 @@ use tale::domain::device::{
 };
 use tale::domain::service::{
     Backend, CapabilityState, Exposure, FunnelStatus, Listener, MetricsOutput, PathMount, Port,
-    ProxyProtocol, ServeStatus, ServiceCapabilities, ServiceFailure, ServiceFailureKind,
-    ServiceMapping, ServiceResourceStatus, ServiceSection,
+    ProxyProtocol, ServeStatus, ServiceActionRequest, ServiceCapabilities, ServiceFailure,
+    ServiceFailureKind, ServiceMapping, ServiceResourceStatus, ServiceSection,
 };
 use tale::domain::source::{ExecutableSource, LocalCapabilities, LocalExecutable};
 use tale::domain::transfer::{TaildriveShare, TaildropTarget};
@@ -446,6 +446,137 @@ fn the_send_review_expands_home_paths_and_shows_the_resolved_file() {
                 .iter()
                 .any(|line| line.contains(&file.display().to_string()))
         );
+    }
+}
+
+#[test]
+fn every_tui_local_path_expands_home_before_review() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let Ok(current_dir) = std::env::current_dir() else {
+        return;
+    };
+    let Ok(relative_dir) = current_dir.strip_prefix(&home) else {
+        return;
+    };
+    let shorthand_dir = PathBuf::from("~").join(relative_dir);
+    let shorthand = |name: &str| shorthand_dir.join(name).display().to_string();
+
+    app.set_route(Route::Devices);
+    let _ = app.dispatch_action(ActionId::DevicesTaildropReceive);
+    submit_form(
+        &mut app,
+        &[("directory", &shorthand_dir.display().to_string())],
+    );
+    assert!(matches!(
+        confirmed_service_request(&app),
+        Some(ServiceActionRequest::TaildropReceive(request))
+            if request.directory == current_dir
+    ));
+    app.overlays.clear();
+
+    app.set_route(Route::Services);
+    app.views.services.section = ServiceSection::Taildrive;
+    let _ = app.dispatch_action(ActionId::ServicesDriveShare);
+    submit_form(
+        &mut app,
+        &[
+            ("name", "home_docs"),
+            ("path", &shorthand_dir.display().to_string()),
+        ],
+    );
+    assert!(matches!(
+        confirmed_service_request(&app),
+        Some(ServiceActionRequest::TaildriveShare { path, .. }) if path == &current_dir
+    ));
+    app.overlays.clear();
+
+    app.views.services.section = ServiceSection::Certificates;
+    let _ = app.dispatch_action(ActionId::ServicesCertificateObtain);
+    submit_form(
+        &mut app,
+        &[
+            ("cert", &shorthand("tale-home-test.crt")),
+            ("key", &shorthand("tale-home-test.key")),
+        ],
+    );
+    assert!(
+        matches!(
+            confirmed_service_request(&app),
+            Some(ServiceActionRequest::Certificate(request))
+                if request.certificate_path == current_dir.join("tale-home-test.crt")
+                    && request.key_path == current_dir.join("tale-home-test.key")
+        ),
+        "certificate form did not confirm: {:?}",
+        app.overlays.last()
+    );
+    app.overlays.clear();
+
+    app.views.services.section = ServiceSection::Serve;
+    let _ = app.dispatch_action(ActionId::ServicesServeCreate);
+    submit_form(
+        &mut app,
+        &[
+            ("port", "444"),
+            ("backend", &shorthand_dir.display().to_string()),
+        ],
+    );
+    assert!(matches!(
+        confirmed_service_request(&app),
+        Some(ServiceActionRequest::Serve { mapping, .. })
+            if mapping.backend == Backend::FileSystemPath(current_dir.clone())
+    ));
+    app.overlays.clear();
+
+    let _ = app.dispatch_action(ActionId::ServicesServeCreate);
+    submit_form(
+        &mut app,
+        &[
+            ("port", "445"),
+            ("backend", &format!("unix:{}", shorthand("tale.sock"))),
+        ],
+    );
+    assert!(matches!(
+        confirmed_service_request(&app),
+        Some(ServiceActionRequest::Serve { mapping, .. })
+            if mapping.backend == Backend::UnixSocket(current_dir.join("tale.sock"))
+    ));
+    app.overlays.clear();
+
+    app.set_route(Route::Devices);
+    let _ = app.dispatch_action(ActionId::CollectionExport);
+    submit_form(&mut app, &[("path", &shorthand("tale-home-test.json"))]);
+    assert!(matches!(
+        app.overlays.last(),
+        Some(tale::app::Overlay::Confirmation(state))
+            if matches!(
+                state.operational_mutation.as_ref(),
+                Some(tale::domain::operational::OperationalMutation::Export(request))
+                    if request.path == current_dir.join("tale-home-test.json")
+            )
+    ));
+}
+
+fn submit_form(app: &mut App, values: &[(&str, &str)]) {
+    if let Some(tale::app::Overlay::Form(state)) = app.overlays.last_mut() {
+        for (key, value) in values {
+            if let Some(field) = state.fields.iter_mut().find(|field| field.key == *key) {
+                field.value = (*value).to_owned();
+            }
+        }
+        state.selected = state.fields.len();
+    }
+    press(app, KeyCode::Enter);
+}
+
+fn confirmed_service_request(app: &App) -> Option<&ServiceActionRequest> {
+    match app.overlays.last() {
+        Some(tale::app::Overlay::Confirmation(state)) => state.service_request.as_ref(),
+        _ => None,
     }
 }
 

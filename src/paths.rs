@@ -158,3 +158,57 @@ pub fn lexical_absolute(path: &Path, current_dir: &Path) -> PathBuf {
     }
     normalized
 }
+
+/// Expands the current user's home shorthand without otherwise interpreting
+/// the path. Relative paths stay relative, and `~user` is deliberately not an
+/// account lookup.
+pub fn expand_home(path: &Path, home: Option<&Path>) -> Result<PathBuf, PathError> {
+    let Ok(relative) = path.strip_prefix("~") else {
+        return Ok(path.to_path_buf());
+    };
+    let home = home.ok_or(PathError::MissingEnvironment("HOME"))?;
+    Ok(home.join(relative))
+}
+
+pub fn expand_process_home(path: &Path) -> Result<PathBuf, PathError> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    expand_home(path, home.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_expansion_is_narrow_and_preserves_other_paths() {
+        let home = Path::new("/home/alice");
+        assert_eq!(
+            expand_home(Path::new("~/documents/report.pdf"), Some(home)).ok(),
+            Some(PathBuf::from("/home/alice/documents/report.pdf"))
+        );
+        assert_eq!(
+            expand_home(Path::new("~"), Some(home)).ok(),
+            Some(PathBuf::from("/home/alice"))
+        );
+        assert_eq!(
+            expand_home(Path::new("relative/report.pdf"), Some(home)).ok(),
+            Some(PathBuf::from("relative/report.pdf"))
+        );
+        assert_eq!(
+            expand_home(Path::new("~someone/report.pdf"), Some(home)).ok(),
+            Some(PathBuf::from("~someone/report.pdf"))
+        );
+    }
+
+    #[test]
+    fn home_is_required_only_when_shorthand_is_used() {
+        assert!(matches!(
+            expand_home(Path::new("~/report.pdf"), None),
+            Err(PathError::MissingEnvironment("HOME"))
+        ));
+        assert_eq!(
+            expand_home(Path::new("report.pdf"), None).ok(),
+            Some(PathBuf::from("report.pdf"))
+        );
+    }
+}

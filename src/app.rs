@@ -80,7 +80,7 @@ use crate::domain::source::{
 };
 use crate::domain::transfer::{
     TaildriveShare, TaildropConflict, TaildropReceiveRequest, TaildropSendRequest, TaildropTarget,
-    expand_home_path, normalize_share_name, validate_receive_directory, validate_regular_file,
+    normalize_share_name, validate_receive_directory, validate_regular_file,
 };
 use crate::domain::webhook::{
     DestinationType, SubscriptionSet, WebhookDraft, WebhookEndpoint, WebhookMutation,
@@ -98,6 +98,7 @@ use crate::local::handoff::{self, HandoffCommand};
 use crate::local::policy::SystemPolicyEntry;
 use crate::local::{certificates, services, transfers};
 use crate::mock::{self, MOCK_NOW, MockLoadScenario, MockTaskBehavior};
+use crate::paths;
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
 use crate::ui::theme::{Theme, ThemeId};
 
@@ -6301,8 +6302,8 @@ impl App {
                         FormField::text(
                             "path",
                             "Path",
-                            "Where the file is written; an existing file is replaced",
-                            "/path/to/export.json",
+                            "Where the file is written; ~/ is supported and an existing file is replaced",
+                            "~/export.json",
                             String::new(),
                         ),
                     ],
@@ -12625,8 +12626,8 @@ impl App {
                         FormField::text(
                             "directory",
                             "Save to",
-                            "An existing directory on this machine",
-                            "/path/to/directory",
+                            "An existing directory on this machine; ~/ is supported",
+                            "~/Downloads",
                             String::new(),
                         ),
                         FormField::options(
@@ -12662,8 +12663,8 @@ impl App {
                         FormField::text(
                             "path",
                             "Folder",
-                            "An existing directory on this machine",
-                            "/path/to/folder",
+                            "An existing directory on this machine; ~/ is supported",
+                            "~/Documents",
                             String::new(),
                         ),
                     ],
@@ -12718,15 +12719,15 @@ impl App {
                         FormField::text(
                             "cert",
                             "Certificate file",
-                            "Where to write the certificate; blank uses the client default",
-                            "default location",
+                            "Where to write the certificate; ~/ is supported",
+                            "~/certificate.crt",
                             String::new(),
                         ),
                         FormField::text(
                             "key",
                             "Key file",
-                            "Where to write the private key; blank uses the client default",
-                            "default location",
+                            "Where to write the private key; ~/ is supported",
+                            "~/certificate.key",
                             String::new(),
                         ),
                         FormField::text(
@@ -12888,8 +12889,7 @@ impl App {
                 let Some(selected) = self.selected_service_mapping() else {
                     return Err("select a mapping to edit".to_owned());
                 };
-                let backend = Backend::parse(required_field(&fields, "backend")?)
-                    .map_err(|error| error.to_string())?;
+                let backend = parse_form_backend(required_field(&fields, "backend")?)?;
                 let proxy_protocol =
                     ProxyProtocol::parse(optional_field(&fields, "proxy").unwrap_or("none"))
                         .map_err(|error| error.to_string())?;
@@ -12920,13 +12920,12 @@ impl App {
                 if !target.available() {
                     return Err("the selected Taildrop target is unavailable".to_owned());
                 }
-                let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
                 let files = required_field(&fields, "files")?
                     .split(',')
                     .map(str::trim)
                     .filter(|path| !path.is_empty())
                     .map(std::path::PathBuf::from)
-                    .map(|path| expand_home_path(&path, home.as_deref()))
+                    .map(|path| expand_form_path(&path))
                     .map(|path| path.and_then(|path| validate_regular_file(&path)))
                     .collect::<Result<Vec<_>, _>>()?;
                 if files.is_empty() {
@@ -12938,7 +12937,7 @@ impl App {
                 }))
             }
             ActionId::DevicesTaildropReceive => {
-                let directory = std::path::PathBuf::from(required_field(&fields, "directory")?);
+                let directory = expand_form_path(Path::new(required_field(&fields, "directory")?))?;
                 validate_receive_directory(&directory)?;
                 let conflict = TaildropConflict::parse(required_field(&fields, "conflict")?)
                     .ok_or_else(|| "conflict must be skip, overwrite, or rename".to_owned())?;
@@ -12954,7 +12953,7 @@ impl App {
             ActionId::ServicesDriveShare => {
                 let input_name = required_field(&fields, "name")?.to_owned();
                 let normalized_name = normalize_share_name(&input_name)?;
-                let path = std::path::PathBuf::from(required_field(&fields, "path")?);
+                let path = expand_form_path(Path::new(required_field(&fields, "path")?))?;
                 if !std::fs::metadata(&path)
                     .map(|metadata| metadata.is_dir())
                     .unwrap_or(false)
@@ -13009,9 +13008,14 @@ impl App {
                 })
             }
             ActionId::ServicesCertificateObtain => {
-                let domain = required_field(&fields, "domain")?.to_owned();
-                let certificate_path = std::path::PathBuf::from(required_field(&fields, "cert")?);
-                let key_path = std::path::PathBuf::from(required_field(&fields, "key")?);
+                let domain = state
+                    .subject
+                    .iter()
+                    .find_map(|(label, value)| (*label == "domain").then(|| value.clone()))
+                    .ok_or_else(|| "the selected certificate domain is unavailable".to_owned())?;
+                let certificate_path =
+                    expand_form_path(Path::new(required_field(&fields, "cert")?))?;
+                let key_path = expand_form_path(Path::new(required_field(&fields, "key")?))?;
                 let min_validity = optional_field(&fields, "min-validity")
                     .filter(|value| !value.is_empty())
                     .map(str::to_owned);
@@ -13067,8 +13071,7 @@ impl App {
         };
         let mount = PathMount::parse(optional_field(fields, "path").unwrap_or("/"))
             .map_err(|error| error.to_string())?;
-        let backend = Backend::parse(required_field(fields, "backend")?)
-            .map_err(|error| error.to_string())?;
+        let backend = parse_form_backend(required_field(fields, "backend")?)?;
         if matches!(backend, Backend::UnixSocket(_)) && !cfg!(unix) {
             return Err("Unix socket backends are unavailable on this platform".to_owned());
         }
@@ -13216,6 +13219,13 @@ impl App {
                     .iter()
                     .map(|file| format!("  {}", file.path.display())),
             );
+        }
+        if let ServiceActionRequest::Certificate(request) = request {
+            preview.push(format!(
+                "Certificate file: {}",
+                request.certificate_path.display()
+            ));
+            preview.push(format!("Key file: {}", request.key_path.display()));
         }
         Some((preview, argv))
     }
@@ -16305,11 +16315,11 @@ fn export_from_form(state: &FormState) -> Result<OperationalMutation, String> {
     Ok(OperationalMutation::Export(ExportRequest {
         collection,
         format: state.value("format").to_owned(),
-        path: PathBuf::from(required_form_value(
+        path: expand_form_path(Path::new(&required_form_value(
             state,
             "path",
             "where to write the file",
-        )?),
+        )?))?,
     }))
 }
 
@@ -17289,6 +17299,22 @@ fn required_field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> Resul
         .ok_or_else(|| format!("{name} is required"))
 }
 
+fn expand_form_path(path: &Path) -> Result<PathBuf, String> {
+    paths::expand_process_home(path).map_err(|error| error.to_string())
+}
+
+fn parse_form_backend(value: &str) -> Result<Backend, String> {
+    if let Some(socket) = value.strip_prefix("unix:")
+        && Path::new(socket).strip_prefix("~").is_ok()
+    {
+        return expand_form_path(Path::new(socket)).map(Backend::UnixSocket);
+    }
+    if Path::new(value).strip_prefix("~").is_ok() {
+        return expand_form_path(Path::new(value)).map(Backend::FileSystemPath);
+    }
+    Backend::parse(value).map_err(|error| error.to_string())
+}
+
 fn optional_field<'a>(fields: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
     fields.get(name).map(String::as_str)
 }
@@ -17346,7 +17372,7 @@ fn mapping_fields(public: bool, existing: Option<&ServiceMapping>) -> Vec<FormFi
         FormField::text(
             "backend",
             "Serve",
-            "A local port, an http:// URL, or a folder to serve files from",
+            "A local port, an http:// URL, or a folder path; ~/ is supported",
             "3000",
             existing.map_or_else(String::new, |mapping| mapping.backend.argument()),
         ),

@@ -118,7 +118,13 @@ pub fn run(mut cli: Cli) -> Result<(), TaleError> {
             cli.mock = args.mock;
             let config =
                 config::resolve(&cli, &environment, &path_environment).map_err(config_error)?;
-            run_doctor(&config, args.output.as_deref())?;
+            let output = args
+                .output
+                .as_deref()
+                .map(|path| crate::paths::expand_home(path, path_environment.home.as_deref()))
+                .transpose()
+                .map_err(|error| TaleError::InvalidArguments(error.to_string()))?;
+            run_doctor(&config, output.as_deref())?;
             Ok(())
         }
         None => {

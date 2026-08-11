@@ -342,10 +342,16 @@ pub fn resolve(
     let mut paths = paths::resolve_paths(path_environment).map_err(path_error)?;
     let config_path = cli.config.as_deref().or(environment.config_file.as_deref());
     if let Some(config_path) = config_path {
-        paths = paths::with_config_file(paths, config_path, &path_environment.current_dir);
+        let config_path = paths::expand_home(config_path, path_environment.home.as_deref())
+            .map_err(path_error)?;
+        paths = paths::with_config_file(paths, &config_path, &path_environment.current_dir);
     }
 
-    let file = read_file_config(&paths.config_file)?;
+    let mut file = read_file_config(&paths.config_file)?;
+    for profile in file.profiles.values_mut() {
+        let CredentialBackend::File { path } = &mut profile.credential_backend;
+        *path = paths::expand_home(path, path_environment.home.as_deref()).map_err(path_error)?;
+    }
     // A session starts on the local client. An admin profile is a deliberate
     // act, on the command line or on `:profiles`, never a leftover in a file.
     let selected_profile = cli.profile.clone();
@@ -394,6 +400,11 @@ pub fn resolve(
             None => "tailscale".to_owned(),
         }
     };
+    let tailscale_path =
+        paths::expand_home(Path::new(&tailscale_path), path_environment.home.as_deref())
+            .map_err(path_error)?
+            .to_string_lossy()
+            .into_owned();
     let tailscale_path_source = if cli.tailscale_path.is_some() {
         ValueSource::Cli
     } else if environment.tailscale_path.is_some() {
@@ -413,6 +424,8 @@ pub fn resolve(
         Some(path) => path,
         None => crate::local::daemon::documented_socket_path(),
     };
+    let socket_path =
+        paths::expand_home(&socket_path, path_environment.home.as_deref()).map_err(path_error)?;
     let socket_path_source = if cli.tailscale_socket.is_some() {
         ValueSource::Cli
     } else if environment.tailscale_socket.is_some() {
@@ -518,13 +531,16 @@ pub fn resolve_paths_for_cli(
     path_environment: &PathEnvironment,
 ) -> Result<Paths, ConfigError> {
     let paths = paths::resolve_paths(path_environment).map_err(path_error)?;
-    Ok(cli
-        .config
-        .as_deref()
-        .or(environment.config_file.as_deref())
-        .map_or(paths.clone(), |config_path| {
-            paths::with_config_file(paths, config_path, &path_environment.current_dir)
-        }))
+    let Some(config_path) = cli.config.as_deref().or(environment.config_file.as_deref()) else {
+        return Ok(paths);
+    };
+    let config_path =
+        paths::expand_home(config_path, path_environment.home.as_deref()).map_err(path_error)?;
+    Ok(paths::with_config_file(
+        paths,
+        &config_path,
+        &path_environment.current_dir,
+    ))
 }
 
 pub fn is_valid_profile_name(value: &str) -> bool {

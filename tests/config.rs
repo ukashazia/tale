@@ -102,6 +102,71 @@ fn precedence_is_cli_then_environment_then_file_then_default() {
 }
 
 #[test]
+fn local_paths_expand_home_across_cli_environment_and_file_values() {
+    let root = std::env::temp_dir().join(format!("tale-home-paths-{}", std::process::id()));
+    let environment_paths = path_environment(Platform::Unix, &root);
+    let Some(home) = environment_paths.home.as_deref() else {
+        return;
+    };
+    assert!(fs::create_dir_all(home).is_ok());
+    let file = home.join("config.toml");
+    assert!(
+        fs::write(
+            &file,
+            "[local]\ntailscale_path = \"~/bin/tailscale\"\nsocket_path = \"~/run/tailscaled.sock\"\n\
+             [profiles.ops]\ntailnet = \"example.test\"\ncredential = \"ops\"\ncredential_backend = \"file\"\ncredential_file = \"~/.config/tale/ops.toml\"\n"
+        )
+        .is_ok()
+    );
+    let command = cli(Some(PathBuf::from("~/config.toml")));
+    let resolved = config::resolve(&command, &environment(), &environment_paths);
+    let credential_file = home.join(".config/tale/ops.toml");
+    assert!(resolved.is_ok());
+    if let Ok(resolved) = resolved {
+        assert_eq!(resolved.paths.config_file, file);
+        assert_eq!(
+            resolved.local.tailscale_path,
+            home.join("bin/tailscale").display().to_string()
+        );
+        assert_eq!(resolved.local.socket_path, home.join("run/tailscaled.sock"));
+        assert_eq!(
+            resolved
+                .profiles
+                .get("ops")
+                .map(|profile| profile.credential_backend.location()),
+            Some(credential_file.as_path())
+        );
+    }
+
+    let mut environment = environment();
+    environment.tailscale_path = Some("~/env/tailscale".to_owned());
+    environment.tailscale_socket = Some(PathBuf::from("~/env/tailscaled.sock"));
+    let from_environment = config::resolve(&command, &environment, &environment_paths);
+    assert!(from_environment.is_ok());
+    if let Ok(resolved) = from_environment {
+        assert_eq!(
+            resolved.local.tailscale_path,
+            home.join("env/tailscale").display().to_string()
+        );
+        assert_eq!(resolved.local.socket_path, home.join("env/tailscaled.sock"));
+    }
+
+    let mut command = command;
+    command.tailscale_path = Some(PathBuf::from("~/cli/tailscale"));
+    command.tailscale_socket = Some(PathBuf::from("~/cli/tailscaled.sock"));
+    let from_cli = config::resolve(&command, &environment, &environment_paths);
+    assert!(from_cli.is_ok());
+    if let Ok(resolved) = from_cli {
+        assert_eq!(
+            resolved.local.tailscale_path,
+            home.join("cli/tailscale").display().to_string()
+        );
+        assert_eq!(resolved.local.socket_path, home.join("cli/tailscaled.sock"));
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn theme_is_strict_and_defaults_to_terminal() {
     let root = std::env::temp_dir().join(format!("tale-theme-config-{}", std::process::id()));
     let _ = fs::create_dir_all(&root);

@@ -92,6 +92,10 @@ tale doctor [--config PATH] [--mock] [--output PATH]
 
 ## TOML schema
 
+Local filesystem values accept `~` and `~/…` for the current user's home
+directory. This applies consistently to CLI flags, environment overrides,
+configuration fields, and interactive forms; `~other-user` is not expanded.
+
 The initial complete schema is:
 
 ```toml
