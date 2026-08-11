@@ -65,6 +65,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -552,6 +558,15 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "fjson"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9749dc2b27a3c20c7a10a40dff21369bcc7ed67e52b9e3d5858a1b6cd44cb5d"
+dependencies = [
+ "arrayvec",
+]
 
 [[package]]
 name = "foldhash"
@@ -1988,6 +2003,7 @@ dependencies = [
  "clap_mangen",
  "criterion",
  "crossterm",
+ "fjson",
  "http-body-util",
  "hyper",
  "hyper-util",

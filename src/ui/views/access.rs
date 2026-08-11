@@ -37,7 +37,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             span.style = span.style.patch(style);
         }
     }
-    let visible = usize::from(area.height.saturating_sub(2)).max(1);
+    let visible = viewport_height(area.height);
     let max_scroll = lines.len().saturating_sub(visible);
     let scroll = app.detail_scroll.min(max_scroll);
     let end = scroll.saturating_add(visible).min(lines.len());
@@ -79,6 +79,14 @@ pub fn line_count(app: &App) -> usize {
         .map_or(0, |policy| document_lines(app, policy).len())
 }
 
+pub fn max_scroll(app: &App, area_height: u16) -> usize {
+    line_count(app).saturating_sub(viewport_height(area_height))
+}
+
+fn viewport_height(area_height: u16) -> usize {
+    usize::from(area_height.saturating_sub(2)).max(1)
+}
+
 pub fn search_matches(app: &App, query: &str) -> Vec<usize> {
     let Some(policy) = app.admin.policy.snapshot.as_ref() else {
         return Vec::new();
@@ -103,16 +111,6 @@ pub fn search_matches(app: &App, query: &str) -> Vec<usize> {
 fn document_lines(app: &App, policy: &crate::domain::policy::PolicySnapshot) -> Vec<Line<'static>> {
     let mut lines = document_prefix(app, policy);
     lines.extend(source_lines(app, policy));
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        "Access Explorer",
-        app.theme.style(theme::StyleRole::SectionHeading),
-    )));
-    lines.extend(
-        crate::ui::views::access_explorer::summary(app)
-            .lines()
-            .map(|line| Line::from(line.to_owned())),
-    );
     lines
 }
 
@@ -177,6 +175,16 @@ fn document_prefix(
         lines.push(Line::default());
     }
     lines.push(Line::from(Span::styled(
+        "Access Explorer",
+        app.theme.style(theme::StyleRole::SectionHeading),
+    )));
+    lines.extend(
+        crate::ui::views::access_explorer::summary(app)
+            .lines()
+            .map(|line| Line::from(line.to_owned())),
+    );
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
         "Policy source · read-only",
         app.theme.style(theme::StyleRole::SectionHeading),
     )));
@@ -190,7 +198,7 @@ fn source_lines(app: &App, policy: &crate::domain::policy::PolicySnapshot) -> Ve
             app.theme.style(theme::StyleRole::StateDanger),
         ))];
     };
-    source
+    format_policy_source(source)
         .lines()
         .map(|line| {
             let role = if line.trim_start().starts_with("//") {
@@ -205,9 +213,54 @@ fn source_lines(app: &App, policy: &crate::domain::policy::PolicySnapshot) -> Ve
         .collect()
 }
 
+fn format_policy_source(source: &str) -> String {
+    match fjson::to_jsonc(source) {
+        Ok(formatted) => formatted,
+        Err(_) => source.to_owned(),
+    }
+}
+
 fn line_text(line: &Line<'_>) -> String {
     line.spans
         .iter()
         .map(|span| span.content.as_ref())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_policy_source;
+
+    #[test]
+    fn formats_hujson_for_display_without_losing_comments() {
+        let source = r#"// policy
+{"groups":{"group:ops":["alice@example.com","bob@example.com"],},"acls":[{"action":"accept","src":["*"],"dst":["*:*"],},],}"#;
+
+        let formatted = format_policy_source(source);
+
+        assert_eq!(
+            formatted,
+            r#"// policy
+{
+  "groups": {
+    "group:ops": ["alice@example.com", "bob@example.com"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["*"],
+      "dst": ["*:*"]
+    }
+  ]
+}
+"#
+        );
+    }
+
+    #[test]
+    fn leaves_invalid_hujson_visible_verbatim() {
+        let source = "{ not valid yet";
+
+        assert_eq!(format_policy_source(source), source);
+    }
 }

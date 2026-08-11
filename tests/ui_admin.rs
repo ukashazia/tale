@@ -166,11 +166,11 @@ fn access_policy_preview_scrolls_and_slash_searches_exact_source_lines() {
         1_785_751_201,
     );
     app.set_route(Route::Access);
-    app.set_terminal_size(80, 24);
+    app.set_terminal_size(80, 40);
 
     press(&mut app, KeyCode::Char('G'));
     assert!(app.detail_scroll > 0);
-    let Some(bottom) = render_lines(&app, 80, 24) else {
+    let Some(bottom) = render_lines(&app, 80, 40) else {
         return;
     };
     assert!(bottom.iter().any(|line| line.contains("policy line 79")));
@@ -180,13 +180,13 @@ fn access_policy_preview_scrolls_and_slash_searches_exact_source_lines() {
     let _ = app.update(Event::Input(InputEvent::Paste("needle".to_owned())));
     let first_match = app.detail_search_match;
     assert!(first_match.is_some());
-    let Some(prompt) = render_lines(&app, 80, 24) else {
+    let Some(prompt) = render_lines(&app, 80, 40) else {
         return;
     };
     assert!(prompt.iter().any(|line| line.contains("Search policy")));
 
     press(&mut app, KeyCode::Enter);
-    let Some(preview) = render_lines(&app, 80, 24) else {
+    let Some(preview) = render_lines(&app, 80, 40) else {
         return;
     };
     assert!(preview.iter().any(|line| line.contains("match 1/2")));

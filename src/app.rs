@@ -15123,8 +15123,16 @@ impl App {
     }
 
     fn access_max_scroll(&self) -> usize {
-        let viewport = usize::from(self.terminal_height.saturating_sub(8)).max(1);
-        crate::ui::views::access::line_count(self).saturating_sub(viewport)
+        let frame = crate::ui::layout::compute(
+            ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: self.terminal_width,
+                height: self.terminal_height,
+            },
+            self,
+        );
+        crate::ui::views::access::max_scroll(self, frame.content.height)
     }
 
     fn device_detail_max_scroll(&self) -> usize {
