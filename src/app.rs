@@ -190,6 +190,13 @@ impl Route {
             _ => None,
         }
     }
+
+    pub const fn requires_admin_profile(self) -> bool {
+        matches!(
+            self,
+            Self::Users | Self::Routes | Self::Access | Self::Credentials | Self::Audit
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -3943,6 +3950,12 @@ impl App {
     }
 
     fn open_navigation_route(&mut self, route: Route) -> Vec<Effect> {
+        if route.requires_admin_profile() && self.admin.profile.is_none() {
+            if let InteractionMode::CommandLine(state) = &mut self.interaction {
+                state.error = Some("Select an administration profile to open this view".to_owned());
+            }
+            return Vec::new();
+        }
         self.interaction = InteractionMode::Normal;
         if self.current_route() == route {
             self.focus = Focus::Collection;

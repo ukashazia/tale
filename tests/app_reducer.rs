@@ -278,6 +278,7 @@ fn navigation_palette_is_canonical_and_fuzzy() {
                     == Some(Route::Audit)
         ));
 
+        app.admin.profile = Some("mock".to_owned());
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current_route(), Route::Audit);
 
@@ -294,6 +295,27 @@ fn navigation_palette_is_canonical_and_fuzzy() {
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current_route(), Route::Config);
     }
+}
+
+#[test]
+fn navigation_requires_an_active_profile_for_admin_only_views() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.admin.profile = None;
+    app.set_route(Route::Devices);
+
+    press(&mut app, KeyCode::Char(':'));
+    let _ = app.update(Event::Input(InputEvent::Paste("audit".to_owned())));
+    press(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.current_route(), Route::Devices);
+    assert!(matches!(
+        &app.interaction,
+        InteractionMode::CommandLine(state)
+            if state.error.as_deref()
+                == Some("Select an administration profile to open this view")
+    ));
 }
 
 #[test]

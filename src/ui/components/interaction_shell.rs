@@ -279,6 +279,17 @@ fn navigation_cell(
     command_width: usize,
     width: usize,
 ) -> Vec<Span<'static>> {
+    let disabled = candidate.route.requires_admin_profile() && app.admin.profile.is_none();
+    let key_role = if disabled {
+        theme::StyleRole::KeyHintDisabled
+    } else {
+        theme::StyleRole::KeyHint
+    };
+    let label_role = if disabled {
+        theme::StyleRole::TextDisabled
+    } else {
+        theme::StyleRole::TextMuted
+    };
     let label_length = candidate.label.chars().count();
     let prefix_width = command_width.saturating_add(1);
     let description_budget = width.saturating_sub(prefix_width);
@@ -288,19 +299,18 @@ fn navigation_cell(
     for character in candidate.label.chars() {
         spans.push(Span::styled(
             character.to_string(),
-            app.theme.style(theme::StyleRole::KeyHint),
+            app.theme.style(key_role),
         ));
     }
     spans.push(Span::styled(
         " ".repeat(command_width.saturating_sub(label_length)),
-        app.theme.style(theme::StyleRole::KeyHint),
+        app.theme.style(key_role),
     ));
-    spans.push(Span::styled(
-        " ",
-        app.theme.style(theme::StyleRole::TextMuted),
-    ));
+    spans.push(Span::styled(" ", app.theme.style(label_role)));
     for (index, character) in description.chars().enumerate() {
-        let style = if candidate
+        let style = if disabled {
+            app.theme.style(theme::StyleRole::TextDisabled)
+        } else if candidate
             .description_matches
             .contains(&u32::try_from(index).map_or(u32::MAX, |i| i))
         {

@@ -285,6 +285,50 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
 }
 
 #[test]
+fn navigation_mutes_admin_only_views_without_an_active_profile() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.admin.profile = None;
+    app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
+    app.set_terminal_size(140, 30);
+    press(&mut app, KeyCode::Char(':'));
+
+    let Some(mut terminal) = Terminal::new(TestBackend::new(140, 30)).ok() else {
+        return;
+    };
+    assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+    let buffer = terminal.backend().buffer();
+    let rendered = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .filter_map(|x| buffer.cell((x, y)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let cell_for = |label: &str| {
+        rendered.iter().enumerate().find_map(|(row, line)| {
+            let column = line.find(label)?;
+            buffer.cell((u16::try_from(column).ok()?, u16::try_from(row).ok()?))
+        })
+    };
+
+    let disabled = app.theme.style(StyleRole::KeyHintDisabled);
+    for label in ["users", "routes", "access", "credentials", "audit"] {
+        let cell = cell_for(label);
+        assert_eq!(cell.map(|cell| cell.fg), disabled.fg, "{label}");
+        assert!(cell.is_some_and(|cell| cell.modifier.contains(disabled.add_modifier)));
+    }
+
+    let dns = cell_for("dns");
+    assert_eq!(
+        dns.map(|cell| cell.fg),
+        app.theme.style(StyleRole::KeyHint).fg
+    );
+}
+
+#[test]
 fn inline_help_routes_commands_and_action_hints_use_the_accent_color() {
     let Some(mut app) = mock_app() else {
         return;
