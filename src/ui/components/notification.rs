@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::App;
@@ -69,7 +70,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(hint.text.as_ref())
-            .style(app.theme.style(hint.role))
+            .style(
+                app.theme
+                    .style(hint.role)
+                    .remove_modifier(Modifier::UNDERLINED),
+            )
             .wrap(Wrap { trim: true }),
         area,
     );

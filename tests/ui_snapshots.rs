@@ -371,6 +371,7 @@ fn assert_notification_role(app: &App, area: ratatui::layout::Rect, role: StyleR
     assert!(cell.is_some());
     if let Some(cell) = cell {
         assert_eq!(Some(cell.fg), app.theme.style(role).fg);
+        assert!(!cell.modifier.contains(ratatui::style::Modifier::UNDERLINED));
     }
 }
 
