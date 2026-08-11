@@ -545,6 +545,7 @@ fn secret_fields_show_their_length_and_never_hold_their_value() {
                 "The write-only token",
             )],
             selected: 0,
+            cursor: 0,
             draft: None,
             list: None,
             secret: None,
@@ -563,6 +564,41 @@ fn secret_fields_show_their_length_and_never_hold_their_value() {
         assert!(
             rendered.contains(&"\u{2022}".repeat(7)),
             "the row does not show that a secret was entered"
+        );
+    }
+}
+
+#[test]
+fn text_fields_edit_at_the_cursor_and_jump_between_words() {
+    let prepared = prepared_app();
+    assert!(prepared.is_some());
+    if let Some(mut app) = prepared {
+        app.overlays.push(Overlay::Form(FormState {
+            action_id: ActionId::AdminLogStreamReplace,
+            title: "Edit text",
+            subject: Vec::new(),
+            fields: vec![tale::app::FormField::text(
+                "text",
+                "Text",
+                "Editable text",
+                "",
+                "alpha gamma",
+            )],
+            selected: 0,
+            cursor: 0,
+            draft: None,
+            list: None,
+            secret: None,
+            error: None,
+        }));
+
+        press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press_key(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        press_key(&mut app, KeyCode::Char('b'), KeyModifiers::NONE);
+
+        assert_eq!(
+            form(&app).map(|state| state.value("text")),
+            Some("alpha bgamma")
         );
     }
 }

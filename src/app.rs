@@ -792,6 +792,8 @@ pub struct FormState {
     pub subject: Vec<(&'static str, String)>,
     pub fields: Vec<FormField>,
     pub selected: usize,
+    /// Byte offset of the insertion point in an open text field.
+    pub cursor: usize,
     /// The value held before editing began, restored if the edit is abandoned.
     pub draft: Option<String>,
     /// The open list field's entries, while one is open.
@@ -831,6 +833,7 @@ impl FormState {
             return;
         };
         self.draft = Some(field.value.clone());
+        self.cursor = field.value.len();
         self.list = field.is_list().then(|| ListEditor::new(field));
         if field.is_secret() {
             // A secret is written once: opening the field starts it over rather
@@ -864,6 +867,7 @@ impl FormState {
         {
             field.value = previous;
         }
+        self.cursor = 0;
     }
 
     fn move_selection(&mut self, offset: isize) {
@@ -2956,10 +2960,12 @@ impl App {
                     if let Some(secret) = state.secret.as_mut() {
                         secret.push_str(text);
                     }
-                } else if let Some(field) = state.selected_field_mut()
+                } else if let cursor = state.cursor
+                    && let Some(field) = state.selected_field_mut()
                     && field.is_text()
                 {
-                    field.value.push_str(text);
+                    field.value.insert_str(cursor, text);
+                    state.cursor = cursor.saturating_add(text.len());
                 }
             }
             Overlay::Confirmation(state) => {
@@ -3687,6 +3693,56 @@ impl App {
                             return Some(Vec::new());
                         }
                         KeyCode::Esc => state.abandon_edit(),
+                        KeyCode::Left | KeyCode::Char('b')
+                            if state.selected_field().is_some_and(FormField::is_text)
+                                && (key.code == KeyCode::Left
+                                    || key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                        {
+                            if let Some(field) = state.selected_field() {
+                                state.cursor = if key
+                                    .modifiers
+                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                {
+                                    previous_word_boundary(&field.value, state.cursor)
+                                } else {
+                                    previous_scalar_boundary(&field.value, state.cursor)
+                                };
+                            }
+                        }
+                        KeyCode::Right | KeyCode::Char('f')
+                            if state.selected_field().is_some_and(FormField::is_text)
+                                && (key.code == KeyCode::Right
+                                    || key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                        {
+                            if let Some(field) = state.selected_field() {
+                                state.cursor = if key
+                                    .modifiers
+                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                {
+                                    next_word_boundary(&field.value, state.cursor)
+                                } else {
+                                    next_scalar_boundary(&field.value, state.cursor)
+                                };
+                            }
+                        }
+                        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                            if let Some(field) = state.selected_field() {
+                                state.cursor = previous_word_boundary(&field.value, state.cursor);
+                            }
+                        }
+                        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                            if let Some(field) = state.selected_field() {
+                                state.cursor = next_word_boundary(&field.value, state.cursor);
+                            }
+                        }
+                        KeyCode::Home if state.selected_field().is_some_and(FormField::is_text) => {
+                            state.cursor = 0;
+                        }
+                        KeyCode::End if state.selected_field().is_some_and(FormField::is_text) => {
+                            if let Some(field) = state.selected_field() {
+                                state.cursor = field.value.len();
+                            }
+                        }
                         KeyCode::Left => {
                             if let Some(field) = state.selected_field_mut() {
                                 field.cycle(false);
@@ -3702,10 +3758,13 @@ impl App {
                                 if let Some(secret) = state.secret.as_mut() {
                                     secret.pop();
                                 }
-                            } else if let Some(field) = state.selected_field_mut()
+                            } else if let cursor = state.cursor
+                                && let Some(field) = state.selected_field_mut()
                                 && field.is_text()
                             {
-                                let _ = field.value.pop();
+                                let previous = previous_scalar_boundary(&field.value, cursor);
+                                field.value.replace_range(previous..cursor, "");
+                                state.cursor = previous;
                             }
                         }
                         KeyCode::Char(character) if is_typed_text(key) => {
@@ -3713,9 +3772,12 @@ impl App {
                                 if let Some(secret) = state.secret.as_mut() {
                                     secret.push(character);
                                 }
-                            } else if let Some(field) = state.selected_field_mut() {
+                            } else if let cursor = state.cursor
+                                && let Some(field) = state.selected_field_mut()
+                            {
                                 if field.is_text() {
-                                    field.value.push(character);
+                                    field.value.insert(cursor, character);
+                                    state.cursor = cursor.saturating_add(character.len_utf8());
                                 } else if character == ' ' {
                                     field.cycle(true);
                                 }
@@ -6030,6 +6092,7 @@ impl App {
             subject: shape.subject,
             fields: shape.fields,
             selected: 0,
+            cursor: 0,
             draft: None,
             list: None,
             secret: None,
@@ -13022,6 +13085,7 @@ impl App {
             subject,
             fields,
             selected: 0,
+            cursor: 0,
             draft: None,
             list: None,
             secret: None,
@@ -17610,12 +17674,36 @@ fn edit_line(editor: &mut LineEditorState, key: KeyEvent) -> bool {
             insert_text(editor, character.encode_utf8(&mut encoded));
             true
         }
-        (KeyCode::Left, _) => {
+        (KeyCode::Left, modifiers) => {
+            editor.cursor = if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                previous_word_boundary(&editor.input, editor.cursor)
+            } else {
+                previous_scalar_boundary(&editor.input, editor.cursor)
+            };
+            true
+        }
+        (KeyCode::Right, modifiers) => {
+            editor.cursor = if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                next_word_boundary(&editor.input, editor.cursor)
+            } else {
+                next_scalar_boundary(&editor.input, editor.cursor)
+            };
+            true
+        }
+        (KeyCode::Char('b'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
             editor.cursor = previous_scalar_boundary(&editor.input, editor.cursor);
             true
         }
-        (KeyCode::Right, _) => {
+        (KeyCode::Char('f'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
             editor.cursor = next_scalar_boundary(&editor.input, editor.cursor);
+            true
+        }
+        (KeyCode::Char('b'), modifiers) if modifiers.contains(KeyModifiers::ALT) => {
+            editor.cursor = previous_word_boundary(&editor.input, editor.cursor);
+            true
+        }
+        (KeyCode::Char('f'), modifiers) if modifiers.contains(KeyModifiers::ALT) => {
+            editor.cursor = next_word_boundary(&editor.input, editor.cursor);
             true
         }
         (KeyCode::Home, _) => {
@@ -17683,6 +17771,27 @@ fn next_scalar_boundary(value: &str, cursor: usize) -> usize {
         .char_indices()
         .nth(1)
         .map_or(value.len(), |(index, _)| cursor.saturating_add(index))
+}
+
+fn previous_word_boundary(value: &str, cursor: usize) -> usize {
+    let before = &value[..cursor];
+    let end = before.trim_end_matches(char::is_whitespace).len();
+    value[..end]
+        .char_indices()
+        .rev()
+        .find(|(_, character)| character.is_whitespace())
+        .map_or(0, |(index, character)| {
+            index.saturating_add(character.len_utf8())
+        })
+}
+
+fn next_word_boundary(value: &str, cursor: usize) -> usize {
+    let after = &value[cursor..];
+    let word = after.trim_start_matches(char::is_whitespace);
+    let word_start = value.len().saturating_sub(word.len());
+    word.char_indices()
+        .find(|(_, character)| character.is_whitespace())
+        .map_or(value.len(), |(index, _)| word_start.saturating_add(index))
 }
 
 /// The key that copies one field. One table: the menu drew its own copy of

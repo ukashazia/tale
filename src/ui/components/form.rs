@@ -81,17 +81,25 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &FormState) {
                 }),
             ),
             Span::styled("  ", app.theme.style(theme::StyleRole::SurfaceRaised)),
-            Span::styled(
-                value,
-                if editing {
-                    app.theme.style(theme::StyleRole::Focus)
-                } else {
-                    app.theme.style(value_role)
-                },
-            ),
         ];
+        let value_style = app.theme.style(if editing {
+            theme::StyleRole::Focus
+        } else {
+            value_role
+        });
+        if editing && field.is_text() {
+            let (before, after) = value.split_at(state.cursor.min(value.len()));
+            spans.push(Span::styled(before.to_owned(), value_style));
+            spans.push(Span::styled(
+                "\u{2588}",
+                app.theme.style(theme::StyleRole::Focus),
+            ));
+            spans.push(Span::styled(after.to_owned(), value_style));
+        } else {
+            spans.push(Span::styled(value, value_style));
+        }
         // A caret only where typing does something: inside an open text field.
-        if editing && (field.is_text() || field.is_secret()) {
+        if editing && field.is_secret() {
             spans.push(Span::styled(
                 "\u{2588}",
                 app.theme.style(theme::StyleRole::Focus),
