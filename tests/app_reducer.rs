@@ -9,6 +9,7 @@ use tale::app::{
 };
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
+use tale::domain::account::LocalSection;
 use tale::domain::device::{SortDirection, SortField, SortSpec};
 use tale::domain::health::{Finding, ObservedFact, Severity};
 use tale::domain::service::{
@@ -203,6 +204,38 @@ fn stale_watcher_generation_cannot_replace_current_connection_state() {
         assert_eq!(app.current_route(), Route::Overview);
         press(&mut app, KeyCode::Char('['));
         assert_eq!(app.current_route(), Route::Overview);
+    }
+}
+
+#[test]
+fn local_account_context_survives_daemon_transitions_and_errors() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.source_mode = SourceMode::Local;
+    let _ = app.bootstrap_effects();
+    let _ = app.update(Event::Local(Box::new(LocalEvent::WatcherConnected {
+        generation: 1,
+    })));
+    app.set_route(Route::Local);
+    app.views.local.section = LocalSection::Accounts;
+
+    for kind in [
+        tale::domain::source::LocalFailureKind::DaemonUnavailable,
+        tale::domain::source::LocalFailureKind::PermissionDenied,
+    ] {
+        let _ = app.update(Event::Local(Box::new(LocalEvent::WatcherDisconnected {
+            generation: 1,
+            failure: tale::domain::source::LocalFailure::new(
+                kind,
+                "watch-ipn-bus",
+                "fixture transition",
+                "fixture daemon state changed",
+                true,
+            ),
+        })));
+        assert_eq!(app.current_route(), Route::Local);
+        assert_eq!(app.views.local.section, LocalSection::Accounts);
     }
 }
 

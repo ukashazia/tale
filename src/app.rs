@@ -4002,6 +4002,9 @@ impl App {
     }
 
     fn leave_unavailable_route(&mut self) {
+        if self.current_route() == Route::Local {
+            return;
+        }
         if self
             .route_unavailable_reason(self.current_route())
             .is_some()
