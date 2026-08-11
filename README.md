@@ -16,8 +16,10 @@ Tailscale resources without jumping between commands and the admin console.
 - Make changes through preview and confirmation flows. `--read-only` disables
   mutations for an entire session.
 
-Tale starts in local mode, so you do not need an API credential just to try it.
-Tailnet-wide views become available after you add an admin profile.
+Tale works in local-only, admin-only, or combined mode. The Tailscale client is
+optional: it is needed only for views and actions involving the current
+machine. Tailnet administration uses the Control API and does not require the
+`tailscale` command or a local Tailscale daemon.
 
 ## Install
 
@@ -66,12 +68,14 @@ From a checkout, with a stable Rust toolchain:
 cargo install --locked --path .
 ```
 
-Install Tailscale too if you want Tale to inspect this machine. Once Tale is
-installed, launch it with:
+Once Tale is installed, launch it with:
 
 ```sh
 tale
 ```
+
+Install Tailscale separately only if you want Tale to inspect or operate the
+current machine.
 
 On your first run:
 
@@ -83,12 +87,22 @@ On your first run:
 ## Connect a tailnet
 
 Create a profile when you want tailnet-wide inventory or administrative
-actions:
+actions. On a machine that also runs Tailscale:
 
 ```sh
 tale auth add ops
 tale --profile ops --read-only
 ```
+
+For admin-only use without the `tailscale` command or daemon:
+
+```sh
+tale auth add ops
+tale --no-local --profile ops --read-only
+```
+
+`--no-local` skips both CLI discovery and the local daemon connection. It does
+not disable profile-backed Control API views or actions.
 
 `auth add` prompts for the tailnet, credential type, and secret. Start with a
 least-privilege credential and keep `--read-only` enabled until you intentionally
