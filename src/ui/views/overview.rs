@@ -240,7 +240,13 @@ fn render_attention(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if warning > 0 {
         detail.push(format!("{warning} warning"));
     }
-    let title = text::view_title("needs attention", findings.len(), findings.len(), &detail);
+    let title = text::view_title(
+        app.theme,
+        "needs attention",
+        findings.len(),
+        findings.len(),
+        &detail,
+    );
     if findings.is_empty() {
         let message = if app.admin.profile.is_some() {
             vec![
@@ -270,7 +276,7 @@ fn render_attention(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ),
             ]
         };
-        panel::render(frame, app, area, &title, message);
+        panel::render_view(frame, app, area, title, message);
         return;
     }
 
@@ -314,7 +320,7 @@ fn render_attention(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect::<Vec<_>>();
     let lines = grid::lines(app, &columns, &rows, area.width.saturating_sub(4));
-    panel::render(frame, app, area, &title, lines);
+    panel::render_view(frame, app, area, title, lines);
 }
 
 fn render_finding(frame: &mut Frame<'_>, app: &App, area: Rect) {

@@ -93,7 +93,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .collect::<Vec<_>>();
         grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
     };
-    panel::render(frame, app, area, &title(app, &filtered, users.len()), lines);
+    panel::render_view(frame, app, area, title(app, &filtered, users.len()), lines);
 }
 
 /// The row again, one fact per line. Only what the API reported: a row of
@@ -230,7 +230,7 @@ fn age(app: &App, moment: Option<crate::domain::Timestamp>) -> String {
 }
 
 /// Route context lives in the border, the way it does on every other route.
-fn title(app: &App, users: &[&AdminUser], total: usize) -> String {
+fn title(app: &App, users: &[&AdminUser], total: usize) -> ratatui::text::Line<'static> {
     let mut detail = Vec::new();
     let connected = users
         .iter()
@@ -245,5 +245,5 @@ fn title(app: &App, users: &[&AdminUser], total: usize) -> String {
             format!("/{}", text::ellipsize(&app.views.users.filter, 32)),
         );
     }
-    text::view_title("users", users.len(), total, &detail)
+    text::view_title(app.theme, "users", users.len(), total, &detail)
 }

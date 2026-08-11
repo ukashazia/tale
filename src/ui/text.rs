@@ -50,16 +50,40 @@ pub fn format_timestamp(value: crate::domain::Timestamp) -> String {
 /// A view's border title: what it is, how much of it is showing, and the terms
 /// that narrowed it. This is where route context lives now that no separate
 /// header row repeats the route name.
-pub fn view_title(base: &str, shown: usize, total: usize, detail: &[String]) -> String {
-    let mut title = if shown == total {
-        format!(" {base} · {total} ")
-    } else {
-        format!(" {base} · {shown} of {total} ")
-    };
+pub fn view_title(
+    theme: Theme,
+    base: &str,
+    shown: usize,
+    total: usize,
+    detail: &[String],
+) -> Line<'static> {
+    let primary = theme.style(StyleRole::TextPrimary);
+    let accent = theme.style(StyleRole::KeyHint);
+    let mut spans = vec![Span::styled(format!(" {base} · "), primary)];
+    spans.push(Span::styled(
+        if shown == total {
+            total.to_string()
+        } else {
+            format!("{shown} of {total}")
+        },
+        if shown == total { primary } else { accent },
+    ));
+    spans.push(Span::styled(" ", primary));
     for part in detail.iter().filter(|part| !part.is_empty()) {
-        title.push_str(&format!("· {part} "));
+        spans.push(Span::styled(format!("· {part} "), accent));
     }
-    title
+    Line::from(spans)
+}
+
+/// A border title with stable identity followed by non-default view state.
+pub fn status_title(theme: Theme, base: &str, detail: &[String]) -> Line<'static> {
+    let primary = theme.style(StyleRole::TextPrimary);
+    let accent = theme.style(StyleRole::KeyHint);
+    let mut spans = vec![Span::styled(format!(" {base} "), primary)];
+    for part in detail.iter().filter(|part| !part.is_empty()) {
+        spans.push(Span::styled(format!("· {part} "), accent));
+    }
+    Line::from(spans)
 }
 
 /// What to say when a view has nothing in it. An empty box is a dead end; this
@@ -259,7 +283,7 @@ impl Freshness {
 
 #[cfg(test)]
 mod tests {
-    use super::{action_hint, empty_state, inline_action};
+    use super::{action_hint, empty_state, inline_action, view_title};
     use crate::admin::AdminResourceState;
     use crate::ui::theme::{ColorCapability, StyleRole, Theme, ThemeId};
 
@@ -275,6 +299,26 @@ mod tests {
         assert_eq!(
             line.spans.get(1).map(|span| span.style),
             Some(theme.style(StyleRole::KeyHint))
+        );
+    }
+
+    #[test]
+    fn view_title_accents_every_non_default_state() {
+        let theme = theme();
+        let detail = vec!["/owner:alice".to_owned(), "last seen ↓".to_owned()];
+        let title = view_title(theme, "devices", 1, 13, &detail);
+
+        assert_eq!(
+            title.spans.first().map(|span| span.style),
+            Some(theme.style(StyleRole::TextPrimary))
+        );
+        assert!(
+            title
+                .spans
+                .iter()
+                .skip(1)
+                .filter(|span| !span.content.trim().is_empty())
+                .all(|span| span.style == theme.style(StyleRole::KeyHint))
         );
     }
 

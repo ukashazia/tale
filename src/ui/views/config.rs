@@ -35,7 +35,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect::<Vec<_>>();
     let lines = grid::lines(app, &columns, &table_rows, area.width.saturating_sub(4));
-    panel::render(frame, app, area, &title(app, rows.len()), lines);
+    panel::render_view(frame, app, area, title(app, rows.len()), lines);
 }
 
 fn visible_rows<'a>(
@@ -56,7 +56,7 @@ fn visible_rows<'a>(
         .map(move |(index, row)| (row, index == selected))
 }
 
-fn title(app: &App, shown: usize) -> String {
+fn title(app: &App, shown: usize) -> ratatui::text::Line<'static> {
     let mut detail = Vec::new();
     if !app.views.config.filter.is_empty() {
         detail.push(format!(
@@ -77,7 +77,7 @@ fn title(app: &App, shown: usize) -> String {
     if shown != total {
         detail.push(format!("{shown} of {total}"));
     }
-    format!("config · read-only · {}", detail.join(" · "))
+    text::status_title(app.theme, "config · read-only", &detail)
 }
 
 /// A value someone chose reads differently from one nobody did, so the source

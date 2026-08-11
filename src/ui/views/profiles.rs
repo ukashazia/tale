@@ -78,7 +78,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect::<Vec<_>>();
     let lines = grid::lines(app, &columns, &table_rows, area.width.saturating_sub(4));
-    panel::render(frame, app, area, &title(app, &rows), lines);
+    panel::render_view(frame, app, area, title(app, &rows), lines);
 }
 
 /// The row again, one fact per line, plus the one thing the table has no room
@@ -363,7 +363,7 @@ fn optional(value: Option<&str>) -> String {
 }
 
 /// Route context lives in the border, the way it does on every other route.
-fn title(app: &App, rows: &[ProfileRow<'_>]) -> String {
+fn title(app: &App, rows: &[ProfileRow<'_>]) -> ratatui::text::Line<'static> {
     let mut detail = Vec::new();
     if !app.views.profiles.filter.is_empty() {
         detail.push(format!(
@@ -390,6 +390,7 @@ fn title(app: &App, rows: &[ProfileRow<'_>]) -> String {
             .map_or("none", ProfileRow::label)
     ));
     text::view_title(
+        app.theme,
         "profiles",
         rows.len(),
         app.all_profile_rows().len(),

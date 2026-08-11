@@ -91,11 +91,11 @@ fn render_admin_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
             format!("/{}", text::ellipsize(&app.views.routes.filter, 32)),
         );
     }
-    panel::render(
+    panel::render_view(
         frame,
         app,
         area,
-        &text::view_title("routes", observations.len(), all.len(), &detail),
+        text::view_title(app.theme, "routes", observations.len(), all.len(), &detail),
         lines,
     );
 }

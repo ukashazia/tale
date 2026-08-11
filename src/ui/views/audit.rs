@@ -88,11 +88,11 @@ fn render_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect::<Vec<_>>();
     let lines = grid::lines(app, &columns, &rows, area.width.saturating_sub(4));
-    panel::render(
+    panel::render_view(
         frame,
         app,
         area,
-        &title(app, events.len(), snapshot.events.len()),
+        title(app, events.len(), snapshot.events.len()),
         lines,
     );
 }
@@ -209,7 +209,7 @@ fn push_optional(
     }
 }
 
-fn title(app: &App, shown: usize, total: usize) -> String {
+fn title(app: &App, shown: usize, total: usize) -> Line<'static> {
     let snapshot = app.admin.activity.snapshot.as_ref();
     let mut detail = vec![
         if snapshot.is_some_and(|snapshot| snapshot.delayed) {
@@ -230,5 +230,5 @@ fn title(app: &App, shown: usize, total: usize) -> String {
             format!("/{}", text::ellipsize(&app.views.audit.filter, 32)),
         );
     }
-    text::view_title("audit", shown, total, &detail)
+    text::view_title(app.theme, "audit", shown, total, &detail)
 }

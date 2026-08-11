@@ -27,6 +27,28 @@ pub fn render(
     );
 }
 
+/// A collection panel whose title contains independently styled status data.
+pub fn render_view(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    title: Line<'static>,
+    content: impl Into<Text<'static>>,
+) {
+    frame.render_widget(
+        Paragraph::new(content)
+            .style(app.theme.style(theme::StyleRole::Surface))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.style(theme::StyleRole::BorderNormal))
+                    .padding(Padding::horizontal(1))
+                    .title(title),
+            ),
+        area,
+    );
+}
+
 /// A semantic detail pane whose values may be longer than the available
 /// column. Tables stay single-line; prose and inspector values wrap.
 pub fn render_wrapped(

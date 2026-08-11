@@ -100,11 +100,17 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
     {
         detail.push("partial inventory".to_owned());
     }
-    panel::render(
+    panel::render_view(
         frame,
         app,
         area,
-        &text::view_title("credentials", filtered.len(), credentials.len(), &detail),
+        text::view_title(
+            app.theme,
+            "credentials",
+            filtered.len(),
+            credentials.len(),
+            &detail,
+        ),
         lines,
     );
 }

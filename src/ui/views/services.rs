@@ -57,7 +57,7 @@ fn tab_line(app: &App) -> Line<'static> {
 }
 
 /// The route's own context, in the border where every other view keeps it.
-fn collection_title(app: &App) -> String {
+fn collection_title(app: &App) -> Line<'static> {
     let section = app.views.services.section;
     let shown = section_row_count(app);
     let total = match section {
@@ -100,7 +100,7 @@ fn collection_title(app: &App) -> String {
     if !filter.is_empty() {
         detail.insert(0, format!("/{filter}"));
     }
-    text::view_title(section.noun(), shown, total, &detail)
+    text::view_title(app.theme, section.noun(), shown, total, &detail)
 }
 
 fn section_row_count(app: &App) -> usize {
@@ -140,7 +140,7 @@ fn render_collection(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         lines.extend(body);
     }
-    panel::render(frame, app, area, &collection_title(app), lines);
+    panel::render_view(frame, app, area, collection_title(app), lines);
 }
 
 /// Every section is the same table, differing only in its columns. Exposure is

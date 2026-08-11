@@ -84,7 +84,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .collect::<Vec<_>>();
         grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
     };
-    panel::render(frame, app, area, &title(app), lines);
+    panel::render_view(frame, app, area, title(app), lines);
 }
 
 /// Nothing here is fetched, so an empty page means either that this session has
@@ -298,7 +298,7 @@ fn cell(app: &App, task: &Task, header: &str) -> grid::Cell {
 }
 
 /// Route context lives in the border, the way it does on every other route.
-fn title(app: &App) -> String {
+fn title(app: &App) -> ratatui::text::Line<'static> {
     let mut detail = Vec::new();
     if !app.task_filter.is_empty() {
         detail.push(format!("/{}", text::ellipsize(&app.task_filter, 32)));
@@ -308,6 +308,7 @@ fn title(app: &App) -> String {
         detail.push(format!("{active} running"));
     }
     text::view_title(
+        app.theme,
         "tasks",
         app.filtered_task_count(),
         app.tasks.all().len(),

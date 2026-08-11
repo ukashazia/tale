@@ -71,7 +71,7 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
         registered_table(app, area)
     };
     let lines = grid::lines(app, &columns, &rows, area.width.saturating_sub(4));
-    panel::render(frame, app, area, &devices_title(app), lines);
+    panel::render_view(frame, app, area, devices_title(app), lines);
 }
 
 fn layout_for(app: &App, area: Rect) -> Layout {
@@ -304,7 +304,7 @@ fn optional_bytes(value: Option<u64>) -> String {
 
 /// Route context lives in the border: what this is, how much of it is showing,
 /// and the terms that narrowed it.
-fn devices_title(app: &App) -> String {
+fn devices_title(app: &App) -> ratatui::text::Line<'static> {
     let mut detail = Vec::new();
     if !app.views.devices.filter_draft.is_empty() {
         detail.push(format!(
@@ -328,6 +328,7 @@ fn devices_title(app: &App) -> String {
         detail.push(format!("local client on {local}"));
     }
     text::view_title(
+        app.theme,
         "devices",
         app.visible_indices().len(),
         app.devices_resource.snapshot.len(),
