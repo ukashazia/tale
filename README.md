@@ -4,8 +4,7 @@ Tale is a keyboard-first Tailscale workspace for your terminal. Use it to see
 what is happening on this machine, explore a tailnet, and manage common
 Tailscale resources without jumping between commands and the admin console.
 
-> Tale is experimental. There is no supported 1.0 release yet; install it from
-> a checkout while the platform matrix is still being validated.
+> Tale is experimental while its platform support matrix is being finalized.
 
 ![Tale showing a device inventory and inspector](docs/assets/tale-devices.png)
 
@@ -20,13 +19,57 @@ Tailscale resources without jumping between commands and the admin console.
 Tale starts in local mode, so you do not need an API credential just to try it.
 Tailnet-wide views become available after you add an admin profile.
 
-## Install and run
+## Install
 
-You need a stable Rust toolchain. Install Tailscale too if you want Tale to
-inspect this machine.
+### Homebrew
+
+```sh
+brew install ukashazia/tale/tale
+```
+
+### Nix
+
+```sh
+nix profile install 'github:ukashazia/tale?dir=packaging/nix'
+```
+
+### Debian or Ubuntu
+
+Download the `.deb` for your architecture from the
+[latest release](https://github.com/ukashazia/tale/releases/latest), then run:
+
+```sh
+# x86_64 / amd64
+sudo apt install ./tale_VERSION_amd64.deb
+
+# ARM64
+sudo apt install ./tale_VERSION_arm64.deb
+```
+
+Replace `VERSION` with the release version in the downloaded filename.
+
+### Arch Linux (AUR)
+
+Using an AUR helper:
+
+```sh
+yay -S tale-bin
+# or
+paru -S tale-bin
+```
+
+### Build from source
+
+From a checkout, with a stable Rust toolchain:
 
 ```sh
 cargo install --locked --path .
+```
+
+Install Tailscale too if you want Tale to inspect this machine. Once Tale is
+installed, launch it with:
+
+```sh
 tale
 ```
 
