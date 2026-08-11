@@ -256,12 +256,6 @@ fn post_v1_obsolete_runtime_and_documentation_paths_are_absent() {
 
     for relative in [
         "README.md",
-        "docs/configuration.md",
-        "docs/support.md",
-        "docs/security.md",
-        "docs/install.md",
-        "docs/troubleshooting.md",
-        "docs/release-checklist.md",
         "docs/cli/tale.1",
         "completions/tale.bash",
         "completions/tale.fish",

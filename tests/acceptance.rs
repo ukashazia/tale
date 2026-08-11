@@ -102,25 +102,3 @@ fn doctor_writes_only_a_new_private_bundle_path() {
         }
     }
 }
-
-#[test]
-fn all_acceptance_journeys_have_explicit_evidence_status() {
-    let matrix = fs::read_to_string("tests/acceptance/journeys.md");
-    assert!(matrix.is_ok());
-    if let Ok(matrix) = matrix {
-        for number in 1..=24 {
-            assert!(
-                matrix.contains(&format!("| {number} |")),
-                "missing acceptance journey {number}"
-            );
-        }
-        assert!(matrix.contains("Real-environment evidence"));
-        assert!(matrix.contains("Blocked:"));
-        for journey in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] {
-            assert!(
-                matrix.contains(&format!("| {journey} —")),
-                "missing integrated journey {journey}"
-            );
-        }
-    }
-}

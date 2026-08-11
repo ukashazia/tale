@@ -9,8 +9,6 @@ tapes_dir="${script_dir}/screenshots"
 wallpaper=${1:-}
 intermediates=(
   "${assets_dir}/.tale-devices.mp4"
-  "${assets_dir}/.tale-services.mp4"
-  "${assets_dir}/.tale-navigation.mp4"
 )
 
 if [[ $# -gt 1 ]]; then
@@ -122,7 +120,7 @@ extract_frame() {
     "${output}"
 }
 
-for name in tale-devices tale-services tale-navigation; do
+for name in tale-devices; do
   capture_tape "${tapes_dir}/${name}.tape"
   extract_frame "${name}"
 done
