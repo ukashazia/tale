@@ -9,8 +9,10 @@ use tale::action::{self, ActionContext, ActionId, Binding};
 use tale::app::{App, InteractionMode, Overlay, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
-use tale::domain::policy_workflow::PolicyWorkflow;
-use tale::event::{Event, InputEvent, SourceEvent};
+use tale::domain::policy_workflow::{
+    PolicyDocument, PolicyPreview, PolicySelectorType, PolicyWorkflow,
+};
+use tale::event::{Event, InputEvent, PolicyEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
 use tale::ui;
@@ -229,6 +231,166 @@ fn access_edit_action_becomes_reopen_while_a_workflow_exists() {
     assert!(!actions.contains(&ActionId::AdminPolicyEdit));
     assert!(actions.contains(&ActionId::AdminPolicyEditorReopen));
     assert!(action::validate_transient_sequences(&actions).is_ok());
+}
+
+#[test]
+fn changed_policy_workflow_actions_have_visible_mock_results() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    let candidate_bytes = b"{\n  // Fictional mock policy\n  \"groups\": { \"group:ops\": [\"alice@example.test\", \"bob@example.test\"] },\n}\n";
+    let file = tale::temporary::TemporaryPolicyFile::create(candidate_bytes);
+    assert!(file.is_ok());
+    let Ok(file) = file else {
+        return;
+    };
+    let Some(base_bytes) = app
+        .admin
+        .policy
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.source_bytes.as_slice())
+    else {
+        return;
+    };
+    let base = PolicyDocument::from_slice(base_bytes, tale::mock::MOCK_NOW);
+    let candidate = PolicyDocument::from_slice(candidate_bytes, tale::mock::MOCK_NOW);
+    assert!(base.is_ok() && candidate.is_ok());
+    let (Ok(base), Ok(candidate)) = (base, candidate) else {
+        return;
+    };
+    let mut workflow = PolicyWorkflow::opening(1, "mock".to_owned(), "example.test".to_owned(), 1);
+    workflow.set_base(base);
+    workflow.set_candidate(candidate, file.path().to_path_buf());
+    app.policy_workflow = Some(workflow);
+    app.set_route(Route::Access);
+
+    let actions = app.contextual_actions();
+    for action_id in [
+        ActionId::AdminPolicyEditorReopen,
+        ActionId::AdminPolicyRemoteRefresh,
+        ActionId::AdminPolicyValidate,
+        ActionId::AdminPolicyPreview,
+        ActionId::AdminPolicyDiff,
+        ActionId::AdminPolicyCandidateDiscard,
+        ActionId::AdminPolicyWorkflowClose,
+    ] {
+        assert!(actions.contains(&action_id), "missing {action_id:?}");
+        assert!(app.action_is_available(action_id), "disabled {action_id:?}");
+    }
+
+    assert!(
+        app.dispatch_action(ActionId::AdminPolicyRemoteRefresh)
+            .is_empty()
+    );
+    assert!(
+        app.dispatch_action(ActionId::AdminPolicyValidate)
+            .is_empty()
+    );
+    assert!(
+        app.policy_workflow
+            .as_ref()
+            .and_then(PolicyWorkflow::validation)
+            .is_some()
+    );
+
+    assert!(app.dispatch_action(ActionId::AdminPolicyDiff).is_empty());
+    assert!(
+        app.policy_workflow
+            .as_ref()
+            .and_then(PolicyWorkflow::diff)
+            .is_some()
+    );
+    let backend = TestBackend::new(100, 40);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(_) => return,
+    };
+    assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("Policy actions"));
+    assert!(rendered.contains("Policy diff"));
+    assert!(!rendered.contains("Policy source · read-only"));
+
+    assert!(app.dispatch_action(ActionId::AdminPolicyPreview).is_empty());
+    assert!(matches!(app.overlays.last(), Some(Overlay::Form(_))));
+    app.overlays.pop();
+
+    if let Some(workflow) = app.policy_workflow.as_mut()
+        && let Some(candidate_hash) = workflow.candidate().map(|value| value.hash().to_owned())
+    {
+        let _ = workflow.set_preview(PolicyPreview {
+            candidate_hash,
+            selector_type: PolicySelectorType::User,
+            selector: "alice@example.test".to_owned(),
+            matches: Vec::new(),
+            observed_at: tale::mock::MOCK_NOW,
+        });
+    }
+    assert!(app.action_is_available(ActionId::AdminPolicyApply));
+    assert!(app.dispatch_action(ActionId::AdminPolicyApply).is_empty());
+    assert!(matches!(
+        app.overlays.last(),
+        Some(Overlay::Confirmation(_))
+    ));
+    app.overlays.pop();
+
+    assert!(
+        app.dispatch_action(ActionId::AdminPolicyCandidateDiscard)
+            .is_empty()
+    );
+    assert!(matches!(
+        app.overlays.last(),
+        Some(Overlay::Confirmation(_))
+    ));
+    app.overlays.pop();
+    assert!(
+        app.dispatch_action(ActionId::AdminPolicyWorkflowClose)
+            .is_empty()
+    );
+    assert!(matches!(
+        app.overlays.last(),
+        Some(Overlay::Confirmation(_))
+    ));
+}
+
+#[test]
+fn unchanged_editor_exit_returns_to_policy_source() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    let base = PolicyDocument::from_slice(b"{}\n", 1);
+    assert!(base.is_ok());
+    let Ok(base) = base else {
+        return;
+    };
+    let mut workflow = PolicyWorkflow::opening(7, "mock".to_owned(), "example.test".to_owned(), 1);
+    workflow.set_base(base.clone());
+    workflow.set_candidate(
+        base.clone(),
+        std::path::PathBuf::from("/tmp/mock-policy.hujson"),
+    );
+    app.policy_workflow = Some(workflow);
+    let effects = app.update(Event::Policy(Box::new(PolicyEvent::EditorFinished {
+        workflow_id: 7,
+        result: Ok(base),
+        path: std::path::PathBuf::from("/tmp/mock-policy.hujson"),
+        editor_success: true,
+        editor_code: Some(0),
+    })));
+
+    assert!(app.policy_workflow.is_none());
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, tale::effect::Effect::ResumeTerminal))
+    );
 }
 
 #[test]

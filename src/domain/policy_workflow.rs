@@ -339,6 +339,13 @@ impl PolicyWorkflow {
         self.opened_at
     }
 
+    pub fn has_candidate_changes(&self) -> bool {
+        self.base
+            .as_ref()
+            .zip(self.candidate.as_ref())
+            .is_some_and(|(base, candidate)| base.hash() != candidate.hash())
+    }
+
     pub fn set_base(&mut self, document: PolicyDocument) {
         self.base = Some(document);
         self.latest_remote = None;

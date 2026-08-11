@@ -1470,6 +1470,15 @@ pub enum ShutdownState {
     Requested(ShutdownReason),
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum PolicyWorkflowView {
+    #[default]
+    Actions,
+    Validation,
+    Preview,
+    Diff,
+}
+
 #[derive(Debug)]
 pub struct App {
     pub view_history: ViewHistory,
@@ -1501,6 +1510,7 @@ pub struct App {
     /// second attempt supersedes the first rather than racing it.
     profile_probe_in_flight: Option<String>,
     pub policy_workflow: Option<PolicyWorkflow>,
+    pub policy_workflow_view: PolicyWorkflowView,
     policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
     latest_policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
     pub secret_result: Option<SecretResult>,
@@ -1680,6 +1690,7 @@ impl App {
             profile_statuses: BTreeMap::new(),
             profile_probe_in_flight: None,
             policy_workflow: None,
+            policy_workflow_view: PolicyWorkflowView::Actions,
             policy_temp_file: None,
             latest_policy_temp_file: None,
             secret_result: None,
@@ -1984,17 +1995,28 @@ impl App {
                 match result {
                     Ok(candidate) => {
                         self.access_explorer_result = None;
+                        let unchanged = self
+                            .policy_workflow
+                            .as_ref()
+                            .and_then(PolicyWorkflow::base)
+                            .is_some_and(|base| base.hash() == candidate.hash());
+                        if unchanged {
+                            effects.extend(self.close_policy_workflow());
+                            if !editor_success {
+                                self.runtime_error = Some(format!(
+                                    "external editor returned {}; policy was unchanged",
+                                    editor_code.map_or_else(
+                                        || "signal".to_owned(),
+                                        |value| value.to_string()
+                                    )
+                                ));
+                            }
+                            return effects;
+                        }
                         if let Some(workflow) = self.policy_workflow.as_mut() {
                             workflow.set_candidate(candidate, path.clone());
-                            if let Some((base, candidate)) =
-                                workflow.base().zip(workflow.candidate())
-                                && let Ok(diff) = crate::admin::policy_mutations::build_policy_diff(
-                                    base, candidate,
-                                )
-                            {
-                                let _ = workflow.set_diff(diff);
-                            }
                         }
+                        self.policy_workflow_view = PolicyWorkflowView::Actions;
                         if !editor_success {
                             self.runtime_error = Some(format!(
                                 "external editor returned {}; candidate retained",
@@ -2002,7 +2024,6 @@ impl App {
                                     .map_or_else(|| "signal".to_owned(), |value| value.to_string())
                             ));
                         }
-                        effects.extend(self.refresh_policy_workflow());
                     }
                     Err(detail) => {
                         self.access_explorer_result = None;
@@ -2039,6 +2060,7 @@ impl App {
                         }
                     }
                 }
+                self.policy_workflow_view = PolicyWorkflowView::Validation;
                 Vec::new()
             }
             PolicyEvent::Previewed {
@@ -2063,6 +2085,7 @@ impl App {
                         }
                     }
                 }
+                self.policy_workflow_view = PolicyWorkflowView::Preview;
                 Vec::new()
             }
             PolicyEvent::Diffed {
@@ -2083,6 +2106,7 @@ impl App {
                         Err(detail) => self.runtime_error = Some(detail),
                     }
                 }
+                self.policy_workflow_view = PolicyWorkflowView::Diff;
                 Vec::new()
             }
             PolicyEvent::Applied {
@@ -5011,6 +5035,29 @@ impl App {
     }
 
     fn policy_credential_admin_available(&self, action_id: ActionId) -> bool {
+        if self.source_mode == SourceMode::Mock
+            && matches!(
+                action_id,
+                ActionId::AdminPolicyEdit
+                    | ActionId::AdminPolicyEditorReopen
+                    | ActionId::AdminPolicyCandidateDiscard
+                    | ActionId::AdminPolicyRemoteRefresh
+                    | ActionId::AdminPolicyValidate
+                    | ActionId::AdminPolicyPreview
+                    | ActionId::AdminPolicyDiff
+                    | ActionId::AdminPolicyApply
+                    | ActionId::AdminPolicyWorkflowClose
+            )
+        {
+            return match action_id {
+                ActionId::AdminPolicyEdit => self.policy_workflow.is_none(),
+                ActionId::AdminPolicyApply => self
+                    .policy_workflow
+                    .as_ref()
+                    .is_some_and(|workflow| workflow.state() == PolicyState::ReadyToApply),
+                _ => self.policy_workflow.is_some(),
+            };
+        }
         if self.admin.profile.is_none() {
             return false;
         }
@@ -6959,6 +7006,45 @@ impl App {
             self.runtime_error = Some(error.to_string());
             return Vec::new();
         }
+        if self.source_mode == SourceMode::Mock {
+            let Some(snapshot) = self.admin.policy.snapshot.as_ref() else {
+                self.runtime_error = Some("the mock policy source is unavailable".to_owned());
+                return Vec::new();
+            };
+            let document =
+                match crate::domain::policy_workflow::PolicyDocument::from_bytes_with_content_type(
+                    snapshot.source_bytes.clone(),
+                    snapshot.content_type.clone(),
+                    self.now,
+                ) {
+                    Ok(document) => document,
+                    Err(error) => {
+                        self.runtime_error = Some(error.to_string());
+                        return Vec::new();
+                    }
+                };
+            let file = match crate::temporary::TemporaryPolicyFile::create(document.bytes()) {
+                Ok(file) => file,
+                Err(error) => {
+                    self.runtime_error = Some(error.to_string());
+                    return Vec::new();
+                }
+            };
+            let workflow_id = self.next_policy_workflow_id;
+            self.next_policy_workflow_id = self.next_policy_workflow_id.saturating_add(1);
+            let path = file.path().to_path_buf();
+            self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
+            let mut workflow = PolicyWorkflow::opening(
+                workflow_id,
+                "mock".to_owned(),
+                "example.test".to_owned(),
+                self.now,
+            );
+            workflow.set_base(document.clone());
+            workflow.set_candidate(document, path);
+            self.policy_workflow = Some(workflow);
+            return self.start_policy_editor();
+        }
         let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
             self.runtime_error = Some("an authenticated admin profile is required".to_owned());
             return Vec::new();
@@ -6981,6 +7067,24 @@ impl App {
     }
 
     fn refresh_policy_workflow(&mut self) -> Vec<Effect> {
+        self.policy_workflow_view = PolicyWorkflowView::Actions;
+        if self.source_mode == SourceMode::Mock {
+            let latest = self.admin.policy.snapshot.as_ref().and_then(|snapshot| {
+                crate::domain::policy_workflow::PolicyDocument::from_bytes_with_content_type(
+                    snapshot.source_bytes.clone(),
+                    snapshot.content_type.clone(),
+                    self.now,
+                )
+                .ok()
+            });
+            if let Some(latest) = latest
+                && let Some(workflow) = self.policy_workflow.as_mut()
+            {
+                workflow.set_latest_remote(latest);
+            }
+            self.runtime_error = Some("mock remote policy refreshed".to_owned());
+            return Vec::new();
+        }
         let Some(workflow) = self.policy_workflow.as_ref() else {
             return self.open_policy_workflow();
         };
@@ -7043,33 +7147,31 @@ impl App {
     }
 
     fn discard_policy_candidate(&mut self) -> Vec<Effect> {
-        let base = self
-            .policy_workflow
-            .as_ref()
-            .and_then(PolicyWorkflow::base)
-            .cloned();
-        let Some(base) = base else {
-            self.runtime_error = Some("the policy base is unavailable".to_owned());
-            return Vec::new();
-        };
-        self.close_policy_temp_file();
-        self.close_latest_policy_temp_file();
-        match crate::temporary::TemporaryPolicyFile::create(base.bytes()) {
-            Ok(file) => {
-                let path = file.path().to_path_buf();
-                self.policy_temp_file = Some(Arc::new(Mutex::new(file)));
-                self.access_explorer_result = None;
-                if let Some(workflow) = self.policy_workflow.as_mut() {
-                    workflow.discard_candidate();
-                    workflow.set_candidate(base, path);
-                }
-            }
-            Err(error) => self.runtime_error = Some(error.to_string()),
-        }
-        Vec::new()
+        self.close_policy_workflow()
     }
 
     fn validate_policy_candidate(&mut self) -> Vec<Effect> {
+        self.policy_workflow_view = PolicyWorkflowView::Validation;
+        if self.source_mode == SourceMode::Mock {
+            let Some(workflow) = self.policy_workflow.as_mut() else {
+                return Vec::new();
+            };
+            let Some(candidate_hash) = workflow.candidate().map(|value| value.hash().to_owned())
+            else {
+                return Vec::new();
+            };
+            let _ = workflow.set_validation(crate::domain::policy_workflow::PolicyValidation {
+                candidate_hash,
+                validated_at: self.now,
+                valid: true,
+                message: Some("mock server validation passed".to_owned()),
+                bounded_safe_detail: None,
+                diagnostics: Vec::new(),
+                server_tests: Vec::new(),
+                observed_at: self.now,
+            });
+            return Vec::new();
+        }
         let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
             self.runtime_error = Some("an authenticated admin profile is required".to_owned());
             return Vec::new();
@@ -7099,6 +7201,7 @@ impl App {
     }
 
     fn preview_policy_candidate(&mut self) -> Vec<Effect> {
+        self.policy_workflow_view = PolicyWorkflowView::Preview;
         let selector = self
             .selected_admin_user()
             .map_or_else(|| "autogroup:members".to_owned(), |user| user.id.clone());
@@ -7131,6 +7234,28 @@ impl App {
         selector_type: PolicySelectorType,
         selector: String,
     ) -> Vec<Effect> {
+        if self.source_mode == SourceMode::Mock {
+            let Some(workflow) = self.policy_workflow.as_mut() else {
+                return Vec::new();
+            };
+            let Some(candidate_hash) = workflow.candidate().map(|value| value.hash().to_owned())
+            else {
+                return Vec::new();
+            };
+            let _ = workflow.set_preview(crate::domain::policy_workflow::PolicyPreview {
+                candidate_hash,
+                selector_type,
+                selector,
+                matches: vec![crate::domain::policy_workflow::PolicyPreviewMatch {
+                    users: vec!["alice@example.test".to_owned()],
+                    ports: vec!["tag:server:22".to_owned()],
+                    line_number: Some(4),
+                }],
+                observed_at: self.now,
+            });
+            self.policy_workflow_view = PolicyWorkflowView::Preview;
+            return Vec::new();
+        }
         let Some((profile, tailnet, credential)) = self.admin_policy_context() else {
             self.runtime_error = Some("an authenticated admin profile is required".to_owned());
             return Vec::new();
@@ -7162,6 +7287,7 @@ impl App {
     }
 
     fn diff_policy_candidate(&mut self) -> Vec<Effect> {
+        self.policy_workflow_view = PolicyWorkflowView::Diff;
         if !self.sync_policy_candidate_file() {
             return Vec::new();
         }
@@ -7462,6 +7588,7 @@ impl App {
             workflow.close();
         }
         self.policy_workflow = None;
+        self.policy_workflow_view = PolicyWorkflowView::Actions;
         self.pending_auth_key_request = None;
         self.pending_credential_revoke = None;
         Vec::new()
@@ -9271,6 +9398,20 @@ impl App {
             return self.close_policy_workflow();
         }
         if state.action_id == ActionId::AdminPolicyApply {
+            if self.source_mode == SourceMode::Mock {
+                self.overlays.pop();
+                if let Some(workflow) = self.policy_workflow.as_mut() {
+                    if let Err(error) = workflow.apply_guard(self.now) {
+                        self.runtime_error = Some(error.to_string());
+                        return Vec::new();
+                    }
+                    workflow.mark_applying();
+                    workflow.mark_verifying();
+                    workflow.mark_succeeded();
+                    self.runtime_error = Some("mock policy applied and verified".to_owned());
+                }
+                return Vec::new();
+            }
             if self.resolved_config.read_only
                 || self.admin.profile_read_only
                 || !self.admin_scope_allowed("policy_file:write")

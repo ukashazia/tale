@@ -2,7 +2,8 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::app::App;
+use crate::action::{self, ActionId};
+use crate::app::{App, PolicyWorkflowView};
 use crate::ui::components::{grid, panel};
 use crate::ui::{text, theme};
 
@@ -95,6 +96,22 @@ pub fn search_matches(app: &App, query: &str) -> Vec<usize> {
     if query.is_empty() {
         return Vec::new();
     }
+    if app
+        .policy_workflow
+        .as_ref()
+        .is_some_and(crate::domain::policy_workflow::PolicyWorkflow::has_candidate_changes)
+    {
+        return workflow_lines(app)
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                line_text(line)
+                    .to_ascii_lowercase()
+                    .contains(&query)
+                    .then_some(index)
+            })
+            .collect();
+    }
     let offset = document_prefix(app, policy).len();
     source_lines(app, policy)
         .iter()
@@ -109,9 +126,146 @@ pub fn search_matches(app: &App, query: &str) -> Vec<usize> {
 }
 
 fn document_lines(app: &App, policy: &crate::domain::policy::PolicySnapshot) -> Vec<Line<'static>> {
+    if app
+        .policy_workflow
+        .as_ref()
+        .is_some_and(crate::domain::policy_workflow::PolicyWorkflow::has_candidate_changes)
+    {
+        return workflow_lines(app);
+    }
     let mut lines = document_prefix(app, policy);
     lines.extend(source_lines(app, policy));
     lines
+}
+
+fn workflow_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(workflow) = app.policy_workflow.as_ref() else {
+        return Vec::new();
+    };
+    let summary = workflow.summary();
+    let mut lines = grid::detail(
+        app,
+        &[
+            ("state", summary.state.label().to_owned()),
+            (
+                "base",
+                summary
+                    .base_hash
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+            ),
+            (
+                "candidate",
+                summary
+                    .candidate_hash
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+            ),
+            ("candidate bytes", summary.candidate_bytes.to_string()),
+        ],
+    );
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "Policy actions",
+        app.theme.style(theme::StyleRole::SectionHeading),
+    )));
+    for action_id in policy_actions() {
+        let Some(spec) = action::find_action(action_id) else {
+            continue;
+        };
+        let key = action::transient_sequence(action_id).map_or("a", |sequence| sequence);
+        let available = app.action_unavailable_reason(action_id).is_none();
+        let role = if available {
+            theme::StyleRole::TextPrimary
+        } else {
+            theme::StyleRole::TextMuted
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{key:<3}"),
+                app.theme.style(theme::StyleRole::Focus),
+            ),
+            Span::styled(spec.label, app.theme.style(role)),
+        ]));
+    }
+    lines.push(Line::default());
+    if app.policy_workflow_view == PolicyWorkflowView::Diff
+        && let Some(diff) = workflow.diff()
+    {
+        lines.push(Line::from(Span::styled(
+            format!("Policy diff · +{} -{}", diff.additions, diff.removals),
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )));
+        lines.extend(diff.text.lines().map(|line| {
+            let role = if line.starts_with('+') && !line.starts_with("+++") {
+                theme::StyleRole::DiffAdded
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                theme::StyleRole::StateDanger
+            } else {
+                theme::StyleRole::TextPrimary
+            };
+            Line::from(Span::styled(line.to_owned(), app.theme.style(role)))
+        }));
+    } else if app.policy_workflow_view == PolicyWorkflowView::Validation
+        && let Some(validation) = workflow.validation()
+    {
+        lines.push(Line::from(Span::styled(
+            if validation.valid {
+                "Validation passed"
+            } else {
+                "Validation failed"
+            },
+            app.theme.style(if validation.valid {
+                theme::StyleRole::StateHealthy
+            } else {
+                theme::StyleRole::StateDanger
+            }),
+        )));
+        if let Some(message) = validation.message.as_ref() {
+            lines.push(Line::from(message.to_owned()));
+        }
+        for diagnostic in &validation.diagnostics {
+            lines.push(Line::from(diagnostic.message.clone()));
+        }
+    } else if app.policy_workflow_view == PolicyWorkflowView::Preview
+        && let Some(preview) = workflow.preview()
+    {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Permission preview · {} {} · {} matches",
+                preview.selector_type.api_value(),
+                preview.selector,
+                preview.matches.len()
+            ),
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )));
+        for item in &preview.matches {
+            lines.push(Line::from(format!(
+                "users: {} · ports: {} · line: {}",
+                item.users.join(", "),
+                item.ports.join(", "),
+                item.line_number
+                    .map_or_else(|| "—".to_owned(), |line| line.to_string())
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Choose an action above. The fetched policy source is hidden while this candidate is pending.",
+            app.theme.style(theme::StyleRole::TextMuted),
+        )));
+    }
+    lines
+}
+
+const fn policy_actions() -> [ActionId; 8] {
+    [
+        ActionId::AdminPolicyEditorReopen,
+        ActionId::AdminPolicyRemoteRefresh,
+        ActionId::AdminPolicyValidate,
+        ActionId::AdminPolicyPreview,
+        ActionId::AdminPolicyDiff,
+        ActionId::AdminPolicyApply,
+        ActionId::AdminPolicyCandidateDiscard,
+        ActionId::AdminPolicyWorkflowClose,
+    ]
 }
 
 fn document_prefix(
