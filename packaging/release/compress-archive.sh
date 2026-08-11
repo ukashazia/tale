@@ -21,4 +21,4 @@ done
 [ -n "$input" ] && [ -n "$output" ] || usage
 [ -f "$input" ] || { echo "input is not a regular file: $input" >&2; exit 66; }
 [ ! -e "$output" ] || { echo "output already exists: $output" >&2; exit 73; }
-zstd --no-progress --force --output "$output" "$input"
+zstd --no-progress --force -o "$output" "$input"
