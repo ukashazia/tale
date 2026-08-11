@@ -201,9 +201,10 @@ fn stale_watcher_generation_cannot_replace_current_connection_state() {
             app.local_daemon_state,
             tale::domain::source::LocalDaemonState::Reconnecting
         ));
-        assert_eq!(app.current_route(), Route::Overview);
+        assert_eq!(app.current_route(), Route::Local);
+        assert_eq!(app.views.local.section, LocalSection::Accounts);
         press(&mut app, KeyCode::Char('['));
-        assert_eq!(app.current_route(), Route::Overview);
+        assert_eq!(app.current_route(), Route::Local);
     }
 }
 
@@ -237,6 +238,28 @@ fn local_account_context_survives_daemon_transitions_and_errors() {
         assert_eq!(app.current_route(), Route::Local);
         assert_eq!(app.views.local.section, LocalSection::Accounts);
     }
+}
+
+#[test]
+fn logged_out_default_opens_local_account_recovery() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    let Some(mut snapshot) = app.local_resource.snapshot.clone() else {
+        return;
+    };
+    snapshot.backend_state = tale::domain::source::LocalState::NeedsLogin {
+        auth_url: Some("https://login.example".to_owned()),
+    };
+    let generation = app.local_resource.generation.saturating_add(1);
+
+    let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+        generation,
+        snapshot: Box::new(snapshot),
+    })));
+
+    assert_eq!(app.current_route(), Route::Local);
+    assert_eq!(app.views.local.section, LocalSection::Accounts);
 }
 
 #[test]
@@ -367,7 +390,7 @@ fn navigation_requires_a_reachable_daemon_for_local_only_views() {
     app.set_route(Route::Overview);
 
     assert_eq!(app.current_route(), Route::Overview);
-    assert!(app.route_unavailable_reason(Route::Local).is_some());
+    assert!(app.route_unavailable_reason(Route::Local).is_none());
     assert!(!app.action_is_available(ActionId::ViewServices));
     press(&mut app, KeyCode::Char(':'));
     let _ = app.update(Event::Input(InputEvent::Paste("services".to_owned())));

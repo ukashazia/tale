@@ -327,7 +327,6 @@ fn navigation_mutes_views_without_their_required_source() {
         ("access", "policies"),
         ("credentials", "keys & tokens"),
         ("audit", "tailnet log"),
-        ("local", "this machine"),
         ("services", "serve, funnel"),
         ("diagnostics", "client metrics"),
         ("devices", "machines & status"),
@@ -338,9 +337,9 @@ fn navigation_mutes_views_without_their_required_source() {
         assert!(cell.is_some_and(|cell| cell.modifier.contains(disabled.add_modifier)));
     }
 
-    let profiles = cell_for("profiles", "which source");
+    let local = cell_for("local", "this machine");
     assert_eq!(
-        profiles.map(|cell| cell.fg),
+        local.map(|cell| cell.fg),
         app.theme.style(StyleRole::KeyHint).fg
     );
 }

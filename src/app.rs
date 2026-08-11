@@ -150,7 +150,6 @@ pub enum Route {
 
 impl Route {
     pub const DEFAULT: Self = Self::Devices;
-    pub const UNAVAILABLE_FALLBACK: Self = Self::Overview;
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -202,7 +201,7 @@ impl Route {
     }
 
     pub const fn requires_local_daemon(self) -> bool {
-        matches!(self, Self::Local | Self::Services | Self::Diagnostics)
+        matches!(self, Self::Services | Self::Diagnostics)
     }
 
     pub const fn requires_observation_source(self) -> bool {
@@ -1681,7 +1680,7 @@ impl App {
             Err(error) => (None, Some(format!("saved-view state is invalid: {error}"))),
         };
         let initial_route = if source_mode == SourceMode::Unavailable && admin.profile.is_none() {
-            Route::UNAVAILABLE_FALLBACK
+            Route::Overview
         } else {
             Route::DEFAULT
         };
@@ -3982,6 +3981,9 @@ impl App {
         if route.requires_admin_profile() && self.admin.profile.is_none() {
             return Some("Select an administration profile to open this view");
         }
+        if route == Route::Local && self.source_mode == SourceMode::Unavailable {
+            return Some("Enable local integration to open this view");
+        }
         if route.requires_local_daemon() && !self.local_routes_available() {
             return Some("Connect to the local daemon to open this view");
         }
@@ -4002,15 +4004,17 @@ impl App {
     }
 
     fn leave_unavailable_route(&mut self) {
-        if self.current_route() == Route::Local {
-            return;
-        }
         if self
             .route_unavailable_reason(self.current_route())
             .is_some()
         {
-            self.set_route(Route::UNAVAILABLE_FALLBACK);
+            self.open_local_account_recovery();
         }
+    }
+
+    fn open_local_account_recovery(&mut self) {
+        self.set_route(Route::Local);
+        self.views.local.section = LocalSection::Accounts;
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
@@ -14555,6 +14559,7 @@ impl App {
                     return Vec::new();
                 }
                 let snapshot = *snapshot;
+                let needs_login = matches!(&snapshot.backend_state, LocalState::NeedsLogin { .. });
                 if self.local_watcher_connected {
                     self.local_daemon_state = LocalDaemonState::Live;
                 }
@@ -14567,6 +14572,12 @@ impl App {
                 );
                 self.local_resource.succeed(generation, snapshot);
                 self.refresh_device_view();
+                if needs_login
+                    && self.current_route() == Route::DEFAULT
+                    && self.admin.profile.is_none()
+                {
+                    self.open_local_account_recovery();
+                }
                 let mut effects = Vec::new();
                 if self.local_executable.is_some()
                     && self.local_cli_state == LocalCliState::Available
