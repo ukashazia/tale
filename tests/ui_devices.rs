@@ -419,7 +419,7 @@ fn slash_searches_inside_device_details_and_n_walks_matches() {
     assert!(matches!(
         app.interaction,
         tale::app::InteractionMode::FilterLine(tale::app::FilterLineState {
-            purpose: tale::app::FilterLinePurpose::DeviceDetailSearch { .. },
+            purpose: tale::app::FilterLinePurpose::DetailSearch { .. },
             ..
         })
     ));

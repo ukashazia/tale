@@ -72,6 +72,16 @@ fn press(app: &mut App, code: KeyCode) {
 }
 
 #[test]
+fn config_table_filter_is_fuzzy_across_visible_columns() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.views.config.filter = "uithmses".to_owned();
+    let rows = app.config_rows();
+    assert!(rows.iter().any(|row| row.name == "ui.theme.session"));
+}
+
+#[test]
 fn bootstrap_and_source_updates_are_typed_and_deterministic() {
     let app = mock_app();
     assert!(app.is_some());

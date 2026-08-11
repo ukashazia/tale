@@ -1,13 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use tale::app::{App, Route, SourceMode};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
-use tale::event::{Event, LocalEvent};
+use tale::event::{Event, InputEvent, LocalEvent};
 use tale::local::daemon::decode_status;
 use tale::paths::{PathEnvironment, Platform};
 
@@ -62,6 +63,30 @@ fn local_overview_and_local_view_show_snapshot_without_blocking_navigation() {
             assert!(stale.iter().any(|line| line.contains("observer")));
         }
     }
+}
+
+#[test]
+fn slash_searches_the_local_detail_document() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    app.set_route(Route::Local);
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('/'),
+        KeyModifiers::NONE,
+    ))));
+    assert!(matches!(
+        app.interaction,
+        tale::app::InteractionMode::FilterLine(tale::app::FilterLineState {
+            purpose: tale::app::FilterLinePurpose::DetailSearch {
+                route: Route::Local,
+                ..
+            },
+            ..
+        })
+    ));
+    let _ = app.update(Event::Input(InputEvent::Paste("Identity".to_owned())));
+    assert_eq!(app.detail_search, "Identity");
 }
 
 fn render_lines(app: &App, width: u16, height: u16) -> Option<Vec<String>> {

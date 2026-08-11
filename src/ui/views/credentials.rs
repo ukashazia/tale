@@ -43,6 +43,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .snapshot
         .as_ref()
         .map_or(&[][..], |snapshot| snapshot.records.as_slice());
+    let filtered = app.filtered_admin_credentials();
     let lines = if credentials.is_empty() {
         text::empty_state(
             app.theme,
@@ -65,8 +66,8 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .admin_credential_selected
             .saturating_add(1)
             .saturating_sub(viewport)
-            .min(credentials.len().saturating_sub(1));
-        let rows = credentials
+            .min(filtered.len().saturating_sub(1));
+        let rows = filtered
             .iter()
             .enumerate()
             .skip(start)
@@ -86,6 +87,12 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
     };
     let mut detail = vec!["metadata only".to_owned()];
+    if !app.views.credentials.filter.is_empty() {
+        detail.insert(
+            0,
+            format!("/{}", text::ellipsize(&app.views.credentials.filter, 32)),
+        );
+    }
     if resource
         .snapshot
         .as_ref()
@@ -97,18 +104,13 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame,
         app,
         area,
-        &text::view_title("credentials", credentials.len(), credentials.len(), &detail),
+        &text::view_title("credentials", filtered.len(), credentials.len(), &detail),
         lines,
     );
 }
 
 fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let credential = app
-        .admin
-        .credentials
-        .snapshot
-        .as_ref()
-        .and_then(|snapshot| snapshot.records.get(app.admin_credential_selected));
+    let credential = app.selected_admin_credential_for_view();
     let Some(credential) = credential else {
         panel::render(frame, app, area, "inspector", "No credential selected");
         return;

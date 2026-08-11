@@ -449,7 +449,7 @@ pub fn filter_menu_height(app: &App, width: u16, available: u16) -> u16 {
     if matches!(
         app.interaction,
         InteractionMode::FilterLine(FilterLineState {
-            purpose: FilterLinePurpose::DeviceDetailSearch { .. },
+            purpose: FilterLinePurpose::DetailSearch { .. },
             ..
         })
     ) {
@@ -470,7 +470,7 @@ fn rendered_columns(app: &App, area: Rect) -> usize {
 }
 
 fn filter_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
-    if matches!(state.purpose, FilterLinePurpose::DeviceDetailSearch { .. }) {
+    if matches!(state.purpose, FilterLinePurpose::DetailSearch { .. }) {
         return detail_search_lines(app, state, area);
     }
     let content_budget = usize::from(area.height).saturating_sub(FILTER_CHROME);
@@ -501,9 +501,20 @@ fn filter_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
 fn detail_search_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
     let key = app.theme.style(theme::StyleRole::KeyHint);
     let label = app.theme.style(theme::StyleRole::TextMuted);
+    let device = matches!(
+        state.purpose,
+        FilterLinePurpose::DetailSearch {
+            route: Route::Devices,
+            ..
+        }
+    );
     let header = Line::from(vec![
         Span::styled(
-            "Search device details",
+            if device {
+                "Search device details"
+            } else {
+                "Search details"
+            },
             app.theme.style(theme::StyleRole::Focus),
         ),
         Span::raw("   "),
@@ -513,12 +524,12 @@ fn detail_search_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellL
         Span::styled(" restore", label),
     ]);
     let (prompt, caret) = detail_search_prompt_line(app, state, area.width);
-    let status = if state.error.is_some() {
+    let status = if device && state.error.is_some() {
         Line::from(Span::styled(
             "No matches in this device record",
             app.theme.style(theme::StyleRole::StateDanger),
         ))
-    } else {
+    } else if device {
         let matches = crate::ui::components::inspector::device_detail_search_matches(
             app,
             &state.editor.input,
@@ -532,6 +543,13 @@ fn detail_search_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellL
             Span::styled("n/N", key),
             Span::styled(" next/previous after Enter", label),
         ])
+    } else {
+        Line::from(vec![
+            Span::styled("Enter", key),
+            Span::styled(" keep", label),
+            Span::raw("   "),
+            Span::styled("matching lines are highlighted", label),
+        ])
     };
     (
         vec![header, prompt, status],
@@ -544,7 +562,7 @@ fn active_filter_prompt_line(
     state: &FilterLineState,
     width: u16,
 ) -> (Line<'static>, Option<u16>) {
-    if matches!(state.purpose, FilterLinePurpose::DeviceDetailSearch { .. }) {
+    if matches!(state.purpose, FilterLinePurpose::DetailSearch { .. }) {
         detail_search_prompt_line(app, state, width)
     } else {
         filter_prompt_line(app, state, width)
@@ -1717,7 +1735,7 @@ fn help_group(id: ActionId) -> Option<HelpGroup> {
         | ActionId::TaskCancel => Some(HelpGroup::CurrentView),
         ActionId::ViewCommandLine
         | ActionId::ViewFilter
-        | ActionId::DeviceDetailSearch
+        | ActionId::DetailSearch
         | ActionId::DeviceDetailNextMatch
         | ActionId::DeviceDetailPreviousMatch
         | ActionId::ResourceActions

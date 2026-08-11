@@ -695,6 +695,34 @@ fn the_mapping_table_answers_filter_sort_and_copy() {
     }
 }
 
+#[test]
+fn every_services_table_uses_fuzzy_filtering() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    if let Some(shares) = app.services_snapshot.taildrive.value.as_mut() {
+        shares.push(TaildriveShare {
+            name: "archive".to_owned(),
+            path: "/srv/archive".into(),
+            as_user: None,
+        });
+    }
+    app.views.services.section = ServiceSection::Taildrive;
+    app.views.services.filter_draft = "dcs".to_owned();
+    assert_eq!(app.visible_taildrive_shares().len(), 1);
+    assert_eq!(app.visible_taildrive_shares()[0].name, "docs");
+
+    if let Some(domains) = app.services_snapshot.certificate_domains.value.as_mut() {
+        domains.push("other.example.org".to_owned());
+    }
+    app.views.services.section = ServiceSection::Certificates;
+    app.views.services.filter_draft = "ndex".to_owned();
+    assert_eq!(
+        app.visible_certificate_domains(),
+        vec!["node.example.ts.net"]
+    );
+}
+
 /// The route's own key was sorted past `? more`, and the hint printed inside
 /// the box named keys that did something else entirely.
 #[test]

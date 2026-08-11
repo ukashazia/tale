@@ -57,6 +57,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector: Opti
 fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let resource = &app.admin.users;
     let users = resource.snapshot.as_deref().unwrap_or_default();
+    let filtered = app.filtered_admin_users();
     let lines = if users.is_empty() {
         text::empty_state(
             app.theme,
@@ -80,7 +81,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 width: *width,
             })
             .collect::<Vec<_>>();
-        let rows = visible_users(app, users, area)
+        let rows = visible_users(app, &filtered, area)
             .map(|(user, selected)| {
                 let cells = COLUMNS
                     .iter()
@@ -92,7 +93,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .collect::<Vec<_>>();
         grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
     };
-    panel::render(frame, app, area, &title(users), lines);
+    panel::render(frame, app, area, &title(app, &filtered, users.len()), lines);
 }
 
 /// The row again, one fact per line. Only what the API reported: a row of
@@ -162,7 +163,7 @@ fn ago(app: &App, moment: crate::domain::Timestamp) -> String {
 /// of their own, so the cursor position decides which slice is on screen.
 fn visible_users<'a>(
     app: &App,
-    users: &'a [AdminUser],
+    users: &'a [&'a AdminUser],
     area: Rect,
 ) -> impl Iterator<Item = (&'a AdminUser, bool)> {
     let viewport = usize::from(area.height.saturating_sub(3)).max(1);
@@ -176,7 +177,7 @@ fn visible_users<'a>(
         .enumerate()
         .skip(start)
         .take(viewport)
-        .map(move |(index, user)| (user, index == selected))
+        .map(move |(index, user)| (*user, index == selected))
 }
 
 /// The one cell that means something the row does not: whether the user is on
@@ -229,7 +230,7 @@ fn age(app: &App, moment: Option<crate::domain::Timestamp>) -> String {
 }
 
 /// Route context lives in the border, the way it does on every other route.
-fn title(users: &[AdminUser]) -> String {
+fn title(app: &App, users: &[&AdminUser], total: usize) -> String {
     let mut detail = Vec::new();
     let connected = users
         .iter()
@@ -238,5 +239,11 @@ fn title(users: &[AdminUser]) -> String {
     if connected > 0 {
         detail.push(format!("{connected} connected"));
     }
-    text::view_title("users", users.len(), users.len(), &detail)
+    if !app.views.users.filter.is_empty() {
+        detail.insert(
+            0,
+            format!("/{}", text::ellipsize(&app.views.users.filter, 32)),
+        );
+    }
+    text::view_title("users", users.len(), total, &detail)
 }

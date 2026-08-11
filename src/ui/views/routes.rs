@@ -37,7 +37,8 @@ pub fn render_admin(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector
 
 fn render_admin_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let resource = &app.admin.routes;
-    let observations = app.admin.route_observations();
+    let all = app.admin.route_observations();
+    let observations = app.filtered_admin_routes();
     let lines = if observations.is_empty() {
         text::empty_state(
             app.theme,
@@ -79,29 +80,34 @@ fn render_admin_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .collect::<Vec<_>>();
         grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
     };
-    let detail = if observations.iter().any(|route| !route.complete) {
+    let mut detail = if observations.iter().any(|route| !route.complete) {
         vec!["some observations incomplete".to_owned()]
     } else {
         Vec::new()
     };
+    if !app.views.routes.filter.is_empty() {
+        detail.insert(
+            0,
+            format!("/{}", text::ellipsize(&app.views.routes.filter, 32)),
+        );
+    }
     panel::render(
         frame,
         app,
         area,
-        &text::view_title("routes", observations.len(), observations.len(), &detail),
+        &text::view_title("routes", observations.len(), all.len(), &detail),
         lines,
     );
 }
 
 fn render_admin_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let observations = app.admin.route_observations();
-    let Some(route) = observations.get(app.admin_route_selected) else {
+    let Some(route) = app.selected_admin_route_for_view() else {
         panel::render(frame, app, area, "inspector", "No route selected");
         return;
     };
     let pairs = [
         ("device", route.device_id.clone()),
-        ("kind", route_role(route).to_owned()),
+        ("kind", route_role(&route).to_owned()),
         (
             "observation",
             if route.complete {

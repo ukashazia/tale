@@ -372,6 +372,13 @@ pub const fn config_schema() -> FilterSchema {
     }
 }
 
+pub const fn collection_schema() -> FilterSchema {
+    FilterSchema {
+        free_text: "fuzzy-matches every visible column",
+        groups: &[],
+    }
+}
+
 pub const fn empty_schema() -> FilterSchema {
     FilterSchema {
         free_text: "",
@@ -1322,7 +1329,7 @@ fn starts_with_matches(candidate: &str, value: &str) -> bool {
 /// Case-insensitive subsequence test, the same rule the completion tray ranks
 /// with. Only a bare word takes this rule, where the user has given no field to
 /// aim at and a forgiving match is the point.
-fn fuzzy_matches(candidate: &str, value: &str) -> bool {
+pub fn fuzzy_matches(candidate: &str, value: &str) -> bool {
     let mut characters = candidate.chars();
     value
         .chars()

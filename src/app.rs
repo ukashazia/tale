@@ -318,6 +318,7 @@ pub struct FilterRestoration {
     pub profile_selection: usize,
     /// The cursor `:config` had before live filtering began.
     pub config_selection: usize,
+    pub collection_selection: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -340,7 +341,8 @@ pub struct FilterLineState {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum FilterLinePurpose {
     Collection,
-    DeviceDetailSearch {
+    DetailSearch {
+        route: Route,
         scroll: usize,
         query: String,
         match_line: Option<usize>,
@@ -1369,7 +1371,9 @@ impl<'a> ProfileRow<'a> {
                 haystack.push(config.credential_backend.label().to_ascii_lowercase());
             }
         }
-        haystack.iter().any(|value| value.contains(needle))
+        haystack
+            .iter()
+            .any(|value| filter::fuzzy_matches(value, needle))
     }
 
     fn ordering_key(&self, field: ProfileSortField) -> String {
@@ -1397,6 +1401,7 @@ pub struct TaskViewState {
 /// `admin_user_selected`, beside the other admin cursors.
 #[derive(Debug, Clone, Default)]
 pub struct UserViewState {
+    pub filter: String,
     /// Whether the side inspector shares the pane with the table. Off by
     /// default, the way the devices pane is: the table is what the route is
     /// for, and the inspector repeats a row already on screen.
@@ -1409,6 +1414,7 @@ pub struct UserViewState {
 #[derive(Debug, Clone, Default)]
 pub struct CollectionViewState {
     pub inspector: bool,
+    pub filter: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1510,6 +1516,7 @@ pub struct App {
     pub admin_audit_window_days: u64,
     pub audit_filters: AuditFilters,
     pub task_filter: String,
+    pub detail_search: String,
     pub composed_devices: Vec<ComposedDevice>,
     pub local_resource: LocalResource,
     pub local_preferences_resource: LocalPreferencesResource,
@@ -1686,6 +1693,7 @@ impl App {
             admin_audit_window_days: 1,
             audit_filters: AuditFilters::default(),
             task_filter: String::new(),
+            detail_search: String::new(),
             composed_devices: Vec::new(),
             local_resource: if config.mock {
                 mock::local_resource()
@@ -2501,6 +2509,7 @@ impl App {
     /// the footer, and contextual help all read it, so they cannot disagree.
     pub fn action_context(&self) -> ActionContext {
         match self.current_route() {
+            Route::Local | Route::Dns | Route::Access | Route::Diagnostics => ActionContext::Detail,
             Route::Audit if self.focus != Focus::Inspector => ActionContext::Audit,
             Route::Overview
             | Route::Devices
@@ -2523,9 +2532,7 @@ impl App {
             | Route::Profiles
             | Route::Config
             | Route::Services
-            | Route::Tasks
-            // Metrics is a long text body, so the movement keys scroll it.
-            | Route::Diagnostics => ActionContext::Collection,
+            | Route::Tasks => ActionContext::Collection,
             _ => ActionContext::Root,
         }
     }
@@ -2619,13 +2626,13 @@ impl App {
             let position = row.saturating_sub(first_row);
             match self.current_route() {
                 Route::Users => {
-                    let length = self.admin.users.snapshot.as_ref().map_or(0, Vec::len);
+                    let length = self.filtered_admin_users().len();
                     if usize::from(position) < length {
                         self.admin_user_selected = usize::from(position);
                     }
                 }
                 Route::Routes => {
-                    let length = self.admin.route_observations().len();
+                    let length = self.filtered_admin_routes().len();
                     if usize::from(position) < length {
                         self.admin_route_selected = usize::from(position);
                     }
@@ -2643,12 +2650,7 @@ impl App {
                     }
                 }
                 Route::Credentials => {
-                    let length = self
-                        .admin
-                        .credentials
-                        .snapshot
-                        .as_ref()
-                        .map_or(0, |snapshot| snapshot.records.len());
+                    let length = self.filtered_admin_credentials().len();
                     if usize::from(position) < length {
                         self.admin_credential_selected = usize::from(position);
                     }
@@ -2900,11 +2902,10 @@ impl App {
                 return Vec::new();
             }
             InteractionMode::FilterLine(state) => {
-                let detail_search =
-                    matches!(state.purpose, FilterLinePurpose::DeviceDetailSearch { .. });
+                let detail_search = matches!(state.purpose, FilterLinePurpose::DetailSearch { .. });
                 insert_text(&mut state.editor, text);
                 return if detail_search {
-                    self.update_device_detail_search_preview();
+                    self.update_detail_search_preview();
                     Vec::new()
                 } else {
                     self.update_live_filter()
@@ -3023,19 +3024,24 @@ impl App {
             let detail_restoration = match &self.interaction {
                 InteractionMode::FilterLine(FilterLineState {
                     purpose:
-                        FilterLinePurpose::DeviceDetailSearch {
+                        FilterLinePurpose::DetailSearch {
+                            route,
                             scroll,
                             query,
                             match_line,
                         },
                     ..
-                }) => Some((*scroll, query.clone(), *match_line)),
+                }) => Some((*route, *scroll, query.clone(), *match_line)),
                 _ => None,
             };
-            if let Some((scroll, query, match_line)) = detail_restoration {
-                self.views.devices.detail_scroll = scroll;
-                self.views.devices.detail_search = query;
-                self.views.devices.detail_search_match = match_line;
+            if let Some((route, scroll, query, match_line)) = detail_restoration {
+                if route == Route::Devices {
+                    self.views.devices.detail_scroll = scroll;
+                    self.views.devices.detail_search = query;
+                    self.views.devices.detail_search_match = match_line;
+                } else {
+                    self.detail_search = query;
+                }
                 self.interaction = InteractionMode::Normal;
                 return Vec::new();
             }
@@ -3047,6 +3053,14 @@ impl App {
                 if self.current_route() == Route::Tasks {
                     self.task_filter = restoration.task_filter;
                     self.tasks.selected = restoration.task_selection;
+                } else if matches!(
+                    self.current_route(),
+                    Route::Users | Route::Routes | Route::Credentials | Route::Audit
+                ) {
+                    self.set_simple_collection_filter(
+                        restoration.input,
+                        restoration.collection_selection,
+                    );
                 } else if self.current_route() == Route::Profiles {
                     self.views.profiles.filter = restoration.input;
                     self.views.profiles.selected = restoration.profile_selection;
@@ -3073,7 +3087,7 @@ impl App {
             if matches!(
                 self.interaction,
                 InteractionMode::FilterLine(FilterLineState {
-                    purpose: FilterLinePurpose::DeviceDetailSearch { .. },
+                    purpose: FilterLinePurpose::DetailSearch { .. },
                     ..
                 })
             ) {
@@ -3114,11 +3128,11 @@ impl App {
             if matches!(
                 self.interaction,
                 InteractionMode::FilterLine(FilterLineState {
-                    purpose: FilterLinePurpose::DeviceDetailSearch { .. },
+                    purpose: FilterLinePurpose::DetailSearch { .. },
                     ..
                 })
             ) {
-                self.update_device_detail_search_preview();
+                self.update_detail_search_preview();
                 return Vec::new();
             }
             return self.update_live_filter();
@@ -3284,6 +3298,36 @@ impl App {
         // While `Tab` walks the tray the offered set stays anchored, so the row the
         // user is cycling through does not move underneath them.
         let sections = (!anchored).then(|| self.filter_suggestions(&input, cursor));
+        if matches!(
+            self.current_route(),
+            Route::Users | Route::Routes | Route::Credentials | Route::Audit
+        ) {
+            self.set_simple_collection_filter(input, 0);
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.error = None;
+                state.generation = generation;
+                if let Some(sections) = sections {
+                    state.sections = sections;
+                }
+            }
+            return Vec::new();
+        }
+        if self.current_route() == Route::Services
+            && self.views.services.section != ServiceSection::Serve
+        {
+            self.views.services.filter_draft = input;
+            self.views.services.applied_filter = FilterExpression::empty();
+            self.views.services.selected = 0;
+            self.views.services.scroll = 0;
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.error = None;
+                state.generation = generation;
+                if let Some(sections) = sections {
+                    state.sections = sections;
+                }
+            }
+            return Vec::new();
+        }
         if self.current_route() == Route::Profiles {
             self.views.profiles.filter = input;
             self.views.profiles.selected = 0;
@@ -3367,11 +3411,14 @@ impl App {
     pub fn filter_schema(&self) -> FilterSchema {
         match self.current_route() {
             Route::Tasks => filter::tasks_schema(),
+            Route::Users | Route::Routes | Route::Credentials | Route::Audit => {
+                filter::collection_schema()
+            }
             Route::Services => match self.views.services.section {
                 ServiceSection::Serve => filter::service_schema(),
-                // The other sections are short lists of names; a query language
-                // would be more machinery than they have rows.
-                _ => filter::empty_schema(),
+                ServiceSection::Taildrive | ServiceSection::Certificates => {
+                    filter::collection_schema()
+                }
             },
             Route::Diagnostics => filter::empty_schema(),
             Route::Profiles => filter::profiles_schema(),
@@ -3814,6 +3861,24 @@ impl App {
     }
 
     fn accept_filter(&mut self, input: &str) -> Vec<Effect> {
+        if matches!(
+            self.current_route(),
+            Route::Users | Route::Routes | Route::Credentials | Route::Audit
+        ) {
+            self.set_simple_collection_filter(input.trim().to_owned(), 0);
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
+        if self.current_route() == Route::Services
+            && self.views.services.section != ServiceSection::Serve
+        {
+            self.views.services.filter_draft = input.trim().to_owned();
+            self.views.services.applied_filter = FilterExpression::empty();
+            self.views.services.selected = 0;
+            self.views.services.scroll = 0;
+            self.interaction = InteractionMode::Normal;
+            return Vec::new();
+        }
         if self.current_route() == Route::Profiles {
             self.views.profiles.filter = input.trim().to_owned();
             self.views.profiles.selected = 0;
@@ -3924,6 +3989,7 @@ impl App {
     }
 
     fn restore_view_frame(&mut self, frame: &ViewFrame) {
+        self.detail_search.clear();
         self.focus = frame.focus;
         if frame.route == Route::Overview {
             self.views.overview.selected_id = match &frame.selection {
@@ -4036,6 +4102,10 @@ impl App {
                 }
                 let input = match self.current_route() {
                     Route::Tasks => self.task_filter.clone(),
+                    Route::Users => self.views.users.filter.clone(),
+                    Route::Routes => self.views.routes.filter.clone(),
+                    Route::Credentials => self.views.credentials.filter.clone(),
+                    Route::Audit => self.views.audit.filter.clone(),
                     Route::Profiles => self.views.profiles.filter.clone(),
                     Route::Config => self.views.config.filter.clone(),
                     Route::Services => self.views.services.filter_draft.clone(),
@@ -4054,12 +4124,13 @@ impl App {
                     task_selection: self.tasks.selected,
                     profile_selection: self.views.profiles.selected,
                     config_selection: self.views.config.selected,
+                    collection_selection: self.current_collection_selection(),
                 };
                 let cursor = input.len();
                 let sections = self.filter_suggestions(&input, cursor);
                 let generation = self.advance_completion_generation();
                 self.interaction = InteractionMode::FilterLine(FilterLineState {
-                    editor: LineEditorState::new(input),
+                    editor: LineEditorState::new(input.clone()),
                     generation,
                     sections,
                     selected_completion: None,
@@ -4069,8 +4140,13 @@ impl App {
                 });
                 Vec::new()
             }
-            ActionId::DeviceDetailSearch => {
-                let input = self.views.devices.detail_search.clone();
+            ActionId::DetailSearch => {
+                let route = self.current_route();
+                let input = if route == Route::Devices {
+                    self.views.devices.detail_search.clone()
+                } else {
+                    self.detail_search.clone()
+                };
                 let restoration = FilterRestoration {
                     input: self.views.devices.filter_draft.clone(),
                     expression: self.views.devices.applied_filter.clone(),
@@ -4080,19 +4156,23 @@ impl App {
                     task_selection: self.tasks.selected,
                     profile_selection: self.views.profiles.selected,
                     config_selection: self.views.config.selected,
+                    collection_selection: self.current_collection_selection(),
                 };
                 let generation = self.advance_completion_generation();
                 self.interaction = InteractionMode::FilterLine(FilterLineState {
-                    editor: LineEditorState::new(input),
+                    editor: LineEditorState::new(input.clone()),
                     generation,
                     sections: Vec::new(),
                     selected_completion: None,
                     error: None,
                     restoration,
-                    purpose: FilterLinePurpose::DeviceDetailSearch {
+                    purpose: FilterLinePurpose::DetailSearch {
+                        route,
                         scroll: self.views.devices.detail_scroll,
-                        query: self.views.devices.detail_search.clone(),
-                        match_line: self.views.devices.detail_search_match,
+                        query: input,
+                        match_line: (route == Route::Devices)
+                            .then_some(self.views.devices.detail_search_match)
+                            .flatten(),
                     },
                 });
                 Vec::new()
@@ -4324,22 +4404,13 @@ impl App {
                 } else if self.current_route() == Route::Diagnostics {
                     self.views.diagnostics.scroll = self.metrics_max_scroll();
                 } else if self.current_route() == Route::Users {
-                    self.admin_user_selected = self
-                        .admin
-                        .users
-                        .snapshot
-                        .as_ref()
-                        .map_or(0, |users| users.len().saturating_sub(1));
+                    self.admin_user_selected = self.filtered_admin_users().len().saturating_sub(1);
                 } else if self.current_route() == Route::Routes {
                     self.admin_route_selected =
-                        self.admin.route_observations().len().saturating_sub(1);
+                        self.filtered_admin_routes().len().saturating_sub(1);
                 } else if self.current_route() == Route::Credentials {
-                    self.admin_credential_selected = self
-                        .admin
-                        .credentials
-                        .snapshot
-                        .as_ref()
-                        .map_or(0, |snapshot| snapshot.records.len().saturating_sub(1));
+                    self.admin_credential_selected =
+                        self.filtered_admin_credentials().len().saturating_sub(1);
                 } else if self.current_route() == Route::Profiles {
                     self.views.profiles.selected = self.profile_rows().len().saturating_sub(1);
                 } else if self.current_route() == Route::Config {
@@ -4410,6 +4481,7 @@ impl App {
                 Vec::new()
             }
             ActionId::CollectionOpen => {
+                self.detail_search.clear();
                 if self.current_route() == Route::Overview {
                     if self.selected_overview_finding().is_some() {
                         self.focus = Focus::Inspector;
@@ -6155,6 +6227,7 @@ impl App {
                     .collect();
             }
             "user-approval-pending" => {
+                self.views.users.filter.clear();
                 let selected = self
                     .admin
                     .users
@@ -6171,6 +6244,7 @@ impl App {
                 }
             }
             "route-overlap-review" => {
+                self.views.routes.filter.clear();
                 let selected = self.admin.route_observations().iter().position(|route| {
                     route
                         .advertised
@@ -7464,12 +7538,9 @@ impl App {
     }
 
     fn selected_credential(&self) -> Option<&crate::domain::credential::CredentialMetadata> {
-        self.admin
-            .credentials
-            .snapshot
-            .as_ref()?
-            .records
+        self.filtered_admin_credentials()
             .get(self.admin_credential_selected)
+            .copied()
     }
 
     fn open_credential_revoke_confirmation(&mut self) -> Vec<Effect> {
@@ -10211,9 +10282,9 @@ impl App {
         let filter = self.views.config.filter.trim().to_ascii_lowercase();
         if !filter.is_empty() {
             rows.retain(|row| {
-                row.name.to_ascii_lowercase().contains(&filter)
-                    || row.value.to_ascii_lowercase().contains(&filter)
-                    || row.source.label().contains(&filter)
+                filter::fuzzy_matches(row.name, &filter)
+                    || filter::fuzzy_matches(&row.value, &filter)
+                    || filter::fuzzy_matches(row.source.label(), &filter)
             });
         }
         let sort = self.views.config.sort;
@@ -12013,6 +12084,8 @@ impl App {
         self.views.services.section = sections.get(next).copied().unwrap_or(ServiceSection::Serve);
         self.views.services.selected = 0;
         self.views.services.scroll = 0;
+        self.views.services.filter_draft.clear();
+        self.views.services.applied_filter = FilterExpression::empty();
         self.focus = Focus::Collection;
     }
 
@@ -12070,23 +12143,46 @@ impl App {
         self.services_snapshot.mappings().count()
     }
 
+    pub fn visible_taildrive_shares(&self) -> Vec<&TaildriveShare> {
+        let query = self.views.services.filter_draft.trim();
+        self.services_snapshot
+            .taildrive
+            .value
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|share| {
+                query.is_empty()
+                    || filter::fuzzy_matches(&share.name, query)
+                    || filter::fuzzy_matches(&share.path.display().to_string(), query)
+                    || share
+                        .as_user
+                        .as_deref()
+                        .is_some_and(|user| filter::fuzzy_matches(user, query))
+            })
+            .collect()
+    }
+
+    pub fn visible_certificate_domains(&self) -> Vec<&str> {
+        let query = self.views.services.filter_draft.trim();
+        self.services_snapshot
+            .certificate_domains
+            .value
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str)
+            .filter(|domain| query.is_empty() || filter::fuzzy_matches(domain, query))
+            .collect()
+    }
+
     fn service_row_count(&self) -> usize {
         match self.views.services.section {
             ServiceSection::Serve => self.visible_service_mappings().len(),
             // With the alpha feature off nothing is listed, so nothing counts.
             ServiceSection::Taildrive if !self.alpha_local_features => 0,
-            ServiceSection::Taildrive => self
-                .services_snapshot
-                .taildrive
-                .value
-                .as_ref()
-                .map_or(0, Vec::len),
-            ServiceSection::Certificates => self
-                .services_snapshot
-                .certificate_domains
-                .value
-                .as_ref()
-                .map_or(0, Vec::len),
+            ServiceSection::Taildrive => self.visible_taildrive_shares().len(),
+            ServiceSection::Certificates => self.visible_certificate_domains().len(),
         }
     }
 
@@ -12123,12 +12219,16 @@ impl App {
     }
 
     pub fn selected_taildrive_share(&self) -> Option<TaildriveShare> {
-        self.services_snapshot
-            .taildrive
-            .value
-            .as_ref()
-            .and_then(|shares| shares.get(self.views.services.selected))
+        self.visible_taildrive_shares()
+            .get(self.views.services.selected)
+            .copied()
             .cloned()
+    }
+
+    pub fn selected_certificate_domain(&self) -> Option<&str> {
+        self.visible_certificate_domains()
+            .get(self.views.services.selected)
+            .copied()
     }
 
     pub fn service_inspector_available(&self) -> bool {
@@ -12137,13 +12237,7 @@ impl App {
             ServiceSection::Taildrive => {
                 self.alpha_local_features && self.selected_taildrive_share().is_some()
             }
-            ServiceSection::Certificates => self
-                .services_snapshot
-                .certificate_domains
-                .value
-                .as_ref()
-                .and_then(|domains| domains.get(self.views.services.selected))
-                .is_some(),
+            ServiceSection::Certificates => self.selected_certificate_domain().is_some(),
         }
     }
 
@@ -12683,14 +12777,7 @@ impl App {
                 })
             }
             ActionId::ServicesCertificateObtain => {
-                let Some(domain) = self
-                    .services_snapshot
-                    .certificate_domains
-                    .value
-                    .as_ref()
-                    .and_then(|domains| domains.get(self.views.services.selected))
-                    .cloned()
-                else {
+                let Some(domain) = self.selected_certificate_domain().map(str::to_owned) else {
                     self.runtime_error = Some("select a domain".to_owned());
                     return Vec::new();
                 };
@@ -14956,8 +15043,40 @@ impl App {
     }
 
     fn move_admin_user_selection(&mut self, offset: isize) {
-        let length = self.admin.users.snapshot.as_ref().map_or(0, Vec::len);
+        let length = self.filtered_admin_users().len();
         self.admin_user_selected = move_bounded_index(self.admin_user_selected, length, offset);
+    }
+
+    fn current_collection_selection(&self) -> usize {
+        match self.current_route() {
+            Route::Users => self.admin_user_selected,
+            Route::Routes => self.admin_route_selected,
+            Route::Credentials => self.admin_credential_selected,
+            Route::Audit => self.admin_activity_selected,
+            _ => 0,
+        }
+    }
+
+    fn set_simple_collection_filter(&mut self, filter: String, selection: usize) {
+        match self.current_route() {
+            Route::Users => {
+                self.views.users.filter = filter;
+                self.admin_user_selected = selection;
+            }
+            Route::Routes => {
+                self.views.routes.filter = filter;
+                self.admin_route_selected = selection;
+            }
+            Route::Credentials => {
+                self.views.credentials.filter = filter;
+                self.admin_credential_selected = selection;
+            }
+            Route::Audit => {
+                self.views.audit.filter = filter;
+                self.admin_activity_selected = selection;
+            }
+            _ => {}
+        }
     }
 
     fn move_device_detail_scroll(&mut self, offset: isize) {
@@ -15000,15 +15119,22 @@ impl App {
         self.views.devices.detail_search_match = None;
     }
 
-    fn update_device_detail_search_preview(&mut self) {
-        let (input, initial_scroll) = match &self.interaction {
+    fn update_detail_search_preview(&mut self) {
+        let (route, input, initial_scroll) = match &self.interaction {
             InteractionMode::FilterLine(FilterLineState {
                 editor,
-                purpose: FilterLinePurpose::DeviceDetailSearch { scroll, .. },
+                purpose: FilterLinePurpose::DetailSearch { route, scroll, .. },
                 ..
-            }) => (editor.input.trim().to_owned(), *scroll),
+            }) => (*route, editor.input.trim().to_owned(), *scroll),
             _ => return,
         };
+        if route != Route::Devices {
+            self.detail_search = input;
+            if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                state.error = None;
+            }
+            return;
+        }
         self.views.devices.detail_search = input;
         let matches = crate::ui::components::inspector::device_detail_search_matches(
             self,
@@ -15055,27 +15181,96 @@ impl App {
     }
 
     fn move_admin_route_selection(&mut self, offset: isize) {
-        let length = self.admin.route_observations().len();
+        let length = self.filtered_admin_routes().len();
         self.admin_route_selected = move_bounded_index(self.admin_route_selected, length, offset);
     }
 
     fn move_admin_credential_selection(&mut self, offset: isize) {
-        let length = self
-            .admin
-            .credentials
-            .snapshot
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.records.len());
+        let length = self.filtered_admin_credentials().len();
         self.admin_credential_selected =
             move_bounded_index(self.admin_credential_selected, length, offset);
     }
 
     pub fn selected_admin_user(&self) -> Option<&crate::domain::user::AdminUser> {
+        self.filtered_admin_users()
+            .get(self.admin_user_selected)
+            .copied()
+    }
+
+    pub fn filtered_admin_users(&self) -> Vec<&crate::domain::user::AdminUser> {
+        let query = self.views.users.filter.trim();
         self.admin
             .users
             .snapshot
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|user| {
+                query.is_empty()
+                    || [
+                        Some(user.id.as_str()),
+                        user.display_name.as_deref(),
+                        user.login_name.as_deref(),
+                        user.role.as_deref(),
+                        user.status.as_deref(),
+                        user.relation_type.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| filter::fuzzy_matches(value, query))
+            })
+            .collect()
+    }
+
+    pub fn filtered_admin_routes(&self) -> Vec<crate::admin::routes::AdminRouteObservation> {
+        let query = self.views.routes.filter.trim();
+        self.admin
+            .route_observations()
+            .into_iter()
+            .filter(|route| {
+                query.is_empty()
+                    || [route.device_id.as_str(), route_role_label(route)]
+                        .into_iter()
+                        .chain(route.advertised.iter().map(String::as_str))
+                        .chain(route.enabled.iter().map(String::as_str))
+                        .any(|value| filter::fuzzy_matches(value, query))
+            })
+            .collect()
+    }
+
+    pub fn filtered_admin_credentials(
+        &self,
+    ) -> Vec<&crate::domain::credential::CredentialMetadata> {
+        let query = self.views.credentials.filter.trim();
+        self.admin
+            .credentials
+            .snapshot
             .as_ref()
-            .and_then(|users| users.get(self.admin_user_selected))
+            .map_or(&[][..], |snapshot| snapshot.records.as_slice())
+            .iter()
+            .filter(|credential| {
+                query.is_empty()
+                    || [
+                        Some(credential.id.as_str()),
+                        Some(credential.key_type.as_str()),
+                        credential.description.as_deref(),
+                        credential.user_id.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .chain(credential.scopes.iter().map(String::as_str))
+                    .chain(credential.tags.iter().map(String::as_str))
+                    .any(|value| filter::fuzzy_matches(value, query))
+            })
+            .collect()
+    }
+
+    pub fn selected_admin_credential_for_view(
+        &self,
+    ) -> Option<&crate::domain::credential::CredentialMetadata> {
+        self.filtered_admin_credentials()
+            .get(self.admin_credential_selected)
+            .copied()
     }
 
     fn selected_admin_device(&self) -> Option<&crate::domain::device::AdminDevice> {
@@ -15089,10 +15284,15 @@ impl App {
     }
 
     fn selected_admin_route(&self) -> Option<crate::admin::routes::AdminRouteObservation> {
-        self.admin
-            .route_observations()
+        self.filtered_admin_routes()
             .into_iter()
             .nth(self.admin_route_selected)
+    }
+
+    pub fn selected_admin_route_for_view(
+        &self,
+    ) -> Option<crate::admin::routes::AdminRouteObservation> {
+        self.selected_admin_route()
     }
 
     fn move_admin_activity_selection(&mut self, offset: isize) {
@@ -15102,18 +15302,52 @@ impl App {
     }
 
     pub fn audit_event_count(&self) -> usize {
-        self.admin.activity.snapshot.as_ref().map_or(0, |snapshot| {
-            snapshot.filtered_events(&self.audit_filters).len()
-        })
+        self.filtered_audit_events().len()
     }
 
     fn selected_admin_activity(&self) -> Option<&crate::domain::activity::AuditEvent> {
-        self.admin.activity.snapshot.as_ref().and_then(|snapshot| {
-            snapshot
-                .filtered_events(&self.audit_filters)
-                .into_iter()
-                .nth(self.admin_activity_selected)
-        })
+        self.filtered_audit_events()
+            .into_iter()
+            .nth(self.admin_activity_selected)
+    }
+
+    pub fn filtered_audit_events(&self) -> Vec<&crate::domain::activity::AuditEvent> {
+        let query = self.views.audit.filter.trim();
+        self.admin
+            .activity
+            .snapshot
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| {
+                snapshot.filtered_events(&self.audit_filters)
+            })
+            .into_iter()
+            .filter(|event| {
+                query.is_empty()
+                    || [
+                        event.event_type.as_deref(),
+                        event.action.as_deref(),
+                        event.origin.as_deref(),
+                        event.action_details.as_deref(),
+                        event.error.as_deref(),
+                        event
+                            .actor
+                            .as_ref()
+                            .and_then(|actor| actor.display.as_deref()),
+                        event.actor.as_ref().and_then(|actor| actor.id.as_deref()),
+                        event
+                            .target
+                            .as_ref()
+                            .and_then(|target| target.display.as_deref()),
+                        event
+                            .target
+                            .as_ref()
+                            .and_then(|target| target.id.as_deref()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| filter::fuzzy_matches(value, query))
+            })
+            .collect()
     }
 
     pub(crate) fn selected_audit_event_for_view(
@@ -15170,6 +15404,7 @@ impl App {
                     return Vec::new();
                 }
                 Some("credential") | Some("key") | Some("auth_key") => {
+                    self.views.credentials.filter.clear();
                     if let Some(index) =
                         self.admin
                             .credentials
@@ -15198,6 +15433,7 @@ impl App {
         }
         match kind.as_deref() {
             Some("user") => {
+                self.views.users.filter.clear();
                 if let Some(index) = self
                     .admin
                     .users
@@ -15239,6 +15475,7 @@ impl App {
                 }
             }
             Some("credential") | Some("key") | Some("auth_key") => {
+                self.views.credentials.filter.clear();
                 if let Some(index) = self
                     .admin
                     .credentials
@@ -15741,6 +15978,14 @@ impl App {
         action::footer_actions_filtered(self.action_context(), self.current_route(), width, |id| {
             self.footer_action_is_relevant(id)
         })
+    }
+
+    pub fn active_detail_search(&self) -> &str {
+        if self.current_route() == Route::Devices {
+            &self.views.devices.detail_search
+        } else {
+            &self.detail_search
+        }
     }
 
     pub fn footer_action_is_relevant(&self, id: ActionId) -> bool {
@@ -18562,6 +18807,22 @@ fn next_search_match(matches: &[usize], current: Option<usize>, backwards: bool)
         current_position.map_or(0, |position| position.saturating_add(1) % matches.len())
     };
     matches.get(position).copied()
+}
+
+fn route_role_label(route: &crate::admin::routes::AdminRouteObservation) -> &'static str {
+    if route.advertised_exit_node() {
+        "exit advertisement"
+    } else if !route.advertised.is_empty() {
+        "subnet advertisement"
+    } else if route.enabled_exit_node() {
+        "exit approval"
+    } else if !route.enabled.is_empty() {
+        "subnet approval"
+    } else if route.complete {
+        "none"
+    } else {
+        "details incomplete"
+    }
 }
 
 fn probe_rank(value: Option<u16>) -> (u8, u16) {

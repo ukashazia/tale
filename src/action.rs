@@ -7,7 +7,7 @@ pub enum ActionId {
     AppQuit,
     ViewCommandLine,
     ViewFilter,
-    DeviceDetailSearch,
+    DetailSearch,
     DeviceDetailNextMatch,
     DeviceDetailPreviousMatch,
     ViewRefresh,
@@ -164,7 +164,7 @@ impl ActionId {
             Self::AppQuit => "app.quit",
             Self::ViewCommandLine => "view.command_line",
             Self::ViewFilter => "view.filter",
-            Self::DeviceDetailSearch => "device_detail.search",
+            Self::DetailSearch => "detail.search",
             Self::DeviceDetailNextMatch => "device_detail.next_match",
             Self::DeviceDetailPreviousMatch => "device_detail.previous_match",
             Self::ViewRefresh => "view.refresh",
@@ -686,18 +686,18 @@ pub fn shell_actions() -> Vec<ActionSpec> {
             id: ActionId::ViewFilter,
             label: "Filter",
             description: "Edit the active collection filter",
-            contexts: &[ActionContext::Collection],
+            contexts: &[ActionContext::Collection, ActionContext::Audit],
             selection_rule: SelectionRule::None,
             default_bindings: BIND_SLASH,
             capability: Capability::Available,
             risk: Risk::Observe,
         },
         ActionSpec {
-            id: ActionId::DeviceDetailSearch,
+            id: ActionId::DetailSearch,
             label: "Search",
-            description: "Search within the open device details",
+            description: "Search within the open detail view",
             contexts: &[ActionContext::Detail],
-            selection_rule: SelectionRule::One,
+            selection_rule: SelectionRule::None,
             default_bindings: BIND_SLASH,
             capability: Capability::Available,
             risk: Risk::Observe,
@@ -1373,7 +1373,7 @@ pub fn footer_actions_filtered(
         .take_while(|hint| {
             matches!(
                 hint.action_id,
-                ActionId::ViewCommandLine | ActionId::ViewFilter | ActionId::DeviceDetailSearch
+                ActionId::ViewCommandLine | ActionId::ViewFilter | ActionId::DetailSearch
             )
         })
         .count();
@@ -1390,9 +1390,25 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
             matches!(route, Route::Services)
         }
         ActionId::CollectionWideColumns => matches!(route, Route::Devices),
-        ActionId::DeviceDetailSearch
-        | ActionId::DeviceDetailNextMatch
-        | ActionId::DeviceDetailPreviousMatch => matches!(route, Route::Devices),
+        ActionId::DetailSearch => matches!(
+            route,
+            Route::Overview
+                | Route::Local
+                | Route::Devices
+                | Route::Users
+                | Route::Routes
+                | Route::Dns
+                | Route::Access
+                | Route::Credentials
+                | Route::Profiles
+                | Route::Tasks
+                | Route::Audit
+                | Route::Services
+                | Route::Diagnostics
+        ),
+        ActionId::DeviceDetailNextMatch | ActionId::DeviceDetailPreviousMatch => {
+            matches!(route, Route::Devices)
+        }
         // Every route here keeps a table with a row worth describing, and each
         // starts with the pane closed.
         ActionId::CollectionInspect => {
@@ -1428,7 +1444,15 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         ActionId::ViewFilter => {
             matches!(
                 route,
-                Route::Devices | Route::Profiles | Route::Config | Route::Services | Route::Tasks
+                Route::Devices
+                    | Route::Users
+                    | Route::Routes
+                    | Route::Credentials
+                    | Route::Profiles
+                    | Route::Config
+                    | Route::Services
+                    | Route::Tasks
+                    | Route::Audit
             )
         }
         ActionId::ResourceCopy => matches!(
@@ -1448,7 +1472,7 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
 const fn footer_priority(id: ActionId) -> u8 {
     match id {
         ActionId::ViewCommandLine => 0,
-        ActionId::ViewFilter | ActionId::DeviceDetailSearch => 1,
+        ActionId::ViewFilter | ActionId::DetailSearch => 1,
         ActionId::ResourceActions => 3,
         ActionId::ResourceCopy => 4,
         ActionId::ViewTasks => 5,
@@ -1479,7 +1503,7 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
         ActionId::AppQuit => Some("quit"),
         ActionId::ViewCommandLine => Some("command"),
         ActionId::ViewFilter => Some("filter"),
-        ActionId::DeviceDetailSearch => Some("search"),
+        ActionId::DetailSearch => Some("search"),
         ActionId::DeviceDetailNextMatch => Some("next"),
         ActionId::DeviceDetailPreviousMatch => Some("previous"),
         ActionId::ViewRefresh => Some("refresh"),

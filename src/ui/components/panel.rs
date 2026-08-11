@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Text;
+use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 
 use crate::app::App;
@@ -36,7 +36,8 @@ pub fn render_wrapped(
     title: &str,
     content: impl Into<Text<'static>>,
 ) {
-    frame.render_widget(block(app, title, content).wrap(Wrap { trim: false }), area);
+    let (title, content) = searchable_content(app, title, content.into());
+    frame.render_widget(block(app, &title, content).wrap(Wrap { trim: false }), area);
 }
 
 /// A pane whose whole surface carries a meaning — a revealed secret, say. Rare
@@ -50,8 +51,9 @@ pub fn render_styled(
     surface: theme::StyleRole,
     border: theme::StyleRole,
 ) {
+    let (title, content) = searchable_content(app, title, content.into());
     frame.render_widget(
-        Paragraph::new(content.into())
+        Paragraph::new(content)
             .style(app.theme.style(surface))
             .block(
                 Block::default()
@@ -63,7 +65,7 @@ pub fn render_styled(
                     .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     // Content never touches the border; one rule, every box.
                     .padding(Padding::horizontal(1))
-                    .title(pad(title)),
+                    .title(pad(&title)),
             ),
         area,
     );
@@ -102,8 +104,9 @@ pub fn render_focusable_wrapped(
     content: impl Into<Text<'static>>,
     focused: bool,
 ) {
+    let (title, content) = searchable_content(app, title, content.into());
     frame.render_widget(
-        Paragraph::new(content.into())
+        Paragraph::new(content)
             .style(app.theme.style(theme::StyleRole::Surface))
             .wrap(Wrap { trim: false })
             .block(
@@ -116,7 +119,7 @@ pub fn render_focusable_wrapped(
                     }))
                     .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     .padding(Padding::horizontal(1))
-                    .title(pad(title)),
+                    .title(pad(&title)),
             ),
         area,
     );
@@ -133,8 +136,9 @@ pub fn render_scrolled(
     content: impl Into<Text<'static>>,
     scroll: u16,
 ) {
+    let (title, content) = searchable_content(app, title, content.into());
     frame.render_widget(
-        Paragraph::new(content.into())
+        Paragraph::new(content)
             .style(app.theme.style(theme::StyleRole::Surface))
             .scroll((scroll, 0))
             .block(
@@ -143,7 +147,7 @@ pub fn render_scrolled(
                     .border_style(app.theme.style(theme::StyleRole::BorderNormal))
                     .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     .padding(Padding::horizontal(1))
-                    .title(pad(title)),
+                    .title(pad(&title)),
             ),
         area,
     );
@@ -170,5 +174,58 @@ pub fn pad(title: &str) -> String {
         String::new()
     } else {
         format!(" {trimmed} ")
+    }
+}
+
+fn searchable_content(
+    app: &App,
+    title: &str,
+    mut content: Text<'static>,
+) -> (String, Text<'static>) {
+    if app.action_context() != crate::action::ActionContext::Detail
+        || app.current_route() == crate::app::Route::Devices
+    {
+        return (title.to_owned(), content);
+    }
+    let query = app.active_detail_search().trim();
+    if query.is_empty() {
+        return (title.to_owned(), content);
+    }
+    let query = query.to_ascii_lowercase();
+    for line in &mut content.lines {
+        if contains_match(&line_text(line), &query) {
+            let style = app.theme.style(theme::StyleRole::CompletionMatch);
+            line.style = line.style.patch(style);
+            for span in &mut line.spans {
+                span.style = span.style.patch(style);
+            }
+        }
+    }
+    (
+        format!("{title} · /{}", app.active_detail_search()),
+        content,
+    )
+}
+
+fn line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+fn contains_match(candidate: &str, query: &str) -> bool {
+    candidate.to_ascii_lowercase().contains(query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_match;
+
+    #[test]
+    fn detail_search_is_case_insensitive_contains_not_fuzzy() {
+        assert!(contains_match("Client preferences", "lient"));
+        assert!(contains_match("Client preferences", "client"));
+        assert!(!contains_match("Client preferences", "clnt"));
     }
 }

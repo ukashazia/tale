@@ -62,40 +62,6 @@ fn collection_title(app: &App) -> String {
     let shown = section_row_count(app);
     let total = match section {
         ServiceSection::Serve => app.service_mapping_total(),
-        _ => shown,
-    };
-    let mut detail = Vec::new();
-    if section == ServiceSection::Serve {
-        let public = app
-            .visible_service_mappings()
-            .iter()
-            .filter(|mapping| mapping.exposure.is_public())
-            .count();
-        if public > 0 {
-            detail.push(format!("{public} public"));
-        }
-        let filter = app.views.services.filter_draft.trim();
-        if !filter.is_empty() {
-            detail.push(format!("/{filter}"));
-        }
-        let sort = app.views.services.sort;
-        detail.push(format!(
-            "{} {}",
-            sort.field.label(),
-            if sort.direction.is_ascending() {
-                "\u{2191}"
-            } else {
-                "\u{2193}"
-            }
-        ));
-    }
-    text::view_title(section.noun(), shown, total, &detail)
-}
-
-fn section_row_count(app: &App) -> usize {
-    match app.views.services.section {
-        ServiceSection::Serve => app.visible_service_mappings().len(),
-        ServiceSection::Taildrive if !app.alpha_local_features => 0,
         ServiceSection::Taildrive => app
             .services_snapshot
             .taildrive
@@ -108,6 +74,41 @@ fn section_row_count(app: &App) -> usize {
             .value
             .as_ref()
             .map_or(0, Vec::len),
+    };
+    let mut detail = Vec::new();
+    if section == ServiceSection::Serve {
+        let public = app
+            .visible_service_mappings()
+            .iter()
+            .filter(|mapping| mapping.exposure.is_public())
+            .count();
+        if public > 0 {
+            detail.push(format!("{public} public"));
+        }
+        let sort = app.views.services.sort;
+        detail.push(format!(
+            "{} {}",
+            sort.field.label(),
+            if sort.direction.is_ascending() {
+                "\u{2191}"
+            } else {
+                "\u{2193}"
+            }
+        ));
+    }
+    let filter = app.views.services.filter_draft.trim();
+    if !filter.is_empty() {
+        detail.insert(0, format!("/{filter}"));
+    }
+    text::view_title(section.noun(), shown, total, &detail)
+}
+
+fn section_row_count(app: &App) -> usize {
+    match app.views.services.section {
+        ServiceSection::Serve => app.visible_service_mappings().len(),
+        ServiceSection::Taildrive if !app.alpha_local_features => 0,
+        ServiceSection::Taildrive => app.visible_taildrive_shares().len(),
+        ServiceSection::Certificates => app.visible_certificate_domains().len(),
     }
 }
 
@@ -176,11 +177,8 @@ fn section_rows(app: &App) -> (Vec<grid::Column>, Vec<grid::Row>) {
                 grid::Column::fill("FOLDER", 1),
             ],
             if app.alpha_local_features {
-                app.services_snapshot
-                    .taildrive
-                    .value
-                    .iter()
-                    .flat_map(|shares| shares.iter())
+                app.visible_taildrive_shares()
+                    .into_iter()
                     .map(|share| {
                         grid::Row::new(vec![share.name.clone(), share.path.display().to_string()])
                     })
@@ -191,12 +189,9 @@ fn section_rows(app: &App) -> (Vec<grid::Column>, Vec<grid::Row>) {
         ),
         ServiceSection::Certificates => (
             vec![grid::Column::fill("DOMAIN", 1)],
-            app.services_snapshot
-                .certificate_domains
-                .value
-                .iter()
-                .flat_map(|domains| domains.iter())
-                .map(|domain| grid::Row::new(vec![domain.clone()]))
+            app.visible_certificate_domains()
+                .into_iter()
+                .map(|domain| grid::Row::new(vec![domain]))
                 .collect(),
         ),
     }
@@ -250,13 +245,7 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
             }
         }
         ServiceSection::Certificates => {
-            if let Some(domain) = app
-                .services_snapshot
-                .certificate_domains
-                .value
-                .as_ref()
-                .and_then(|domains| domains.get(app.views.services.selected))
-            {
+            if let Some(domain) = app.selected_certificate_domain() {
                 lines.push(field(app, "domain", domain));
                 lines.push(Line::default());
             }
@@ -315,7 +304,7 @@ fn section_empty_message(app: &App) -> Vec<Line<'static>> {
             text::action_hint(app.theme, "  enable for this run    ", "a e"),
         ];
     }
-    if section == ServiceSection::Serve && !app.views.services.filter_draft.trim().is_empty() {
+    if !app.views.services.filter_draft.trim().is_empty() {
         return vec![
             text::muted_help(app.theme, format!("No {noun} match this filter")),
             Line::default(),

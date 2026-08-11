@@ -60,7 +60,7 @@ fn render_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
         panel::render(frame, app, area, "audit", lines);
         return;
     };
-    let events = snapshot.filtered_events(&app.audit_filters);
+    let events = app.filtered_audit_events();
     let columns = COLUMNS
         .iter()
         .map(|(header, width)| grid::Column {
@@ -223,6 +223,12 @@ fn title(app: &App, shown: usize, total: usize) -> String {
     ];
     if app.audit_filters != crate::domain::activity::AuditFilters::default() {
         detail.insert(0, "filtered".to_owned());
+    }
+    if !app.views.audit.filter.is_empty() {
+        detail.insert(
+            0,
+            format!("/{}", text::ellipsize(&app.views.audit.filter, 32)),
+        );
     }
     text::view_title("audit", shown, total, &detail)
 }
