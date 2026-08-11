@@ -139,6 +139,70 @@ fn admin_views_render_partial_and_read_only_states_at_required_sizes() {
 }
 
 #[test]
+fn access_policy_preview_scrolls_and_slash_searches_exact_source_lines() {
+    let Some(mut app) = admin_app("policy-preview") else {
+        return;
+    };
+    let source = (0..80)
+        .map(|index| {
+            if matches!(index, 20 | 70) {
+                format!("  // needle policy line {index}")
+            } else {
+                format!("  // policy line {index}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.admin.policy.begin(2);
+    app.admin.policy.succeed(
+        2,
+        PolicySnapshot {
+            source_bytes: format!("{{\n{source}\n}}\n").into_bytes(),
+            content_type: "application/hujson".to_owned(),
+            fetched_at: 1_785_751_201,
+            content_hash: "searchable-policy".to_owned(),
+            etag: None,
+        },
+        1_785_751_201,
+    );
+    app.set_route(Route::Access);
+    app.set_terminal_size(80, 24);
+
+    press(&mut app, KeyCode::Char('G'));
+    assert!(app.detail_scroll > 0);
+    let Some(bottom) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(bottom.iter().any(|line| line.contains("policy line 79")));
+
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('/'));
+    let _ = app.update(Event::Input(InputEvent::Paste("needle".to_owned())));
+    let first_match = app.detail_search_match;
+    assert!(first_match.is_some());
+    let Some(prompt) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(prompt.iter().any(|line| line.contains("Search policy")));
+
+    press(&mut app, KeyCode::Enter);
+    let Some(preview) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(preview.iter().any(|line| line.contains("match 1/2")));
+    assert!(
+        preview
+            .iter()
+            .any(|line| line.contains("needle policy line 20"))
+    );
+
+    press(&mut app, KeyCode::Char('n'));
+    assert_ne!(app.detail_search_match, first_match);
+    press(&mut app, KeyCode::Char('N'));
+    assert_eq!(app.detail_search_match, first_match);
+}
+
+#[test]
 fn admin_device_details_render_inventory_routes_and_posture_values() {
     let Some(mut app) = admin_app("device-details") else {
         return;

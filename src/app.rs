@@ -1516,7 +1516,9 @@ pub struct App {
     pub admin_audit_window_days: u64,
     pub audit_filters: AuditFilters,
     pub task_filter: String,
+    pub detail_scroll: usize,
     pub detail_search: String,
+    pub detail_search_match: Option<usize>,
     pub composed_devices: Vec<ComposedDevice>,
     pub local_resource: LocalResource,
     pub local_preferences_resource: LocalPreferencesResource,
@@ -1693,7 +1695,9 @@ impl App {
             admin_audit_window_days: 1,
             audit_filters: AuditFilters::default(),
             task_filter: String::new(),
+            detail_scroll: 0,
             detail_search: String::new(),
+            detail_search_match: None,
             composed_devices: Vec::new(),
             local_resource: if config.mock {
                 mock::local_resource()
@@ -3040,7 +3044,9 @@ impl App {
                     self.views.devices.detail_search = query;
                     self.views.devices.detail_search_match = match_line;
                 } else {
+                    self.detail_scroll = scroll;
                     self.detail_search = query;
+                    self.detail_search_match = match_line;
                 }
                 self.interaction = InteractionMode::Normal;
                 return Vec::new();
@@ -3989,7 +3995,9 @@ impl App {
     }
 
     fn restore_view_frame(&mut self, frame: &ViewFrame) {
+        self.detail_scroll = 0;
         self.detail_search.clear();
+        self.detail_search_match = None;
         self.focus = frame.focus;
         if frame.route == Route::Overview {
             self.views.overview.selected_id = match &frame.selection {
@@ -4168,21 +4176,27 @@ impl App {
                     restoration,
                     purpose: FilterLinePurpose::DetailSearch {
                         route,
-                        scroll: self.views.devices.detail_scroll,
+                        scroll: if route == Route::Devices {
+                            self.views.devices.detail_scroll
+                        } else {
+                            self.detail_scroll
+                        },
                         query: input,
-                        match_line: (route == Route::Devices)
-                            .then_some(self.views.devices.detail_search_match)
-                            .flatten(),
+                        match_line: if route == Route::Devices {
+                            self.views.devices.detail_search_match
+                        } else {
+                            self.detail_search_match
+                        },
                     },
                 });
                 Vec::new()
             }
             ActionId::DeviceDetailNextMatch => {
-                self.move_device_detail_search_match(false);
+                self.move_detail_search_match(false);
                 Vec::new()
             }
             ActionId::DeviceDetailPreviousMatch => {
-                self.move_device_detail_search_match(true);
+                self.move_detail_search_match(true);
                 Vec::new()
             }
             ActionId::ViewRefresh => self.start_refresh(false),
@@ -4309,6 +4323,8 @@ impl App {
             ActionId::CollectionMoveUp => {
                 if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
                     self.move_device_detail_scroll(-1);
+                } else if self.current_route() == Route::Access {
+                    self.move_access_scroll(-1);
                 } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(-1);
                 } else if self.current_route() == Route::Tasks {
@@ -4337,6 +4353,8 @@ impl App {
             ActionId::CollectionMoveDown => {
                 if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
                     self.move_device_detail_scroll(1);
+                } else if self.current_route() == Route::Access {
+                    self.move_access_scroll(1);
                 } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(1);
                 } else if self.current_route() == Route::Tasks {
@@ -4365,6 +4383,8 @@ impl App {
             ActionId::CollectionFirst => {
                 if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
                     self.views.devices.detail_scroll = 0;
+                } else if self.current_route() == Route::Access {
+                    self.detail_scroll = 0;
                 } else if self.current_route() == Route::Overview {
                     self.select_overview_position(0);
                 } else if self.current_route() == Route::Tasks {
@@ -4392,6 +4412,8 @@ impl App {
             ActionId::CollectionLast => {
                 if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
                     self.views.devices.detail_scroll = self.device_detail_max_scroll();
+                } else if self.current_route() == Route::Access {
+                    self.detail_scroll = self.access_max_scroll();
                 } else if self.current_route() == Route::Overview {
                     self.select_overview_position(usize::MAX);
                 } else if self.current_route() == Route::Tasks {
@@ -4423,6 +4445,8 @@ impl App {
             ActionId::CollectionPageUp => {
                 if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
                     self.move_device_detail_scroll(-5);
+                } else if self.current_route() == Route::Access {
+                    self.move_access_scroll(-5);
                 } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(-5);
                 } else if self.current_route() == Route::Tasks {
@@ -4451,6 +4475,8 @@ impl App {
             ActionId::CollectionPageDown => {
                 if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
                     self.move_device_detail_scroll(5);
+                } else if self.current_route() == Route::Access {
+                    self.move_access_scroll(5);
                 } else if self.current_route() == Route::Overview {
                     self.move_overview_selection(5);
                 } else if self.current_route() == Route::Tasks {
@@ -4482,6 +4508,7 @@ impl App {
             }
             ActionId::CollectionOpen => {
                 self.detail_search.clear();
+                self.detail_search_match = None;
                 if self.current_route() == Route::Overview {
                     if self.selected_overview_finding().is_some() {
                         self.focus = Focus::Inspector;
@@ -15089,6 +15116,17 @@ impl App {
         self.views.devices.detail_scroll = move_bounded_index(current, length, offset);
     }
 
+    fn move_access_scroll(&mut self, offset: isize) {
+        let length = self.access_max_scroll().saturating_add(1);
+        let current = self.detail_scroll.min(length.saturating_sub(1));
+        self.detail_scroll = move_bounded_index(current, length, offset);
+    }
+
+    fn access_max_scroll(&self) -> usize {
+        let viewport = usize::from(self.terminal_height.saturating_sub(8)).max(1);
+        crate::ui::views::access::line_count(self).saturating_sub(viewport)
+    }
+
     fn device_detail_max_scroll(&self) -> usize {
         let frame = crate::ui::layout::compute(
             ratatui::layout::Rect {
@@ -15130,6 +15168,30 @@ impl App {
         };
         if route != Route::Devices {
             self.detail_search = input;
+            if route == Route::Access {
+                let matches = crate::ui::views::access::search_matches(self, &self.detail_search);
+                if self.detail_search.is_empty() {
+                    self.detail_search_match = None;
+                    self.detail_scroll = initial_scroll.min(self.access_max_scroll());
+                } else {
+                    let matched = matches
+                        .iter()
+                        .copied()
+                        .find(|line| *line >= initial_scroll)
+                        .or_else(|| matches.first().copied());
+                    self.detail_search_match = matched;
+                    if let Some(line) = matched {
+                        self.detail_scroll = line.min(self.access_max_scroll());
+                    }
+                    if let InteractionMode::FilterLine(state) = &mut self.interaction {
+                        state.error = matched.is_none().then(|| FilterErrorReport {
+                            message: "No matches in this policy".to_owned(),
+                            expected: "plain text".to_owned(),
+                        });
+                    }
+                    return;
+                }
+            }
             if let InteractionMode::FilterLine(state) = &mut self.interaction {
                 state.error = None;
             }
@@ -15165,7 +15227,18 @@ impl App {
         }
     }
 
-    fn move_device_detail_search_match(&mut self, backwards: bool) {
+    fn move_detail_search_match(&mut self, backwards: bool) {
+        if self.current_route() == Route::Access {
+            let matches = crate::ui::views::access::search_matches(self, &self.detail_search);
+            let Some(next) = next_search_match(&matches, self.detail_search_match, backwards)
+            else {
+                self.runtime_error = Some("search the policy with / first".to_owned());
+                return;
+            };
+            self.detail_search_match = Some(next);
+            self.detail_scroll = next.min(self.access_max_scroll());
+            return;
+        }
         let matches = crate::ui::components::inspector::device_detail_search_matches(
             self,
             &self.views.devices.detail_search,

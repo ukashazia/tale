@@ -501,19 +501,17 @@ fn filter_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
 fn detail_search_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
     let key = app.theme.style(theme::StyleRole::KeyHint);
     let label = app.theme.style(theme::StyleRole::TextMuted);
-    let device = matches!(
-        state.purpose,
-        FilterLinePurpose::DetailSearch {
-            route: Route::Devices,
-            ..
-        }
-    );
+    let route = match state.purpose {
+        FilterLinePurpose::DetailSearch { route, .. } => route,
+        FilterLinePurpose::Collection => app.current_route(),
+    };
+    let navigable = matches!(route, Route::Devices | Route::Access);
     let header = Line::from(vec![
         Span::styled(
-            if device {
-                "Search device details"
-            } else {
-                "Search details"
+            match route {
+                Route::Devices => "Search device details",
+                Route::Access => "Search policy",
+                _ => "Search details",
             },
             app.theme.style(theme::StyleRole::Focus),
         ),
@@ -524,16 +522,21 @@ fn detail_search_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellL
         Span::styled(" restore", label),
     ]);
     let (prompt, caret) = detail_search_prompt_line(app, state, area.width);
-    let status = if device && state.error.is_some() {
+    let status = if navigable && state.error.is_some() {
         Line::from(Span::styled(
-            "No matches in this device record",
+            if route == Route::Access {
+                "No matches in this policy"
+            } else {
+                "No matches in this device record"
+            },
             app.theme.style(theme::StyleRole::StateDanger),
         ))
-    } else if device {
-        let matches = crate::ui::components::inspector::device_detail_search_matches(
-            app,
-            &state.editor.input,
-        );
+    } else if navigable {
+        let matches = if route == Route::Access {
+            crate::ui::views::access::search_matches(app, &state.editor.input)
+        } else {
+            crate::ui::components::inspector::device_detail_search_matches(app, &state.editor.input)
+        };
         Line::from(vec![
             Span::styled("Enter", key),
             Span::styled(" keep", label),

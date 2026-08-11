@@ -1407,7 +1407,7 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
                 | Route::Diagnostics
         ),
         ActionId::DeviceDetailNextMatch | ActionId::DeviceDetailPreviousMatch => {
-            matches!(route, Route::Devices)
+            matches!(route, Route::Devices | Route::Access)
         }
         // Every route here keeps a table with a row worth describing, and each
         // starts with the pane closed.

@@ -205,7 +205,10 @@ fn searchable_content(
     mut content: Text<'static>,
 ) -> (String, Text<'static>) {
     if app.action_context() != crate::action::ActionContext::Detail
-        || app.current_route() == crate::app::Route::Devices
+        || matches!(
+            app.current_route(),
+            crate::app::Route::Devices | crate::app::Route::Access
+        )
     {
         return (title.to_owned(), content);
     }
