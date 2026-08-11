@@ -820,10 +820,7 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
                         }
                         2 => press(&mut app, KeyCode::Char('a')),
                         3 => press(&mut app, KeyCode::Char('?')),
-                        4 => {
-                            let effects = app.dispatch_action(ActionId::SettingsAppearance);
-                            assert!(effects.is_empty());
-                        }
+                        4 => press(&mut app, KeyCode::Char('a')),
                         _ => {}
                     }
                     let backend = TestBackend::new(width, height);
@@ -862,31 +859,6 @@ fn complete_theme_capability_viewport_matrix_has_semantic_cells() {
                     }
                 }
             }
-        }
-    }
-}
-
-/// The palette moved off a page of its own: appearance is reachable from
-/// wherever the user already is, and shows its swatches in the menu.
-#[test]
-fn appearance_is_a_choice_menu_reachable_from_any_page() {
-    let app = populated_app();
-    assert!(app.is_some());
-    if let Some(mut app) = app {
-        // Tasks is deliberately empty here. The view-level action must remain
-        // reachable without borrowing a selection from the collection.
-        app.set_route(Route::Tasks);
-        let effects = app.dispatch_action(ActionId::ResourceActions);
-        assert!(effects.is_empty());
-        press(&mut app, KeyCode::Char('z'));
-        press(&mut app, KeyCode::Char('a'));
-        assert!(app.overlays.is_empty());
-        let lines = lines_at(&app, 100, 32);
-        assert!(lines.is_some());
-        if let Some(lines) = lines {
-            assert!(lines.iter().any(|line| line.contains("Appearance")));
-            assert!(lines.iter().any(|line| line.contains("Esc close")));
-            assert!(lines.iter().any(|line| line.contains("terminal")));
         }
     }
 }
@@ -939,13 +911,6 @@ fn terminal_group_headings_keep_accent_fill_with_dark_ink() {
         press(&mut app, key);
         assert!(heading_is_styled(&app, heading), "unstyled {heading}");
     }
-
-    let Some(mut app) = populated_app() else {
-        return;
-    };
-    app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
-    let _ = app.dispatch_action(ActionId::SettingsAppearance);
-    assert!(heading_is_styled(&app, "Theme"));
 }
 
 #[test]

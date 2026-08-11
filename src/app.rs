@@ -100,7 +100,7 @@ use crate::local::{certificates, services, transfers};
 use crate::mock::{self, MOCK_NOW, MockLoadScenario, MockTaskBehavior};
 use crate::paths;
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
-use crate::ui::theme::{Theme, ThemeId};
+use crate::ui::theme::Theme;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SourceMode {
@@ -379,7 +379,6 @@ pub enum ChoiceOutcome {
     ServiceSort(ServiceSortSpec),
     ProfileSort(ProfileSortSpec),
     ConfigSort(SettingSortSpec),
-    Theme(ThemeId),
     Account {
         action_id: ActionId,
         account_id: String,
@@ -4227,19 +4226,6 @@ impl App {
                 ));
                 Vec::new()
             }
-            ActionId::SettingsAppearance => {
-                self.interaction = InteractionMode::Transient(TransientMenuState {
-                    kind: TransientKind::Choice,
-                    title: "Appearance",
-                    actions: Vec::new(),
-                    choices: self.theme_choices(),
-                    fields: Vec::new(),
-                    addresses: Vec::new(),
-                    prefix: None,
-                    message: None,
-                });
-                Vec::new()
-            }
             ActionId::CollectionMoveUp => {
                 if self.current_route() == Route::Devices && self.focus == Focus::Inspector {
                     self.move_device_detail_scroll(-1);
@@ -4823,7 +4809,6 @@ impl App {
             | ActionId::AdminLogStreamDelete
             | ActionId::AdminNetworkLogsSettings => self.operational_mutation_available(action_id),
             ActionId::SettingsInspectCapabilities => self.admin.profile.is_some(),
-            ActionId::SettingsAppearance => true,
             ActionId::AdminPolicyEdit
             | ActionId::AdminPolicyEditorReopen
             | ActionId::AdminPolicyCandidateDiscard
@@ -12413,9 +12398,7 @@ impl App {
     }
 
     fn operational_resource_actions(&self) -> Vec<ActionId> {
-        // Appearance belongs to the view itself, so it remains reachable even
-        // when this route has no collection or selected row.
-        let mut actions = vec![ActionId::SettingsAppearance];
+        let mut actions = Vec::new();
         // Saved views and exports are for collections Tale fetched. `:profiles`
         // lists this machine's own configuration, which is already a file the
         // user owns, so offering to export it or to name a view of it would be
@@ -15441,22 +15424,6 @@ impl App {
             .collect()
     }
 
-    fn theme_choices(&self) -> Vec<MenuChoice> {
-        const KEYS: [char; 3] = ['d', 'l', 't'];
-        ThemeId::ALL
-            .into_iter()
-            .enumerate()
-            .map(|(index, id)| MenuChoice {
-                sequence: KEYS.get(index).copied().map_or('?', |key| key).to_string(),
-                group: "Theme".to_owned(),
-                subject: String::new(),
-                label: id.as_str().to_owned(),
-                active: self.theme.id() == id,
-                outcome: ChoiceOutcome::Theme(id),
-            })
-            .collect()
-    }
-
     fn account_choices(&self, action_id: ActionId, accounts: &[LocalAccount]) -> Vec<MenuChoice> {
         accounts
             .iter()
@@ -15501,10 +15468,6 @@ impl App {
             ChoiceOutcome::ConfigSort(sort) => {
                 self.views.config.sort = sort;
                 self.views.config.selected = 0;
-                Vec::new()
-            }
-            ChoiceOutcome::Theme(id) => {
-                self.theme = Theme::new(id, self.theme.capability());
                 Vec::new()
             }
             ChoiceOutcome::Account {
@@ -17669,7 +17632,6 @@ fn is_admin_action(action_id: ActionId) -> bool {
             | ActionId::ActivityOpenActor
             | ActionId::ActivityOpenTarget
             | ActionId::SettingsInspectCapabilities
-            | ActionId::SettingsAppearance
             | ActionId::AdminDeviceRename
             | ActionId::AdminDeviceTagsReplace
             | ActionId::AdminDeviceApprove

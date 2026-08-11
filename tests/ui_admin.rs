@@ -569,9 +569,5 @@ fn config_is_a_full_collection_with_filter_sort_copy_and_actions() {
     press(&mut app, KeyCode::Esc);
 
     let _ = app.dispatch_action(ActionId::ResourceActions);
-    assert!(matches!(
-        &app.interaction,
-        InteractionMode::Transient(state)
-            if state.actions.contains(&ActionId::SettingsAppearance)
-    ));
+    assert!(matches!(&app.interaction, InteractionMode::Transient(_)));
 }

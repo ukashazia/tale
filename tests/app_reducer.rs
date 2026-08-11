@@ -20,7 +20,6 @@ use tale::event::{Event, InputEvent, LocalEvent, ServicesEvent, SourceEvent, Tas
 use tale::mock::{self, MOCK_NOW};
 use tale::paths::{PathEnvironment, Platform};
 use tale::task::{Progress, TaskState};
-use tale::ui::theme::ThemeId;
 
 fn mock_app() -> Option<App> {
     let root = PathBuf::from("/fictional/tale-reducer");
@@ -882,42 +881,6 @@ fn stale_service_refresh_cannot_replace_newer_data_and_read_only_blocks_dispatch
         app.set_route(Route::Services);
         let _ = app.dispatch_action(tale::action::ActionId::ServicesFunnelReset);
         assert!(app.runtime_error.is_some());
-        assert!(app.tasks.all().is_empty());
-    }
-}
-
-#[test]
-fn appearance_is_a_direct_key_choice_and_cancelling_changes_nothing() {
-    let app = mock_app();
-    assert!(app.is_some());
-    if let Some(mut app) = app {
-        let original = app.theme;
-        let route = app.current_route();
-        let history_len = app.view_history.frames.len();
-        let source_mode = app.source_mode;
-
-        // Leaving the menu alone leaves the theme alone.
-        let effects = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
-        assert!(effects.is_empty());
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.theme, original);
-        assert!(matches!(app.interaction, InteractionMode::Normal));
-
-        // One key applies and closes, like every other transient menu.
-        let effects = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
-        assert!(effects.is_empty());
-        press(&mut app, KeyCode::Char('l'));
-        assert_eq!(app.theme.id(), ThemeId::TailscaleLight);
-        assert!(matches!(app.interaction, InteractionMode::Normal));
-        assert!(app.overlays.is_empty());
-
-        // And it is reversible by picking the other one.
-        let _ = app.dispatch_action(tale::action::ActionId::SettingsAppearance);
-        press(&mut app, KeyCode::Char('d'));
-        assert_eq!(app.theme.id(), ThemeId::TailscaleDark);
-        assert_eq!(app.current_route(), route);
-        assert_eq!(app.view_history.frames.len(), history_len);
-        assert_eq!(app.source_mode, source_mode);
         assert!(app.tasks.all().is_empty());
     }
 }
