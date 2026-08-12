@@ -6,6 +6,7 @@ use ratatui::backend::TestBackend;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use tale::action::ActionId;
 use tale::app::{App, Focus, Route, SourceMode};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
@@ -17,6 +18,20 @@ use tale::local::daemon::decode_status;
 use tale::paths::{PathEnvironment, Platform};
 
 const STATUS: &str = include_str!("fixtures/tailscale/1.98.9/linux/status.json");
+
+#[test]
+fn initial_device_load_is_not_rendered_as_an_empty_fleet() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    app.set_route(Route::Devices);
+    let Some(lines) = render_lines(&app, 120, 30) else {
+        return;
+    };
+    assert!(lines.iter().any(|line| line.contains("Loading devices…")));
+    assert!(lines.iter().any(|line| line.contains("devices · loading")));
+    assert!(!lines.iter().any(|line| line.contains("devices · 0")));
+}
 
 #[test]
 fn local_devices_render_wide_fields_and_supported_filters() {
@@ -93,6 +108,46 @@ fn local_devices_render_wide_fields_and_supported_filters() {
         };
         assert_eq!(app.visible_indices().len(), 4);
     }
+}
+
+#[test]
+fn column_mode_is_visible_in_the_title_and_reports_changes() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    let snapshot = decode_status(STATUS, "1.98.9".to_owned(), None, 1_754_000_000);
+    let Ok(snapshot) = snapshot else {
+        return;
+    };
+    app.local_resource.generation = 1;
+    let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+        generation: 1,
+        snapshot: Box::new(snapshot),
+    })));
+    app.set_route(Route::Devices);
+
+    let Some(standard) = render_lines(&app, 140, 30) else {
+        return;
+    };
+    assert!(
+        standard
+            .iter()
+            .any(|line| line.contains("columns: standard"))
+    );
+
+    let _ = app.dispatch_action(ActionId::CollectionWideColumns);
+    assert_eq!(
+        app.runtime_error.as_deref(),
+        Some("device columns: extended")
+    );
+    let Some(extended) = render_lines(&app, 140, 30) else {
+        return;
+    };
+    assert!(
+        extended
+            .iter()
+            .any(|line| line.contains("columns: extended"))
+    );
 }
 
 #[test]

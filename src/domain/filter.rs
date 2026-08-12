@@ -374,7 +374,7 @@ pub const fn config_schema() -> FilterSchema {
 
 pub const fn collection_schema() -> FilterSchema {
     FilterSchema {
-        free_text: "fuzzy-matches every visible column",
+        free_text: "matches text in every visible column",
         groups: &[],
     }
 }
@@ -892,7 +892,7 @@ impl FilterTerm {
                 .search_fields()
                 .into_iter()
                 .chain(dns_name)
-                .any(|field| fuzzy_matches(field, value)),
+                .any(|field| contains_matches(field, value)),
             Self::Field {
                 field,
                 negated,
@@ -978,7 +978,7 @@ impl FilterTerm {
                 port.as_str(),
             ]
             .into_iter()
-            .any(|field| fuzzy_matches(field, value)),
+            .any(|field| contains_matches(field, value)),
             Self::Field {
                 field,
                 negated,
@@ -1024,7 +1024,7 @@ impl FilterTerm {
                 }
                 fields.extend(device.tags.iter().map(String::as_str));
                 fields.extend(device.addresses.iter().map(String::as_str));
-                fields.iter().any(|field| fuzzy_matches(field, value))
+                fields.iter().any(|field| contains_matches(field, value))
             }
             Self::Field {
                 field,
@@ -1306,7 +1306,7 @@ fn text_matches(candidate: &str, value: &str, mode: FieldMatchMode) -> bool {
 /// Case-insensitive substring test. A named field takes this rule: `name:build`
 /// finds `build-01` without demanding the whole value, but the term still has to
 /// appear as written, so `os:ios` cannot reach `windows`.
-fn contains_matches(candidate: &str, value: &str) -> bool {
+pub fn contains_matches(candidate: &str, value: &str) -> bool {
     if value.is_empty() {
         return true;
     }
@@ -1326,9 +1326,9 @@ fn starts_with_matches(candidate: &str, value: &str) -> bool {
     })
 }
 
-/// Case-insensitive subsequence test, the same rule the completion tray ranks
-/// with. Only a bare word takes this rule, where the user has given no field to
-/// aim at and a forgiving match is the point.
+/// Case-insensitive subsequence test used to rank completion and navigation
+/// candidates. Collection filters deliberately use `contains_matches` so a
+/// returned row always contains the query in one of its searchable values.
 pub fn fuzzy_matches(candidate: &str, value: &str) -> bool {
     let mut characters = candidate.chars();
     value

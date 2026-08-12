@@ -102,6 +102,19 @@ fn operational_source_and_risk_roles_have_non_color_signals() {
     }
 }
 
+#[test]
+fn offline_state_is_dimmed_without_looking_deleted() {
+    for capability in ColorCapability::ALL {
+        let style = Theme::new(ThemeId::Terminal, capability).style(StyleRole::StateOffline);
+        assert!(style.add_modifier.contains(ratatui::style::Modifier::DIM));
+        assert!(
+            !style
+                .add_modifier
+                .contains(ratatui::style::Modifier::CROSSED_OUT)
+        );
+    }
+}
+
 fn rust_files(root: &Path, output: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;

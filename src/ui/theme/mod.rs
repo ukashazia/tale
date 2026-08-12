@@ -336,9 +336,10 @@ fn role_spec(role: StyleRole) -> RoleSpec {
         R::StatePending | R::TaskQueued | R::TaskRunning => {
             RoleSpec::fg(T::Focus).modified(Modifier::ITALIC)
         }
-        R::StateDisabled | R::StateUnknown | R::StateOffline | R::TaskCancelled => {
+        R::StateDisabled | R::StateUnknown | R::TaskCancelled => {
             RoleSpec::fg(T::Disabled).modified(Modifier::CROSSED_OUT)
         }
+        R::StateOffline => RoleSpec::fg(T::Disabled).modified(Modifier::DIM),
         R::SourceAdmin => RoleSpec::fg(T::Admin).modified(Modifier::ITALIC),
         R::SourceCombined => {
             RoleSpec::fg(T::Admin).modified(Modifier::BOLD.union(Modifier::ITALIC))

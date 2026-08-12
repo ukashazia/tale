@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
 
 use crate::app::App;
 use crate::domain::device::{AdminDevice, Device, Liveness};
@@ -65,12 +66,21 @@ const COLUMNS: &[(&str, Tier, grid::Width)] = &[
 ];
 
 pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let initial_loading = app.devices_resource.health == crate::domain::SourceHealth::Loading
+        && app.devices_resource.snapshot.is_empty();
     let (columns, rows) = if app.views.devices.columns.is_empty() {
         default_table(app, area)
     } else {
         registered_table(app, area)
     };
-    let lines = grid::lines(app, &columns, &rows, area.width.saturating_sub(4));
+    let lines = if initial_loading {
+        vec![Line::from(Span::styled(
+            "Loading devices…",
+            app.theme.style(theme::StyleRole::StatePending),
+        ))]
+    } else {
+        grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
+    };
     panel::render_view(frame, app, area, devices_title(app), lines);
 }
 
@@ -321,11 +331,29 @@ fn devices_title(app: &App) -> ratatui::text::Line<'static> {
             "\u{2193}"
         }
     ));
+    detail.push(
+        if app.views.devices.columns.is_empty() {
+            if app.views.devices.wide_columns {
+                "columns: extended"
+            } else {
+                "columns: standard"
+            }
+        } else {
+            "columns: saved view"
+        }
+        .to_owned(),
+    );
     detail.push(app.device_view_source().label().to_owned());
     if let crate::app::SourceAlignment::Divergent { local, .. } = app.source_alignment() {
         // The rows are the profile's tailnet; this machine is on another one.
         // Saying so is what stops the list from reading as one fleet.
         detail.push(format!("local client on {local}"));
+    }
+    if app.devices_resource.health == crate::domain::SourceHealth::Loading
+        && app.devices_resource.snapshot.is_empty()
+    {
+        detail.insert(0, "loading".to_owned());
+        return text::status_title(app.theme, "devices", &detail);
     }
     text::view_title(
         app.theme,

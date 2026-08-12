@@ -407,7 +407,7 @@ fn task_matches_query(task: &Task, query: &str) -> bool {
             task.detail.as_str(),
         ]
         .into_iter()
-        .any(|value| crate::domain::filter::fuzzy_matches(value, query))
+        .any(|value| crate::domain::filter::contains_matches(value, query))
 }
 
 impl Default for TaskStore {

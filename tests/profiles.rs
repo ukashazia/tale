@@ -94,6 +94,41 @@ fn activate(app: &mut App) -> Vec<Effect> {
     app.dispatch_action(ActionId::ProfileActivate)
 }
 
+#[test]
+fn blocked_admin_navigation_resumes_after_profile_activation() {
+    let Some(mut app) = profiles_app("resume-navigation") else {
+        return;
+    };
+    inspected(
+        &mut app,
+        vec![("ops".to_owned(), stored()), ("audit".to_owned(), stored())],
+    );
+
+    press(&mut app, KeyCode::Char(':'));
+    let _ = app.update(Event::Input(InputEvent::Paste("audit".to_owned())));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.current_route(), Route::Profiles);
+
+    select(&mut app, "audit");
+    let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::StartProfileProbe { profile, .. } if profile == "audit"
+    )));
+
+    let _ = app.update(Event::Credential(Box::new(
+        CredentialEvent::ProfileProbed {
+            profile: "audit".to_owned(),
+            result: Ok(CredentialKind::AccessToken),
+        },
+    )));
+    assert_eq!(app.current_route(), Route::Audit);
+    assert_eq!(app.admin.profile.as_deref(), Some("audit"));
+}
+
 /// A configured credential does not make a session administer anything. Tale
 /// starts on the client in front of it and waits to be pointed elsewhere.
 #[test]

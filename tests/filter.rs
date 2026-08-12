@@ -277,7 +277,7 @@ fn token_spans_track_quoted_sections() {
 }
 
 #[test]
-fn a_named_field_takes_a_substring_and_a_bare_word_takes_a_fuzzy_match() {
+fn named_and_bare_text_filters_take_predictable_substrings() {
     let devices = mock::devices();
     let matched = |query: &str| {
         parse(query).map_or_else(
@@ -304,9 +304,14 @@ fn a_named_field_takes_a_substring_and_a_bare_word_takes_a_fuzzy_match() {
     assert_eq!(matched("os:ios").len(), 2);
     assert!(!matched("os:ios").contains(&"win-lab".to_owned()));
 
-    // A bare word has no field to aim at, so it matches fuzzily instead.
-    assert_eq!(matched("bld"), vec!["build-01".to_owned()]);
+    // Bare words use the same predictable substring rule. They cannot drift
+    // across unrelated characters in a value.
+    assert!(matched("bld").is_empty());
     assert_eq!(matched("uild"), vec!["build-01".to_owned()]);
+    assert_eq!(
+        matched("alice"),
+        vec!["build-01".to_owned(), "studio-mac".to_owned()]
+    );
 }
 
 #[test]

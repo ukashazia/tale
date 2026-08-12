@@ -1400,7 +1400,7 @@ impl<'a> ProfileRow<'a> {
         }
         haystack
             .iter()
-            .any(|value| filter::fuzzy_matches(value, needle))
+            .any(|value| filter::contains_matches(value, needle))
     }
 
     fn ordering_key(&self, field: ProfileSortField) -> String {
@@ -1536,6 +1536,9 @@ pub struct App {
     /// The profile whose activation probe is outstanding. One at a time: a
     /// second attempt supersedes the first rather than racing it.
     profile_probe_in_flight: Option<String>,
+    /// An admin-only destination requested before a profile was active. Profile
+    /// activation resumes it only after the credential probe succeeds.
+    pending_navigation_route: Option<Route>,
     pub policy_workflow: Option<PolicyWorkflow>,
     pub policy_workflow_view: PolicyWorkflowView,
     policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
@@ -1723,6 +1726,7 @@ impl App {
             admin_profile_snapshots: BTreeMap::new(),
             profile_statuses: BTreeMap::new(),
             profile_probe_in_flight: None,
+            pending_navigation_route: None,
             policy_workflow: None,
             policy_workflow_view: PolicyWorkflowView::Actions,
             policy_temp_file: None,
@@ -3962,6 +3966,16 @@ impl App {
     }
 
     fn open_navigation_route(&mut self, route: Route) -> Vec<Effect> {
+        if route.requires_admin_profile() && self.admin.profile.is_none() {
+            self.interaction = InteractionMode::Normal;
+            self.pending_navigation_route = Some(route);
+            self.navigate(Route::Profiles);
+            self.runtime_error = Some(format!(
+                "Choose an administration profile and press Enter to open {}",
+                route.label()
+            ));
+            return Vec::new();
+        }
         if let Some(reason) = self.route_unavailable_reason(route) {
             if let InteractionMode::CommandLine(state) = &mut self.interaction {
                 state.error = Some(reason.to_owned());
@@ -4148,6 +4162,9 @@ impl App {
     }
 
     fn restore_view_frame(&mut self, frame: &ViewFrame) {
+        if frame.route != Route::Profiles {
+            self.pending_navigation_route = None;
+        }
         self.detail_scroll = 0;
         self.detail_search.clear();
         self.detail_search_match = None;
@@ -4706,6 +4723,9 @@ impl App {
                         self.focus = Focus::Inspector;
                     }
                 } else if self.current_route() == Route::Profiles {
+                    if self.pending_navigation_route.is_some() {
+                        return self.activate_selected_profile();
+                    }
                     if self.selected_profile_row().is_some() {
                         self.focus = Focus::Inspector;
                     }
@@ -4749,6 +4769,14 @@ impl App {
             ActionId::CollectionWideColumns => {
                 if self.current_route() == Route::Devices {
                     self.views.devices.wide_columns = !self.views.devices.wide_columns;
+                    self.runtime_error = Some(format!(
+                        "device columns: {}",
+                        if self.views.devices.wide_columns {
+                            "extended"
+                        } else {
+                            "standard"
+                        }
+                    ));
                 }
                 Vec::new()
             }
@@ -10610,9 +10638,9 @@ impl App {
         let filter = self.views.config.filter.trim().to_ascii_lowercase();
         if !filter.is_empty() {
             rows.retain(|row| {
-                filter::fuzzy_matches(row.name, &filter)
-                    || filter::fuzzy_matches(&row.value, &filter)
-                    || filter::fuzzy_matches(row.source.label(), &filter)
+                filter::contains_matches(row.name, &filter)
+                    || filter::contains_matches(&row.value, &filter)
+                    || filter::contains_matches(row.source.label(), &filter)
             });
         }
         let sort = self.views.config.sort;
@@ -10693,6 +10721,12 @@ impl App {
             return Vec::new();
         };
         let Some(name) = row.name().map(str::to_owned) else {
+            if self.pending_navigation_route.is_some() {
+                self.runtime_error = Some(
+                    "Choose an administration profile to continue to the requested view".to_owned(),
+                );
+                return Vec::new();
+            }
             // The local client needs no credential and no verification: it is
             // the daemon on this machine, reachable or not on its own terms.
             self.profile_probe_in_flight = None;
@@ -10852,6 +10886,11 @@ impl App {
         }
         self.refresh_device_view();
         effects.extend(self.start_admin_refresh());
+        if profile.is_some()
+            && let Some(route) = self.pending_navigation_route.take()
+        {
+            self.navigate(route);
+        }
         effects
     }
 
@@ -12533,12 +12572,12 @@ impl App {
             .iter()
             .filter(|share| {
                 query.is_empty()
-                    || filter::fuzzy_matches(&share.name, query)
-                    || filter::fuzzy_matches(&share.path.display().to_string(), query)
+                    || filter::contains_matches(&share.name, query)
+                    || filter::contains_matches(&share.path.display().to_string(), query)
                     || share
                         .as_user
                         .as_deref()
-                        .is_some_and(|user| filter::fuzzy_matches(user, query))
+                        .is_some_and(|user| filter::contains_matches(user, query))
             })
             .collect()
     }
@@ -12552,7 +12591,7 @@ impl App {
             .unwrap_or_default()
             .iter()
             .map(String::as_str)
-            .filter(|domain| query.is_empty() || filter::fuzzy_matches(domain, query))
+            .filter(|domain| query.is_empty() || filter::contains_matches(domain, query))
             .collect()
     }
 
@@ -15675,7 +15714,7 @@ impl App {
                     ]
                     .into_iter()
                     .flatten()
-                    .any(|value| filter::fuzzy_matches(value, query))
+                    .any(|value| filter::contains_matches(value, query))
             })
             .collect()
     }
@@ -15691,7 +15730,7 @@ impl App {
                         .into_iter()
                         .chain(route.advertised.iter().map(String::as_str))
                         .chain(route.enabled.iter().map(String::as_str))
-                        .any(|value| filter::fuzzy_matches(value, query))
+                        .any(|value| filter::contains_matches(value, query))
             })
             .collect()
     }
@@ -15718,7 +15757,7 @@ impl App {
                     .flatten()
                     .chain(credential.scopes.iter().map(String::as_str))
                     .chain(credential.tags.iter().map(String::as_str))
-                    .any(|value| filter::fuzzy_matches(value, query))
+                    .any(|value| filter::contains_matches(value, query))
             })
             .collect()
     }
@@ -15803,7 +15842,7 @@ impl App {
                     ]
                     .into_iter()
                     .flatten()
-                    .any(|value| filter::fuzzy_matches(value, query))
+                    .any(|value| filter::contains_matches(value, query))
             })
             .collect()
     }

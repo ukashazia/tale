@@ -205,9 +205,8 @@ impl StyleRole {
             Self::StatePending | Self::TaskQueued | Self::TaskRunning => {
                 Modifier::ITALIC.union(Modifier::UNDERLINED)
             }
-            Self::StateUnknown | Self::StateOffline | Self::TaskCancelled | Self::Redacted => {
-                Modifier::CROSSED_OUT
-            }
+            Self::StateUnknown | Self::TaskCancelled | Self::Redacted => Modifier::CROSSED_OUT,
+            Self::StateOffline => Modifier::DIM,
             Self::SourceAdmin => Modifier::ITALIC,
             Self::SourceCombined => Modifier::BOLD.union(Modifier::ITALIC),
             Self::RiskDisruptive => Modifier::BOLD.union(Modifier::UNDERLINED),

@@ -696,7 +696,7 @@ fn the_mapping_table_answers_filter_sort_and_copy() {
 }
 
 #[test]
-fn every_services_table_uses_fuzzy_filtering() {
+fn every_services_table_uses_substring_filtering() {
     let Some(mut app) = populated_app() else {
         return;
     };
@@ -708,7 +708,7 @@ fn every_services_table_uses_fuzzy_filtering() {
         });
     }
     app.views.services.section = ServiceSection::Taildrive;
-    app.views.services.filter_draft = "dcs".to_owned();
+    app.views.services.filter_draft = "docs".to_owned();
     assert_eq!(app.visible_taildrive_shares().len(), 1);
     assert_eq!(app.visible_taildrive_shares()[0].name, "docs");
 
@@ -716,7 +716,7 @@ fn every_services_table_uses_fuzzy_filtering() {
         domains.push("other.example.org".to_owned());
     }
     app.views.services.section = ServiceSection::Certificates;
-    app.views.services.filter_draft = "ndex".to_owned();
+    app.views.services.filter_draft = "node.ex".to_owned();
     assert_eq!(
         app.visible_certificate_domains(),
         vec!["node.example.ts.net"]

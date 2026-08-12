@@ -73,11 +73,11 @@ fn press(app: &mut App, code: KeyCode) {
 }
 
 #[test]
-fn config_table_filter_is_fuzzy_across_visible_columns() {
+fn config_table_filter_matches_substrings_across_visible_columns() {
     let Some(mut app) = mock_app() else {
         return;
     };
-    app.views.config.filter = "uithmses".to_owned();
+    app.views.config.filter = "theme.sess".to_owned();
     let rows = app.config_rows();
     assert!(rows.iter().any(|row| row.name == "ui.theme.session"));
 }
@@ -370,13 +370,12 @@ fn navigation_requires_an_active_profile_for_admin_only_views() {
     let _ = app.update(Event::Input(InputEvent::Paste("audit".to_owned())));
     press(&mut app, KeyCode::Enter);
 
-    assert_eq!(app.current_route(), Route::Devices);
-    assert!(matches!(
-        &app.interaction,
-        InteractionMode::CommandLine(state)
-            if state.error.as_deref()
-                == Some("Select an administration profile to open this view")
-    ));
+    assert_eq!(app.current_route(), Route::Profiles);
+    assert!(matches!(app.interaction, InteractionMode::Normal));
+    assert_eq!(
+        app.runtime_error.as_deref(),
+        Some("Choose an administration profile and press Enter to open audit")
+    );
 }
 
 #[test]
