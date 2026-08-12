@@ -1590,6 +1590,10 @@ pub struct App {
     pub tick_count: u64,
     mock_clock_started_at: Option<Instant>,
     pub runtime_error: Option<String>,
+    /// Non-error feedback about a completed UI interaction. Unlike
+    /// `runtime_error`, this never affects process success and renders at the
+    /// informational level below errors and task results.
+    pub status_notice: Option<String>,
     pub copied_value: Option<String>,
     pub mutation_lock: MutationLock,
     pub mutation_in_flight: Option<u64>,
@@ -1801,6 +1805,7 @@ impl App {
             tick_count: 0,
             mock_clock_started_at: None,
             runtime_error: saved_views_error,
+            status_notice: None,
             copied_value: None,
             mutation_lock: MutationLock::new(),
             mutation_in_flight: None,
@@ -3970,7 +3975,7 @@ impl App {
             self.interaction = InteractionMode::Normal;
             self.pending_navigation_route = Some(route);
             self.navigate(Route::Profiles);
-            self.runtime_error = Some(format!(
+            self.status_notice = Some(format!(
                 "Choose an administration profile and press Enter to open {}",
                 route.label()
             ));
@@ -4258,6 +4263,7 @@ impl App {
         // Once another action is valid they are no longer current, and must
         // not turn a later normal shutdown into an application failure.
         self.runtime_error = None;
+        self.status_notice = None;
         match action_id {
             ActionId::AppQuit => self.handle_quit_key(),
             ActionId::ViewCommandLine => {
@@ -4769,7 +4775,7 @@ impl App {
             ActionId::CollectionWideColumns => {
                 if self.current_route() == Route::Devices {
                     self.views.devices.wide_columns = !self.views.devices.wide_columns;
-                    self.runtime_error = Some(format!(
+                    self.status_notice = Some(format!(
                         "device columns: {}",
                         if self.views.devices.wide_columns {
                             "extended"

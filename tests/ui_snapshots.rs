@@ -399,6 +399,11 @@ fn status_hints_use_their_semantic_colors() {
     app.copied_value = Some("device.example.ts.net:443".to_owned());
     assert_notification_role(&app, area, StyleRole::StateInfo);
 
+    app.copied_value = None;
+    app.status_notice = Some("device columns: extended".to_owned());
+    assert_notification_role(&app, area, StyleRole::StateInfo);
+    app.status_notice = None;
+
     for (kind, role) in [
         (TaskResultKind::Success, StyleRole::TaskSucceeded),
         (TaskResultKind::Failure, StyleRole::TaskFailed),

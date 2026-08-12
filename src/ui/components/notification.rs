@@ -52,6 +52,12 @@ fn status_hint(app: &App) -> Option<StatusHint<'_>> {
             role,
         });
     }
+    if let Some(notice) = &app.status_notice {
+        return Some(StatusHint {
+            text: Cow::Borrowed(notice),
+            role: theme::StyleRole::StateInfo,
+        });
+    }
     if let Some(value) = &app.copied_value {
         return Some(StatusHint {
             text: Cow::Owned(format!("copied: {}", one_line(value))),

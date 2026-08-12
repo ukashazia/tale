@@ -137,9 +137,10 @@ fn column_mode_is_visible_in_the_title_and_reports_changes() {
 
     let _ = app.dispatch_action(ActionId::CollectionWideColumns);
     assert_eq!(
-        app.runtime_error.as_deref(),
+        app.status_notice.as_deref(),
         Some("device columns: extended")
     );
+    assert!(app.runtime_error.is_none());
     let Some(extended) = render_lines(&app, 140, 30) else {
         return;
     };

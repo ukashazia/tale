@@ -373,7 +373,7 @@ fn navigation_requires_an_active_profile_for_admin_only_views() {
     assert_eq!(app.current_route(), Route::Profiles);
     assert!(matches!(app.interaction, InteractionMode::Normal));
     assert_eq!(
-        app.runtime_error.as_deref(),
+        app.status_notice.as_deref(),
         Some("Choose an administration profile and press Enter to open audit")
     );
 }
