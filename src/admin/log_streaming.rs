@@ -391,6 +391,7 @@ impl AdminClient {
                         tailnet,
                         "logging",
                         log_type.wire_value(),
+                        "stream",
                         "status",
                     ],
                     &[],
