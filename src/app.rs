@@ -446,6 +446,7 @@ pub enum InteractionMode {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ConfirmationState {
     pub action_id: ActionId,
+    pub admin_generation: u64,
     pub mutation: Option<LocalMutation>,
     pub admin_mutation: Option<AdminMutationRequest>,
     pub admin_batch: Option<AdminBatchConfirmation>,
@@ -4457,6 +4458,7 @@ impl App {
                     self.overlays.push(Overlay::Confirmation(Box::new(
                         ConfirmationState {
                             action_id,
+                            admin_generation: self.admin_generation,
                             mutation: None,
                             admin_mutation: None,
                             admin_batch: None,
@@ -6391,6 +6393,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7518,6 +7521,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminPolicyApply,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7690,6 +7694,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminPolicyCandidateDiscard,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7718,6 +7723,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminPolicyWorkflowClose,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7834,6 +7840,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminCredentialAuthKeyCreate,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7980,6 +7987,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::AdminCredentialRevoke,
+            admin_generation: self.admin_generation,
             mutation: None,
             admin_mutation: None,
             admin_batch: None,
@@ -8060,6 +8068,7 @@ impl App {
         };
         self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::ProfileCredentialRemove,
+            admin_generation: self.admin_generation,
             mutation: None,
             admin_mutation: None,
             admin_batch: None,
@@ -8242,6 +8251,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::LocalAccountLogin,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -8270,6 +8280,7 @@ impl App {
         };
         self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::LocalAccountLogout,
+            admin_generation: self.admin_generation,
             mutation: None,
             admin_mutation: None,
             admin_batch: None,
@@ -8353,6 +8364,7 @@ impl App {
                 self.overlays
                     .push(Overlay::Confirmation(Box::new(ConfirmationState {
                         action_id: state.action_id,
+                        admin_generation: self.admin_generation,
                         mutation: None,
                         admin_mutation: None,
                         admin_batch: None,
@@ -8452,6 +8464,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: mutation.action_id(),
+                admin_generation: self.admin_generation,
                 mutation: Some(mutation),
                 admin_mutation: None,
                 admin_batch: None,
@@ -9301,19 +9314,29 @@ impl App {
         &mut self,
         confirmation: AdminBatchConfirmation,
     ) -> Vec<Effect> {
-        let Some(profile_config) = self
-            .admin
-            .profile
-            .as_ref()
-            .and_then(|profile| self.resolved_config.profiles.get(profile))
-        else {
+        let Some(active_profile) = self.admin.profile.as_ref() else {
+            self.set_confirmation_error("an authenticated admin profile is required");
+            return Vec::new();
+        };
+        let Some(profile_config) = self.resolved_config.profiles.get(active_profile) else {
             self.set_confirmation_error("admin profile configuration is unavailable");
             return Vec::new();
         };
-        let Some(tailnet) = self.admin.tailnet.clone() else {
-            self.set_confirmation_error("admin tailnet is no longer selected");
+        if confirmation
+            .requests
+            .iter()
+            .any(|request| request.profile != *active_profile)
+        {
+            self.set_confirmation_error(
+                "the active administration profile changed after batch preflight; preview again",
+            );
             return Vec::new();
-        };
+        }
+        let tailnet = profile_config.tailnet.clone();
+        if self.admin.tailnet.as_deref() != Some(tailnet.as_str()) {
+            self.set_confirmation_error("admin profile and tailnet context are inconsistent");
+            return Vec::new();
+        }
         if !self.admin_mutation_available(confirmation.batch.action_id) {
             let reason = self
                 .action_unavailable_reason(confirmation.batch.action_id)
@@ -9524,6 +9547,12 @@ impl App {
     }
 
     fn accept_confirmation(&mut self, state: ConfirmationState) -> Vec<Effect> {
+        if state.admin_generation != self.admin_generation {
+            self.set_confirmation_error(
+                "the active administration profile changed after this preview; discard it and review the operation again",
+            );
+            return Vec::new();
+        }
         if let Some(required) = state.required_phrase.as_deref()
             && state.input != required
         {
@@ -9765,6 +9794,12 @@ impl App {
             return vec![Effect::StartProfileCredentialRemove { profile, reference }];
         }
         if let Some(mut request) = state.admin_mutation {
+            if self.admin.profile.as_deref() != Some(request.profile.as_str()) {
+                self.set_confirmation_error(
+                    "the active administration profile changed after preflight; preview again",
+                );
+                return Vec::new();
+            }
             if !self.admin_mutation_available(request.action_id) {
                 let reason = self
                     .action_unavailable_reason(request.action_id)
@@ -9821,11 +9856,13 @@ impl App {
                 self.runtime_error = Some("admin profile configuration disappeared".to_owned());
                 return Vec::new();
             };
-            let Some(tailnet) = self.admin.tailnet.clone() else {
+            let tailnet = profile_config.tailnet.clone();
+            if self.admin.tailnet.as_deref() != Some(tailnet.as_str()) {
                 self.admin_resource_locks.release(request.mutation_id);
-                self.runtime_error = Some("admin tailnet is no longer selected".to_owned());
+                self.runtime_error =
+                    Some("admin profile and tailnet context are inconsistent".to_owned());
                 return Vec::new();
-            };
+            }
             let task_id = self.tasks.create(
                 request.action_id,
                 format!(
@@ -11705,6 +11742,7 @@ impl App {
                 self.overlays
                     .push(Overlay::Confirmation(Box::new(ConfirmationState {
                         action_id: request.action_id,
+                        admin_generation: self.admin_generation,
                         mutation: None,
                         admin_mutation: Some(*request),
                         admin_batch: None,
@@ -12066,6 +12104,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: pending.action_id,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: Some(AdminBatchConfirmation { batch, requests }),
@@ -13615,6 +13654,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: request.action_id(),
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,

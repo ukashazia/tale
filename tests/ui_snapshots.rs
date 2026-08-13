@@ -1134,6 +1134,7 @@ fn every_overlay_paints_a_surface_rather_than_showing_the_view_through_it() {
 
     let confirmation = tale::app::Overlay::Confirmation(Box::new(tale::app::ConfirmationState {
         action_id: ActionId::ServicesFunnelUnpublish,
+        admin_generation: 0,
         mutation: None,
         admin_mutation: None,
         admin_batch: None,
