@@ -81,6 +81,7 @@ struct AuthKeyTaskContext {
     queue: EventQueue,
     token_manager: Arc<TokenManager>,
     result_id: u64,
+    admin_generation: u64,
     profile: String,
     credential: String,
     tailnet: String,
@@ -694,6 +695,8 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             });
         }
         Effect::StartOperationalMutation {
+            operation_id,
+            admin_generation,
             action_id,
             mutation,
             profile,
@@ -708,6 +711,8 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 run_operational_mutation(
                     queue,
                     token_manager,
+                    operation_id,
+                    admin_generation,
                     action_id,
                     mutation,
                     profile,
@@ -947,6 +952,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
         }
         Effect::StartAuthKeyCreate {
             result_id,
+            admin_generation,
             profile,
             tailnet,
             credential,
@@ -961,6 +967,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     queue,
                     token_manager,
                     result_id,
+                    admin_generation,
                     profile,
                     credential,
                     tailnet,
@@ -1987,6 +1994,7 @@ async fn run_auth_key_create(context: AuthKeyTaskContext) {
         queue,
         token_manager,
         result_id,
+        admin_generation,
         profile,
         credential,
         tailnet,
@@ -2007,12 +2015,18 @@ async fn run_auth_key_create(context: AuthKeyTaskContext) {
     let event = match result {
         Ok(created) => Event::Credential(Box::new(CredentialEvent::AuthKeyCreated {
             result_id,
+            admin_generation,
+            profile,
+            tailnet,
             metadata: created.metadata,
             secret: created.secret,
             observed_at: created.created_at,
         })),
         Err(detail) => Event::Credential(Box::new(CredentialEvent::AuthKeyCreateFailed {
             result_id,
+            admin_generation,
+            profile,
+            tailnet,
             detail,
         })),
     };
@@ -2421,6 +2435,8 @@ where
 async fn run_operational_mutation(
     queue: EventQueue,
     token_manager: Arc<TokenManager>,
+    operation_id: u64,
+    admin_generation: u64,
     action_id: ActionId,
     mutation: OperationalMutation,
     profile: String,
@@ -2433,8 +2449,12 @@ async fn run_operational_mutation(
         Err(error) => {
             let _ = queue
                 .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+                    operation_id,
+                    admin_generation,
+                    profile,
+                    tailnet,
                     action_id,
-                    mutation,
+                    mutation: Box::new(mutation),
                     result: Err(admin_refresh_error(
                         error,
                         "authenticate operational mutation",
@@ -2450,8 +2470,12 @@ async fn run_operational_mutation(
         Err(error) => {
             let _ = queue
                 .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+                    operation_id,
+                    admin_generation,
+                    profile,
+                    tailnet,
                     action_id,
-                    mutation,
+                    mutation: Box::new(mutation),
                     result: Err(error),
                     secret: None,
                 })))
@@ -2462,8 +2486,12 @@ async fn run_operational_mutation(
     let (result, secret) = execute_operational_mutation(&client, &token, &tailnet, &mutation).await;
     let _ = queue
         .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+            operation_id,
+            admin_generation,
+            profile,
+            tailnet,
             action_id,
-            mutation,
+            mutation: Box::new(mutation),
             result,
             secret,
         })))

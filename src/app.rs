@@ -1549,6 +1549,8 @@ pub struct App {
     next_secret_result_id: u64,
     pending_auth_key_request: Option<crate::admin::key_mutations::AuthKeyCreateRequest>,
     pending_auth_key_result: Option<u64>,
+    pending_operational_mutation: Option<u64>,
+    next_operational_mutation_id: u64,
     pending_credential_revoke: Option<String>,
     pub admin_user_selected: usize,
     pub admin_route_selected: usize,
@@ -1741,6 +1743,8 @@ impl App {
             next_secret_result_id: 1,
             pending_auth_key_request: None,
             pending_auth_key_result: None,
+            pending_operational_mutation: None,
+            next_operational_mutation_id: 1,
             pending_credential_revoke: None,
             admin_user_selected: 0,
             admin_route_selected: 0,
@@ -2231,6 +2235,9 @@ impl App {
         match event {
             CredentialEvent::AuthKeyCreated {
                 result_id,
+                admin_generation,
+                profile,
+                tailnet,
                 metadata,
                 secret,
                 observed_at,
@@ -2239,6 +2246,14 @@ impl App {
                     return Vec::new();
                 }
                 self.pending_auth_key_result = None;
+                if admin_generation != self.admin_generation
+                    || self.admin.profile.as_deref() != Some(profile.as_str())
+                    || self.admin.tailnet.as_deref() != Some(tailnet.as_str())
+                {
+                    self.runtime_error = Some(format!(
+                        "auth key creation completed for {profile} / {tailnet} after the active admin context changed; preserve the displayed secret and review that tailnet"
+                    ));
+                }
                 let secret_result = SecretResult::from_handle(
                     SecretMetadata {
                         result_id,
@@ -2254,10 +2269,25 @@ impl App {
                 self.secret_result = Some(secret_result);
                 self.overlays.push(Overlay::SecretResult);
             }
-            CredentialEvent::AuthKeyCreateFailed { result_id, detail } => {
+            CredentialEvent::AuthKeyCreateFailed {
+                result_id,
+                admin_generation,
+                profile,
+                tailnet,
+                detail,
+            } => {
                 if self.pending_auth_key_result == Some(result_id) {
                     self.pending_auth_key_result = None;
-                    self.runtime_error = Some(detail);
+                    let context = if admin_generation == self.admin_generation
+                        && self.admin.profile.as_deref() == Some(profile.as_str())
+                        && self.admin.tailnet.as_deref() == Some(tailnet.as_str())
+                    {
+                        String::new()
+                    } else {
+                        format!(" for {profile} / {tailnet}")
+                    };
+                    self.runtime_error =
+                        Some(format!("auth key creation{context} failed: {detail}"));
                 }
             }
             CredentialEvent::DetailFetched { key_id, result } => {
@@ -5323,7 +5353,11 @@ impl App {
                         .as_ref()
                         .is_some_and(|workflow| workflow.state() == PolicyState::ReadyToApply)
             }
-            ActionId::AdminCredentialAuthKeyCreate => true,
+            ActionId::AdminCredentialAuthKeyCreate => {
+                self.pending_auth_key_result.is_none()
+                    && self.pending_operational_mutation.is_none()
+                    && self.secret_result.is_none()
+            }
             ActionId::AdminCredentialRevoke => self.selected_credential().is_some(),
             _ => false,
         }
@@ -5355,6 +5389,14 @@ impl App {
         if self.admin.profile.is_none()
             || self.admin.profile_read_only
             || self.resolved_config.read_only
+            || self.pending_operational_mutation.is_some()
+        {
+            return false;
+        }
+        if matches!(
+            action_id,
+            ActionId::AdminWebhookCreate | ActionId::AdminWebhookRotateSecret
+        ) && (self.pending_auth_key_result.is_some() || self.secret_result.is_some())
         {
             return false;
         }
@@ -9715,6 +9757,7 @@ impl App {
             self.overlays.pop();
             return vec![Effect::StartAuthKeyCreate {
                 result_id,
+                admin_generation: self.admin_generation,
                 profile,
                 tailnet,
                 credential,
@@ -10026,8 +10069,13 @@ impl App {
             self.set_confirmation_error("admin tailnet is no longer selected");
             return Vec::new();
         };
+        let operation_id = self.next_operational_mutation_id;
+        self.next_operational_mutation_id = self.next_operational_mutation_id.saturating_add(1);
+        self.pending_operational_mutation = Some(operation_id);
         self.overlays.pop();
         vec![Effect::StartOperationalMutation {
+            operation_id,
+            admin_generation: self.admin_generation,
             action_id,
             mutation,
             profile,
@@ -10861,9 +10909,18 @@ impl App {
         if !self.admin_mutations_in_flight.is_empty()
             || !self.admin_batches_in_flight.is_empty()
             || !self.admin_batch_preflights.is_empty()
+            || self.pending_auth_key_result.is_some()
+            || self.pending_operational_mutation.is_some()
+            || self.pending_credential_revoke.is_some()
+            || self.secret_result.is_some()
+            || self
+                .policy_workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow.state() == PolicyState::Applying)
         {
             self.runtime_error = Some(
-                "finish or cancel the active admin mutation before switching profiles".to_owned(),
+                "finish the active control-plane write and preserve or close any view-once secret before switching profiles"
+                    .to_owned(),
             );
             return Vec::new();
         }
@@ -11823,30 +11880,48 @@ impl App {
                 return effects;
             }
             AdminEvent::OperationalFinished {
+                operation_id,
+                admin_generation,
+                profile,
+                tailnet,
                 action_id,
                 mutation,
                 result,
                 secret,
             } => {
-                match result {
-                    Ok(OperationalResult::WebhookVerified { endpoints, detail }) => {
-                        self.webhooks = endpoints;
-                        self.runtime_error = Some(detail);
-                    }
-                    Ok(OperationalResult::NetworkLogSettingVerified { enabled, detail }) => {
-                        if let Some(value) = enabled
-                            && let Some(settings) = self.admin.settings.snapshot.as_mut()
-                        {
-                            settings.network_flow_logging_on = Some(value);
+                let mutation = *mutation;
+                let expected = self.pending_operational_mutation == Some(operation_id);
+                if expected {
+                    self.pending_operational_mutation = None;
+                }
+                let context_current = admin_generation == self.admin_generation
+                    && self.admin.profile.as_deref() == Some(profile.as_str())
+                    && self.admin.tailnet.as_deref() == Some(tailnet.as_str());
+                if expected && context_current {
+                    match result {
+                        Ok(OperationalResult::WebhookVerified { endpoints, detail }) => {
+                            self.webhooks = endpoints;
+                            self.runtime_error = Some(detail);
                         }
-                        self.runtime_error = Some(detail);
+                        Ok(OperationalResult::NetworkLogSettingVerified { enabled, detail }) => {
+                            if let Some(value) = enabled
+                                && let Some(settings) = self.admin.settings.snapshot.as_mut()
+                            {
+                                settings.network_flow_logging_on = Some(value);
+                            }
+                            self.runtime_error = Some(detail);
+                        }
+                        Ok(OperationalResult::Completed { detail }) => {
+                            self.runtime_error = Some(detail);
+                        }
+                        Err(error) => {
+                            self.runtime_error = Some(error.to_string());
+                        }
                     }
-                    Ok(OperationalResult::Completed { detail }) => {
-                        self.runtime_error = Some(detail);
-                    }
-                    Err(error) => {
-                        self.runtime_error = Some(error.to_string());
-                    }
+                } else {
+                    self.runtime_error = Some(format!(
+                        "an operational write completed for {profile} / {tailnet} outside its initiating admin context; remote state was not merged locally"
+                    ));
                 }
                 if let Some(secret) = secret {
                     let credential_id = match &mutation {
@@ -11880,7 +11955,11 @@ impl App {
                     | ActionId::AdminWebhookDelete
                     | ActionId::AdminLogStreamReplace
                     | ActionId::AdminLogStreamDelete
-                    | ActionId::AdminNetworkLogsSettings => self.start_admin_current_view_refresh(),
+                    | ActionId::AdminNetworkLogsSettings
+                        if expected && context_current =>
+                    {
+                        self.start_admin_current_view_refresh()
+                    }
                     _ => Vec::new(),
                 };
                 return refresh;

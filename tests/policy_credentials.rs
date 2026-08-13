@@ -326,6 +326,9 @@ fn auth_key_request_preserves_all_fields_and_secret_traits_are_safe() {
                     "{:?}",
                     tale::event::CredentialEvent::AuthKeyCreated {
                         result_id: 1,
+                        admin_generation: 0,
+                        profile: "fixture".to_owned(),
+                        tailnet: "example.test".to_owned(),
                         metadata: created.metadata,
                         secret: created.secret,
                         observed_at: 1,
