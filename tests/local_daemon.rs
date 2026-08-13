@@ -53,7 +53,7 @@ async fn response(mut stream: UnixStream, request: String) -> Result<(), String>
     match path {
         Some(path) if path.ends_with("/localapi/v0/status") => {
             let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nTailscale-Version: 1.98.9\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nTailscale-Version: 1.96.4\r\n\r\n",
                 STATUS.len()
             );
             assert!(stream.write_all(header.as_bytes()).await.is_ok());
@@ -184,6 +184,9 @@ async fn fake_localapi_checks_headers_endpoints_and_chunked_watch() {
         client.watch(NotifyWatchMask::tale(), &cancellation),
     );
     assert!(status.is_ok());
+    if let Ok(status) = status {
+        assert_eq!(status.server_version.as_deref(), Some("1.96.4"));
+    }
     assert!(preferences.is_ok());
     assert!(watch.is_ok());
     if let Ok(mut watch) = watch {

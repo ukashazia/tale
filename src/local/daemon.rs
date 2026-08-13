@@ -33,7 +33,6 @@ pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_NOTIFICATION_BYTES: usize = 32 * 1024 * 1024;
 
 const CANCEL_POLL: Duration = Duration::from_millis(10);
-const EXPECTED_CLIENT_FAMILY: &str = "1.98.9";
 
 pub fn documented_socket_path() -> PathBuf {
     if cfg!(windows) {
@@ -86,8 +85,6 @@ pub enum LocalDaemonError {
     Protocol { operation: String, detail: String },
     #[error("LocalAPI {operation} JSON was invalid: {detail}")]
     Decode { operation: String, detail: String },
-    #[error("LocalAPI server version is outside the pinned {expected} family: {actual}")]
-    UnsupportedVersion { expected: String, actual: String },
     #[error("LocalAPI is unsupported on this platform")]
     UnsupportedPlatform,
 }
@@ -100,7 +97,6 @@ impl LocalDaemonError {
             | Self::HttpStatus { operation, .. }
             | Self::Protocol { operation, .. }
             | Self::Decode { operation, .. } => operation.clone(),
-            Self::UnsupportedVersion { .. } => "version".to_owned(),
             Self::Cancelled => "cancellation".to_owned(),
             Self::UnsupportedPlatform => "platform".to_owned(),
         }
@@ -146,12 +142,6 @@ impl LocalDaemonError {
                 LocalFailureKind::InvalidOutput,
                 "local daemon response was unsupported",
                 detail.clone(),
-                false,
-            ),
-            Self::UnsupportedVersion { actual, .. } => (
-                LocalFailureKind::UnsupportedClient,
-                "local daemon client family is unsupported",
-                format!("server version {actual} is outside the pinned contract"),
                 false,
             ),
             Self::UnsupportedPlatform => (
@@ -623,7 +613,7 @@ impl LocalDaemonClient {
         let (response, connection) = self
             .snapshot_response("status", LOCAL_API_STATUS_PATH, cancellation)
             .await?;
-        let server_version = server_version(&response, "status")?;
+        let server_version = server_version(&response);
         let body = self
             .read_snapshot_body(
                 "status",
@@ -690,8 +680,6 @@ impl LocalDaemonClient {
             self.open_response(operation, &path, false),
         )
         .await?;
-        let version = server_version(&response, operation)?;
-        validate_server_version(version.as_deref())?;
         if response.status() != StatusCode::OK {
             return Err(http_status_error(
                 operation,
@@ -715,7 +703,6 @@ impl LocalDaemonClient {
             self.open_response(operation, path, true),
         )
         .await?;
-        server_version(&response, operation)?;
         Ok((response, connection))
     }
 
@@ -795,40 +782,12 @@ fn local_request(path: &str, close: bool) -> Result<Request<Empty<Bytes>>, hyper
     builder.body(Empty::new())
 }
 
-fn server_version(
-    response: &Response<Incoming>,
-    operation: &str,
-) -> Result<Option<String>, LocalDaemonError> {
-    let version = response
+fn server_version(response: &Response<Incoming>) -> Option<String> {
+    response
         .headers()
         .get("Tailscale-Version")
-        .map(|value| {
-            value
-                .to_str()
-                .map(str::to_owned)
-                .map_err(|error| LocalDaemonError::Protocol {
-                    operation: operation.to_owned(),
-                    detail: bounded_detail(&format!("server version header was invalid: {error}")),
-                })
-        })
-        .transpose()?;
-    validate_server_version(version.as_deref())?;
-    Ok(version)
-}
-
-fn validate_server_version(version: Option<&str>) -> Result<(), LocalDaemonError> {
-    if let Some(version) = version
-        && !version.eq(EXPECTED_CLIENT_FAMILY)
-        && !version
-            .strip_prefix(EXPECTED_CLIENT_FAMILY)
-            .is_some_and(|suffix| suffix.starts_with([' ', '-', '+']))
-    {
-        return Err(LocalDaemonError::UnsupportedVersion {
-            expected: EXPECTED_CLIENT_FAMILY.to_owned(),
-            actual: bounded_detail(version),
-        });
-    }
-    Ok(())
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 fn http_status_error(
