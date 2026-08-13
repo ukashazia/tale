@@ -723,8 +723,8 @@ fn every_services_table_uses_substring_filtering() {
     );
 }
 
-/// The route's own key was sorted past `? more`, and the hint printed inside
-/// the box named keys that did something else entirely.
+/// The route's own key must remain visible when the footer wraps, and the hint
+/// printed inside the box must not name keys that do something else entirely.
 #[test]
 fn the_footer_offers_the_keys_this_route_actually_has() {
     let Some(mut app) = populated_app() else {
@@ -734,7 +734,8 @@ fn the_footer_offers_the_keys_this_route_actually_has() {
     let services = render_lines(&app, 160, 45);
     assert!(services.is_some());
     if let Some(services) = services {
-        let footer = services.last().cloned().unwrap_or_default();
+        let layout = tale::ui::layout::compute(ratatui::layout::Rect::new(0, 0, 160, 45), &app);
+        let footer = services[usize::from(layout.footer.y)..].join("\n");
         assert!(footer.contains("Tab next tab"), "no tab key: {footer}");
         assert!(!footer.contains("columns"), "columns has no meaning here");
         assert!(
@@ -747,7 +748,8 @@ fn the_footer_offers_the_keys_this_route_actually_has() {
     let devices = render_lines(&app, 160, 45);
     assert!(devices.is_some());
     if let Some(devices) = devices {
-        let footer = devices.last().cloned().unwrap_or_default();
+        let layout = tale::ui::layout::compute(ratatui::layout::Rect::new(0, 0, 160, 45), &app);
+        let footer = devices[usize::from(layout.footer.y)..].join("\n");
         assert!(!footer.contains("tab"), "the tab key leaked onto devices");
         assert!(footer.contains("columns"));
     }

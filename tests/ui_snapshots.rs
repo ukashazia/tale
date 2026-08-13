@@ -265,8 +265,9 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
             let drawn = terminal.draw(|frame| ui::render(frame, &app));
             assert!(drawn.is_ok());
             let buffer = terminal.backend().buffer();
-            let key = buffer.cell((0, 29));
-            let label = buffer.cell((2, 29));
+            let footer = ui::layout::compute(buffer.area, &app).footer;
+            let key = buffer.cell((0, footer.y));
+            let label = buffer.cell((2, footer.y));
             assert!(key.is_some());
             assert!(label.is_some());
             if let (Some(key), Some(label)) = (key, label) {
@@ -282,6 +283,25 @@ fn quick_footer_separates_accent_keys_from_muted_help() {
             }
         }
     }
+}
+
+#[test]
+fn quick_footer_wraps_complete_hints_across_two_rows() {
+    let Some(app) = populated_app() else {
+        return;
+    };
+    let width = 80;
+    let height = 30;
+    let layout = ui::layout::compute(ratatui::layout::Rect::new(0, 0, width, height), &app);
+    assert_eq!(layout.footer.height, 2);
+    let Some(lines) = lines_at(&app, width, height) else {
+        return;
+    };
+    let first = lines.get(usize::from(layout.footer.y));
+    let second = lines.get(usize::from(layout.footer.y.saturating_add(1)));
+    assert!(first.is_some_and(|line| line.contains(": command")));
+    assert!(second.is_some_and(|line| !line.trim().is_empty()));
+    assert!(lines.iter().all(|line| !line.contains('\n')));
 }
 
 #[test]
@@ -506,7 +526,7 @@ fn full_screen_device_details_do_not_claim_split_pane_focus() {
 }
 
 #[test]
-fn required_responsive_frames_render_without_wrapped_rows() {
+fn required_responsive_frames_render_without_clipped_rows() {
     let empty = mock_app();
     assert!(empty.is_some());
     if let Some(mut empty) = empty {
@@ -546,7 +566,7 @@ fn required_responsive_frames_render_without_wrapped_rows() {
             assert!(lines.iter().any(|line| line.contains('●')));
             assert!(lines.iter().any(|line| line.contains(": command")));
             assert!(lines.iter().any(|line| line.contains("/ filter")));
-            assert!(lines.iter().any(|line| line.contains("? more")));
+            assert!(lines.iter().any(|line| line.contains("? help")));
         }
     }
 

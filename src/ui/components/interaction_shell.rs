@@ -82,28 +82,42 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if !app.resolved_config.ui.show_footer {
         return vec![Line::default()];
     }
-    let mut spans = Vec::new();
-    for (index, hint) in app.footer_actions(width).into_iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::styled(
-                "  ",
-                app.theme.style(theme::StyleRole::SurfaceRaised),
-            ));
-        }
-        spans.push(Span::styled(
-            hint.key,
-            app.theme.style(theme::StyleRole::KeyHint),
-        ));
-        spans.push(Span::styled(
-            " ",
-            app.theme.style(theme::StyleRole::SurfaceRaised),
-        ));
-        spans.push(Span::styled(
-            hint.label,
-            app.theme.style(theme::StyleRole::TextMuted),
-        ));
+    action::footer_rows(&app.footer_actions(width), width)
+        .into_iter()
+        .map(|row| {
+            let mut spans = Vec::new();
+            for (index, hint) in row.into_iter().enumerate() {
+                if index > 0 {
+                    spans.push(Span::styled(
+                        "  ",
+                        app.theme.style(theme::StyleRole::SurfaceRaised),
+                    ));
+                }
+                spans.push(Span::styled(
+                    hint.key,
+                    app.theme.style(theme::StyleRole::KeyHint),
+                ));
+                spans.push(Span::styled(
+                    " ",
+                    app.theme.style(theme::StyleRole::SurfaceRaised),
+                ));
+                spans.push(Span::styled(
+                    hint.label,
+                    app.theme.style(theme::StyleRole::TextMuted),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+pub fn normal_height(app: &App, width: u16) -> u16 {
+    if !app.resolved_config.ui.show_footer {
+        return 1;
     }
-    vec![Line::from(spans)]
+    u16::try_from(action::footer_rows(&app.footer_actions(width), width).len())
+        .map_or(u16::MAX, |height| height)
+        .max(1)
 }
 
 type ShellLines = (Vec<Line<'static>>, Option<(u16, u16)>);

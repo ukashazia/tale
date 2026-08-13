@@ -2438,15 +2438,25 @@ impl App {
             if self.resolved_config.ui.show_footer
                 && contains_point(layout.footer, mouse.column, mouse.row)
             {
-                let mut x = layout.footer.x;
-                for hint in self.footer_actions(layout.footer.width) {
-                    let end = x.saturating_add(
-                        u16::try_from(hint.width()).map_or(u16::MAX, |value| value),
-                    );
-                    if mouse.column >= x && mouse.column < end {
-                        return self.dispatch_action(hint.action_id);
+                let hints = self.footer_actions(layout.footer.width);
+                for (row, hints) in action::footer_rows(&hints, layout.footer.width)
+                    .into_iter()
+                    .enumerate()
+                {
+                    let y = layout
+                        .footer
+                        .y
+                        .saturating_add(u16::try_from(row).map_or(u16::MAX, |value| value));
+                    let mut x = layout.footer.x;
+                    for hint in hints {
+                        let end = x.saturating_add(
+                            u16::try_from(hint.width()).map_or(u16::MAX, |value| value),
+                        );
+                        if mouse.row == y && mouse.column >= x && mouse.column < end {
+                            return self.dispatch_action(hint.action_id);
+                        }
+                        x = end.saturating_add(2);
                     }
-                    x = end.saturating_add(2);
                 }
                 return Vec::new();
             }

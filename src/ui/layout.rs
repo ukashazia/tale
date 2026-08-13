@@ -42,7 +42,9 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
         LayoutMode::Compact
     };
     let interaction_height = match &app.interaction {
-        InteractionMode::Normal => 1,
+        InteractionMode::Normal => {
+            crate::ui::components::interaction_shell::normal_height(app, area.width)
+        }
         InteractionMode::CommandLine(_) => navigation_palette_height(),
         InteractionMode::FilterLine(_) => {
             crate::ui::components::interaction_shell::filter_menu_height(

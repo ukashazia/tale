@@ -135,7 +135,9 @@ fn the_inspector_describes_one_task_and_shows_its_output() {
     };
     press(&mut app, KeyCode::Char('G'));
     press(&mut app, KeyCode::Enter);
-    let Some(lines) = render_lines(&app, 160, 30) else {
+    // The responsive footer uses its second row at this width, so keep the
+    // inspector's existing content budget while checking its final output row.
+    let Some(lines) = render_lines(&app, 160, 31) else {
         return;
     };
     for expected in [

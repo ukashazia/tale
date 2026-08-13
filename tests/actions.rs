@@ -651,7 +651,15 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
         Some(ActionId::ViewCommandLine)
     );
     let footer = action::footer_hints(ActionContext::Collection, Route::Devices, 20);
-    assert!(footer.last().is_some_and(|hint| hint == "? more"));
+    assert!(footer.iter().any(|hint| hint == "? more"));
+    assert!(
+        action::footer_rows(
+            &action::footer_actions(ActionContext::Collection, Route::Devices, 20),
+            20,
+        )
+        .len()
+            <= action::FOOTER_MAX_ROWS
+    );
     let footer = action::footer_hints(ActionContext::Collection, Route::Devices, 120);
     assert_eq!(
         footer
@@ -662,7 +670,7 @@ fn dispatch_uses_registered_bindings_and_footer_reports_more() {
         vec![
             ": command",
             "/ filter",
-            "? more",
+            "? help",
             "a actions",
             "y copy",
             "@ tasks"

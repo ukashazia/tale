@@ -1300,6 +1300,8 @@ pub struct FooterHint {
     pub label: &'static str,
 }
 
+pub const FOOTER_MAX_ROWS: usize = 2;
+
 impl FooterHint {
     pub fn text(self) -> String {
         format!("{} {}", self.key, self.label)
@@ -1314,6 +1316,27 @@ impl FooterHint {
     }
 }
 
+pub fn footer_rows(hints: &[FooterHint], width: u16) -> Vec<Vec<FooterHint>> {
+    let width = usize::from(width);
+    let mut rows = vec![Vec::new()];
+    let mut used = 0usize;
+    for hint in hints {
+        let separator = usize::from(!rows.last().is_none_or(Vec::is_empty)) * 2;
+        if used.saturating_add(separator).saturating_add(hint.width()) > width
+            && rows.last().is_some_and(|row| !row.is_empty())
+        {
+            rows.push(Vec::new());
+            used = 0;
+        }
+        let separator = usize::from(!rows.last().is_none_or(Vec::is_empty)) * 2;
+        used = used.saturating_add(separator).saturating_add(hint.width());
+        if let Some(row) = rows.last_mut() {
+            row.push(*hint);
+        }
+    }
+    rows
+}
+
 pub fn footer_actions(context: ActionContext, route: Route, width: u16) -> Vec<FooterHint> {
     footer_actions_filtered(context, route, width, |_| true)
 }
@@ -1324,8 +1347,6 @@ pub fn footer_actions_filtered(
     width: u16,
     include: impl Fn(ActionId) -> bool,
 ) -> Vec<FooterHint> {
-    let mut used = 0usize;
-    let mut hints = Vec::new();
     let mut specs = all_actions()
         .into_iter()
         .filter(|spec| {
@@ -1337,48 +1358,46 @@ pub fn footer_actions_filtered(
         })
         .collect::<Vec<_>>();
     specs.sort_by_key(|spec| footer_priority(spec.id));
-    let mut hidden = false;
-    for spec in specs {
-        let Some(label) = compact_help_label(spec.id) else {
-            continue;
-        };
-        let hint = FooterHint {
-            action_id: spec.id,
-            key: spec.default_bindings[0].label(),
-            label,
-        };
-        let separator = if hints.is_empty() { 0 } else { 2 };
-        if used
-            .saturating_add(separator)
-            .saturating_add(hint.width())
-            .saturating_add(8)
-            > usize::from(width)
-        {
-            hidden = true;
-            break;
-        }
-        used += separator + hint.width();
-        hints.push(hint);
-    }
-    let help = FooterHint {
-        action_id: ActionId::ViewHelp,
-        key: "?",
-        label: if hidden { "more" } else { "help" },
-    };
-    // Command, search, and help are the three discovery affordances. Help is
-    // reserved while fitting the row, then inserted after the first two so it
-    // stays discoverable without separating related actions later in the bar.
-    let help_index = hints
-        .iter()
-        .take_while(|hint| {
-            matches!(
-                hint.action_id,
-                ActionId::ViewCommandLine | ActionId::ViewFilter | ActionId::DetailSearch
-            )
+    let available = specs
+        .into_iter()
+        .filter_map(|spec| {
+            Some(FooterHint {
+                action_id: spec.id,
+                key: spec.default_bindings[0].label(),
+                label: compact_help_label(spec.id)?,
+            })
         })
-        .count();
-    hints.insert(help_index, help);
-    hints
+        .collect::<Vec<_>>();
+
+    for visible in (0..=available.len()).rev() {
+        let hidden = visible < available.len();
+        let mut hints = available[..visible].to_vec();
+        let help_index = hints
+            .iter()
+            .take_while(|hint| {
+                matches!(
+                    hint.action_id,
+                    ActionId::ViewCommandLine | ActionId::ViewFilter | ActionId::DetailSearch
+                )
+            })
+            .count();
+        hints.insert(
+            help_index,
+            FooterHint {
+                action_id: ActionId::ViewHelp,
+                key: "?",
+                label: if hidden { "more" } else { "help" },
+            },
+        );
+        let rows = footer_rows(&hints, width);
+        if rows.len() <= FOOTER_MAX_ROWS
+            && hints.iter().all(|hint| hint.width() <= usize::from(width))
+        {
+            return hints;
+        }
+    }
+
+    Vec::new()
 }
 
 /// Some keys are bound in a shared context but only mean something on one
