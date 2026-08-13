@@ -29,6 +29,12 @@ machine. Tailnet administration uses the Control API and does not require the
 brew install ukashazia/tale/tale
 ```
 
+### Shell installer
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ukashazia/tale/releases/latest/download/tale-installer.sh | sh
+```
+
 ### Nix
 
 ```sh
@@ -173,8 +179,20 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --locked
 ```
 
+Enter the Nix development shell to use the pinned release tooling:
+
+```sh
+nix develop
+```
+
 Regenerate the man page and completions after changing the CLI:
 
 ```sh
 cargo run --locked --bin generate-artifacts -- --output-dir .
+```
+
+Validate generated release automation after changing distribution settings:
+
+```sh
+dist generate --check
 ```
