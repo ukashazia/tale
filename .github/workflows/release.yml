@@ -1,12 +1,14 @@
-name: Release
+name: Build and release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -38,8 +40,21 @@ jobs:
       VERSION: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Restore Rust build cache
+        id: rust-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Install archive tooling
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           if [ "${RUNNER_OS}" = "macOS" ]; then
             brew install zstd
@@ -54,7 +69,18 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --target "$TARGET"
 
+      - name: Save Rust build cache
+        if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
       - name: Assemble release payload
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           mkdir -p release
           cargo run --locked --release --bin package-artifact -- --target "$TARGET" --binary "target/$TARGET/release/tale" --output "release/tale-$TARGET.tar" --checksum "release/tale-$TARGET.tar.sha256" --source-date-epoch "$SOURCE_DATE_EPOCH"
@@ -68,7 +94,7 @@ jobs:
           chmod 0755 release/install.sh
 
       - name: Assemble Debian package
-        if: matrix.debian
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.debian
         run: |
           version=${VERSION#v}
           case "$TARGET" in
@@ -79,6 +105,7 @@ jobs:
           shasum -a 256 "release/tale_${version}_${architecture}.deb" > "release/tale_${version}_${architecture}.deb.sha256"
 
       - name: Upload target assets
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
@@ -91,9 +118,12 @@ jobs:
 
   publish:
     name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: package
     runs-on: ubuntu-24.04
     environment: release
+    permissions:
+      contents: write
     steps:
       - name: Download release assets
         uses: actions/download-artifact@v4
