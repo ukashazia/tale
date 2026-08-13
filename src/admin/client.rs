@@ -254,6 +254,7 @@ struct MutationBody {
 struct RawMediaTypes<'a> {
     content_type: &'a str,
     accept: &'a str,
+    if_match: Option<&'a str>,
 }
 
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
@@ -709,6 +710,7 @@ impl AdminClient {
                 RawMediaTypes {
                     content_type: "application/hujson",
                     accept: "application/json",
+                    if_match: None,
                 },
             )
             .await?;
@@ -740,6 +742,7 @@ impl AdminClient {
                 RawMediaTypes {
                     content_type: "application/hujson",
                     accept: "application/json",
+                    if_match: None,
                 },
             )
             .await?;
@@ -751,6 +754,7 @@ impl AdminClient {
         token: &AccessToken,
         tailnet: &str,
         candidate: &[u8],
+        etag: &str,
     ) -> Result<MutationResponse<PolicyBody>, AdminError> {
         let url = self.path(&["tailnet", tailnet, "acl"], &[])?;
         self.mutation_policy(
@@ -758,8 +762,11 @@ impl AdminClient {
             token,
             url,
             candidate,
-            "application/hujson",
-            "application/hujson",
+            RawMediaTypes {
+                content_type: "application/hujson",
+                accept: "application/hujson",
+                if_match: Some(etag),
+            },
         )
         .await
     }
@@ -1058,28 +1065,29 @@ impl AdminClient {
         body: &[u8],
         media: RawMediaTypes<'_>,
     ) -> Result<ApiResponse<MutationBody>, AdminError> {
-        let response = self
+        let mut request = self
             .http
             .request(method, url)
             .header(AUTHORIZATION, format!("Bearer {}", token.as_str()))
             .header(USER_AGENT, crate::VERSION_USER_AGENT)
             .header(ACCEPT, media.accept)
             .header(CONTENT_TYPE, media.content_type)
-            .body(body.to_vec())
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    AdminError::TimedOut {
-                        operation: endpoint.operation().to_owned(),
-                    }
-                } else {
-                    AdminError::Transport {
-                        operation: endpoint.operation().to_owned(),
-                        detail: bounded_detail(&error.to_string()),
-                    }
+            .body(body.to_vec());
+        if let Some(etag) = media.if_match {
+            request = request.header(reqwest::header::IF_MATCH, etag);
+        }
+        let response = request.send().await.map_err(|error| {
+            if error.is_timeout() {
+                AdminError::TimedOut {
+                    operation: endpoint.operation().to_owned(),
                 }
-            })?;
+            } else {
+                AdminError::Transport {
+                    operation: endpoint.operation().to_owned(),
+                    detail: bounded_detail(&error.to_string()),
+                }
+            }
+        })?;
         let status = response.status();
         let headers = response.headers().clone();
         let body = read_bounded(response, endpoint.operation(), MAX_BODY_BYTES, token).await?;
@@ -1107,21 +1115,10 @@ impl AdminClient {
         token: &AccessToken,
         url: Url,
         body: &[u8],
-        content_type: &str,
-        accept: &str,
+        media: RawMediaTypes<'_>,
     ) -> Result<MutationResponse<PolicyBody>, AdminError> {
         let response = self
-            .mutation_raw(
-                endpoint,
-                Method::POST,
-                token,
-                url,
-                body,
-                RawMediaTypes {
-                    content_type,
-                    accept,
-                },
-            )
+            .mutation_raw(endpoint, Method::POST, token, url, body, media)
             .await?;
         if !policy_content_type_string(&response.value.content_type) {
             return Err(AdminError::DecodeFailed {
@@ -1398,7 +1395,9 @@ fn classify_status(
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
             AdminError::ValidationFailed { operation, detail }
         }
-        StatusCode::CONFLICT => AdminError::Conflict { operation, detail },
+        StatusCode::CONFLICT | StatusCode::PRECONDITION_FAILED => {
+            AdminError::Conflict { operation, detail }
+        }
         StatusCode::TOO_MANY_REQUESTS => AdminError::RateLimited {
             operation,
             retry_after_seconds: retry_after,

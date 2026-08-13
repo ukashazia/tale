@@ -1869,6 +1869,12 @@ async fn apply_policy_remote(
         };
         return PolicyApplyResult::RemoteConflict { latest: document };
     }
+    let Some(latest_etag) = latest.value.etag.as_deref() else {
+        return PolicyApplyResult::FailedRetained {
+            detail: "the final policy read did not return an ETag; refusing an unguarded save"
+                .to_owned(),
+        };
+    };
     let candidate = match policy_document(bytes.clone(), crate::local::now()) {
         Ok(candidate) => candidate,
         Err(detail) => return PolicyApplyResult::FailedRetained { detail },
@@ -1892,7 +1898,25 @@ async fn apply_policy_remote(
                 .unwrap_or_else(|| "final server validation rejected the candidate".to_owned()),
         };
     }
-    if let Err(error) = client.save_policy(&token, &context.tailnet, &bytes).await {
+    if let Err(error) = client
+        .save_policy(&token, &context.tailnet, &bytes, latest_etag)
+        .await
+    {
+        if matches!(error, AdminError::Conflict { .. }) {
+            return match client.get_policy(&token, &context.tailnet).await {
+                Ok(response) => {
+                    match policy_document(response.value.source_bytes, response.meta.observed_at) {
+                        Ok(latest) => PolicyApplyResult::RemoteConflict { latest },
+                        Err(detail) => PolicyApplyResult::FailedRetained { detail },
+                    }
+                }
+                Err(refresh_error) => PolicyApplyResult::FailedRetained {
+                    detail: format!(
+                        "the policy changed during save, and the latest policy could not be fetched: {refresh_error}"
+                    ),
+                },
+            };
+        }
         return if policy_save_may_have_reached_server(&error) {
             verify_saved_policy(
                 &client,
