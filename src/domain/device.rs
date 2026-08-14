@@ -540,10 +540,7 @@ fn compare_directed_device_field(left: &Device, right: &Device, sort: SortSpec) 
 
 fn compare_device_field(left: &Device, right: &Device, field: SortField) -> Ordering {
     match field {
-        SortField::Name => left
-            .display_name
-            .to_lowercase()
-            .cmp(&right.display_name.to_lowercase()),
+        SortField::Name => compare_case_insensitive(&left.display_name, &right.display_name),
         SortField::Liveness => liveness_rank(left.liveness).cmp(&liveness_rank(right.liveness)),
         SortField::Owner => compare_optional_text(
             left.owner.as_deref().or(left.owner_label.as_deref()),
@@ -567,9 +564,18 @@ fn compare_device_field(left: &Device, right: &Device, field: SortField) -> Orde
     }
 }
 
+/// Case-folded ordering that keeps the comparator allocation-free: sorting a
+/// large tailnet by name runs this tens of thousands of times, and lowercasing
+/// both sides into fresh strings was the bulk of the work.
+fn compare_case_insensitive(left: &str, right: &str) -> Ordering {
+    left.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(right.chars().flat_map(char::to_lowercase))
+}
+
 fn compare_optional_text(left: Option<&str>, right: Option<&str>) -> Ordering {
     match (left, right) {
-        (Some(left), Some(right)) => left.to_lowercase().cmp(&right.to_lowercase()),
+        (Some(left), Some(right)) => compare_case_insensitive(left, right),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
