@@ -2307,41 +2307,11 @@ impl App {
                 self.pending_credential_revoke = None;
                 match result {
                     CredentialRevocationResult::Verified => {
-                        self.runtime_error =
-                            Some("remote credential revocation was verified".to_owned());
-                        let current_profile = self.admin.profile.clone();
-                        let current_reference = self
-                            .admin
-                            .profile
-                            .as_ref()
-                            .and_then(|profile| self.resolved_config.profiles.get(profile))
-                            .map(|profile| profile.credential.as_str());
-                        let clear_current = current_reference == Some(key_id.as_str());
-                        let next_profile = current_profile.as_ref().and_then(|current| {
-                            self.resolved_config
-                                .profiles
-                                .iter()
-                                .find(|(name, profile)| {
-                                    *name != current && profile.credential != key_id
-                                })
-                                .map(|(name, _)| name.clone())
-                        });
-                        let effects = self
-                            .start_admin_resource_refresh(vec![AdminRefreshResource::Credentials]);
-                        if clear_current {
-                            if let Some(next_profile) = next_profile {
-                                self.runtime_error = Some(format!(
-                                    "remote credential revocation was verified; switching to configured profile {next_profile}"
-                                ));
-                                let mut effects = effects;
-                                effects.extend(self.switch_profile(Some(next_profile)));
-                                return effects;
-                            }
-                            let mut effects = effects;
-                            effects.extend(self.clear_admin_profile());
-                            return effects;
-                        }
-                        return effects;
+                        self.runtime_error = Some(
+                            "remote credential revocation was verified; the active profile was deactivated because opaque local credential references cannot be mapped safely to remote credential IDs"
+                                .to_owned(),
+                        );
+                        return self.clear_admin_profile();
                     }
                     CredentialRevocationResult::OutcomeUnknown { detail }
                     | CredentialRevocationResult::Failed { detail } => {
@@ -8012,13 +7982,6 @@ impl App {
         }
         let phrase = format!("REVOKE {}", credential.id);
         self.pending_credential_revoke = Some(credential.id.clone());
-        let references = self
-            .resolved_config
-            .profiles
-            .iter()
-            .filter(|(_, profile)| profile.credential == credential.id)
-            .map(|(profile, _)| format!("{profile} -> {}", credential.id))
-            .collect::<Vec<_>>();
         let display_list = |values: &[String]| {
             if values.is_empty() {
                 "none returned".to_owned()
@@ -8083,14 +8046,8 @@ impl App {
                     "known dependents: {}",
                     display_list(&credential.known_dependents)
                 ),
-                format!(
-                    "known Tale profile references: {}",
-                    if references.is_empty() {
-                        "none".to_owned()
-                    } else {
-                        references.join(", ")
-                    }
-                ),
+                "profile safety: local credential references are opaque; Tale will deactivate the active profile after verified revocation"
+                    .to_owned(),
                 "remote revocation and local keyring removal are separate actions".to_owned(),
             ],
             redacted_argv: vec!["DELETE /tailnet/{tailnet}/keys/{exact-id}".to_owned()],
