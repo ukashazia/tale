@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::Route;
@@ -967,12 +970,16 @@ pub fn shell_actions() -> Vec<ActionSpec> {
     ]
 }
 
-pub fn find_action(id: ActionId) -> Option<ActionSpec> {
-    all_actions().into_iter().find(|spec| spec.id == id)
+pub fn find_action(id: ActionId) -> Option<&'static ActionSpec> {
+    let catalog = catalog();
+    catalog
+        .by_id
+        .get(&id)
+        .and_then(|index| catalog.specs.get(*index))
 }
 
 pub fn action_for_key(key: KeyEvent, context: ActionContext) -> Option<ActionId> {
-    all_actions().into_iter().find_map(|spec| {
+    all_actions().iter().find_map(|spec| {
         if spec.contexts.contains(&context)
             && spec
                 .default_bindings
@@ -1348,7 +1355,7 @@ pub fn footer_actions_filtered(
     include: impl Fn(ActionId) -> bool,
 ) -> Vec<FooterHint> {
     let mut specs = all_actions()
-        .into_iter()
+        .iter()
         .filter(|spec| {
             spec.contexts.contains(&context)
                 && !spec.default_bindings.is_empty()
@@ -2061,16 +2068,37 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
     ]
 }
 
-pub fn all_actions() -> Vec<ActionSpec> {
-    let mut actions = shell_actions();
-    actions.extend(local_observer_actions());
-    actions.extend(local_operator_actions());
-    actions.extend(local_service_actions());
-    actions.extend(admin_observer_actions());
-    actions.extend(admin_operator_actions());
-    actions.extend(policy_and_credential_actions());
-    actions.extend(operational_actions());
-    actions
+/// The registry every availability check reads. Assembling it allocates every
+/// spec in the program, and a single frame consults it once per action per
+/// footer row, so it is built once and borrowed from there on.
+struct Catalog {
+    specs: Vec<ActionSpec>,
+    by_id: HashMap<ActionId, usize>,
+}
+
+static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
+    let mut specs = shell_actions();
+    specs.extend(local_observer_actions());
+    specs.extend(local_operator_actions());
+    specs.extend(local_service_actions());
+    specs.extend(admin_observer_actions());
+    specs.extend(admin_operator_actions());
+    specs.extend(policy_and_credential_actions());
+    specs.extend(operational_actions());
+    let by_id = specs
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| (spec.id, index))
+        .collect();
+    Catalog { specs, by_id }
+});
+
+fn catalog() -> &'static Catalog {
+    &CATALOG
+}
+
+pub fn all_actions() -> &'static [ActionSpec] {
+    &catalog().specs
 }
 
 pub fn operational_actions() -> Vec<ActionSpec> {
