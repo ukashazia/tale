@@ -1,5 +1,6 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+use crate::action::FooterHint;
 use crate::app::{App, Focus, InteractionMode, TransientKind};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -21,7 +22,17 @@ pub struct FrameLayout {
     pub footer: Rect,
 }
 
+/// Geometry for a terminal of this size. Callers that also draw or hit-test the
+/// footer should use [`compute_with_footer`] instead, so the rows are built once.
 pub fn compute(area: Rect, app: &App) -> FrameLayout {
+    let footer = crate::ui::components::interaction_shell::footer_rows(app, area.width);
+    compute_with_footer(area, app, &footer)
+}
+
+/// `footer` is the already-measured normal-mode footer. Measuring it runs every
+/// action's availability check, so the rows are built once per frame and passed
+/// in rather than recomputed here.
+pub fn compute_with_footer(area: Rect, app: &App, footer: &[Vec<FooterHint>]) -> FrameLayout {
     let minimum = area.width < 60 || area.height < 18;
     if minimum {
         return FrameLayout {
@@ -43,7 +54,7 @@ pub fn compute(area: Rect, app: &App) -> FrameLayout {
     };
     let interaction_height = match &app.interaction {
         InteractionMode::Normal => {
-            crate::ui::components::interaction_shell::normal_height(app, area.width)
+            crate::ui::components::interaction_shell::normal_height(footer)
         }
         InteractionMode::CommandLine(_) => navigation_palette_height(),
         InteractionMode::FilterLine(_) => {

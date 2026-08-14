@@ -15,7 +15,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Block::default().style(app.theme.style(theme::StyleRole::Canvas)),
         area,
     );
-    let layout = layout::compute(area, app);
+    let footer = components::interaction_shell::footer_rows(app, area.width);
+    let layout = layout::compute_with_footer(area, app, &footer);
     if layout.minimum {
         let message = vec![
             text::muted_help(app.theme, "Tale needs at least 60 columns and 18 rows."),
@@ -50,7 +51,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         Route::Diagnostics => views::diagnostics::render(frame, app, layout.content),
     }
     components::notification::render(frame, app, layout.notification);
-    components::interaction_shell::render(frame, app, layout.footer);
+    components::interaction_shell::render(frame, app, layout.footer, &footer);
     if let Some(overlay) = app.overlays.last() {
         components::overlay::render(frame, app, overlay);
     }
