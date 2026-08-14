@@ -411,6 +411,19 @@ impl FilterExpression {
             .all(|term| term.matches(device, dns_name, now))
     }
 
+    /// Whether any term reads the clock, which is true for an age comparison
+    /// and for key expiry. Terms that do not are stable between ticks, so a
+    /// result derived from them can be cached without a timestamp.
+    pub fn requires_now(&self) -> bool {
+        self.terms.iter().any(|term| match term {
+            FilterTerm::Text(_) => false,
+            FilterTerm::Field {
+                field, comparison, ..
+            } => comparison.is_some() || *field == FilterField::KeyExpiry,
+            FilterTerm::StructuredField { field, .. } => *field == FilterField::KeyExpiry,
+        })
+    }
+
     pub fn requires_admin_data(&self) -> bool {
         self.terms.iter().any(|term| {
             matches!(

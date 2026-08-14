@@ -1222,7 +1222,7 @@ struct DeviceVisibleCacheKey {
     devices_generation: u64,
     local_generation: u64,
     admin_generation: u64,
-    now: Timestamp,
+    now: Option<Timestamp>,
     source_mode: SourceMode,
     filter: FilterExpression,
     sort: SortSpec,
@@ -15380,7 +15380,15 @@ impl App {
             devices_generation: self.devices_resource.generation,
             local_generation: self.local_resource.generation,
             admin_generation: self.admin.devices.generation,
-            now: self.now,
+            // Only a filter that reads the clock makes the result depend on it.
+            // Carrying it unconditionally re-filtered and re-sorted the whole
+            // snapshot every tick for a result that had not changed.
+            now: self
+                .views
+                .devices
+                .applied_filter
+                .requires_now()
+                .then_some(self.now),
             source_mode: self.source_mode,
             filter: self.views.devices.applied_filter.clone(),
             sort: self.views.devices.sort,
@@ -15444,7 +15452,7 @@ impl App {
             let right_device = devices.get(*right);
             match (left_device, right_device) {
                 (Some(left), Some(right)) => {
-                    compare_devices_by_specs(left, right, &sort_terms, self.now)
+                    compare_devices_by_specs(left, right, &sort_terms)
                 }
                 _ => left.cmp(right),
             }
