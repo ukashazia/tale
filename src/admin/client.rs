@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use reqwest::header::{
@@ -316,16 +317,33 @@ impl std::fmt::Debug for AdminClient {
     }
 }
 
+/// One client for the process. Each one owns a connection pool and a TLS
+/// configuration, so building a fresh one per operation — a refresh, a
+/// mutation, a token exchange — meant no connection was ever reused and every
+/// call paid for a new handshake. The deadline is per request rather than per
+/// client so a single shared handle can serve every caller's timeout.
+static HTTP: OnceLock<Option<Client>> = OnceLock::new();
+
+fn shared_http() -> Option<Client> {
+    HTTP.get_or_init(|| {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .ok()
+    })
+    .clone()
+}
+
+fn http_unavailable(operation: &str) -> AdminError {
+    AdminError::Transport {
+        operation: operation.to_owned(),
+        detail: "the HTTPS client could not be initialized".to_owned(),
+    }
+}
+
 impl AdminClient {
     pub fn new(request_timeout: Duration) -> Result<Self, AdminError> {
-        let http = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(request_timeout)
-            .build()
-            .map_err(|_| AdminError::Transport {
-                operation: "create HTTPS client".to_owned(),
-                detail: "the HTTPS client could not be initialized".to_owned(),
-            })?;
+        let http = shared_http().ok_or_else(|| http_unavailable("create HTTPS client"))?;
         let base_url = Url::parse(&format!("{API_ORIGIN}{API_PREFIX}")).map_err(|_| {
             AdminError::Transport {
                 operation: "create HTTPS client".to_owned(),
@@ -342,14 +360,7 @@ impl AdminClient {
     /// Builds a client against a deterministic test server.
     #[doc(hidden)]
     pub fn with_base_url(base_url: Url, request_timeout: Duration) -> Result<Self, AdminError> {
-        let http = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(request_timeout)
-            .build()
-            .map_err(|_| AdminError::Transport {
-                operation: "create HTTPS test client".to_owned(),
-                detail: "the HTTPS client could not be initialized".to_owned(),
-            })?;
+        let http = shared_http().ok_or_else(|| http_unavailable("create HTTPS test client"))?;
         Ok(Self {
             http,
             base_url,
@@ -1013,6 +1024,7 @@ impl AdminClient {
         let mut request = self
             .http
             .request(method, url)
+            .timeout(self.request_timeout)
             .header(AUTHORIZATION, format!("Bearer {}", token.as_str()))
             .header(USER_AGENT, crate::VERSION_USER_AGENT)
             .header(ACCEPT, "application/json");
@@ -1068,6 +1080,7 @@ impl AdminClient {
         let mut request = self
             .http
             .request(method, url)
+            .timeout(self.request_timeout)
             .header(AUTHORIZATION, format!("Bearer {}", token.as_str()))
             .header(USER_AGENT, crate::VERSION_USER_AGENT)
             .header(ACCEPT, media.accept)
@@ -1162,6 +1175,7 @@ impl AdminClient {
             let request = self
                 .http
                 .request(Method::GET, url.clone())
+                .timeout(self.request_timeout)
                 .header(AUTHORIZATION, format!("Bearer {}", token.as_str()))
                 .header(USER_AGENT, crate::VERSION_USER_AGENT)
                 .header(ACCEPT, accept.unwrap_or("application/json"));
