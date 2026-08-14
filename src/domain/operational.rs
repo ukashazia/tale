@@ -12,7 +12,7 @@ use super::webhook::WebhookMutation;
 /// Secret values are held only by an ephemeral reference-counted buffer while a
 /// confirmation or request is alive. They are never part of a preview or task
 /// description.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LogStreamMutationDraft {
     pub log_type: LogType,
     pub destination_type: String,
@@ -32,6 +32,15 @@ pub struct LogStreamMutationDraft {
     pub gcs_scopes: Vec<String>,
     pub gcs_credentials: Option<Arc<SecretBuffer>>,
     pub secret_action: SecretAction,
+}
+
+impl std::fmt::Debug for LogStreamMutationDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("LogStreamMutationDraft")
+            .field(&self.preview())
+            .finish()
+    }
 }
 
 impl LogStreamMutationDraft {
@@ -194,12 +203,5 @@ impl OperationalMutation {
 }
 
 fn redact_identity(value: &str) -> String {
-    match url::Url::parse(value) {
-        Ok(mut parsed) => {
-            let _ = parsed.set_username("");
-            let _ = parsed.set_password(None);
-            parsed.to_string()
-        }
-        Err(_) => "<destination supplied>".to_owned(),
-    }
+    super::redaction::redact_destination_url(value)
 }

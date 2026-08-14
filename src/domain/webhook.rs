@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt;
 
 use thiserror::Error;
 use url::Url;
@@ -185,7 +186,7 @@ fn merge_sorted(left: &[String], right: &[String]) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct WebhookEndpoint {
     pub stable_id: String,
     pub endpoint_url: String,
@@ -200,11 +201,41 @@ pub struct WebhookEndpoint {
     pub source_id: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+impl fmt::Debug for WebhookEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebhookEndpoint")
+            .field("stable_id", &self.stable_id)
+            .field("endpoint_url", &redact_url(&self.endpoint_url))
+            .field("destination_type", &self.destination_type)
+            .field("subscriptions", &self.subscriptions)
+            .field("creator_login_name", &self.creator_login_name)
+            .field("created_at", &self.created_at)
+            .field("last_modified_at", &self.last_modified_at)
+            .field("status", &self.status)
+            .field("last_result", &self.last_result)
+            .field("observed_at", &self.observed_at)
+            .field("source_id", &self.source_id)
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct WebhookDraft {
     pub endpoint_url: String,
     pub destination_type: DestinationType,
     pub subscriptions: SubscriptionSet,
+}
+
+impl fmt::Debug for WebhookDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebhookDraft")
+            .field("endpoint_url", &redact_url(&self.endpoint_url))
+            .field("destination_type", &self.destination_type)
+            .field("subscriptions", &self.subscriptions)
+            .finish()
+    }
 }
 
 impl WebhookDraft {
@@ -260,7 +291,7 @@ pub fn validate_url(value: &str) -> Result<(), WebhookError> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum WebhookMutation {
     Create(WebhookDraft),
     EditSubscriptions {
@@ -280,6 +311,15 @@ pub enum WebhookMutation {
         endpoint_id: String,
         endpoint_label: String,
     },
+}
+
+impl fmt::Debug for WebhookMutation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("WebhookMutation")
+            .field(&self.preview())
+            .finish()
+    }
 }
 
 impl WebhookMutation {
@@ -322,7 +362,7 @@ impl WebhookMutation {
 }
 
 fn redact_url(value: &str) -> String {
-    Url::parse(value).map_or_else(|_| "<invalid URL>".to_owned(), |url| url.to_string())
+    super::redaction::redact_destination_url(value)
 }
 
 #[cfg(test)]
@@ -340,6 +380,26 @@ mod tests {
             Err(WebhookError::UnsupportedPort)
         );
         assert!(validate_url("https://example.test/hook").is_ok());
+    }
+
+    #[test]
+    fn previews_and_debug_hide_url_paths_and_queries() {
+        let subscriptions = SubscriptionSet::from_wire(Vec::new(), vec!["nodeCreated".to_owned()]);
+        let Ok(subscriptions) = subscriptions else {
+            return;
+        };
+        let mutation = WebhookMutation::Create(WebhookDraft {
+            endpoint_url: "https://hooks.example.test/bearer-secret?token=query-secret".to_owned(),
+            destination_type: DestinationType::Slack,
+            subscriptions,
+        });
+        let preview = mutation.preview();
+        let debug = format!("{mutation:?}");
+        for output in [preview, debug] {
+            assert!(output.contains("https://hooks.example.test/<redacted>"));
+            assert!(!output.contains("bearer-secret"));
+            assert!(!output.contains("query-secret"));
+        }
     }
 
     #[test]

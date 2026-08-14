@@ -86,8 +86,12 @@ pub enum AdminEvent {
         refresh_local_dns: bool,
     },
     OperationalFinished {
+        operation_id: u64,
+        admin_generation: u64,
+        profile: String,
+        tailnet: String,
         action_id: crate::action::ActionId,
-        mutation: OperationalMutation,
+        mutation: Box<OperationalMutation>,
         result: Result<OperationalResult, crate::admin::client::AdminError>,
         secret: Option<Arc<SecretBuffer>>,
     },
@@ -130,6 +134,12 @@ pub enum OperationalResult {
     },
     NetworkLogSettingVerified {
         enabled: Option<bool>,
+        detail: String,
+    },
+    SucceededUnverified {
+        detail: String,
+    },
+    OutcomeUnknown {
         detail: String,
     },
 }
@@ -181,12 +191,18 @@ pub enum PolicyApplyResult {
 pub enum CredentialEvent {
     AuthKeyCreated {
         result_id: u64,
+        admin_generation: u64,
+        profile: String,
+        tailnet: String,
         metadata: CredentialMetadata,
         secret: Arc<SecretBuffer>,
         observed_at: Timestamp,
     },
     AuthKeyCreateFailed {
         result_id: u64,
+        admin_generation: u64,
+        profile: String,
+        tailnet: String,
         detail: String,
     },
     DetailFetched {

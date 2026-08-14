@@ -269,12 +269,9 @@ async fn status_and_network_setting_contracts_preserve_independent_reads_and_par
         response.value.last_observation,
         u64::try_from(expected.unix_timestamp()).ok()
     );
-    assert!(
-        capture
-            .lock()
-            .await
-            .starts_with("GET /api/v2/tailnet/example.test/logging/configuration/status HTTP/1.1")
-    );
+    assert!(capture.lock().await.starts_with(
+        "GET /api/v2/tailnet/example.test/logging/configuration/stream/status HTTP/1.1"
+    ));
 
     let (base_url, capture) = fake_response(
         "200 OK",
@@ -711,8 +708,11 @@ fn webhook_and_log_stream_previews_are_complete_but_secret_safe() {
             subscriptions: subscriptions.clone(),
         };
         assert!(draft.validate().is_ok());
-        let preview = WebhookMutation::Create(draft).preview();
-        assert!(preview.contains("tenant=fixture"));
+        let mutation = WebhookMutation::Create(draft);
+        let preview = mutation.preview();
+        assert!(preview.contains("https://hooks.example.test/<redacted>"));
+        assert!(!preview.contains("tenant=fixture"));
+        assert!(!format!("{mutation:?}").contains("tenant=fixture"));
         assert!(preview.contains("future-event"));
         assert!(!preview.contains("fixture-secret"));
     }

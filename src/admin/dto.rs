@@ -116,7 +116,13 @@ impl fmt::Debug for WebhookDto {
         formatter
             .debug_struct("WebhookDto")
             .field("endpoint_id", &self.endpoint_id)
-            .field("endpoint_url", &self.endpoint_url)
+            .field(
+                "endpoint_url",
+                &self
+                    .endpoint_url
+                    .as_deref()
+                    .map(crate::domain::redaction::redact_destination_url),
+            )
             .field("provider_type", &self.provider_type)
             .field("creator_login_name", &self.creator_login_name)
             .field("created", &self.created)
@@ -171,7 +177,13 @@ impl fmt::Debug for LogstreamConfigurationDto {
             .debug_struct("LogstreamConfigurationDto")
             .field("log_type", &self.log_type)
             .field("destination_type", &self.destination_type)
-            .field("url", &self.url)
+            .field(
+                "url",
+                &self
+                    .url
+                    .as_deref()
+                    .map(crate::domain::redaction::redact_destination_url),
+            )
             .field("user", &self.user)
             .field("upload_period_minutes", &self.upload_period_minutes)
             .field("compression_format", &self.compression_format)
@@ -640,35 +652,5 @@ pub fn redact_json_value(value: &Value) -> Value {
 }
 
 fn redact_text(text: &str) -> String {
-    let mut value = text.to_owned();
-    for key in ["client_secret", "access_token", "authorization"] {
-        value = redact_text_field(&value, key);
-    }
-    value
-}
-
-fn redact_text_field(text: &str, key: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut cursor = 0usize;
-    while let Some(relative) = text[cursor..].find(key) {
-        let start = cursor.saturating_add(relative);
-        output.push_str(&text[cursor..start]);
-        output.push_str(key);
-        let after_key = start.saturating_add(key.len());
-        let tail = &text[after_key..];
-        if let Some(separator) = tail.find(':').or_else(|| tail.find('=')) {
-            output.push_str(&tail[..=separator]);
-            output.push_str("\"<redacted>\"");
-            cursor = after_key.saturating_add(separator + 1);
-            if let Some(comma) = text[cursor..].find(',') {
-                cursor = cursor.saturating_add(comma);
-            } else {
-                cursor = text.len();
-            }
-        } else {
-            cursor = after_key;
-        }
-    }
-    output.push_str(&text[cursor..]);
-    output
+    crate::domain::redaction::redact_unstructured_secrets(text)
 }

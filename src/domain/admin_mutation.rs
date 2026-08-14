@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::action::{ActionId, Risk};
 use crate::domain::Timestamp;
 
-pub const TIER_THREE_PREFLIGHT_MAX_AGE: Timestamp = 30;
+pub const REMOTE_WRITE_PREFLIGHT_MAX_AGE: Timestamp = 30;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum AdminResourceKind {
@@ -202,12 +202,9 @@ pub struct AdminPreflight<T> {
 }
 
 impl<T> AdminPreflight<T> {
-    pub fn is_fresh_at(&self, now: Timestamp, risk: Risk) -> bool {
-        if risk != Risk::DestructiveOrSecret {
-            return true;
-        }
+    pub fn is_fresh_at(&self, now: Timestamp) -> bool {
         now >= self.observed_at
-            && now.saturating_sub(self.observed_at) <= TIER_THREE_PREFLIGHT_MAX_AGE
+            && now.saturating_sub(self.observed_at) <= REMOTE_WRITE_PREFLIGHT_MAX_AGE
     }
 }
 
@@ -678,6 +675,18 @@ mod tests {
             AdminMutationState::Dispatching,
             AdminMutationState::OutcomeUnknown
         ));
+    }
+
+    #[test]
+    fn every_remote_write_preflight_expires() {
+        let preflight = AdminPreflight {
+            observed_at: 100,
+            snapshot: (),
+            fields: BTreeMap::new(),
+        };
+        assert!(preflight.is_fresh_at(130));
+        assert!(!preflight.is_fresh_at(131));
+        assert!(!preflight.is_fresh_at(99));
     }
 
     #[test]

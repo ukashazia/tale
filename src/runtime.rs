@@ -81,6 +81,7 @@ struct AuthKeyTaskContext {
     queue: EventQueue,
     token_manager: Arc<TokenManager>,
     result_id: u64,
+    admin_generation: u64,
     profile: String,
     credential: String,
     tailnet: String,
@@ -694,6 +695,8 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
             });
         }
         Effect::StartOperationalMutation {
+            operation_id,
+            admin_generation,
             action_id,
             mutation,
             profile,
@@ -708,6 +711,8 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                 run_operational_mutation(
                     queue,
                     token_manager,
+                    operation_id,
+                    admin_generation,
                     action_id,
                     mutation,
                     profile,
@@ -947,6 +952,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
         }
         Effect::StartAuthKeyCreate {
             result_id,
+            admin_generation,
             profile,
             tailnet,
             credential,
@@ -961,6 +967,7 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
                     queue,
                     token_manager,
                     result_id,
+                    admin_generation,
                     profile,
                     credential,
                     tailnet,
@@ -1869,6 +1876,12 @@ async fn apply_policy_remote(
         };
         return PolicyApplyResult::RemoteConflict { latest: document };
     }
+    let Some(latest_etag) = latest.value.etag.as_deref() else {
+        return PolicyApplyResult::FailedRetained {
+            detail: "the final policy read did not return an ETag; refusing an unguarded save"
+                .to_owned(),
+        };
+    };
     let candidate = match policy_document(bytes.clone(), crate::local::now()) {
         Ok(candidate) => candidate,
         Err(detail) => return PolicyApplyResult::FailedRetained { detail },
@@ -1892,7 +1905,25 @@ async fn apply_policy_remote(
                 .unwrap_or_else(|| "final server validation rejected the candidate".to_owned()),
         };
     }
-    if let Err(error) = client.save_policy(&token, &context.tailnet, &bytes).await {
+    if let Err(error) = client
+        .save_policy(&token, &context.tailnet, &bytes, latest_etag)
+        .await
+    {
+        if matches!(error, AdminError::Conflict { .. }) {
+            return match client.get_policy(&token, &context.tailnet).await {
+                Ok(response) => {
+                    match policy_document(response.value.source_bytes, response.meta.observed_at) {
+                        Ok(latest) => PolicyApplyResult::RemoteConflict { latest },
+                        Err(detail) => PolicyApplyResult::FailedRetained { detail },
+                    }
+                }
+                Err(refresh_error) => PolicyApplyResult::FailedRetained {
+                    detail: format!(
+                        "the policy changed during save, and the latest policy could not be fetched: {refresh_error}"
+                    ),
+                },
+            };
+        }
         return if policy_save_may_have_reached_server(&error) {
             verify_saved_policy(
                 &client,
@@ -1963,6 +1994,7 @@ async fn run_auth_key_create(context: AuthKeyTaskContext) {
         queue,
         token_manager,
         result_id,
+        admin_generation,
         profile,
         credential,
         tailnet,
@@ -1983,12 +2015,18 @@ async fn run_auth_key_create(context: AuthKeyTaskContext) {
     let event = match result {
         Ok(created) => Event::Credential(Box::new(CredentialEvent::AuthKeyCreated {
             result_id,
+            admin_generation,
+            profile,
+            tailnet,
             metadata: created.metadata,
             secret: created.secret,
             observed_at: created.created_at,
         })),
         Err(detail) => Event::Credential(Box::new(CredentialEvent::AuthKeyCreateFailed {
             result_id,
+            admin_generation,
+            profile,
+            tailnet,
             detail,
         })),
     };
@@ -2397,6 +2435,8 @@ where
 async fn run_operational_mutation(
     queue: EventQueue,
     token_manager: Arc<TokenManager>,
+    operation_id: u64,
+    admin_generation: u64,
     action_id: ActionId,
     mutation: OperationalMutation,
     profile: String,
@@ -2409,8 +2449,12 @@ async fn run_operational_mutation(
         Err(error) => {
             let _ = queue
                 .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+                    operation_id,
+                    admin_generation,
+                    profile,
+                    tailnet,
                     action_id,
-                    mutation,
+                    mutation: Box::new(mutation),
                     result: Err(admin_refresh_error(
                         error,
                         "authenticate operational mutation",
@@ -2426,8 +2470,12 @@ async fn run_operational_mutation(
         Err(error) => {
             let _ = queue
                 .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+                    operation_id,
+                    admin_generation,
+                    profile,
+                    tailnet,
                     action_id,
-                    mutation,
+                    mutation: Box::new(mutation),
                     result: Err(error),
                     secret: None,
                 })))
@@ -2438,8 +2486,12 @@ async fn run_operational_mutation(
     let (result, secret) = execute_operational_mutation(&client, &token, &tailnet, &mutation).await;
     let _ = queue
         .send(Event::Admin(Box::new(AdminEvent::OperationalFinished {
+            operation_id,
+            admin_generation,
+            profile,
+            tailnet,
             action_id,
-            mutation,
+            mutation: Box::new(mutation),
             result,
             secret,
         })))
@@ -2514,99 +2566,109 @@ async fn execute_operational_mutation(
         }
         OperationalMutation::LogStreamReplace(draft) => {
             let replacement = replacement_from_draft(draft);
-            let result = match client
+            let write_error = client
                 .replace_log_stream_configuration(token, tailnet, &replacement)
                 .await
+                .err();
+            if let Some(error) = write_error.as_ref()
+                && !operational_write_may_have_reached_server(error)
             {
-                Err(error) => Err(error),
-                Ok(_) => {
-                    let configuration = client
+                return (Err(error.clone()), None);
+            }
+            let verification = poll_operational_check("verify log-stream replacement", || async {
+                let configuration = client
                         .get_log_stream_configuration(token, tailnet, draft.log_type)
-                        .await;
-                    let status = client
+                        .await?;
+                let status = client
                         .get_log_stream_status(token, tailnet, draft.log_type)
-                        .await;
-                    match (configuration, status) {
-                        (Ok(configuration), Ok(status)) => Ok(OperationalResult::Completed {
-                            detail: format!(
-                                "{} log stream replaced and verified: {} / {}",
-                                draft.log_type.wire_value(),
-                                configuration.value.destination.kind,
-                                status.value.status
-                            ),
-                        }),
-                        (Err(error), _) | (_, Err(error)) => Err(error),
-                    }
+                        .await?;
+                if log_stream_configuration_matches(draft, &configuration.value)
+                    && status.value.log_type == draft.log_type
+                    && status.value.configured
+                {
+                    Ok(OperationalCheck::Verified(OperationalResult::Completed {
+                        detail: format!(
+                            "{} log stream replacement exactly matched the requested non-secret fields; status={}",
+                            draft.log_type.wire_value(), status.value.status
+                        ),
+                    }))
+                } else {
+                    Ok(OperationalCheck::Mismatch(
+                        "the observed log-stream configuration or status did not match the request"
+                            .to_owned(),
+                    ))
                 }
-            };
+            })
+            .await;
+            let result = reconcile_operational_write(write_error, verification, false);
             (result, None)
         }
         OperationalMutation::LogStreamDelete(log_type) => {
-            let result = match client
+            let write_error = client
                 .delete_log_stream_configuration(token, tailnet, *log_type)
                 .await
+                .err();
+            if let Some(error) = write_error.as_ref()
+                && !operational_write_may_have_reached_server(error)
             {
-                Err(error) => Err(error),
-                Ok(_) => {
-                    let configuration = client
-                        .get_log_stream_configuration(token, tailnet, *log_type)
-                        .await;
-                    let status = client
-                        .get_log_stream_status(token, tailnet, *log_type)
-                        .await;
-                    match configuration {
-                        Ok(_) => Err(AdminError::Conflict {
-                            operation: "verify log-stream deletion".to_owned(),
-                            detail: "the configuration is still returned after deletion".to_owned(),
-                        }),
-                        Err(AdminError::NotFound { .. }) => match status {
-                            Ok(_) => Err(AdminError::Conflict {
-                                operation: "verify log-stream deletion".to_owned(),
-                                detail: "the publishing status is still returned after deletion"
-                                    .to_owned(),
-                            }),
-                            Err(AdminError::NotFound { .. }) => Ok(OperationalResult::Completed {
-                                detail: format!(
-                                    "{} log stream deletion verified absent in configuration and status reads",
-                                    log_type.wire_value()
-                                ),
-                            }),
-                            Err(error) => Err(error),
-                        },
-                        Err(error) => Err(error),
+                return (Err(error.clone()), None);
+            }
+            let verification = poll_operational_check("verify log-stream deletion", || async {
+                let configuration = client
+                    .get_log_stream_configuration(token, tailnet, *log_type)
+                    .await;
+                let status = client.get_log_stream_status(token, tailnet, *log_type).await;
+                match (configuration, status) {
+                    (Err(AdminError::NotFound { .. }), Err(AdminError::NotFound { .. })) => {
+                        Ok(OperationalCheck::Verified(OperationalResult::Completed {
+                            detail: format!(
+                                "{} log stream deletion verified absent in configuration and status reads",
+                                log_type.wire_value()
+                            ),
+                        }))
                     }
+                    (Ok(_), _) | (_, Ok(_)) => Ok(OperationalCheck::Mismatch(
+                        "the log-stream configuration or publishing status is still returned"
+                            .to_owned(),
+                    )),
+                    (Err(error), Err(_)) => Err(error),
                 }
-            };
+            })
+            .await;
+            let result = reconcile_operational_write(write_error, verification, false);
             (result, None)
         }
         OperationalMutation::NetworkLogSetting { enabled } => {
-            let result = match client
+            let write_error = client
                 .set_network_log_setting(token, tailnet, *enabled)
                 .await
+                .err();
+            if let Some(error) = write_error.as_ref()
+                && !operational_write_may_have_reached_server(error)
             {
-                Err(error) => Err(error),
-                Ok(_) => match client.get_network_log_setting(token, tailnet).await {
-                    Err(error) => Err(error),
-                    Ok(settings) => {
-                        let observed = settings.value.network_flow_logging_on;
-                        if observed == Some(*enabled) {
-                            Ok(OperationalResult::NetworkLogSettingVerified {
-                                enabled: observed,
-                                detail: format!(
-                                    "network-flow collection setting verified as {}",
-                                    if *enabled { "enabled" } else { "disabled" }
-                                ),
-                            })
-                        } else {
-                            Err(AdminError::Conflict {
-                                operation: "verify network-log setting".to_owned(),
-                                detail: "the verified setting did not match the requested value"
-                                    .to_owned(),
-                            })
-                        }
-                    }
-                },
-            };
+                return (Err(error.clone()), None);
+            }
+            let verification = poll_operational_check("verify network-log setting", || async {
+                let settings = client.get_network_log_setting(token, tailnet).await?;
+                let observed = settings.value.network_flow_logging_on;
+                if observed == Some(*enabled) {
+                    Ok(OperationalCheck::Verified(
+                        OperationalResult::NetworkLogSettingVerified {
+                            enabled: observed,
+                            detail: format!(
+                                "network-flow collection setting verified as {}",
+                                if *enabled { "enabled" } else { "disabled" }
+                            ),
+                        },
+                    ))
+                } else {
+                    Ok(OperationalCheck::Mismatch(
+                        "the verified setting did not match the requested value".to_owned(),
+                    ))
+                }
+            })
+            .await;
+            let result = reconcile_operational_write(write_error, verification, false);
             (result, None)
         }
         OperationalMutation::SavedView(_) | OperationalMutation::Export(_) => (
@@ -2618,6 +2680,135 @@ async fn execute_operational_mutation(
             None,
         ),
     }
+}
+
+enum OperationalCheck<T> {
+    Verified(T),
+    Mismatch(String),
+}
+
+async fn poll_operational_check<T, F, Fut>(operation: &str, mut check: F) -> Result<T, AdminError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<OperationalCheck<T>, AdminError>>,
+{
+    let deadline = Instant::now() + ADMIN_VERIFICATION_DEADLINE;
+    loop {
+        match check().await {
+            Ok(OperationalCheck::Verified(value)) => return Ok(value),
+            Ok(OperationalCheck::Mismatch(detail)) => {
+                if Instant::now() >= deadline {
+                    return Err(AdminError::Conflict {
+                        operation: operation.to_owned(),
+                        detail,
+                    });
+                }
+            }
+            Err(error) if retryable_verification_error(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            tokio::time::sleep(remaining.min(ADMIN_VERIFICATION_POLL)).await;
+        }
+    }
+}
+
+fn reconcile_operational_write(
+    write_error: Option<AdminError>,
+    verification: Result<OperationalResult, AdminError>,
+    secret_response_is_unrecoverable: bool,
+) -> Result<OperationalResult, AdminError> {
+    match (write_error, verification) {
+        (None, Ok(verified)) => Ok(verified),
+        (None, Err(error)) => Ok(OperationalResult::SucceededUnverified {
+            detail: error.to_string(),
+        }),
+        (Some(error), Ok(_)) if secret_response_is_unrecoverable => {
+            Ok(OperationalResult::OutcomeUnknown {
+                detail: format!(
+                    "the write may have reached the server after {error}; remote state changed, but the one-time secret response is unavailable"
+                ),
+            })
+        }
+        (Some(error), Ok(verified)) if operational_write_may_have_reached_server(&error) => {
+            Ok(verified)
+        }
+        (Some(error), Err(verification_error))
+            if operational_write_may_have_reached_server(&error) =>
+        {
+            Ok(OperationalResult::OutcomeUnknown {
+                detail: format!(
+                    "the write may have reached the server after {error}; verification failed: {verification_error}"
+                ),
+            })
+        }
+        (Some(error), _) => Err(error),
+    }
+}
+
+fn operational_write_may_have_reached_server(error: &AdminError) -> bool {
+    matches!(
+        error,
+        AdminError::Transport { .. }
+            | AdminError::TimedOut { .. }
+            | AdminError::ServerFailure { .. }
+            | AdminError::UnexpectedStatus { .. }
+            | AdminError::DecodeFailed { .. }
+            | AdminError::BodyTooLarge { .. }
+    )
+}
+
+fn log_stream_configuration_matches(
+    draft: &LogStreamMutationDraft,
+    observed: &crate::domain::log_stream::LogStreamConfiguration,
+) -> bool {
+    let expected_identity = match draft.destination_type.as_str() {
+        "s3" => draft.s3_bucket.as_deref(),
+        "gcs" => draft.gcs_bucket.as_deref(),
+        _ => Some(draft.url.as_str()),
+    };
+    observed.log_type == draft.log_type
+        && observed.enabled
+        && observed.destination.kind == draft.destination_type
+        && expected_identity.is_some_and(|identity| observed.destination.identity == identity)
+        && option_matches(&draft.user, &observed.user)
+        && option_matches(
+            &draft.upload_period_minutes,
+            &observed.upload_period_minutes,
+        )
+        && option_matches(&draft.compression_format, &observed.compression_format)
+        && option_matches(&draft.s3_region, &observed.s3_region)
+        && option_matches(&draft.s3_key_prefix, &observed.s3_key_prefix)
+        && option_matches(
+            &draft.s3_authentication_type,
+            &observed.s3_authentication_type,
+        )
+        && option_matches(&draft.s3_access_key_id, &observed.s3_access_key_id)
+        && option_matches(&draft.s3_role_arn, &observed.s3_role_arn)
+        && option_matches(&draft.gcs_key_prefix, &observed.gcs_key_prefix)
+        && (draft.gcs_scopes.is_empty() || draft.gcs_scopes == observed.gcs_scopes)
+}
+
+fn option_matches<T: Eq>(requested: &Option<T>, observed: &Option<T>) -> bool {
+    requested
+        .as_ref()
+        .is_none_or(|value| observed.as_ref() == Some(value))
+}
+
+fn webhook_endpoint_matches(
+    endpoint: &crate::domain::webhook::WebhookEndpoint,
+    endpoint_url: &str,
+    destination_type: &crate::domain::webhook::DestinationType,
+    subscriptions: &crate::domain::webhook::SubscriptionSet,
+) -> bool {
+    endpoint.endpoint_url == endpoint_url
+        && endpoint.destination_type == *destination_type
+        && endpoint.subscriptions == *subscriptions
 }
 
 async fn execute_webhook_mutation(
@@ -2641,50 +2832,107 @@ async fn execute_webhook_mutation(
                     &draft.subscriptions,
                 )
                 .await;
-            match response {
-                Ok(response) => {
-                    let secret = response.secret.map(Arc::new);
-                    let verified = async {
-                        let _detail = client
-                            .get_webhook(token, &response.endpoint.stable_id)
-                            .await?;
-                        let inventory = client.list_webhooks(token, tailnet).await?;
-                        Ok::<_, AdminError>(OperationalResult::WebhookVerified {
-                            endpoints: inventory.value,
-                            detail: "webhook created; detail and inventory verification completed"
-                                .to_owned(),
-                        })
-                    }
-                    .await;
-                    (verified, secret)
+            let (write_error, endpoint_id, secret) = match response {
+                Ok(response) => (
+                    None,
+                    Some(response.endpoint.stable_id),
+                    response.secret.map(Arc::new),
+                ),
+                Err(error) if operational_write_may_have_reached_server(&error) => {
+                    (Some(error), None, None)
                 }
-                Err(error) => (Err(error), None),
-            }
+                Err(error) => return (Err(error), None),
+            };
+            let verification = poll_operational_check("verify webhook creation", || async {
+                let inventory = client.list_webhooks(token, tailnet).await?;
+                let matching = inventory.value.iter().find(|endpoint| {
+                    endpoint_id
+                        .as_ref()
+                        .is_none_or(|id| endpoint.stable_id == *id)
+                        && webhook_endpoint_matches(
+                            endpoint,
+                            &draft.endpoint_url,
+                            &draft.destination_type,
+                            &draft.subscriptions,
+                        )
+                });
+                let Some(matching) = matching else {
+                    return Ok(OperationalCheck::Mismatch(
+                        "the created webhook is not present with the requested URL, destination, and subscriptions"
+                            .to_owned(),
+                    ));
+                };
+                let detail = client.get_webhook(token, &matching.stable_id).await?;
+                if webhook_endpoint_matches(
+                    &detail.endpoint,
+                    &draft.endpoint_url,
+                    &draft.destination_type,
+                    &draft.subscriptions,
+                ) {
+                    Ok(OperationalCheck::Verified(
+                        OperationalResult::WebhookVerified {
+                            endpoints: inventory.value,
+                            detail: "webhook creation exactly matched URL, destination, and subscriptions in detail and inventory"
+                                .to_owned(),
+                        },
+                    ))
+                } else {
+                    Ok(OperationalCheck::Mismatch(
+                        "webhook detail did not match the requested creation".to_owned(),
+                    ))
+                }
+            })
+            .await;
+            let result =
+                reconcile_operational_write(write_error, verification, endpoint_id.is_none());
+            (result, secret)
         }
         WebhookMutation::EditSubscriptions {
             endpoint_id, after, ..
         } => {
-            let result = match client
+            let write_error = client
                 .edit_webhook_subscriptions(token, endpoint_id, after)
                 .await
+                .err();
+            if let Some(error) = write_error.as_ref()
+                && !operational_write_may_have_reached_server(error)
             {
-                Err(error) => Err(error),
-                Ok(_) => {
-                    let detail = client.get_webhook(token, endpoint_id).await;
-                    let inventory = client.list_webhooks(token, tailnet).await;
-                    match (detail, inventory) {
-                        (Ok(_), Ok(inventory)) => Ok(OperationalResult::WebhookVerified {
+                return (Err(error.clone()), None);
+            }
+            let verification = poll_operational_check("verify webhook subscriptions", || async {
+                let detail = client.get_webhook(token, endpoint_id).await?;
+                let inventory = client.list_webhooks(token, tailnet).await?;
+                let inventory_matches = inventory.value.iter().any(|endpoint| {
+                    endpoint.stable_id == *endpoint_id && endpoint.subscriptions == *after
+                });
+                if detail.endpoint.subscriptions == *after && inventory_matches {
+                    Ok(OperationalCheck::Verified(
+                        OperationalResult::WebhookVerified {
                             endpoints: inventory.value,
-                            detail: "webhook subscriptions edited; detail and inventory verification completed".to_owned(),
-                        }),
-                        (Err(error), _) | (_, Err(error)) => Err(error),
-                    }
+                            detail: "webhook subscriptions exactly matched the request in detail and inventory"
+                                .to_owned(),
+                        },
+                    ))
+                } else {
+                    Ok(OperationalCheck::Mismatch(
+                        "webhook detail or inventory subscriptions did not match the request"
+                            .to_owned(),
+                    ))
                 }
-            };
+            })
+            .await;
+            let result = reconcile_operational_write(write_error, verification, false);
             (result, None)
         }
         WebhookMutation::Test { endpoint_id } => {
             let result = match client.test_webhook(token, endpoint_id).await {
+                Err(error) if operational_write_may_have_reached_server(&error) => {
+                    Ok(OperationalResult::OutcomeUnknown {
+                        detail: format!(
+                            "the asynchronous webhook test may have been queued after {error}; delivery cannot be reconciled through the API"
+                        ),
+                    })
+                }
                 Err(error) => Err(error),
                 Ok(response) => {
                     let detail = client.get_webhook(token, endpoint_id).await;
@@ -2697,7 +2945,14 @@ async fn execute_webhook_mutation(
                                 response.meta.status
                             ),
                         }),
-                        (Err(error), _) | (_, Err(error)) => Err(error),
+                        (Err(error), _) | (_, Err(error)) => {
+                            Ok(OperationalResult::SucceededUnverified {
+                                detail: format!(
+                                    "server acknowledged asynchronous webhook test with HTTP {}, but inventory refresh failed: {error}",
+                                    response.meta.status
+                                ),
+                            })
+                        }
                     }
                 }
             };
@@ -2708,57 +2963,68 @@ async fn execute_webhook_mutation(
             match response {
                 Ok(response) => {
                     let secret = response.secret.map(Arc::new);
-                    let verified = async {
-                        let _detail = client.get_webhook(token, endpoint_id).await?;
+                    let verified = poll_operational_check("verify webhook secret rotation", || async {
+                        let detail = client.get_webhook(token, endpoint_id).await?;
                         let inventory = client.list_webhooks(token, tailnet).await?;
-                        Ok::<_, AdminError>(OperationalResult::WebhookVerified {
-                            endpoints: inventory.value,
-                            detail: "webhook secret rotated; detail and inventory verification completed".to_owned(),
-                        })
-                    }
-                    .await;
-                    (verified, secret)
+                        if detail.endpoint.stable_id == *endpoint_id
+                            && inventory.value.iter().any(|endpoint| endpoint.stable_id == *endpoint_id)
+                        {
+                            Ok(OperationalCheck::Verified(OperationalResult::WebhookVerified {
+                                endpoints: inventory.value,
+                                detail: "webhook secret rotation response was followed by matching detail and inventory reads".to_owned(),
+                            }))
+                        } else {
+                            Ok(OperationalCheck::Mismatch(
+                                "the rotated webhook was not returned by detail and inventory".to_owned(),
+                            ))
+                        }
+                    }).await;
+                    (reconcile_operational_write(None, verified, false), secret)
                 }
+                Err(error) if operational_write_may_have_reached_server(&error) => (
+                    Ok(OperationalResult::OutcomeUnknown {
+                        detail: format!(
+                            "webhook secret rotation may have reached the server after {error}; the one-time replacement secret is unavailable"
+                        ),
+                    }),
+                    None,
+                ),
                 Err(error) => (Err(error), None),
             }
         }
         WebhookMutation::Delete { endpoint_id, .. } => {
-            let result = match client.delete_webhook(token, endpoint_id).await {
-                Err(error) => Err(error),
-                Ok(_) => {
-                    let detail = client.get_webhook(token, endpoint_id).await;
-                    let inventory = client.list_webhooks(token, tailnet).await;
-                    match detail {
-                        Ok(_) => Err(AdminError::Conflict {
-                            operation: "verify webhook deletion".to_owned(),
-                            detail: "the endpoint is still returned by detail".to_owned(),
-                        }),
-                        Err(AdminError::NotFound { .. }) => match inventory {
-                            Ok(inventory) => {
-                                if inventory
-                                    .value
-                                    .iter()
-                                    .any(|value| value.stable_id.as_str() == endpoint_id.as_str())
-                                {
-                                    Err(AdminError::Conflict {
-                                        operation: "verify webhook deletion".to_owned(),
-                                        detail: "the endpoint is still returned by inventory"
-                                            .to_owned(),
-                                    })
-                                } else {
-                                    Ok(OperationalResult::WebhookVerified {
-                                        endpoints: inventory.value,
-                                        detail: "webhook deletion verified by detail and inventory"
-                                            .to_owned(),
-                                    })
-                                }
-                            }
-                            Err(error) => Err(error),
-                        },
-                        Err(error) => Err(error),
+            let write_error = client.delete_webhook(token, endpoint_id).await.err();
+            if let Some(error) = write_error.as_ref()
+                && !operational_write_may_have_reached_server(error)
+            {
+                return (Err(error.clone()), None);
+            }
+            let verification = poll_operational_check("verify webhook deletion", || async {
+                let detail = client.get_webhook(token, endpoint_id).await;
+                let inventory = client.list_webhooks(token, tailnet).await?;
+                match detail {
+                    Err(AdminError::NotFound { .. })
+                        if !inventory
+                            .value
+                            .iter()
+                            .any(|endpoint| endpoint.stable_id == *endpoint_id) =>
+                    {
+                        Ok(OperationalCheck::Verified(
+                            OperationalResult::WebhookVerified {
+                                endpoints: inventory.value,
+                                detail: "webhook deletion verified absent in detail and inventory"
+                                    .to_owned(),
+                            },
+                        ))
                     }
+                    Ok(_) | Err(AdminError::NotFound { .. }) => Ok(OperationalCheck::Mismatch(
+                        "the deleted webhook is still returned by detail or inventory".to_owned(),
+                    )),
+                    Err(error) => Err(error),
                 }
-            };
+            })
+            .await;
+            let result = reconcile_operational_write(write_error, verification, false);
             (result, None)
         }
     }
@@ -7585,4 +7851,85 @@ fn spawn_signal_source(tasks: &mut JoinSet<()>, queue: EventQueue, stop: StopFla
             }
         }
     });
+}
+
+#[cfg(test)]
+mod operational_verification_tests {
+    use super::*;
+    use crate::domain::log_stream::{
+        LogStreamConfiguration, LogStreamDestination, LogType, SecretAction,
+    };
+
+    fn draft() -> LogStreamMutationDraft {
+        LogStreamMutationDraft {
+            log_type: LogType::Network,
+            destination_type: "splunk".to_owned(),
+            url: "https://logs.example.test/ingest".to_owned(),
+            user: Some("collector".to_owned()),
+            upload_period_minutes: Some(5),
+            compression_format: Some("gzip".to_owned()),
+            token: None,
+            s3_bucket: None,
+            s3_region: None,
+            s3_key_prefix: None,
+            s3_authentication_type: None,
+            s3_access_key_id: None,
+            s3_role_arn: None,
+            gcs_bucket: None,
+            gcs_key_prefix: None,
+            gcs_scopes: Vec::new(),
+            gcs_credentials: None,
+            secret_action: SecretAction::KeepExisting,
+        }
+    }
+
+    fn observed() -> LogStreamConfiguration {
+        LogStreamConfiguration {
+            log_type: LogType::Network,
+            enabled: true,
+            destination: LogStreamDestination {
+                kind: "splunk".to_owned(),
+                identity: "https://logs.example.test/ingest".to_owned(),
+            },
+            user: Some("collector".to_owned()),
+            upload_period_minutes: Some(5),
+            compression_format: Some("gzip".to_owned()),
+            s3_region: None,
+            s3_key_prefix: None,
+            s3_authentication_type: None,
+            s3_access_key_id: None,
+            s3_role_arn: None,
+            gcs_key_prefix: None,
+            gcs_scopes: Vec::new(),
+            secret_action: SecretAction::KeepExisting,
+            observed_at: 1,
+            source_id: "fixture".to_owned(),
+        }
+    }
+
+    #[test]
+    fn log_stream_verification_compares_every_requested_non_secret_field() {
+        let draft = draft();
+        let mut observed = observed();
+        assert!(log_stream_configuration_matches(&draft, &observed));
+        observed.upload_period_minutes = Some(10);
+        assert!(!log_stream_configuration_matches(&draft, &observed));
+    }
+
+    #[test]
+    fn uncertain_secret_writes_never_claim_recoverable_success() {
+        let result = reconcile_operational_write(
+            Some(AdminError::TimedOut {
+                operation: "rotate webhook secret".to_owned(),
+            }),
+            Ok(OperationalResult::Completed {
+                detail: "remote state changed".to_owned(),
+            }),
+            true,
+        );
+        assert!(matches!(
+            result,
+            Ok(OperationalResult::OutcomeUnknown { .. })
+        ));
+    }
 }

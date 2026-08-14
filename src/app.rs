@@ -446,6 +446,7 @@ pub enum InteractionMode {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ConfirmationState {
     pub action_id: ActionId,
+    pub admin_generation: u64,
     pub mutation: Option<LocalMutation>,
     pub admin_mutation: Option<AdminMutationRequest>,
     pub admin_batch: Option<AdminBatchConfirmation>,
@@ -1548,6 +1549,8 @@ pub struct App {
     next_secret_result_id: u64,
     pending_auth_key_request: Option<crate::admin::key_mutations::AuthKeyCreateRequest>,
     pending_auth_key_result: Option<u64>,
+    pending_operational_mutation: Option<u64>,
+    next_operational_mutation_id: u64,
     pending_credential_revoke: Option<String>,
     pub admin_user_selected: usize,
     pub admin_route_selected: usize,
@@ -1740,6 +1743,8 @@ impl App {
             next_secret_result_id: 1,
             pending_auth_key_request: None,
             pending_auth_key_result: None,
+            pending_operational_mutation: None,
+            next_operational_mutation_id: 1,
             pending_credential_revoke: None,
             admin_user_selected: 0,
             admin_route_selected: 0,
@@ -2230,6 +2235,9 @@ impl App {
         match event {
             CredentialEvent::AuthKeyCreated {
                 result_id,
+                admin_generation,
+                profile,
+                tailnet,
                 metadata,
                 secret,
                 observed_at,
@@ -2238,6 +2246,14 @@ impl App {
                     return Vec::new();
                 }
                 self.pending_auth_key_result = None;
+                if admin_generation != self.admin_generation
+                    || self.admin.profile.as_deref() != Some(profile.as_str())
+                    || self.admin.tailnet.as_deref() != Some(tailnet.as_str())
+                {
+                    self.runtime_error = Some(format!(
+                        "auth key creation completed for {profile} / {tailnet} after the active admin context changed; preserve the displayed secret and review that tailnet"
+                    ));
+                }
                 let secret_result = SecretResult::from_handle(
                     SecretMetadata {
                         result_id,
@@ -2253,10 +2269,25 @@ impl App {
                 self.secret_result = Some(secret_result);
                 self.overlays.push(Overlay::SecretResult);
             }
-            CredentialEvent::AuthKeyCreateFailed { result_id, detail } => {
+            CredentialEvent::AuthKeyCreateFailed {
+                result_id,
+                admin_generation,
+                profile,
+                tailnet,
+                detail,
+            } => {
                 if self.pending_auth_key_result == Some(result_id) {
                     self.pending_auth_key_result = None;
-                    self.runtime_error = Some(detail);
+                    let context = if admin_generation == self.admin_generation
+                        && self.admin.profile.as_deref() == Some(profile.as_str())
+                        && self.admin.tailnet.as_deref() == Some(tailnet.as_str())
+                    {
+                        String::new()
+                    } else {
+                        format!(" for {profile} / {tailnet}")
+                    };
+                    self.runtime_error =
+                        Some(format!("auth key creation{context} failed: {detail}"));
                 }
             }
             CredentialEvent::DetailFetched { key_id, result } => {
@@ -2276,41 +2307,11 @@ impl App {
                 self.pending_credential_revoke = None;
                 match result {
                     CredentialRevocationResult::Verified => {
-                        self.runtime_error =
-                            Some("remote credential revocation was verified".to_owned());
-                        let current_profile = self.admin.profile.clone();
-                        let current_reference = self
-                            .admin
-                            .profile
-                            .as_ref()
-                            .and_then(|profile| self.resolved_config.profiles.get(profile))
-                            .map(|profile| profile.credential.as_str());
-                        let clear_current = current_reference == Some(key_id.as_str());
-                        let next_profile = current_profile.as_ref().and_then(|current| {
-                            self.resolved_config
-                                .profiles
-                                .iter()
-                                .find(|(name, profile)| {
-                                    *name != current && profile.credential != key_id
-                                })
-                                .map(|(name, _)| name.clone())
-                        });
-                        let effects = self
-                            .start_admin_resource_refresh(vec![AdminRefreshResource::Credentials]);
-                        if clear_current {
-                            if let Some(next_profile) = next_profile {
-                                self.runtime_error = Some(format!(
-                                    "remote credential revocation was verified; switching to configured profile {next_profile}"
-                                ));
-                                let mut effects = effects;
-                                effects.extend(self.switch_profile(Some(next_profile)));
-                                return effects;
-                            }
-                            let mut effects = effects;
-                            effects.extend(self.clear_admin_profile());
-                            return effects;
-                        }
-                        return effects;
+                        self.runtime_error = Some(
+                            "remote credential revocation was verified; the active profile was deactivated because opaque local credential references cannot be mapped safely to remote credential IDs"
+                                .to_owned(),
+                        );
+                        return self.clear_admin_profile();
                     }
                     CredentialRevocationResult::OutcomeUnknown { detail }
                     | CredentialRevocationResult::Failed { detail } => {
@@ -4457,6 +4458,7 @@ impl App {
                     self.overlays.push(Overlay::Confirmation(Box::new(
                         ConfirmationState {
                             action_id,
+                            admin_generation: self.admin_generation,
                             mutation: None,
                             admin_mutation: None,
                             admin_batch: None,
@@ -5321,7 +5323,11 @@ impl App {
                         .as_ref()
                         .is_some_and(|workflow| workflow.state() == PolicyState::ReadyToApply)
             }
-            ActionId::AdminCredentialAuthKeyCreate => true,
+            ActionId::AdminCredentialAuthKeyCreate => {
+                self.pending_auth_key_result.is_none()
+                    && self.pending_operational_mutation.is_none()
+                    && self.secret_result.is_none()
+            }
             ActionId::AdminCredentialRevoke => self.selected_credential().is_some(),
             _ => false,
         }
@@ -5353,6 +5359,14 @@ impl App {
         if self.admin.profile.is_none()
             || self.admin.profile_read_only
             || self.resolved_config.read_only
+            || self.pending_operational_mutation.is_some()
+        {
+            return false;
+        }
+        if matches!(
+            action_id,
+            ActionId::AdminWebhookCreate | ActionId::AdminWebhookRotateSecret
+        ) && (self.pending_auth_key_result.is_some() || self.secret_result.is_some())
         {
             return false;
         }
@@ -6391,6 +6405,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7518,6 +7533,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminPolicyApply,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7690,6 +7706,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminPolicyCandidateDiscard,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7718,6 +7735,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminPolicyWorkflowClose,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7834,6 +7852,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::AdminCredentialAuthKeyCreate,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -7963,13 +7982,6 @@ impl App {
         }
         let phrase = format!("REVOKE {}", credential.id);
         self.pending_credential_revoke = Some(credential.id.clone());
-        let references = self
-            .resolved_config
-            .profiles
-            .iter()
-            .filter(|(_, profile)| profile.credential == credential.id)
-            .map(|(profile, _)| format!("{profile} -> {}", credential.id))
-            .collect::<Vec<_>>();
         let display_list = |values: &[String]| {
             if values.is_empty() {
                 "none returned".to_owned()
@@ -7980,6 +7992,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::AdminCredentialRevoke,
+            admin_generation: self.admin_generation,
             mutation: None,
             admin_mutation: None,
             admin_batch: None,
@@ -8033,14 +8046,8 @@ impl App {
                     "known dependents: {}",
                     display_list(&credential.known_dependents)
                 ),
-                format!(
-                    "known Tale profile references: {}",
-                    if references.is_empty() {
-                        "none".to_owned()
-                    } else {
-                        references.join(", ")
-                    }
-                ),
+                "profile safety: local credential references are opaque; Tale will deactivate the active profile after verified revocation"
+                    .to_owned(),
                 "remote revocation and local keyring removal are separate actions".to_owned(),
             ],
             redacted_argv: vec!["DELETE /tailnet/{tailnet}/keys/{exact-id}".to_owned()],
@@ -8060,6 +8067,7 @@ impl App {
         };
         self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::ProfileCredentialRemove,
+            admin_generation: self.admin_generation,
             mutation: None,
             admin_mutation: None,
             admin_batch: None,
@@ -8242,6 +8250,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: ActionId::LocalAccountLogin,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,
@@ -8270,6 +8279,7 @@ impl App {
         };
         self.overlays.push(Overlay::Confirmation(Box::new(ConfirmationState {
             action_id: ActionId::LocalAccountLogout,
+            admin_generation: self.admin_generation,
             mutation: None,
             admin_mutation: None,
             admin_batch: None,
@@ -8353,6 +8363,7 @@ impl App {
                 self.overlays
                     .push(Overlay::Confirmation(Box::new(ConfirmationState {
                         action_id: state.action_id,
+                        admin_generation: self.admin_generation,
                         mutation: None,
                         admin_mutation: None,
                         admin_batch: None,
@@ -8452,6 +8463,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: mutation.action_id(),
+                admin_generation: self.admin_generation,
                 mutation: Some(mutation),
                 admin_mutation: None,
                 admin_batch: None,
@@ -9301,19 +9313,29 @@ impl App {
         &mut self,
         confirmation: AdminBatchConfirmation,
     ) -> Vec<Effect> {
-        let Some(profile_config) = self
-            .admin
-            .profile
-            .as_ref()
-            .and_then(|profile| self.resolved_config.profiles.get(profile))
-        else {
+        let Some(active_profile) = self.admin.profile.as_ref() else {
+            self.set_confirmation_error("an authenticated admin profile is required");
+            return Vec::new();
+        };
+        let Some(profile_config) = self.resolved_config.profiles.get(active_profile) else {
             self.set_confirmation_error("admin profile configuration is unavailable");
             return Vec::new();
         };
-        let Some(tailnet) = self.admin.tailnet.clone() else {
-            self.set_confirmation_error("admin tailnet is no longer selected");
+        if confirmation
+            .requests
+            .iter()
+            .any(|request| request.profile != *active_profile)
+        {
+            self.set_confirmation_error(
+                "the active administration profile changed after batch preflight; preview again",
+            );
             return Vec::new();
-        };
+        }
+        let tailnet = profile_config.tailnet.clone();
+        if self.admin.tailnet.as_deref() != Some(tailnet.as_str()) {
+            self.set_confirmation_error("admin profile and tailnet context are inconsistent");
+            return Vec::new();
+        }
         if !self.admin_mutation_available(confirmation.batch.action_id) {
             let reason = self
                 .action_unavailable_reason(confirmation.batch.action_id)
@@ -9335,7 +9357,7 @@ impl App {
                 self.set_confirmation_error("every batch target requires a fresh preflight");
                 return Vec::new();
             };
-            if !preflight.is_fresh_at(self.now, request.risk) {
+            if !preflight.is_fresh_at(self.now) {
                 self.set_confirmation_error("a batch preflight expired; preview again");
                 return Vec::new();
             }
@@ -9524,6 +9546,12 @@ impl App {
     }
 
     fn accept_confirmation(&mut self, state: ConfirmationState) -> Vec<Effect> {
+        if state.admin_generation != self.admin_generation {
+            self.set_confirmation_error(
+                "the active administration profile changed after this preview; discard it and review the operation again",
+            );
+            return Vec::new();
+        }
         if let Some(required) = state.required_phrase.as_deref()
             && state.input != required
         {
@@ -9686,6 +9714,7 @@ impl App {
             self.overlays.pop();
             return vec![Effect::StartAuthKeyCreate {
                 result_id,
+                admin_generation: self.admin_generation,
                 profile,
                 tailnet,
                 credential,
@@ -9765,6 +9794,12 @@ impl App {
             return vec![Effect::StartProfileCredentialRemove { profile, reference }];
         }
         if let Some(mut request) = state.admin_mutation {
+            if self.admin.profile.as_deref() != Some(request.profile.as_str()) {
+                self.set_confirmation_error(
+                    "the active administration profile changed after preflight; preview again",
+                );
+                return Vec::new();
+            }
             if !self.admin_mutation_available(request.action_id) {
                 let reason = self
                     .action_unavailable_reason(request.action_id)
@@ -9789,7 +9824,7 @@ impl App {
                 }
                 return Vec::new();
             };
-            if !preflight.is_fresh_at(self.now, request.risk) {
+            if !preflight.is_fresh_at(self.now) {
                 if let Err(error) = transition(&mut request.state, AdminMutationState::Preflighting)
                 {
                     self.runtime_error = Some(error.to_string());
@@ -9821,11 +9856,13 @@ impl App {
                 self.runtime_error = Some("admin profile configuration disappeared".to_owned());
                 return Vec::new();
             };
-            let Some(tailnet) = self.admin.tailnet.clone() else {
+            let tailnet = profile_config.tailnet.clone();
+            if self.admin.tailnet.as_deref() != Some(tailnet.as_str()) {
                 self.admin_resource_locks.release(request.mutation_id);
-                self.runtime_error = Some("admin tailnet is no longer selected".to_owned());
+                self.runtime_error =
+                    Some("admin profile and tailnet context are inconsistent".to_owned());
                 return Vec::new();
-            };
+            }
             let task_id = self.tasks.create(
                 request.action_id,
                 format!(
@@ -9989,8 +10026,13 @@ impl App {
             self.set_confirmation_error("admin tailnet is no longer selected");
             return Vec::new();
         };
+        let operation_id = self.next_operational_mutation_id;
+        self.next_operational_mutation_id = self.next_operational_mutation_id.saturating_add(1);
+        self.pending_operational_mutation = Some(operation_id);
         self.overlays.pop();
         vec![Effect::StartOperationalMutation {
+            operation_id,
+            admin_generation: self.admin_generation,
             action_id,
             mutation,
             profile,
@@ -10824,9 +10866,18 @@ impl App {
         if !self.admin_mutations_in_flight.is_empty()
             || !self.admin_batches_in_flight.is_empty()
             || !self.admin_batch_preflights.is_empty()
+            || self.pending_auth_key_result.is_some()
+            || self.pending_operational_mutation.is_some()
+            || self.pending_credential_revoke.is_some()
+            || self.secret_result.is_some()
+            || self
+                .policy_workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow.state() == PolicyState::Applying)
         {
             self.runtime_error = Some(
-                "finish or cancel the active admin mutation before switching profiles".to_owned(),
+                "finish the active control-plane write and preserve or close any view-once secret before switching profiles"
+                    .to_owned(),
             );
             return Vec::new();
         }
@@ -11705,6 +11756,7 @@ impl App {
                 self.overlays
                     .push(Overlay::Confirmation(Box::new(ConfirmationState {
                         action_id: request.action_id,
+                        admin_generation: self.admin_generation,
                         mutation: None,
                         admin_mutation: Some(*request),
                         admin_batch: None,
@@ -11785,30 +11837,57 @@ impl App {
                 return effects;
             }
             AdminEvent::OperationalFinished {
+                operation_id,
+                admin_generation,
+                profile,
+                tailnet,
                 action_id,
                 mutation,
                 result,
                 secret,
             } => {
-                match result {
-                    Ok(OperationalResult::WebhookVerified { endpoints, detail }) => {
-                        self.webhooks = endpoints;
-                        self.runtime_error = Some(detail);
-                    }
-                    Ok(OperationalResult::NetworkLogSettingVerified { enabled, detail }) => {
-                        if let Some(value) = enabled
-                            && let Some(settings) = self.admin.settings.snapshot.as_mut()
-                        {
-                            settings.network_flow_logging_on = Some(value);
+                let mutation = *mutation;
+                let expected = self.pending_operational_mutation == Some(operation_id);
+                if expected {
+                    self.pending_operational_mutation = None;
+                }
+                let context_current = admin_generation == self.admin_generation
+                    && self.admin.profile.as_deref() == Some(profile.as_str())
+                    && self.admin.tailnet.as_deref() == Some(tailnet.as_str());
+                if expected && context_current {
+                    match result {
+                        Ok(OperationalResult::WebhookVerified { endpoints, detail }) => {
+                            self.webhooks = endpoints;
+                            self.runtime_error = Some(detail);
                         }
-                        self.runtime_error = Some(detail);
+                        Ok(OperationalResult::NetworkLogSettingVerified { enabled, detail }) => {
+                            if let Some(value) = enabled
+                                && let Some(settings) = self.admin.settings.snapshot.as_mut()
+                            {
+                                settings.network_flow_logging_on = Some(value);
+                            }
+                            self.runtime_error = Some(detail);
+                        }
+                        Ok(OperationalResult::Completed { detail }) => {
+                            self.runtime_error = Some(detail);
+                        }
+                        Ok(OperationalResult::SucceededUnverified { detail }) => {
+                            self.runtime_error = Some(format!(
+                                "operational write succeeded, but verification was unavailable: {detail}"
+                            ));
+                        }
+                        Ok(OperationalResult::OutcomeUnknown { detail }) => {
+                            self.runtime_error =
+                                Some(format!("operational write outcome is unknown: {detail}"));
+                        }
+                        Err(error) => {
+                            self.runtime_error = Some(error.to_string());
+                        }
                     }
-                    Ok(OperationalResult::Completed { detail }) => {
-                        self.runtime_error = Some(detail);
-                    }
-                    Err(error) => {
-                        self.runtime_error = Some(error.to_string());
-                    }
+                } else {
+                    self.runtime_error = Some(format!(
+                        "an operational write completed for {profile} / {tailnet} outside its initiating admin context; remote state was not merged locally"
+                    ));
                 }
                 if let Some(secret) = secret {
                     let credential_id = match &mutation {
@@ -11842,7 +11921,11 @@ impl App {
                     | ActionId::AdminWebhookDelete
                     | ActionId::AdminLogStreamReplace
                     | ActionId::AdminLogStreamDelete
-                    | ActionId::AdminNetworkLogsSettings => self.start_admin_current_view_refresh(),
+                    | ActionId::AdminNetworkLogsSettings
+                        if expected && context_current =>
+                    {
+                        self.start_admin_current_view_refresh()
+                    }
                     _ => Vec::new(),
                 };
                 return refresh;
@@ -12066,6 +12149,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: pending.action_id,
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: Some(AdminBatchConfirmation { batch, requests }),
@@ -13615,6 +13699,7 @@ impl App {
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
                 action_id: request.action_id(),
+                admin_generation: self.admin_generation,
                 mutation: None,
                 admin_mutation: None,
                 admin_batch: None,

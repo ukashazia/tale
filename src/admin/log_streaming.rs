@@ -44,7 +44,10 @@ impl fmt::Debug for LogStreamReplacement {
             .debug_struct("LogStreamReplacement")
             .field("log_type", &self.log_type)
             .field("destination_type", &self.destination_type)
-            .field("url", &self.url)
+            .field(
+                "url",
+                &crate::domain::redaction::redact_destination_url(&self.url),
+            )
             .field("user", &self.user)
             .field("upload_period_minutes", &self.upload_period_minutes)
             .field("compression_format", &self.compression_format)
@@ -391,6 +394,7 @@ impl AdminClient {
                         tailnet,
                         "logging",
                         log_type.wire_value(),
+                        "stream",
                         "status",
                     ],
                     &[],
@@ -460,6 +464,16 @@ fn configuration_from_dto(
         log_type,
         enabled: true,
         destination: LogStreamDestination { kind, identity },
+        user: value.user,
+        upload_period_minutes: value.upload_period_minutes,
+        compression_format: value.compression_format,
+        s3_region: value.s3_region,
+        s3_key_prefix: value.s3_key_prefix,
+        s3_authentication_type: value.s3_authentication_type,
+        s3_access_key_id: value.s3_access_key_id,
+        s3_role_arn: value.s3_role_arn,
+        gcs_key_prefix: value.gcs_key_prefix,
+        gcs_scopes: value.gcs_scopes.unwrap_or_default(),
         secret_action: crate::domain::log_stream::SecretAction::KeepExisting,
         observed_at,
         source_id: source_id.to_owned(),

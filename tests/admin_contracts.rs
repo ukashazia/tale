@@ -237,7 +237,9 @@ async fn policy_validation_preview_and_save_use_exact_contracts() -> Result<(), 
     let (base_url, capture) =
         fake_response("200 OK", "application/hujson", candidate.clone()).await?;
     let (client, token) = client_with_token(base_url).await?;
-    let result = client.save_policy(&token, "example.test", &candidate).await;
+    let result = client
+        .save_policy(&token, "example.test", &candidate, "\"policy-version-7\"")
+        .await;
     assert!(result.is_ok());
     if let Ok(result) = result {
         assert_eq!(result.value.source_bytes, candidate);
@@ -246,7 +248,7 @@ async fn policy_validation_preview_and_save_use_exact_contracts() -> Result<(), 
     assert!(request.starts_with("POST /api/v2/tailnet/example.test/acl HTTP/1.1"));
     assert!(request.contains("accept: application/hujson"));
     assert!(request.contains("content-type: application/hujson"));
-    assert!(!request.to_ascii_lowercase().contains("if-match:"));
+    assert!(request.contains("if-match: \"policy-version-7\""));
     assert_eq!(captured_body(&request), candidate.as_slice());
     Ok(())
 }
@@ -417,7 +419,7 @@ async fn oauth_exchange_is_form_encoded_and_refreshes_are_coalesced() -> Result<
 #[tokio::test]
 async fn status_errors_are_typed_without_body_guessing() -> Result<(), String> {
     type ErrorCase = (&'static str, Vec<u8>, fn(&AdminError) -> bool);
-    let cases: [ErrorCase; 3] = [
+    let cases: [ErrorCase; 4] = [
         (
             "401 Unauthorized",
             br#"{"error":"expired"}"#.to_vec(),
@@ -432,6 +434,11 @@ async fn status_errors_are_typed_without_body_guessing() -> Result<(), String> {
             "404 Not Found",
             br#"{"error":"missing"}"#.to_vec(),
             |error: &AdminError| matches!(error, AdminError::NotFound { .. }),
+        ),
+        (
+            "412 Precondition Failed",
+            br#"{"error":"policy changed"}"#.to_vec(),
+            |error: &AdminError| matches!(error, AdminError::Conflict { .. }),
         ),
     ];
     for (status, body, matches_error) in cases {

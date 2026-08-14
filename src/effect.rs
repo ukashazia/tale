@@ -81,6 +81,8 @@ pub enum Effect {
         timeout: Duration,
     },
     StartOperationalMutation {
+        operation_id: u64,
+        admin_generation: u64,
         action_id: crate::action::ActionId,
         mutation: OperationalMutation,
         profile: String,
@@ -149,6 +151,7 @@ pub enum Effect {
     },
     StartAuthKeyCreate {
         result_id: u64,
+        admin_generation: u64,
         profile: String,
         tailnet: String,
         credential: String,
