@@ -10423,12 +10423,12 @@ impl App {
                                     let source = record.connection.canonical_src();
                                     let destination = record.connection.canonical_dst();
                                     ExportRow::FlowLog {
-                                        reporting_node: record.node_id,
-                                        logged: canonical_wire_timestamp(&record.logged),
-                                        start: canonical_wire_timestamp(&record.start),
-                                        end: canonical_wire_timestamp(&record.end),
+                                        reporting_node: record.node_id.to_owned(),
+                                        logged: canonical_wire_timestamp(record.logged),
+                                        start: canonical_wire_timestamp(record.start),
+                                        end: canonical_wire_timestamp(record.end),
                                         traffic_class: record.class.label().to_owned(),
-                                        protocol: record.connection.proto,
+                                        protocol: record.connection.proto.clone(),
                                         source,
                                         destination,
                                         tx_packets: record.connection.tx_packets,

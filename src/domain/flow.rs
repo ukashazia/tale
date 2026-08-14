@@ -179,7 +179,7 @@ pub struct FlowMessage {
 }
 
 impl FlowMessage {
-    pub fn records(&self) -> impl Iterator<Item = FlowRecord> + '_ {
+    pub fn records(&self) -> impl Iterator<Item = FlowRecord<'_>> {
         [
             (TrafficClass::Virtual, self.virtual_traffic.as_slice()),
             (TrafficClass::Subnet, self.subnet_traffic.as_slice()),
@@ -189,25 +189,16 @@ impl FlowMessage {
         .into_iter()
         .flat_map(move |(class, connections)| {
             connections.iter().map(move |connection| FlowRecord {
-                node_id: self.node_id.clone(),
-                reporting_node_name: self.reporting_node_name.clone(),
-                logged: self.logged.clone(),
-                start: self.start.clone(),
-                end: self.end.clone(),
-                source_node_id: self.source_node.as_ref().map(|node| node.node_id.clone()),
-                source_node_name: self.source_node.as_ref().and_then(|node| node.name.clone()),
-                destination_node_ids: self
-                    .destination_nodes
-                    .iter()
-                    .map(|node| node.node_id.clone())
-                    .collect(),
-                destination_node_names: self
-                    .destination_nodes
-                    .iter()
-                    .filter_map(|node| node.name.clone())
-                    .collect(),
+                node_id: self.node_id.as_str(),
+                reporting_node_name: self.reporting_node_name.as_deref(),
+                logged: self.logged.as_str(),
+                start: self.start.as_str(),
+                end: self.end.as_str(),
+                source_node_id: self.source_node.as_ref().map(|node| node.node_id.as_str()),
+                source_node_name: self.source_node.as_ref().and_then(|node| node.name.as_deref()),
+                destination_nodes: self.destination_nodes.as_slice(),
                 class,
-                connection: connection.clone(),
+                connection,
             })
         })
     }
@@ -229,19 +220,35 @@ impl FlowMessage {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct FlowRecord {
-    pub node_id: String,
-    pub reporting_node_name: Option<String>,
-    pub logged: String,
-    pub start: String,
-    pub end: String,
-    pub source_node_id: Option<String>,
-    pub source_node_name: Option<String>,
-    pub destination_node_ids: Vec<String>,
-    pub destination_node_names: Vec<String>,
+/// One connection seen against the message that reported it. A flow log is
+/// millions of these and each one is read once, so the record borrows the
+/// message rather than restating it.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct FlowRecord<'a> {
+    pub node_id: &'a str,
+    pub reporting_node_name: Option<&'a str>,
+    pub logged: &'a str,
+    pub start: &'a str,
+    pub end: &'a str,
+    pub source_node_id: Option<&'a str>,
+    pub source_node_name: Option<&'a str>,
+    pub destination_nodes: &'a [FlowNode],
     pub class: TrafficClass,
-    pub connection: FlowConnection,
+    pub connection: &'a FlowConnection,
+}
+
+impl<'a> FlowRecord<'a> {
+    pub fn destination_node_ids(&self) -> impl Iterator<Item = &'a str> {
+        self.destination_nodes
+            .iter()
+            .map(|node| node.node_id.as_str())
+    }
+
+    pub fn destination_node_names(&self) -> impl Iterator<Item = &'a str> {
+        self.destination_nodes
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
@@ -270,27 +277,25 @@ impl FlowFilter {
                 || self
                     .reporting_node_label
                     .as_deref()
-                    .is_none_or(|value| record.reporting_node_name.as_deref() == Some(value)))
+                    .is_none_or(|value| record.reporting_node_name == Some(value)))
             && self
                 .source_node_id
                 .as_deref()
-                .is_none_or(|value| record.source_node_id.as_deref() == Some(value))
+                .is_none_or(|value| record.source_node_id == Some(value))
             && (self.source_node_id.is_some()
                 || self
                     .source_node_label
                     .as_deref()
-                    .is_none_or(|value| record.source_node_name.as_deref() == Some(value)))
+                    .is_none_or(|value| record.source_node_name == Some(value)))
             && self
                 .destination_node_id
                 .as_deref()
-                .is_none_or(|value| record.destination_node_ids.iter().any(|node| node == value))
+                .is_none_or(|value| record.destination_node_ids().any(|node| node == value))
             && (self.destination_node_id.is_some()
-                || self.destination_node_label.as_deref().is_none_or(|value| {
-                    record
-                        .destination_node_names
-                        .iter()
-                        .any(|node| node == value)
-                }))
+                || self
+                    .destination_node_label
+                    .as_deref()
+                    .is_none_or(|value| record.destination_node_names().any(|node| node == value)))
             && self
                 .protocol
                 .as_deref()
@@ -466,7 +471,10 @@ pub fn aggregate_checked_cancellable(
     if dimensions.is_empty() {
         return Err(FlowError::EmptyAggregation);
     }
-    let mut rows: BTreeMap<Vec<String>, AggregatedFlow> = BTreeMap::new();
+    // Keyed on counters alone so the key is moved into the map once per group.
+    // Storing it in the row as well meant cloning a vector of strings for every
+    // record, including the ones landing on a group that already existed.
+    let mut rows: BTreeMap<Vec<String>, FlowCounters> = BTreeMap::new();
     for message in messages {
         if cancellation.is_some_and(|value| value.load(Ordering::Relaxed)) {
             return Err(FlowError::Cancelled);
@@ -482,14 +490,7 @@ pub fn aggregate_checked_cancellable(
                 .iter()
                 .map(|dimension| dimension_value(*dimension, &record))
                 .collect::<Vec<_>>();
-            let row = rows.entry(key.clone()).or_insert(AggregatedFlow {
-                key,
-                tx_packets: 0,
-                tx_bytes: 0,
-                rx_packets: 0,
-                rx_bytes: 0,
-                records: 0,
-            });
+            let row = rows.entry(key).or_default();
             row.tx_packets = row
                 .tx_packets
                 .checked_add(record.connection.tx_packets)
@@ -512,21 +513,41 @@ pub fn aggregate_checked_cancellable(
                 .ok_or(FlowError::CounterOverflow)?;
         }
     }
-    Ok(rows.into_values().collect())
+    Ok(rows
+        .into_iter()
+        .map(|(key, counters)| AggregatedFlow {
+            key,
+            tx_packets: counters.tx_packets,
+            tx_bytes: counters.tx_bytes,
+            rx_packets: counters.rx_packets,
+            rx_bytes: counters.rx_bytes,
+            records: counters.records,
+        })
+        .collect())
+}
+
+/// The running totals for one aggregation group, held apart from the key so the
+/// key does not have to be cloned to look a group up.
+#[derive(Default)]
+struct FlowCounters {
+    tx_packets: u64,
+    tx_bytes: u64,
+    rx_packets: u64,
+    rx_bytes: u64,
+    records: usize,
 }
 
 fn dimension_value(dimension: AggregateDimension, record: &FlowRecord) -> String {
     match dimension {
-        AggregateDimension::ReportingNode => record.node_id.clone(),
+        AggregateDimension::ReportingNode => record.node_id.to_owned(),
         AggregateDimension::SourceNode => record
             .source_node_id
-            .clone()
-            .unwrap_or_else(|| "<not returned>".to_owned()),
+            .map_or_else(|| "<not returned>".to_owned(), str::to_owned),
         AggregateDimension::DestinationNode => {
-            if record.destination_node_ids.is_empty() {
+            if record.destination_nodes.is_empty() {
                 "<not returned>".to_owned()
             } else {
-                record.destination_node_ids.join(",")
+                record.destination_node_ids().collect::<Vec<_>>().join(",")
             }
         }
         AggregateDimension::TrafficClass => record.class.label().to_owned(),
