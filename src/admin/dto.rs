@@ -116,7 +116,13 @@ impl fmt::Debug for WebhookDto {
         formatter
             .debug_struct("WebhookDto")
             .field("endpoint_id", &self.endpoint_id)
-            .field("endpoint_url", &self.endpoint_url)
+            .field(
+                "endpoint_url",
+                &self
+                    .endpoint_url
+                    .as_deref()
+                    .map(crate::domain::redaction::redact_destination_url),
+            )
             .field("provider_type", &self.provider_type)
             .field("creator_login_name", &self.creator_login_name)
             .field("created", &self.created)
@@ -171,7 +177,13 @@ impl fmt::Debug for LogstreamConfigurationDto {
             .debug_struct("LogstreamConfigurationDto")
             .field("log_type", &self.log_type)
             .field("destination_type", &self.destination_type)
-            .field("url", &self.url)
+            .field(
+                "url",
+                &self
+                    .url
+                    .as_deref()
+                    .map(crate::domain::redaction::redact_destination_url),
+            )
             .field("user", &self.user)
             .field("upload_period_minutes", &self.upload_period_minutes)
             .field("compression_format", &self.compression_format)

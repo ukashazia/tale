@@ -708,8 +708,11 @@ fn webhook_and_log_stream_previews_are_complete_but_secret_safe() {
             subscriptions: subscriptions.clone(),
         };
         assert!(draft.validate().is_ok());
-        let preview = WebhookMutation::Create(draft).preview();
-        assert!(preview.contains("tenant=fixture"));
+        let mutation = WebhookMutation::Create(draft);
+        let preview = mutation.preview();
+        assert!(preview.contains("https://hooks.example.test/<redacted>"));
+        assert!(!preview.contains("tenant=fixture"));
+        assert!(!format!("{mutation:?}").contains("tenant=fixture"));
         assert!(preview.contains("future-event"));
         assert!(!preview.contains("fixture-secret"));
     }

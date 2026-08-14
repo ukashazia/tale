@@ -44,7 +44,10 @@ impl fmt::Debug for LogStreamReplacement {
             .debug_struct("LogStreamReplacement")
             .field("log_type", &self.log_type)
             .field("destination_type", &self.destination_type)
-            .field("url", &self.url)
+            .field(
+                "url",
+                &crate::domain::redaction::redact_destination_url(&self.url),
+            )
             .field("user", &self.user)
             .field("upload_period_minutes", &self.upload_period_minutes)
             .field("compression_format", &self.compression_format)

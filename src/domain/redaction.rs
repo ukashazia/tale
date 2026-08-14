@@ -2,8 +2,28 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 
+use url::Url;
+
 use super::Timestamp;
 use super::diagnostic::{DnsQueryResult, NetcheckObservation, PingSummary};
+
+pub fn redact_destination_url(value: &str) -> String {
+    let Ok(mut parsed) = Url::parse(value) else {
+        return "<destination supplied>".to_owned();
+    };
+    let has_sensitive_suffix = parsed.path() != "/" || parsed.query().is_some();
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_path("/");
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    let origin = parsed.as_str().trim_end_matches('/');
+    if has_sensitive_suffix {
+        format!("{origin}/<redacted>")
+    } else {
+        origin.to_owned()
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DiagnosticReportInput {
