@@ -25,6 +25,117 @@ pub fn redact_destination_url(value: &str) -> String {
     }
 }
 
+pub(crate) fn redact_unstructured_secrets(text: &str) -> String {
+    const SECRET_KEYS: &[&str] = &[
+        "access_token",
+        "access-token",
+        "accesstoken",
+        "api_key",
+        "api-key",
+        "apikey",
+        "auth_key",
+        "auth-key",
+        "authkey",
+        "authorization",
+        "client_secret",
+        "client-secret",
+        "clientsecret",
+        "cookie",
+        "credential",
+        "password",
+        "private_key",
+        "private-key",
+        "privatekey",
+        "refresh_token",
+        "refresh-token",
+        "refreshtoken",
+        "secret",
+        "token",
+    ];
+
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+
+    for key in SECRET_KEYS {
+        for (start, _) in lower.match_indices(key) {
+            let key_end = start.saturating_add(key.len());
+            if start
+                .checked_sub(1)
+                .and_then(|index| bytes.get(index))
+                .is_some_and(|byte| is_secret_name_byte(*byte))
+                || bytes
+                    .get(key_end)
+                    .is_some_and(|byte| is_secret_name_byte(*byte))
+            {
+                continue;
+            }
+
+            let mut separator = key_end;
+            if matches!(bytes.get(separator), Some(b'"' | b'\'')) {
+                separator = separator.saturating_add(1);
+            }
+            while bytes.get(separator).is_some_and(u8::is_ascii_whitespace) {
+                separator = separator.saturating_add(1);
+            }
+            if !matches!(bytes.get(separator), Some(b':' | b'=')) {
+                continue;
+            }
+
+            let mut value_start = separator.saturating_add(1);
+            while bytes.get(value_start).is_some_and(u8::is_ascii_whitespace) {
+                value_start = value_start.saturating_add(1);
+            }
+            let Some(first) = bytes.get(value_start).copied() else {
+                continue;
+            };
+            let value_end = if matches!(first, b'"' | b'\'') {
+                let quote = first;
+                let mut escaped = false;
+                let mut end = value_start.saturating_add(1);
+                while let Some(byte) = bytes.get(end).copied() {
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == quote {
+                        break;
+                    }
+                    end = end.saturating_add(1);
+                }
+                ranges.push((value_start.saturating_add(1), end));
+                continue;
+            } else {
+                bytes[value_start..]
+                    .iter()
+                    .position(|byte| {
+                        matches!(byte, b',' | b'}' | b']' | b'\n' | b'\r' | b'&' | b';')
+                    })
+                    .map_or(text.len(), |offset| value_start.saturating_add(offset))
+            };
+            ranges.push((value_start, value_end));
+        }
+    }
+
+    ranges.sort_unstable();
+    let mut redacted = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        if start < cursor || start > end || end > text.len() {
+            continue;
+        }
+        redacted.push_str(&text[cursor..start]);
+        redacted.push_str("<redacted>");
+        cursor = end;
+    }
+    redacted.push_str(&text[cursor..]);
+    redacted
+}
+
+const fn is_secret_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DiagnosticReportInput {
     pub tale_version: String,
@@ -309,4 +420,35 @@ fn format_optional_u8(value: Option<u8>) -> String {
 
 fn format_optional_u64(value: Option<u64>) -> String {
     value.map_or_else(|| "not returned".to_owned(), |value| format!("{value}ms"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_unstructured_secrets;
+
+    #[test]
+    fn unstructured_secret_redaction_is_case_insensitive_and_format_agnostic() {
+        let canary = "fictional-secret-canary";
+        let inputs = [
+            format!("CLIENT_SECRET={canary}"),
+            format!(r#"{{"clientSecret":"{canary}","safe":"visible"}}"#),
+            format!("Password: {canary}\nnext: visible"),
+            format!("Authorization: Bearer {canary}"),
+            format!("https://example.invalid/hook?token={canary}&safe=visible"),
+            format!("Cookie='{canary}'; safe=visible"),
+            format!("private-key: {canary}"),
+        ];
+
+        for input in inputs {
+            let redacted = redact_unstructured_secrets(&input);
+            assert!(!redacted.contains(canary), "secret remained in {redacted}");
+            assert!(redacted.contains("<redacted>"));
+        }
+    }
+
+    #[test]
+    fn unstructured_secret_redaction_does_not_match_field_name_substrings() {
+        let input = "tokenizer: visible\nsecretive=visible\nauthorization_state=visible";
+        assert_eq!(redact_unstructured_secrets(input), input);
+    }
 }

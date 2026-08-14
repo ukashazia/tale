@@ -1471,74 +1471,7 @@ fn redact_body(body: &[u8], token: &str) -> String {
 }
 
 pub(crate) fn redact_text(text: &str) -> String {
-    let mut text = text.to_owned();
-    for key in ["client_secret", "access_token", "authorization"] {
-        text = redact_jsonish_field(&text, key);
-    }
-    text
-}
-
-fn redact_jsonish_field(text: &str, key: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut cursor = 0usize;
-    while let Some(relative) = text[cursor..].find(key) {
-        let start = cursor.saturating_add(relative);
-        output.push_str(&text[cursor..start]);
-        output.push_str(key);
-        let after_key = start.saturating_add(key.len());
-        let tail = &text[after_key..];
-        if let Some(separator) = tail.find(':').or_else(|| tail.find('=')) {
-            let separator_index = after_key.saturating_add(separator);
-            output.push_str(&text[after_key..=separator_index]);
-            let value_start = separator_index.saturating_add(1);
-            let value_start = value_start.saturating_add(
-                text[value_start..]
-                    .chars()
-                    .take_while(char::is_ascii_whitespace)
-                    .map(char::len_utf8)
-                    .sum::<usize>(),
-            );
-            output.push_str(&text[separator_index.saturating_add(1)..value_start]);
-            if text.as_bytes().get(value_start) == Some(&b'"') {
-                let remainder = text
-                    .get(value_start.saturating_add(1)..)
-                    .map_or("", |value| value);
-                let mut escaped = false;
-                let end = remainder
-                    .char_indices()
-                    .find_map(|(offset, character)| {
-                        if escaped {
-                            escaped = false;
-                            None
-                        } else if character == '\\' {
-                            escaped = true;
-                            None
-                        } else if character == '"' {
-                            Some(value_start.saturating_add(2).saturating_add(offset))
-                        } else {
-                            None
-                        }
-                    })
-                    .map_or(text.len(), |value| value);
-                output.push_str("\"<redacted>\"");
-                cursor = end;
-            } else {
-                let remainder = text.get(value_start..).map_or("", |value| value);
-                let end = remainder
-                    .char_indices()
-                    .find_map(|(offset, character)| {
-                        matches!(character, ',' | '}' | '\n').then_some(value_start + offset)
-                    })
-                    .map_or(text.len(), |value| value);
-                output.push_str("\"<redacted>\"");
-                cursor = end;
-            }
-        } else {
-            cursor = after_key;
-        }
-    }
-    output.push_str(&text[cursor..]);
-    output
+    crate::domain::redaction::redact_unstructured_secrets(text)
 }
 
 fn strip_html(text: &str) -> String {
