@@ -136,6 +136,12 @@ pub enum OperationalResult {
         enabled: Option<bool>,
         detail: String,
     },
+    SucceededUnverified {
+        detail: String,
+    },
+    OutcomeUnknown {
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone)]

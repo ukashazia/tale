@@ -11914,6 +11914,15 @@ impl App {
                         Ok(OperationalResult::Completed { detail }) => {
                             self.runtime_error = Some(detail);
                         }
+                        Ok(OperationalResult::SucceededUnverified { detail }) => {
+                            self.runtime_error = Some(format!(
+                                "operational write succeeded, but verification was unavailable: {detail}"
+                            ));
+                        }
+                        Ok(OperationalResult::OutcomeUnknown { detail }) => {
+                            self.runtime_error =
+                                Some(format!("operational write outcome is unknown: {detail}"));
+                        }
                         Err(error) => {
                             self.runtime_error = Some(error.to_string());
                         }
