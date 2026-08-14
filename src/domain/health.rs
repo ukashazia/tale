@@ -412,15 +412,37 @@ fn source_findings(snapshot: &HealthSnapshot, findings: &mut Vec<Finding>) {
 }
 
 fn route_overlap_findings(snapshot: &HealthSnapshot, findings: &mut Vec<Finding>) {
-    let mut routes = snapshot.routes.iter().collect::<Vec<_>>();
-    routes.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
-    for (index, left) in routes.iter().enumerate() {
-        for right in routes.iter().skip(index + 1) {
-            if left.advertiser_id == right.advertiser_id
-                || !cidr_overlaps(left.cidr.as_str(), right.cidr.as_str())
-            {
+    // Each CIDR is parsed once and the routes are ordered by address, so the
+    // routes that can overlap a given one are the ones immediately after it.
+    // Comparing every pair and re-parsing both sides made this quadratic in a
+    // tailnet's route count.
+    let mut routes = snapshot
+        .routes
+        .iter()
+        .filter_map(|route| route_span(&route.cidr).map(|span| (span, route)))
+        .collect::<Vec<_>>();
+    routes.sort_by(|(left_span, left), (right_span, right)| {
+        left_span
+            .cmp(right_span)
+            .then_with(|| left.stable_id.cmp(&right.stable_id))
+    });
+    for (index, (span, first)) in routes.iter().enumerate() {
+        for (other_span, second) in routes.iter().skip(index + 1) {
+            // Ordered by start address, so the first route that begins after
+            // this one ends rules out every route after it as well.
+            if other_span.family != span.family || other_span.start > span.end {
+                break;
+            }
+            if first.advertiser_id == second.advertiser_id {
                 continue;
             }
+            // The pair is reported lowest stable id first, so the finding reads
+            // the same however the scan reached it.
+            let (left, right) = if first.stable_id <= second.stable_id {
+                (first, second)
+            } else {
+                (second, first)
+            };
             findings.push(Finding::new(
                 "route-overlap-review",
                 Severity::Info,
@@ -458,78 +480,39 @@ fn route_overlap_findings(snapshot: &HealthSnapshot, findings: &mut Vec<Finding>
     }
 }
 
-fn cidr_overlaps(left: &str, right: &str) -> bool {
-    let Some(left) = parse_cidr(left) else {
-        return false;
-    };
-    let Some(right) = parse_cidr(right) else {
-        return false;
-    };
-    contains(left, right.0) || contains(right, left.0)
+/// A route's address span, normalized so that ordering brings every pair that
+/// can overlap next to each other. IPv4 and IPv6 never overlap, so the family
+/// leads the ordering and separates the two blocks.
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+struct RouteSpan {
+    family: u8,
+    start: u128,
+    end: u128,
 }
 
-fn parse_cidr(value: &str) -> Option<(IpAddr, u8)> {
-    let (address, prefix) = value.split_once('/')?;
-    let ip = address.parse::<IpAddr>().ok()?;
+fn route_span(cidr: &str) -> Option<RouteSpan> {
+    let (address, prefix) = cidr.split_once('/')?;
     let prefix = prefix.parse::<u8>().ok()?;
-    let max = match ip {
-        IpAddr::V4(_) => 32,
-        IpAddr::V6(_) => 128,
+    let (family, bits, width) = match address.parse::<IpAddr>().ok()? {
+        IpAddr::V4(value) => (0, u128::from(u32::from(value)), 32),
+        IpAddr::V6(value) => (1, u128::from(value), 128),
     };
-    if prefix > max {
+    if prefix > width {
         return None;
     }
-    Some((network(ip, prefix), prefix))
-}
-
-fn network(ip: IpAddr, prefix: u8) -> IpAddr {
-    match ip {
-        IpAddr::V4(value) => {
-            let bits = u32::from(value);
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix)
-            };
-            IpAddr::V4(std::net::Ipv4Addr::from(bits & mask))
-        }
-        IpAddr::V6(value) => {
-            let bits = u128::from(value);
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u128::MAX << (128 - prefix)
-            };
-            IpAddr::V6(std::net::Ipv6Addr::from(bits & mask))
-        }
-    }
-}
-
-fn contains(network_and_prefix: (IpAddr, u8), ip: IpAddr) -> bool {
-    let (network_address, prefix) = network_and_prefix;
-    match (network_address, ip) {
-        (IpAddr::V4(network_address), IpAddr::V4(ip)) => {
-            let bits = u32::from(ip);
-            let network_bits = u32::from(network_address);
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix)
-            };
-            bits & mask == network_bits
-        }
-        (IpAddr::V6(network_address), IpAddr::V6(ip)) => {
-            let bits = u128::from(ip);
-            let network_bits = u128::from(network_address);
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u128::MAX << (128 - prefix)
-            };
-            bits & mask == network_bits
-        }
-        _ => false,
-    }
+    // Written as a shift of the all-ones value so that a zero-length prefix,
+    // whose host part is the whole address, does not shift past the word.
+    let host = if prefix == 0 {
+        u128::MAX >> (128 - u32::from(width))
+    } else {
+        (1u128 << (width - prefix)) - 1
+    };
+    let start = bits & !host;
+    Some(RouteSpan {
+        family,
+        start,
+        end: start | host,
+    })
 }
 
 fn client_version_findings(snapshot: &HealthSnapshot, findings: &mut Vec<Finding>) {
