@@ -15451,9 +15451,7 @@ impl App {
             let left_device = devices.get(*left);
             let right_device = devices.get(*right);
             match (left_device, right_device) {
-                (Some(left), Some(right)) => {
-                    compare_devices_by_specs(left, right, &sort_terms)
-                }
+                (Some(left), Some(right)) => compare_devices_by_specs(left, right, &sort_terms),
                 _ => left.cmp(right),
             }
         });

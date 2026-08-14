@@ -53,9 +53,7 @@ pub fn compute_with_footer(area: Rect, app: &App, footer: &[Vec<FooterHint>]) ->
         LayoutMode::Compact
     };
     let interaction_height = match &app.interaction {
-        InteractionMode::Normal => {
-            crate::ui::components::interaction_shell::normal_height(footer)
-        }
+        InteractionMode::Normal => crate::ui::components::interaction_shell::normal_height(footer),
         InteractionMode::CommandLine(_) => navigation_palette_height(),
         InteractionMode::FilterLine(_) => {
             crate::ui::components::interaction_shell::filter_menu_height(

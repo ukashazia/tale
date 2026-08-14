@@ -7427,8 +7427,7 @@ async fn handle_stream_line(
             if observation.is_none() {
                 push_task_detail(&mut stream.detail, &text);
             }
-            let completed =
-                u16::try_from(stream.netcheck_observed).map_or(u16::MAX, |value| value);
+            let completed = u16::try_from(stream.netcheck_observed).map_or(u16::MAX, |value| value);
             queue
                 .send(local_event(LocalEvent::DiagnosticProgress {
                     task_id,

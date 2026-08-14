@@ -195,7 +195,10 @@ impl FlowMessage {
                 start: self.start.as_str(),
                 end: self.end.as_str(),
                 source_node_id: self.source_node.as_ref().map(|node| node.node_id.as_str()),
-                source_node_name: self.source_node.as_ref().and_then(|node| node.name.as_deref()),
+                source_node_name: self
+                    .source_node
+                    .as_ref()
+                    .and_then(|node| node.name.as_deref()),
                 destination_nodes: self.destination_nodes.as_slice(),
                 class,
                 connection,
