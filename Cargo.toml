@@ -1,6 +1,6 @@
 [package]
 name = "tale"
-version = "2.0.7"
+version = "2.0.8"
 edition = "2024"
 description = "Keyboard-first terminal application for Tailscale networks"
 homepage = "https://github.com/ukashazia/tale"
