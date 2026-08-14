@@ -9400,7 +9400,7 @@ impl App {
                 self.set_confirmation_error("every batch target requires a fresh preflight");
                 return Vec::new();
             };
-            if !preflight.is_fresh_at(self.now, request.risk) {
+            if !preflight.is_fresh_at(self.now) {
                 self.set_confirmation_error("a batch preflight expired; preview again");
                 return Vec::new();
             }
@@ -9867,7 +9867,7 @@ impl App {
                 }
                 return Vec::new();
             };
-            if !preflight.is_fresh_at(self.now, request.risk) {
+            if !preflight.is_fresh_at(self.now) {
                 if let Err(error) = transition(&mut request.state, AdminMutationState::Preflighting)
                 {
                     self.runtime_error = Some(error.to_string());
