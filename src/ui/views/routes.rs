@@ -78,7 +78,7 @@ fn render_admin_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .selected(index == app.admin_route_selected)
             })
             .collect::<Vec<_>>();
-        grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
+        grid::lines(app, &columns, rows, area.width.saturating_sub(4))
     };
     let mut detail = if observations.iter().any(|route| !route.complete) {
         vec!["some observations incomplete".to_owned()]

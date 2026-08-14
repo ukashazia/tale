@@ -319,7 +319,7 @@ fn render_attention(frame: &mut Frame<'_>, app: &App, area: Rect) {
             grid::Row::new(cells).selected(selected_id == Some(finding.id.as_str()))
         })
         .collect::<Vec<_>>();
-    let lines = grid::lines(app, &columns, &rows, area.width.saturating_sub(4));
+    let lines = grid::lines(app, &columns, rows, area.width.saturating_sub(4));
     panel::render_view(frame, app, area, title, lines);
 }
 

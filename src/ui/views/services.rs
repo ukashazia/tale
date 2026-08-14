@@ -117,7 +117,7 @@ fn render_collection(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let body = if rows.is_empty() {
         Vec::new()
     } else {
-        grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
+        grid::lines(app, &columns, rows, area.width.saturating_sub(4))
     };
     if body.is_empty() {
         lines.extend(section_empty_message(app));

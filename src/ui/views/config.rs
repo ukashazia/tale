@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .selected(selected)
         })
         .collect::<Vec<_>>();
-    let lines = grid::lines(app, &columns, &table_rows, area.width.saturating_sub(4));
+    let lines = grid::lines(app, &columns, table_rows, area.width.saturating_sub(4));
     panel::render_view(frame, app, area, title(app, rows.len()), lines);
 }
 
