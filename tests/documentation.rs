@@ -19,6 +19,7 @@ fn current_documentation_and_local_links_exist() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for relative in [
         "README.md",
+        "docs/tale-config.schema.json",
         "docs/cli/tale.1",
         "completions/tale.bash",
         "completions/_tale",
@@ -36,6 +37,64 @@ fn current_documentation_and_local_links_exist() {
         assert!(readme.contains("docs/cli/tale.1"));
         assert!(readme.contains("cargo install --locked --path ."));
         assert!(readme.contains("tale auth add ops"));
+        assert!(readme.contains("tale-config.schema.json"));
+        assert!(readme.contains("[credentials.ops]"));
+        assert!(readme.contains("kind = \"access_token\""));
+        assert!(readme.contains("kind = \"oauth_client\""));
+    }
+
+    let schema = fs::read_to_string(root.join("docs/tale-config.schema.json"));
+    assert!(schema.is_ok());
+    if let Ok(schema) = schema {
+        let parsed = serde_json::from_str::<serde_json::Value>(&schema);
+        assert!(parsed.is_ok(), "configuration schema must be valid JSON");
+        if let Ok(parsed) = parsed {
+            assert_eq!(parsed["properties"]["local"]["$ref"], "#/$defs/local");
+            assert_eq!(
+                parsed["$defs"]["ui"]["properties"]["theme"]["enum"],
+                serde_json::json!(["tailscale-dark", "tailscale-light", "terminal"])
+            );
+            assert_eq!(
+                parsed["$defs"]["history"]["properties"]["max_tasks"]["minimum"],
+                20
+            );
+            assert_eq!(
+                parsed["$defs"]["profile"]["properties"]["credential_backend"]["const"],
+                "file"
+            );
+            for (section, setting, definition, pattern) in [
+                (
+                    "local",
+                    "reconcile_interval",
+                    "duration_5s_to_10m",
+                    "^(?:(?:[5-9][0-9]{3}|[1-9][0-9]{4}|[1-5][0-9]{5}|600000)ms|(?:[5-9]|[1-9][0-9]|[1-5][0-9]{2}|600)s|(?:[1-9]|10)m)$",
+                ),
+                (
+                    "local",
+                    "command_timeout",
+                    "duration_1s_to_10m",
+                    "^(?:(?:[1-9][0-9]{3}|[1-9][0-9]{4}|[1-5][0-9]{5}|600000)ms|(?:[1-9]|[1-9][0-9]|[1-5][0-9]{2}|600)s|(?:[1-9]|10)m)$",
+                ),
+                (
+                    "admin",
+                    "refresh_interval",
+                    "duration_5s_to_30m",
+                    "^(?:(?:[5-9][0-9]{3}|[1-9][0-9]{4}|[1-9][0-9]{5}|1[0-7][0-9]{5}|1800000)ms|(?:[5-9]|[1-9][0-9]|[1-9][0-9]{2}|1[0-7][0-9]{2}|1800)s|(?:[1-9]|[12][0-9]|30)m)$",
+                ),
+                (
+                    "admin",
+                    "request_timeout",
+                    "duration_1s_to_2m",
+                    "^(?:(?:[1-9][0-9]{3}|[1-9][0-9]{4}|1[01][0-9]{4}|120000)ms|(?:[1-9]|[1-9][0-9]|1[01][0-9]|120)s|[12]m)$",
+                ),
+            ] {
+                assert_eq!(
+                    parsed["$defs"][section]["properties"][setting]["allOf"][0]["$ref"],
+                    format!("#/$defs/{definition}")
+                );
+                assert_eq!(parsed["$defs"][definition]["pattern"], pattern);
+            }
+        }
     }
 }
 

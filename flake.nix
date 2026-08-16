@@ -22,9 +22,11 @@
           default = pkgs.mkShellNoCC {
             packages = with pkgs; [
               cargo-dist
+              cargo-release
               coreutils
               ffmpeg-headless
               vhs
+              just
             ];
           };
         });

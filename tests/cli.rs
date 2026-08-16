@@ -100,9 +100,28 @@ fn help_does_not_expose_tui_routes_as_subcommands() {
     let help = Cli::command().render_help().to_string();
     assert!(help.contains("config"));
     assert!(help.contains("doctor"));
+    assert!(help.contains("Select a configured tailnet profile"));
+    assert!(help.contains("Disable every mutation"));
     assert!(!help.contains("users"));
-    assert!(!help.contains("credentials"));
+    assert!(!help.contains("devices"));
     assert!(!help.contains("services"));
+}
+
+#[test]
+fn nested_command_help_explains_each_action() {
+    let mut command = Cli::command();
+    let Some(auth) = command.find_subcommand_mut("auth") else {
+        return;
+    };
+    let add_help = auth
+        .find_subcommand_mut("add")
+        .map(|add| add.render_help().to_string());
+    assert!(add_help.is_some());
+    if let Some(add_help) = add_help {
+        assert!(add_help.contains("Create or update a credential profile"));
+        assert!(add_help.contains("Read the secret from standard input"));
+        assert!(add_help.contains("OAuth client ID"));
+    }
 }
 
 #[test]
