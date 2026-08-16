@@ -15,13 +15,13 @@ _tale() {
 
     local context curcontext="$curcontext" state line
     _arguments "${_arguments_options[@]}" : \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
@@ -37,27 +37,27 @@ _tale() {
         case $line[1] in
             (gen-completions)
 _arguments "${_arguments_options[@]}" : \
-'--shell=[]:SHELL:_default' \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--shell=[Shell to generate completions for\: bash, zsh, or fish]:SHELL:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (auth)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_tale__subcmd__auth_commands" \
@@ -72,46 +72,46 @@ _arguments "${_arguments_options[@]}" : \
         case $line[1] in
             (add)
 _arguments "${_arguments_options[@]}" : \
-'--tailnet=[]:ID:_default' \
-'--kind=[]:KIND:(oauth-client access-token)' \
-'--client-id=[]:ID:_default' \
-'--scopes=[]:SCOPES:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
+'--tailnet=[Tailnet ID or '\''-'\''; prompts when omitted]:ID:_default' \
+'--kind=[Credential type\: oauth-client or access-token; prompts when omitted]:KIND:(oauth-client access-token)' \
+'--client-id=[OAuth client ID; required with --secret-stdin for oauth-client credentials]:ID:_default' \
+'--scopes=[Comma-separated OAuth scopes; prompts when omitted for oauth-client credentials]:SCOPES:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--secret-stdin[Read the secret from standard input instead of prompting. Selects the access token, or the client secret when the kind is \`oauth_client\`]' \
-'--read-only[]' \
-'--no-local[]' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':profile:_default' \
+':profile -- Name for the profile. Use letters, digits, '\''_'\'' and '\''-'\'':_default' \
 && ret=0
 ;;
 (remove)
 _arguments "${_arguments_options[@]}" : \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':profile:_default' \
+':profile -- Name of the profile:_default' \
 && ret=0
 ;;
 (status)
 _arguments "${_arguments_options[@]}" : \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::profile:_default' \
+'::profile -- Profile to inspect; defaults to --profile:_default' \
 && ret=0
 ;;
         esac
@@ -120,13 +120,13 @@ esac
 ;;
 (config)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 ":: :_tale__subcmd__config_commands" \
@@ -141,39 +141,39 @@ _arguments "${_arguments_options[@]}" : \
         case $line[1] in
             (path)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (check)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (show)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -184,14 +184,14 @@ esac
 ;;
 (doctor)
 _arguments "${_arguments_options[@]}" : \
-'--output=[]:PATH:_files' \
-'--profile=[]:NAME:_default' \
-'--config=[]:PATH:_files' \
-'--view=[]:ROUTE:_default' \
-'--tailscale-path=[]:PATH:_files' \
-'--tailscale-socket=[]:PATH:_files' \
-'--read-only[]' \
-'--no-local[]' \
+'--output=[Write the report to PATH instead of standard output]:PATH:_files' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
+'--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
+'--read-only[Disable every mutation for this session]' \
+'--no-local[Do not connect to the local Tailscale client or daemon]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -205,18 +205,18 @@ esac
 _tale_commands() {
     local commands; commands=(
 'gen-completions:Print shell completion instructions to standard output' \
-'auth:' \
-'config:' \
-'doctor:' \
+'auth:Add, inspect, or remove tailnet credentials' \
+'config:Inspect and validate Tale configuration' \
+'doctor:Print a redacted, non-mutating diagnostic report' \
     )
     _describe -t commands 'tale commands' commands "$@"
 }
 (( $+functions[_tale__subcmd__auth_commands] )) ||
 _tale__subcmd__auth_commands() {
     local commands; commands=(
-'add:\`auth add\` is the only writer to the credential store, so it has to be usable without a terminal\: the prompts cannot be reached from a script, a container, or a CI job, and they are the sole recovery path once a profile has been removed' \
-'remove:' \
-'status:' \
+'add:Create or update a credential profile' \
+'remove:Delete a credential profile and its stored secret' \
+'status:Show the selected profile'\''s credential status' \
     )
     _describe -t commands 'tale auth commands' commands "$@"
 }
@@ -238,8 +238,8 @@ _tale__subcmd__auth__subcmd__status_commands() {
 (( $+functions[_tale__subcmd__config_commands] )) ||
 _tale__subcmd__config_commands() {
     local commands; commands=(
-'path:' \
-'check:' \
+'path:Print configuration, credential, state, and cache locations' \
+'check:Validate the configuration without opening the terminal interface' \
 'show:Every resolved value and what decided it' \
     )
     _describe -t commands 'tale config commands' commands "$@"

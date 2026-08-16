@@ -1,6 +1,6 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH tale 1  "tale 2.0.7" 
+.TH tale 1  "tale 2.0.9" 
 .SH NAME
 tale \- A terminal\-native Tailscale workspace
 .SH SYNOPSIS
@@ -10,25 +10,25 @@ A terminal\-native Tailscale workspace
 .SH OPTIONS
 .TP
 \fB\-\-profile\fR \fI<NAME>\fR
-
+Select a configured tailnet profile for this session
 .TP
 \fB\-\-config\fR \fI<PATH>\fR
-
+Read configuration from PATH instead of the default config location
 .TP
 \fB\-\-view\fR \fI<ROUTE>\fR
-
+Open ROUTE when the terminal interface starts
 .TP
 \fB\-\-read\-only\fR
-
+Disable every mutation for this session
 .TP
 \fB\-\-no\-local\fR
-
+Do not connect to the local Tailscale client or daemon
 .TP
 \fB\-\-tailscale\-path\fR \fI<PATH>\fR
-
+Use PATH as the local Tailscale executable
 .TP
 \fB\-\-tailscale\-socket\fR \fI<PATH>\fR
-
+Connect to the local Tailscale daemon at PATH
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
@@ -41,9 +41,12 @@ tale\-gen\-completions(1)
 Print shell completion instructions to standard output
 .TP
 tale\-auth(1)
+Add, inspect, or remove tailnet credentials
 .TP
 tale\-config(1)
+Inspect and validate Tale configuration
 .TP
 tale\-doctor(1)
+Print a redacted, non\-mutating diagnostic report
 .SH VERSION
-v2.0.7
+v2.0.9

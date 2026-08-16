@@ -24,107 +24,107 @@ function __fish_tale_using_subcommand
     contains -- $cmd[1] $argv
 end
 
-complete -c tale -n "__fish_tale_needs_command" -l profile -r
-complete -c tale -n "__fish_tale_needs_command" -l config -r -F
-complete -c tale -n "__fish_tale_needs_command" -l view -r
-complete -c tale -n "__fish_tale_needs_command" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_needs_command" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_needs_command" -l read-only
-complete -c tale -n "__fish_tale_needs_command" -l no-local
+complete -c tale -n "__fish_tale_needs_command" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_needs_command" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_needs_command" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_needs_command" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_needs_command" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_needs_command" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_needs_command" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_needs_command" -s h -l help -d 'Print help'
 complete -c tale -n "__fish_tale_needs_command" -s V -l version -d 'Print version'
 complete -c tale -n "__fish_tale_needs_command" -f -a "gen-completions" -d 'Print shell completion instructions to standard output'
-complete -c tale -n "__fish_tale_needs_command" -f -a "auth"
-complete -c tale -n "__fish_tale_needs_command" -f -a "config"
-complete -c tale -n "__fish_tale_needs_command" -f -a "doctor"
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l shell -r
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l no-local
+complete -c tale -n "__fish_tale_needs_command" -f -a "auth" -d 'Add, inspect, or remove tailnet credentials'
+complete -c tale -n "__fish_tale_needs_command" -f -a "config" -d 'Inspect and validate Tale configuration'
+complete -c tale -n "__fish_tale_needs_command" -f -a "doctor" -d 'Print a redacted, non-mutating diagnostic report'
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l shell -d 'Shell to generate completions for: bash, zsh, or fish' -r
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand gen-completions" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand gen-completions" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "add" -d '`auth add` is the only writer to the credential store, so it has to be usable without a terminal: the prompts cannot be reached from a script, a container, or a CI job, and they are the sole recovery path once a profile has been removed'
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "remove"
-complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "status"
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailnet -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l kind -r -f -a "oauth-client\t''
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "add" -d 'Create or update a credential profile'
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "remove" -d 'Delete a credential profile and its stored secret'
+complete -c tale -n "__fish_tale_using_subcommand auth; and not __fish_seen_subcommand_from add remove status" -f -a "status" -d 'Show the selected profile\'s credential status'
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailnet -d 'Tailnet ID or \'-\'; prompts when omitted' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l kind -d 'Credential type: oauth-client or access-token; prompts when omitted' -r -f -a "oauth-client\t''
 access-token\t''"
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l client-id -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l scopes -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-socket -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l client-id -d 'OAuth client ID; required with --secret-stdin for oauth-client credentials' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l scopes -d 'Comma-separated OAuth scopes; prompts when omitted for oauth-client credentials' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l secret-stdin -d 'Read the secret from standard input instead of prompting. Selects the access token, or the client secret when the kind is `oauth_client`'
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from add" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from remove" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand auth; and __fish_seen_subcommand_from status" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "path"
-complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "check"
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "path" -d 'Print configuration, credential, state, and cache locations'
+complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "check" -d 'Validate the configuration without opening the terminal interface'
 complete -c tale -n "__fish_tale_using_subcommand config; and not __fish_seen_subcommand_from path check show" -f -a "show" -d 'Every resolved value and what decided it'
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from path" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from check" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand config; and __fish_seen_subcommand_from show" -s h -l help -d 'Print help'
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l output -r -F
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l profile -r
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l config -r -F
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l view -r
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l tailscale-path -r -F
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l tailscale-socket -r -F
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l read-only
-complete -c tale -n "__fish_tale_using_subcommand doctor" -l no-local
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l output -d 'Write the report to PATH instead of standard output' -r -F
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l profile -d 'Select a configured tailnet profile for this session' -r
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l config -d 'Read configuration from PATH instead of the default config location' -r -F
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l view -d 'Open ROUTE when the terminal interface starts' -r
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l tailscale-path -d 'Use PATH as the local Tailscale executable' -r -F
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l tailscale-socket -d 'Connect to the local Tailscale daemon at PATH' -r -F
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l read-only -d 'Disable every mutation for this session'
+complete -c tale -n "__fish_tale_using_subcommand doctor" -l no-local -d 'Do not connect to the local Tailscale client or daemon'
 complete -c tale -n "__fish_tale_using_subcommand doctor" -s h -l help -d 'Print help'

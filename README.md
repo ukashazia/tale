@@ -122,6 +122,99 @@ printf '%s' "$TOKEN" |
   tale auth add ops --tailnet TAILNET_ID --kind access-token --secret-stdin
 ```
 
+## Configuration
+
+Tale reads `config.toml` from its platform configuration directory. Run
+`tale config path` to see the exact location; `--config PATH` and
+`TALE_CONFIG_FILE` select another file. Settings resolve in this order:
+command-line flags, environment variables, this file, then defaults.
+
+The checked-in [configuration schema](docs/tale-config.schema.json) provides
+completion, validation, and hover help in TOML-aware editors. Put this comment
+at the very top of a configuration file to opt in with Taplo and compatible
+TOML language servers:
+
+```toml
+#:schema https://raw.githubusercontent.com/ukashazia/tale/main/docs/tale-config.schema.json
+```
+
+Only include settings you want to override. This annotated example shows every
+available section; credential secrets belong in the separate credential store,
+not in `config.toml`. See [Credential store](#credential-store) for its format.
+
+```toml
+#:schema https://raw.githubusercontent.com/ukashazia/tale/main/docs/tale-config.schema.json
+
+# Disable all mutations in this session.
+read_only = true
+
+[local]
+# Set false for an admin-only installation; --no-local also does this per run.
+enabled = true
+# tailscale_path = "~/bin/tailscale"
+# socket_path = "/var/run/tailscale/tailscaled.sock"
+# Reconcile local state every 5s to 10m; each command may take 1s to 10m.
+reconcile_interval = "30s"
+command_timeout = "10s"
+
+[admin]
+# Refresh Control API data every 5s to 30m; requests may take 1s to 2m.
+refresh_interval = "30s"
+request_timeout = "15s"
+
+[ui]
+theme = "terminal" # tailscale-dark, tailscale-light, or terminal
+color = "auto" # auto, none, ansi16, ansi256, or truecolor
+symbols = "auto" # auto, ascii, or unicode
+mouse = false
+detail_pane = "auto" # auto, always, or never
+time_zone = "local" # local or utc
+relative_times = true
+show_footer = true
+
+[history]
+persist_tasks = false
+max_tasks = 200 # 20 through 5000
+
+# Profile names contain letters, digits, '_' or '-'. Select one with --profile.
+[profiles.ops]
+tailnet = "-"
+read_only = true
+# A reference into the credential store, never a credential value.
+credential = "ops"
+credential_backend = "file"
+credential_file = "~/.config/tale/credentials.toml"
+```
+
+### Credential store
+
+`credentials.toml` is deliberately separate from shareable configuration and
+contains plaintext secrets. Prefer `tale auth add` to create or rotate records:
+it writes the file atomically with owner-only permissions. Do not commit, share,
+or add this file to a configuration repository.
+
+Each `[credentials.NAME]` table matches a profile's `credential = "NAME"`
+value. An access-token record looks like this:
+
+```toml
+[credentials.ops]
+kind = "access_token"
+version = 1
+access_token = "REPLACE_WITH_ACCESS_TOKEN"
+```
+
+An OAuth client record uses `client_id`, `client_secret`, and its requested
+Control API scopes instead:
+
+```toml
+[credentials.automation]
+kind = "oauth_client"
+version = 1
+client_id = "REPLACE_WITH_CLIENT_ID"
+client_secret = "REPLACE_WITH_CLIENT_SECRET"
+requested_scopes = ["devices:core:read", "users:read"]
+```
+
 ## Essential keys
 
 | Key | Action |

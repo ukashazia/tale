@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ukashazia/tale/main/docs/tale-config.schema.json",
+  "title": "Tale configuration",
+  "description": "Configuration for Tale. Credential secrets live in the separate credential store, never in this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "read_only": {
+      "type": "boolean",
+      "default": false,
+      "description": "Disable all mutations for the entire session. The --read-only flag also enables this."
+    },
+    "local": {
+      "$ref": "#/$defs/local"
+    },
+    "admin": {
+      "$ref": "#/$defs/admin"
+    },
+    "ui": {
+      "$ref": "#/$defs/ui"
+    },
+    "history": {
+      "$ref": "#/$defs/history"
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Named Control API profiles. A profile is active only when selected with --profile or in the Profiles view.",
+      "patternProperties": {
+        "^[A-Za-z0-9_-]+$": {
+          "$ref": "#/$defs/profile"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "duration_5s_to_10m": {
+      "type": "string",
+      "pattern": "^(?:(?:[5-9][0-9]{3}|[1-9][0-9]{4}|[1-5][0-9]{5}|600000)ms|(?:[5-9]|[1-9][0-9]|[1-5][0-9]{2}|600)s|(?:[1-9]|10)m)$",
+      "description": "A whole-number duration from 5s through 10m."
+    },
+    "duration_1s_to_10m": {
+      "type": "string",
+      "pattern": "^(?:(?:[1-9][0-9]{3}|[1-9][0-9]{4}|[1-5][0-9]{5}|600000)ms|(?:[1-9]|[1-9][0-9]|[1-5][0-9]{2}|600)s|(?:[1-9]|10)m)$",
+      "description": "A whole-number duration from 1s through 10m."
+    },
+    "duration_5s_to_30m": {
+      "type": "string",
+      "pattern": "^(?:(?:[5-9][0-9]{3}|[1-9][0-9]{4}|[1-9][0-9]{5}|1[0-7][0-9]{5}|1800000)ms|(?:[5-9]|[1-9][0-9]|[1-9][0-9]{2}|1[0-7][0-9]{2}|1800)s|(?:[1-9]|[12][0-9]|30)m)$",
+      "description": "A whole-number duration from 5s through 30m."
+    },
+    "duration_1s_to_2m": {
+      "type": "string",
+      "pattern": "^(?:(?:[1-9][0-9]{3}|[1-9][0-9]{4}|1[01][0-9]{4}|120000)ms|(?:[1-9]|[1-9][0-9]|1[01][0-9]|120)s|[12]m)$",
+      "description": "A whole-number duration from 1s through 2m."
+    },
+    "local": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable local Tailscale CLI and daemon integration. --no-local overrides this."
+        },
+        "tailscale_path": {
+          "type": "string",
+          "default": "tailscale",
+          "description": "Path to the Tailscale executable. A leading ~/ is expanded."
+        },
+        "socket_path": {
+          "type": "string",
+          "description": "Path to the local Tailscale daemon socket. A leading ~/ is expanded."
+        },
+        "reconcile_interval": {
+          "allOf": [
+            { "$ref": "#/$defs/duration_5s_to_10m" }
+          ],
+          "default": "30s",
+          "description": "How often to reconcile local state. Allowed range: 5s to 10m."
+        },
+        "command_timeout": {
+          "allOf": [
+            { "$ref": "#/$defs/duration_1s_to_10m" }
+          ],
+          "default": "10s",
+          "description": "Timeout for a local Tailscale command. Allowed range: 1s to 10m."
+        }
+      }
+    },
+    "admin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "refresh_interval": {
+          "allOf": [
+            { "$ref": "#/$defs/duration_5s_to_30m" }
+          ],
+          "default": "30s",
+          "description": "How often to refresh Control API data. Allowed range: 5s to 30m."
+        },
+        "request_timeout": {
+          "allOf": [
+            { "$ref": "#/$defs/duration_1s_to_2m" }
+          ],
+          "default": "15s",
+          "description": "Timeout for a Control API request. Allowed range: 1s to 2m."
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "theme": {
+          "type": "string",
+          "enum": ["tailscale-dark", "tailscale-light", "terminal"],
+          "default": "terminal",
+          "description": "Color theme."
+        },
+        "color": {
+          "type": "string",
+          "enum": ["auto", "none", "ansi16", "ansi256", "truecolor"],
+          "default": "auto",
+          "description": "Terminal color capability. NO_COLOR overrides this with none."
+        },
+        "symbols": {
+          "type": "string",
+          "enum": ["auto", "ascii", "unicode"],
+          "default": "auto",
+          "description": "Use ASCII or Unicode status symbols."
+        },
+        "mouse": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable mouse input."
+        },
+        "detail_pane": {
+          "type": "string",
+          "enum": ["auto", "always", "never"],
+          "default": "auto",
+          "description": "When to show an item detail pane."
+        },
+        "time_zone": {
+          "type": "string",
+          "enum": ["local", "utc"],
+          "default": "local",
+          "description": "Time zone for absolute timestamps."
+        },
+        "relative_times": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show relative timestamps when available."
+        },
+        "show_footer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the keyboard-help footer."
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "persist_tasks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Persist task history between sessions."
+        },
+        "max_tasks": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 5000,
+          "default": 200,
+          "description": "Maximum number of stored task records."
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tailnet", "credential", "credential_backend", "credential_file"],
+      "properties": {
+        "tailnet": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tailnet ID, or '-' for the default tailnet."
+        },
+        "read_only": {
+          "type": "boolean",
+          "default": true,
+          "description": "Disable mutations while this profile is active."
+        },
+        "credential": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference to a secret in the separate credential store; never place a secret here."
+        },
+        "credential_backend": {
+          "const": "file",
+          "description": "Credential-store backend. Tale currently supports file."
+        },
+        "credential_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Location of the credential store for the file backend. A leading ~/ is expanded."
+        }
+      }
+    }
+  }
+}

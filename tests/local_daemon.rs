@@ -19,8 +19,10 @@ use tale::local::process::Cancellation;
 const STATUS: &str = include_str!("fixtures/tailscale/1.98.9/linux/status.json");
 const PREFS: &[u8] = include_bytes!("fixtures/tailscale/1.98.9/linux/prefs.json");
 
-fn socket_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("tale-localapi-{name}-{}", std::process::id()))
+fn socket_path(name: &str) -> Result<(tempfile::TempDir, PathBuf), std::io::Error> {
+    let directory = tempfile::Builder::new().prefix(name).tempdir_in("/tmp")?;
+    let path = directory.path().join("localapi.sock");
+    Ok((directory, path))
 }
 
 async fn read_request(stream: &mut UnixStream) -> Option<String> {
@@ -154,8 +156,11 @@ async fn observer_response(
 
 #[tokio::test]
 async fn fake_localapi_checks_headers_endpoints_and_chunked_watch() {
-    let path = socket_path("contract");
-    let _ = std::fs::remove_file(&path);
+    let socket = socket_path("tale-localapi-contract-");
+    assert!(socket.is_ok());
+    let Ok((_directory, path)) = socket else {
+        return;
+    };
     let listener = UnixListener::bind(&path);
     assert!(listener.is_ok());
     let Ok(listener) = listener else {
@@ -203,13 +208,15 @@ async fn fake_localapi_checks_headers_endpoints_and_chunked_watch() {
         assert!(matches!(watch.next(&cancellation).await, Ok(None)));
     }
     assert!(server.await.is_ok());
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn observer_accepts_watch_before_bootstrap_reads_and_cancels_idle_stream() {
-    let path = socket_path("observer");
-    let _ = std::fs::remove_file(&path);
+    let socket = socket_path("tale-localapi-observer-");
+    assert!(socket.is_ok());
+    let Ok((_directory, path)) = socket else {
+        return;
+    };
     let listener = UnixListener::bind(&path);
     assert!(listener.is_ok());
     let Ok(listener) = listener else {
@@ -278,13 +285,15 @@ async fn observer_accepts_watch_before_bootstrap_reads_and_cancels_idle_stream()
     assert!(joined.is_ok());
     server.abort();
     let _ = server.await;
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn reconnect_keeps_read_generations_monotonic() {
-    let path = socket_path("reconnect-generations");
-    let _ = std::fs::remove_file(&path);
+    let socket = socket_path("tale-localapi-reconnect-generations-");
+    assert!(socket.is_ok());
+    let Ok((_directory, path)) = socket else {
+        return;
+    };
     let listener = UnixListener::bind(&path);
     assert!(listener.is_ok());
     let Ok(listener) = listener else {
@@ -385,7 +394,6 @@ async fn reconnect_keeps_read_generations_monotonic() {
     );
     server.abort();
     let _ = server.await;
-    let _ = std::fs::remove_file(path);
 }
 
 #[test]
