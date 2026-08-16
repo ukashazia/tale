@@ -79,7 +79,7 @@ pub fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.theme.style(theme::StyleRole::StatePending),
         ))]
     } else {
-        grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
+        grid::lines(app, &columns, rows, area.width.saturating_sub(4))
     };
     panel::render_view(frame, app, area, devices_title(app), lines);
 }

@@ -87,7 +87,7 @@ fn render_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
             grid::Row::new(cells).selected(index == app.admin_activity_selected)
         })
         .collect::<Vec<_>>();
-    let lines = grid::lines(app, &columns, &rows, area.width.saturating_sub(4));
+    let lines = grid::lines(app, &columns, rows, area.width.saturating_sub(4));
     panel::render_view(
         frame,
         app,

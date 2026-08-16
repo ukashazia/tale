@@ -84,7 +84,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .selected(index == app.admin_credential_selected)
             })
             .collect::<Vec<_>>();
-        grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
+        grid::lines(app, &columns, rows, area.width.saturating_sub(4))
     };
     let mut detail = vec!["metadata only".to_owned()];
     if !app.views.credentials.filter.is_empty() {

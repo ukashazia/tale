@@ -91,7 +91,7 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 grid::Row::new(cells).selected(selected)
             })
             .collect::<Vec<_>>();
-        grid::lines(app, &columns, &rows, area.width.saturating_sub(4))
+        grid::lines(app, &columns, rows, area.width.saturating_sub(4))
     };
     panel::render_view(frame, app, area, title(app, &filtered, users.len()), lines);
 }

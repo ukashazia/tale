@@ -7316,7 +7316,7 @@ async fn run_streaming_diagnostic(
             let (observation, errors) =
                 diagnostics::parse_netcheck_lines(&stream.netcheck_lines, crate::local::now());
             for error in errors {
-                stream.detail = append_bounded(&stream.detail, &error);
+                push_task_detail(&mut stream.detail, &error);
             }
             let Some(observation) = observation else {
                 finish_diagnostic_failure(
@@ -7341,9 +7341,16 @@ async fn run_streaming_diagnostic(
     }
 }
 
+/// How many netcheck report lines are kept. Only the most recent decodable one
+/// is used, so this exists to bound a live run rather than to preserve history.
+const MAX_NETCHECK_LINES: usize = 4096;
+
 struct StreamAccumulator {
     ping_samples: Vec<crate::domain::diagnostic::PingSample>,
     netcheck_lines: Vec<String>,
+    /// Counted separately from `netcheck_lines`, which is trimmed, so progress
+    /// keeps climbing over a long run.
+    netcheck_observed: u64,
     detail: String,
     sequence: u64,
 }
@@ -7353,6 +7360,7 @@ impl StreamAccumulator {
         Self {
             ping_samples: Vec::new(),
             netcheck_lines: Vec::new(),
+            netcheck_observed: 0,
             detail: String::new(),
             sequence: 0,
         }
@@ -7369,15 +7377,15 @@ async fn handle_stream_line(
     let text = match std::str::from_utf8(&line.bytes) {
         Ok(value) => value.trim_end_matches(['\r', '\n']).to_owned(),
         Err(_) => {
-            stream.detail = append_bounded(
-                &stream.detail,
+            push_task_detail(
+                &mut stream.detail,
                 &format!("{}: non-UTF-8 output", stream_label(line.stream)),
             );
             return;
         }
     };
     if line.stream == OutputStream::Stderr {
-        stream.detail = append_bounded(&stream.detail, &format!("stderr: {text}"));
+        push_task_detail(&mut stream.detail, &format!("stderr: {text}"));
         return;
     }
     match request {
@@ -7387,7 +7395,7 @@ async fn handle_stream_line(
             if let Some(sample) = sample.as_ref() {
                 stream.ping_samples.push(sample.clone());
             } else {
-                stream.detail = append_bounded(&stream.detail, &text);
+                push_task_detail(&mut stream.detail, &text);
             }
             let completed =
                 u16::try_from(stream.ping_samples.len()).map_or(u16::MAX, |value| value.min(10));
@@ -7405,15 +7413,21 @@ async fn handle_stream_line(
                 .await;
         }
         diagnostics::DiagnosticRequest::Netcheck { .. } => {
+            stream.netcheck_observed = stream.netcheck_observed.saturating_add(1);
             stream.netcheck_lines.push(text.clone());
+            // A live netcheck runs until it is cancelled, and only the most
+            // recent decodable report is ever used, so older lines are dropped
+            // in blocks rather than retained for the life of the run.
+            if stream.netcheck_lines.len() > MAX_NETCHECK_LINES.saturating_mul(2) {
+                stream.netcheck_lines.drain(..MAX_NETCHECK_LINES);
+            }
             let observation =
                 diagnostics::parse_netcheck_lines(std::slice::from_ref(&text), crate::local::now())
                     .0;
             if observation.is_none() {
-                stream.detail = append_bounded(&stream.detail, &text);
+                push_task_detail(&mut stream.detail, &text);
             }
-            let completed =
-                u16::try_from(stream.netcheck_lines.len()).map_or(u16::MAX, |value| value);
+            let completed = u16::try_from(stream.netcheck_observed).map_or(u16::MAX, |value| value);
             queue
                 .send(local_event(LocalEvent::DiagnosticProgress {
                     task_id,
@@ -7674,9 +7688,16 @@ fn bounded_diagnostic_detail(value: &str) -> String {
     bounded_task_detail(&redacted)
 }
 
+const TASK_DETAIL_CAP: usize = 256 * 1024;
+
 fn bounded_task_detail(value: &str) -> String {
-    const CAP: usize = 256 * 1024;
-    crate::task::bounded_detail(value, CAP)
+    crate::task::bounded_detail(value, TASK_DETAIL_CAP)
+}
+
+/// Appends to a detail that is still being streamed into. Unlike
+/// [`append_bounded`] this does not rebuild the buffer per line.
+fn push_task_detail(detail: &mut String, value: &str) {
+    crate::task::push_bounded(detail, value, TASK_DETAIL_CAP);
 }
 
 fn append_bounded(existing: &str, value: &str) -> String {

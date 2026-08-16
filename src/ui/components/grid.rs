@@ -104,22 +104,23 @@ const GAP: usize = 2;
 /// Every list in Tale is this shape: a heading row, then one line per row, the
 /// selection carrying the row style. Views differ in their columns, never in
 /// how a list looks.
-pub fn lines(app: &App, columns: &[Column], rows: &[Row], width: u16) -> Vec<Line<'static>> {
+pub fn lines(app: &App, columns: &[Column], rows: Vec<Row>, width: u16) -> Vec<Line<'static>> {
     let widths = resolve(columns, width);
-    let mut lines = vec![Line::from(row_spans(
+    let mut lines = Vec::with_capacity(rows.len().saturating_add(1));
+    lines.push(Line::from(row_spans(
         app,
         columns
             .iter()
-            .map(|column| Cell::new(column.header.clone()))
+            .map(|column| Cell::new(column.header.as_str()))
             .collect(),
         &widths,
         theme::StyleRole::TextPrimary,
         false,
-    ))];
+    )));
     for row in rows {
         lines.push(Line::from(row_spans(
             app,
-            row.cells.clone(),
+            row.cells,
             &widths,
             row.role,
             row.selected,
@@ -142,17 +143,9 @@ fn row_spans(
         .into_iter()
         .enumerate()
         .map(|(index, cell)| {
-            let padded = match widths.get(index) {
-                Some(width) => text::pad_or_trim(&cell.text, *width),
-                None => cell.text.clone(),
-            };
-            let trailing = if index >= last {
-                String::new()
-            } else {
-                " ".repeat(GAP)
-            };
+            let gap = if index >= last { 0 } else { GAP };
             Span::styled(
-                format!("{padded}{trailing}"),
+                fit(cell.text, widths.get(index).copied(), gap),
                 if selected {
                     app.theme.style(theme::StyleRole::Selection)
                 } else {
@@ -161,6 +154,31 @@ fn row_spans(
             )
         })
         .collect()
+}
+
+/// One cell's text padded or ellipsized to its column, with the trailing gap
+/// already on it. This is the innermost loop of every table on screen, so the
+/// result is written into a single string rather than composed from a padded
+/// value and a separator.
+fn fit(text: String, width: Option<usize>, gap: usize) -> String {
+    // A cell with no column behind it is written through untouched, which is
+    // what the caller relies on for the trailing cells of a short header.
+    let Some(width) = width else {
+        return text;
+    };
+    let mut fitted = String::with_capacity(text.len().saturating_add(width).saturating_add(gap));
+    let count = text.chars().count();
+    if count <= width {
+        fitted.push_str(&text);
+        fitted.extend(std::iter::repeat_n(' ', width.saturating_sub(count)));
+    } else if width <= 1 {
+        fitted.extend("…".chars().take(width));
+    } else {
+        fitted.extend(text.chars().take(width.saturating_sub(1)));
+        fitted.push('…');
+    }
+    fitted.extend(std::iter::repeat_n(' ', gap));
+    fitted
 }
 
 /// Fixed columns are honoured first; whatever is left is split by weight, so a

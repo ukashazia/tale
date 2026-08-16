@@ -11,9 +11,9 @@ use crate::app::{
 use crate::domain::filter;
 use crate::ui::{layout, text, theme};
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, footer: &[Vec<action::FooterHint>]) {
     let (lines, caret) = match &app.interaction {
-        InteractionMode::Normal => (normal_lines(app, area.width), None),
+        InteractionMode::Normal => (normal_lines(app, footer), None),
         InteractionMode::CommandLine(state) => navigation_lines(app, state, area),
         InteractionMode::FilterLine(state) => filter_lines(app, state, area),
         InteractionMode::Transient(state) => (transient_lines(app, state, area), None),
@@ -78,15 +78,26 @@ fn place_caret(frame: &mut Frame<'_>, area: Rect, caret: Option<(u16, u16)>) {
     ));
 }
 
-fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+/// The footer hints laid out into rows. Deciding which hints belong runs every
+/// action's availability check, so this is called once per frame and the result
+/// is shared by the height the layout reserves, the rows drawn here, and mouse
+/// hit testing.
+pub fn footer_rows(app: &App, width: u16) -> Vec<Vec<action::FooterHint>> {
     if !app.resolved_config.ui.show_footer {
-        return vec![Line::default()];
+        return Vec::new();
     }
     action::footer_rows(&app.footer_actions(width), width)
-        .into_iter()
+}
+
+fn normal_lines(app: &App, footer: &[Vec<action::FooterHint>]) -> Vec<Line<'static>> {
+    if footer.is_empty() {
+        return vec![Line::default()];
+    }
+    footer
+        .iter()
         .map(|row| {
             let mut spans = Vec::new();
-            for (index, hint) in row.into_iter().enumerate() {
+            for (index, hint) in row.iter().enumerate() {
                 if index > 0 {
                     spans.push(Span::styled(
                         "  ",
@@ -111,11 +122,8 @@ fn normal_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-pub fn normal_height(app: &App, width: u16) -> u16 {
-    if !app.resolved_config.ui.show_footer {
-        return 1;
-    }
-    u16::try_from(action::footer_rows(&app.footer_actions(width), width).len())
+pub fn normal_height(footer: &[Vec<action::FooterHint>]) -> u16 {
+    u16::try_from(footer.len())
         .map_or(u16::MAX, |height| height)
         .max(1)
 }

@@ -1222,7 +1222,7 @@ struct DeviceVisibleCacheKey {
     devices_generation: u64,
     local_generation: u64,
     admin_generation: u64,
-    now: Timestamp,
+    now: Option<Timestamp>,
     source_mode: SourceMode,
     filter: FilterExpression,
     sort: SortSpec,
@@ -2419,31 +2419,40 @@ impl App {
         }
     }
 
+    /// The frame geometry the current terminal size produces, so the reducer
+    /// paths that need a rectangle agree with what was last drawn.
+    fn frame_layout(&self) -> crate::ui::layout::FrameLayout {
+        let area = ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: self.terminal_width,
+            height: self.terminal_height,
+        };
+        crate::ui::layout::compute(area, self)
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
         if !self.resolved_config.ui.mouse {
             return Vec::new();
         }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            let layout = crate::ui::layout::compute(
-                ratatui::layout::Rect {
-                    x: 0,
-                    y: 0,
-                    width: self.terminal_width,
-                    height: self.terminal_height,
-                },
-                self,
-            );
+            let area = ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: self.terminal_width,
+                height: self.terminal_height,
+            };
+            // The same rows the footer was drawn from, so a click lands on the
+            // hint the user actually sees.
+            let footer = crate::ui::components::interaction_shell::footer_rows(self, area.width);
+            let layout = crate::ui::layout::compute_with_footer(area, self, &footer);
             if !matches!(self.interaction, InteractionMode::Normal) {
                 return self.handle_interaction_mouse(mouse, layout.footer);
             }
             if self.resolved_config.ui.show_footer
                 && contains_point(layout.footer, mouse.column, mouse.row)
             {
-                let hints = self.footer_actions(layout.footer.width);
-                for (row, hints) in action::footer_rows(&hints, layout.footer.width)
-                    .into_iter()
-                    .enumerate()
-                {
+                for (row, hints) in footer.iter().enumerate() {
                     let y = layout
                         .footer
                         .y
@@ -2629,15 +2638,7 @@ impl App {
             return;
         }
         if self.current_route() == Route::Audit {
-            let frame = crate::ui::layout::compute(
-                ratatui::layout::Rect {
-                    x: 0,
-                    y: 0,
-                    width: self.terminal_width,
-                    height: self.terminal_height,
-                },
-                self,
-            );
+            let frame = self.frame_layout();
             if frame
                 .inspector
                 .is_some_and(|inspector| contains_point(inspector, column, row))
@@ -2663,15 +2664,7 @@ impl App {
             return;
         }
         if self.current_route() != Route::Devices {
-            let frame = crate::ui::layout::compute(
-                ratatui::layout::Rect {
-                    x: 0,
-                    y: 0,
-                    width: self.terminal_width,
-                    height: self.terminal_height,
-                },
-                self,
-            );
+            let frame = self.frame_layout();
             if frame.minimum {
                 return;
             }
@@ -2768,15 +2761,7 @@ impl App {
             }
             return;
         }
-        let frame = crate::ui::layout::compute(
-            ratatui::layout::Rect {
-                x: 0,
-                y: 0,
-                width: self.terminal_width,
-                height: self.terminal_height,
-            },
-            self,
-        );
+        let frame = self.frame_layout();
         if let Some(inspector) = frame.inspector
             && contains_point(inspector, column, row)
         {
@@ -2812,15 +2797,7 @@ impl App {
                 .is_some_and(|area| contains_point(area, column, row));
         }
         if self.current_route() == Route::Devices {
-            let frame = crate::ui::layout::compute(
-                ratatui::layout::Rect {
-                    x: 0,
-                    y: 0,
-                    width: self.terminal_width,
-                    height: self.terminal_height,
-                },
-                self,
-            );
+            let frame = self.frame_layout();
             return self
                 .device_collection_area(frame)
                 .is_some_and(|area| contains_point(area, column, row));
@@ -2841,15 +2818,7 @@ impl App {
         ) {
             return false;
         }
-        let frame = crate::ui::layout::compute(
-            ratatui::layout::Rect {
-                x: 0,
-                y: 0,
-                width: self.terminal_width,
-                height: self.terminal_height,
-            },
-            self,
-        );
+        let frame = self.frame_layout();
         if frame.minimum {
             return false;
         }
@@ -2906,15 +2875,7 @@ impl App {
         if self.focus == Focus::Inspector {
             return None;
         }
-        let frame = crate::ui::layout::compute(
-            ratatui::layout::Rect {
-                x: 0,
-                y: 0,
-                width: self.terminal_width,
-                height: self.terminal_height,
-            },
-            self,
-        );
+        let frame = self.frame_layout();
         if frame.minimum {
             return None;
         }
@@ -2939,15 +2900,7 @@ impl App {
         if self.focus == Focus::Inspector {
             return None;
         }
-        let frame = crate::ui::layout::compute(
-            ratatui::layout::Rect {
-                x: 0,
-                y: 0,
-                width: self.terminal_width,
-                height: self.terminal_height,
-            },
-            self,
-        );
+        let frame = self.frame_layout();
         if frame.minimum {
             return None;
         }
@@ -10470,12 +10423,12 @@ impl App {
                                     let source = record.connection.canonical_src();
                                     let destination = record.connection.canonical_dst();
                                     ExportRow::FlowLog {
-                                        reporting_node: record.node_id,
-                                        logged: canonical_wire_timestamp(&record.logged),
-                                        start: canonical_wire_timestamp(&record.start),
-                                        end: canonical_wire_timestamp(&record.end),
+                                        reporting_node: record.node_id.to_owned(),
+                                        logged: canonical_wire_timestamp(record.logged),
+                                        start: canonical_wire_timestamp(record.start),
+                                        end: canonical_wire_timestamp(record.end),
                                         traffic_class: record.class.label().to_owned(),
-                                        protocol: record.connection.proto,
+                                        protocol: record.connection.proto.clone(),
                                         source,
                                         destination,
                                         tx_packets: record.connection.tx_packets,
@@ -15427,7 +15380,15 @@ impl App {
             devices_generation: self.devices_resource.generation,
             local_generation: self.local_resource.generation,
             admin_generation: self.admin.devices.generation,
-            now: self.now,
+            // Only a filter that reads the clock makes the result depend on it.
+            // Carrying it unconditionally re-filtered and re-sorted the whole
+            // snapshot every tick for a result that had not changed.
+            now: self
+                .views
+                .devices
+                .applied_filter
+                .requires_now()
+                .then_some(self.now),
             source_mode: self.source_mode,
             filter: self.views.devices.applied_filter.clone(),
             sort: self.views.devices.sort,
@@ -15490,9 +15451,7 @@ impl App {
             let left_device = devices.get(*left);
             let right_device = devices.get(*right);
             match (left_device, right_device) {
-                (Some(left), Some(right)) => {
-                    compare_devices_by_specs(left, right, &sort_terms, self.now)
-                }
+                (Some(left), Some(right)) => compare_devices_by_specs(left, right, &sort_terms),
                 _ => left.cmp(right),
             }
         });
@@ -15640,28 +15599,12 @@ impl App {
     }
 
     fn access_max_scroll(&self) -> usize {
-        let frame = crate::ui::layout::compute(
-            ratatui::layout::Rect {
-                x: 0,
-                y: 0,
-                width: self.terminal_width,
-                height: self.terminal_height,
-            },
-            self,
-        );
+        let frame = self.frame_layout();
         crate::ui::views::access::max_scroll(self, frame.content.height)
     }
 
     fn device_detail_max_scroll(&self) -> usize {
-        let frame = crate::ui::layout::compute(
-            ratatui::layout::Rect {
-                x: 0,
-                y: 0,
-                width: self.terminal_width,
-                height: self.terminal_height,
-            },
-            self,
-        );
+        let frame = self.frame_layout();
         crate::ui::components::inspector::device_detail_max_scroll(self, frame.content.height)
     }
 

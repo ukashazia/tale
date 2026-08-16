@@ -188,7 +188,7 @@ fn render_accounts(frame: &mut Frame<'_>, app: &App, area: Rect) {
         lines.extend(grid::lines(
             app,
             &columns,
-            &rows,
+            rows,
             area.width.saturating_sub(4),
         ));
     }

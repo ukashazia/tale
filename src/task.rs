@@ -428,6 +428,21 @@ fn append_detail(task: &mut Task, detail: &str) {
     task.detail = bounded_detail(&combined, DETAIL_CAP);
 }
 
+/// Appends one line to a running detail, compacting only once the buffer has
+/// grown past twice its cap. Re-bounding on every append copied the whole
+/// buffer each time, which made a long stream quadratic in its own output; this
+/// compacts once per `cap` bytes produced, so appending stays amortized
+/// constant and the buffer never exceeds twice the cap.
+pub fn push_bounded(detail: &mut String, value: &str, cap: usize) {
+    if !detail.is_empty() {
+        detail.push('\n');
+    }
+    detail.push_str(value);
+    if detail.len() > cap.saturating_mul(2) {
+        *detail = bounded_detail(detail, cap);
+    }
+}
+
 pub fn bounded_detail(value: &str, cap: usize) -> String {
     if value.len() <= cap {
         return value.to_owned();

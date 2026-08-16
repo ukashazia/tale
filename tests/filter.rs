@@ -134,11 +134,11 @@ fn stable_sort_has_id_tie_breaking_and_missing_values_follow_direction() {
         direction: SortDirection::Ascending,
     };
     assert_eq!(
-        compare_devices(&devices[0], &devices[1], asc, mock::MOCK_NOW),
+        compare_devices(&devices[0], &devices[1], asc),
         Ordering::Greater
     );
     assert_eq!(
-        compare_devices(&devices[1], &devices[0], asc, mock::MOCK_NOW),
+        compare_devices(&devices[1], &devices[0], asc),
         Ordering::Less
     );
 
@@ -147,7 +147,7 @@ fn stable_sort_has_id_tie_breaking_and_missing_values_follow_direction() {
         direction: SortDirection::Descending,
     };
     assert_eq!(
-        compare_devices(&devices[0], &devices[1], desc, mock::MOCK_NOW),
+        compare_devices(&devices[0], &devices[1], desc),
         Ordering::Greater
     );
 }
@@ -167,7 +167,7 @@ fn last_seen_sort_orders_elapsed_age_in_the_requested_direction() {
         field: SortField::LastSeen,
         direction: SortDirection::Ascending,
     };
-    devices.sort_by(|left, right| compare_devices(left, right, ascending, now));
+    devices.sort_by(|left, right| compare_devices(left, right, ascending));
     assert_eq!(
         devices
             .iter()
@@ -185,7 +185,7 @@ fn last_seen_sort_orders_elapsed_age_in_the_requested_direction() {
         field: SortField::LastSeen,
         direction: SortDirection::Descending,
     };
-    devices.sort_by(|left, right| compare_devices(left, right, descending, now));
+    devices.sort_by(|left, right| compare_devices(left, right, descending));
     assert_eq!(
         devices
             .iter()
