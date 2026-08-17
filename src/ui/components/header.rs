@@ -44,13 +44,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .map(|(_, value)| VERSION_LABEL.saturating_add(value.chars().count()))
         .max()
-        .map_or(0, |width| width);
+        .unwrap_or(0);
     let logo = LOGO.trim_end().lines().collect::<Vec<_>>();
     let logo_width = logo
         .iter()
         .map(|line| line.chars().count())
         .max()
-        .map_or(0, |width| width);
+        .unwrap_or(0);
     let detail_start = logo.len().saturating_sub(status.len()) / 2;
     let gap = 6_usize;
     let mut lines = vec![Line::default()];

@@ -2456,12 +2456,10 @@ impl App {
                     let y = layout
                         .footer
                         .y
-                        .saturating_add(u16::try_from(row).map_or(u16::MAX, |value| value));
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
                     let mut x = layout.footer.x;
                     for hint in hints {
-                        let end = x.saturating_add(
-                            u16::try_from(hint.width()).map_or(u16::MAX, |value| value),
-                        );
+                        let end = x.saturating_add(u16::try_from(hint.width()).unwrap_or(u16::MAX));
                         if mouse.row == y && mouse.column >= x && mouse.column < end {
                             return self.dispatch_action(hint.action_id);
                         }
@@ -2860,7 +2858,7 @@ impl App {
                     .iter()
                     .position(|finding| finding.id == selected.id)
             })
-            .map_or(0, |position| position);
+            .unwrap_or(0);
         let start = selected
             .saturating_add(1)
             .saturating_sub(viewport)
@@ -6279,7 +6277,7 @@ impl App {
                     .keys()
                     .next()
                     .copied()
-                    .map_or(LogType::Network, |value| value);
+                    .unwrap_or(LogType::Network);
                 self.open_operational_confirmation(
                     action_id,
                     OperationalMutation::LogStreamDelete(log_type),
@@ -10131,7 +10129,7 @@ impl App {
                 .sort_terms
                 .first()
                 .copied()
-                .map_or(SortSpec::default(), |value| value);
+                .unwrap_or(SortSpec::default());
             self.views.devices.wide_columns =
                 view.wide_columns || view.columns.iter().any(|column| column == "version");
             self.views.devices.columns = view.columns.clone();
@@ -10215,10 +10213,7 @@ impl App {
                     {
                         return Err("device collection is not currently observed".to_owned());
                     }
-                    let observed_at = self
-                        .devices_resource
-                        .observed_at
-                        .map_or(self.now, |value| value);
+                    let observed_at = self.devices_resource.observed_at.unwrap_or(self.now);
                     let rows = self
                         .visible_indices()
                         .into_iter()
@@ -10242,7 +10237,7 @@ impl App {
                         self.admin.users.snapshot.as_ref().ok_or_else(|| {
                             "user collection is not currently observed".to_owned()
                         })?;
-                    let observed_at = self.admin.users.observed_at.map_or(self.now, |value| value);
+                    let observed_at = self.admin.users.observed_at.unwrap_or(self.now);
                     let rows = values
                         .iter()
                         .map(|user| ExportRow::User {
@@ -10264,11 +10259,7 @@ impl App {
                 }
                 ExportCollection::Routes => {
                     let observations = self.admin.route_observations();
-                    let observed_at = self
-                        .admin
-                        .routes
-                        .observed_at
-                        .map_or(self.now, |value| value);
+                    let observed_at = self.admin.routes.observed_at.unwrap_or(self.now);
                     let rows = observations
                         .iter()
                         .flat_map(|observation| {
@@ -10301,11 +10292,7 @@ impl App {
                         .snapshot
                         .as_ref()
                         .ok_or_else(|| "DNS collection is not currently observed".to_owned())?;
-                    let observed_at = self
-                        .admin
-                        .nameservers
-                        .observed_at
-                        .map_or(self.now, |value| value);
+                    let observed_at = self.admin.nameservers.observed_at.unwrap_or(self.now);
                     let sorted_values = sorted_strings(&values.values);
                     let rows = sorted_values
                         .iter()
@@ -15349,7 +15336,7 @@ impl App {
             {
                 return;
             }
-            let target = old_position.map_or(0, |position| position);
+            let target = old_position.unwrap_or(0);
             self.views.devices.selected_id = devices
                 .get(target.min(devices.len().saturating_sub(1)))
                 .map(|device| device.id.clone());
@@ -15362,7 +15349,7 @@ impl App {
             {
                 return;
             }
-            let target = old_position.map_or(0, |position| position);
+            let target = old_position.unwrap_or(0);
             self.views.devices.selected_id = visible
                 .get(target.min(visible.len().saturating_sub(1)))
                 .and_then(|index| self.devices_resource.snapshot.get(*index))
@@ -15498,7 +15485,7 @@ impl App {
                     .iter()
                     .position(|index| self.devices_resource.snapshot[*index].id == *id)
             })
-            .map_or(0, |position| position);
+            .unwrap_or(0);
         let next = if offset.is_negative() {
             current.saturating_sub(offset.unsigned_abs())
         } else {
@@ -16562,7 +16549,7 @@ impl App {
                     .iter()
                     .position(|finding| finding.id == id)
             })
-            .map_or(0, |position| position);
+            .unwrap_or(0);
         let next = move_bounded_index(current, self.health_findings.len(), offset);
         self.views.overview.selected_id = self
             .health_findings
@@ -17572,7 +17559,7 @@ fn navigation_candidates(query: &str) -> Vec<NavigationCandidate> {
             let score = pattern.indices(haystack, &mut matcher, &mut indices)?;
             indices.sort_unstable();
             indices.dedup();
-            let label_length = u32::try_from(label.chars().count()).map_or(u32::MAX, |value| value);
+            let label_length = u32::try_from(label.chars().count()).unwrap_or(u32::MAX);
             let description_offset = label_length.saturating_add(1);
             let description_matches = indices
                 .into_iter()
@@ -17721,7 +17708,7 @@ fn navigation_rank(route: Route) -> usize {
     navigation_catalog()
         .iter()
         .position(|(candidate, _, _)| *candidate == route)
-        .map_or(usize::MAX, |index| index)
+        .unwrap_or(usize::MAX)
 }
 
 const SNAPSHOT_VALUE_LIMIT: usize = 100;
@@ -17745,7 +17732,7 @@ fn active_token(input: &str, cursor: usize) -> (usize, usize) {
     filter::token_spans(input)
         .into_iter()
         .find(|(start, end)| cursor >= *start && cursor <= *end)
-        .map_or((cursor, cursor), |span| span)
+        .unwrap_or((cursor, cursor))
 }
 
 fn filter_stage<'a>(token: &'a str, schema: &FilterSchema) -> FilterStage<'a> {
@@ -17848,7 +17835,7 @@ fn rank(
             let score = pattern.indices(haystack, &mut matcher, &mut indices)?;
             indices.sort_unstable();
             indices.dedup();
-            let length = u32::try_from(suggestion.text.chars().count()).map_or(u32::MAX, |v| v);
+            let length = u32::try_from(suggestion.text.chars().count()).unwrap_or(u32::MAX);
             suggestion.matches = indices
                 .into_iter()
                 .filter(|index| *index < length)

@@ -90,7 +90,7 @@ impl Backend for Recorder {
 fn frame(backend: &mut SteadyCursor<Recorder>, cells: usize, position: Position) {
     let cell = Cell::default();
     let content = (0..cells).map(|index| {
-        let index = u16::try_from(index).map_or(u16::MAX, |value| value);
+        let index = u16::try_from(index).unwrap_or(u16::MAX);
         (index, 0, &cell)
     });
     assert!(backend.draw(content).is_ok());

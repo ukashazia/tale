@@ -140,10 +140,10 @@ fn flow_connection(value: FlowConnectionDto) -> Result<FlowConnection, AdminErro
         dst,
         src_port,
         dst_port,
-        tx_packets: value.tx_packets.map_or(0, |value| value),
-        tx_bytes: value.tx_bytes.map_or(0, |value| value),
-        rx_packets: value.rx_packets.map_or(0, |value| value),
-        rx_bytes: value.rx_bytes.map_or(0, |value| value),
+        tx_packets: value.tx_packets.unwrap_or(0),
+        tx_bytes: value.tx_bytes.unwrap_or(0),
+        rx_packets: value.rx_packets.unwrap_or(0),
+        rx_bytes: value.rx_bytes.unwrap_or(0),
     })
 }
 

@@ -237,7 +237,7 @@ pub fn bounded_handoff_duration(result: &HandoffResult) -> Duration {
     result
         .finished_at
         .checked_duration_since(result.started_at)
-        .map_or(Duration::ZERO, |duration| duration)
+        .unwrap_or(Duration::ZERO)
 }
 
 #[cfg(test)]

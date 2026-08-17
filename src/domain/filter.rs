@@ -614,7 +614,7 @@ fn tokenize(input: &str) -> Result<Vec<(String, usize)>, FilterError> {
         }
         if character.is_whitespace() && !quoted {
             if !current.is_empty() {
-                let token_start = start.map_or(position, |value| value);
+                let token_start = start.unwrap_or(position);
                 tokens.push((std::mem::take(&mut current), token_start));
                 start = None;
             }
@@ -633,7 +633,7 @@ fn tokenize(input: &str) -> Result<Vec<(String, usize)>, FilterError> {
         });
     }
     if !current.is_empty() {
-        tokens.push((current, start.map_or(0, |value| value)));
+        tokens.push((current, start.unwrap_or(0)));
     }
     Ok(tokens)
 }

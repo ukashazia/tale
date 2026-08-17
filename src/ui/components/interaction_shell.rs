@@ -123,9 +123,7 @@ fn normal_lines(app: &App, footer: &[Vec<action::FooterHint>]) -> Vec<Line<'stat
 }
 
 pub fn normal_height(footer: &[Vec<action::FooterHint>]) -> u16 {
-    u16::try_from(footer.len())
-        .map_or(u16::MAX, |height| height)
-        .max(1)
+    u16::try_from(footer.len()).unwrap_or(u16::MAX).max(1)
 }
 
 type ShellLines = (Vec<Line<'static>>, Option<(u16, u16)>);
@@ -171,7 +169,7 @@ fn navigation_lines(app: &App, state: &crate::app::CommandLineState, area: Rect)
             .iter()
             .map(|section| section.candidates.len().saturating_add(1))
             .max()
-            .map_or(0, |value| value);
+            .unwrap_or(0);
         for row in 0..height {
             let mut spans = Vec::new();
             for column in 0..columns {
@@ -200,7 +198,7 @@ fn navigation_lines(app: &App, state: &crate::app::CommandLineState, area: Rect)
         state.error.as_deref(),
         area.width,
     );
-    let caret_row = u16::try_from(lines.len()).map_or(u16::MAX, |row| row);
+    let caret_row = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     lines.push(prompt);
     lines.push(navigation_hints(app));
     (lines, caret.map(|column| (column, caret_row)))
@@ -288,7 +286,7 @@ fn navigation_section_line(
         .iter()
         .map(|candidate| candidate.label.chars().count())
         .max()
-        .map_or(0, |value| value);
+        .unwrap_or(0);
     section.candidates.get(row.saturating_sub(1)).map_or_else(
         || vec![Span::raw(" ".repeat(width))],
         |candidate| navigation_cell(app, candidate, command_width, width),
@@ -334,7 +332,7 @@ fn navigation_cell(
             app.theme.style(theme::StyleRole::TextDisabled)
         } else if candidate
             .description_matches
-            .contains(&u32::try_from(index).map_or(u32::MAX, |i| i))
+            .contains(&u32::try_from(index).unwrap_or(u32::MAX))
         {
             app.theme.style(theme::StyleRole::Focus)
         } else {
@@ -428,7 +426,7 @@ fn band_heights(cells: &[FilterCell<'_>], columns: usize) -> Vec<usize> {
             band.iter()
                 .map(|cell| cell.suggestions.len().saturating_add(1))
                 .max()
-                .map_or(0, |height| height)
+                .unwrap_or(0)
         })
         .collect()
 }
@@ -453,7 +451,7 @@ fn catalog_height(app: &App, columns: usize) -> usize {
             band.iter()
                 .map(|group| group.fields.len().saturating_add(1))
                 .max()
-                .map_or(0, |height| height)
+                .unwrap_or(0)
         })
         .collect::<Vec<_>>();
     grid_height(&heights)
@@ -492,7 +490,7 @@ pub fn filter_menu_height(app: &App, width: u16, available: u16) -> u16 {
         .max(FILTER_CHROME.saturating_add(1));
     let columns = filter_columns(app, width, budget);
     let natural = catalog_height(app, columns).saturating_add(FILTER_CHROME);
-    u16::try_from(natural.min(budget)).map_or(u16::MAX, |height| height)
+    u16::try_from(natural.min(budget)).unwrap_or(u16::MAX)
 }
 
 /// Recovers the column count the height was chosen for, so drawing and mouse
@@ -524,7 +522,7 @@ fn filter_lines(app: &App, state: &FilterLineState, area: Rect) -> ShellLines {
     }
     lines.push(Line::default());
     let (prompt, caret) = filter_prompt_line(app, state, area.width);
-    let caret_row = u16::try_from(lines.len()).map_or(u16::MAX, |row| row);
+    let caret_row = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     lines.push(prompt);
     lines.push(filter_status(app, state, area.width));
     (lines, caret.map(|column| (column, caret_row)))
@@ -663,7 +661,7 @@ fn filter_content(app: &App, state: &FilterLineState, area: Rect) -> Vec<Line<'s
             .iter()
             .map(|cell| cell.suggestions.len().saturating_add(1))
             .max()
-            .map_or(0, |height| height);
+            .unwrap_or(0);
         for row in 0..height {
             let mut spans = Vec::new();
             for column in 0..columns {
@@ -701,11 +699,7 @@ fn filter_cell_line(
     }
     let index = row.saturating_sub(1);
     let longest = |select: fn(&FilterSuggestion) -> usize| {
-        cell.suggestions
-            .iter()
-            .map(select)
-            .max()
-            .map_or(0, |value| value)
+        cell.suggestions.iter().map(select).max().unwrap_or(0)
     };
     let columns = ColumnWidths {
         name: longest(|suggestion| suggestion.text.chars().count()),
@@ -746,7 +740,7 @@ fn filter_suggestion_spans(
     for (index, character) in suggestion.text.chars().enumerate() {
         let matched = suggestion
             .matches
-            .contains(&u32::try_from(index).map_or(u32::MAX, |value| value));
+            .contains(&u32::try_from(index).unwrap_or(u32::MAX));
         let role = if character == ':' && !selected {
             theme::StyleRole::SyntaxOperator
         } else if matched && !selected {
@@ -891,9 +885,9 @@ fn collapse_spans(
         let role = roles
             .get(index)
             .copied()
-            .map_or(theme::StyleRole::Prompt, |role| role);
+            .unwrap_or(theme::StyleRole::Prompt);
         if current_role != Some(role) && !current.is_empty() {
-            let previous = current_role.map_or(theme::StyleRole::Prompt, |role| role);
+            let previous = current_role.unwrap_or(theme::StyleRole::Prompt);
             spans.push(Span::styled(
                 std::mem::take(&mut current),
                 app.theme.style(previous),
@@ -903,7 +897,7 @@ fn collapse_spans(
         current.push(*character);
     }
     if !current.is_empty() {
-        let previous = current_role.map_or(theme::StyleRole::Prompt, |role| role);
+        let previous = current_role.unwrap_or(theme::StyleRole::Prompt);
         spans.push(Span::styled(current, app.theme.style(previous)));
     }
     spans
@@ -1040,7 +1034,7 @@ fn caret_column(clipped_left: bool, keep_before: usize) -> u16 {
     let column = PROMPT_PREFIX_WIDTH
         .saturating_add(usize::from(clipped_left))
         .saturating_add(keep_before);
-    u16::try_from(column).map_or(u16::MAX, |column| column)
+    u16::try_from(column).unwrap_or(u16::MAX)
 }
 
 /// `"/ "` and `": "` are both two cells wide.
@@ -1137,7 +1131,7 @@ fn band_height(band: &[MenuSection]) -> usize {
     band.iter()
         .map(|section| section.entries.len().saturating_add(1))
         .max()
-        .map_or(0, |height| height)
+        .unwrap_or(0)
 }
 
 fn menu_cell(app: &App, section: &MenuSection, row: usize, width: usize) -> Vec<Span<'static>> {
@@ -1157,7 +1151,7 @@ fn menu_cell(app: &App, section: &MenuSection, row: usize, width: usize) -> Vec<
         .iter()
         .map(|entry| entry.key.chars().count())
         .max()
-        .map_or(0, |value| value);
+        .unwrap_or(0);
     section.entries.get(row.saturating_sub(1)).map_or_else(
         || vec![Span::raw(" ".repeat(width))],
         |entry| {
@@ -1196,7 +1190,7 @@ fn menu_grid_height(sections: &[MenuSection], columns: usize) -> u16 {
         .sum::<usize>()
         .saturating_add(bands.saturating_sub(1));
     u16::try_from(content.saturating_add(4))
-        .map_or(u16::MAX, |height| height)
+        .unwrap_or(u16::MAX)
         .max(14)
 }
 

@@ -191,7 +191,7 @@ pub fn decode_created_auth_key(
         known_dependents: key.known_dependents.take().unwrap_or_default(),
     };
     Ok(CreatedAuthKey {
-        created_at: metadata.created_at.map_or(observed_at, |value| value),
+        created_at: metadata.created_at.unwrap_or(observed_at),
         metadata,
         secret: Arc::new(SecretBuffer::new(secret.as_bytes())),
     })

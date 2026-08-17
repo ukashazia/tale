@@ -439,7 +439,7 @@ pub fn resolve(
     let color = if environment.no_color {
         ColorMode::None
     } else {
-        file.ui.color.map_or(ColorMode::Auto, |value| value)
+        file.ui.color.unwrap_or(ColorMode::Auto)
     };
     let color_source = if environment.no_color {
         ValueSource::Environment
@@ -472,11 +472,11 @@ pub fn resolve(
             reconcile_interval: file
                 .local
                 .reconcile_interval
-                .map_or(Duration::from_secs(30), |value| value),
+                .unwrap_or(Duration::from_secs(30)),
             command_timeout: file
                 .local
                 .command_timeout
-                .map_or(Duration::from_secs(10), |value| value),
+                .unwrap_or(Duration::from_secs(10)),
             enabled_source: local_enabled_source,
             tailscale_path_source,
             socket_path_source,
@@ -487,24 +487,21 @@ pub fn resolve(
             refresh_interval: file
                 .admin
                 .refresh_interval
-                .map_or(Duration::from_secs(30), |value| value),
+                .unwrap_or(Duration::from_secs(30)),
             request_timeout: file
                 .admin
                 .request_timeout
-                .map_or(Duration::from_secs(15), |value| value),
+                .unwrap_or(Duration::from_secs(15)),
             refresh_interval_source: source_for(file.admin.refresh_interval.is_some()),
             request_timeout_source: source_for(file.admin.request_timeout.is_some()),
         },
         ui: UiConfig {
             theme: file.ui.theme.unwrap_or(ThemeId::Terminal),
             color,
-            symbols: file.ui.symbols.map_or(SymbolsMode::Auto, |value| value),
+            symbols: file.ui.symbols.unwrap_or(SymbolsMode::Auto),
             mouse: file.ui.mouse.is_some_and(|value| value),
-            detail_pane: file
-                .ui
-                .detail_pane
-                .map_or(DetailPaneMode::Auto, |value| value),
-            time_zone: file.ui.time_zone.map_or(TimeZoneMode::Local, |value| value),
+            detail_pane: file.ui.detail_pane.unwrap_or(DetailPaneMode::Auto),
+            time_zone: file.ui.time_zone.unwrap_or(TimeZoneMode::Local),
             relative_times: file.ui.relative_times.is_none_or(|value| value),
             show_footer: file.ui.show_footer.is_none_or(|value| value),
             theme_source: source_for(file.ui.theme.is_some()),
@@ -518,7 +515,7 @@ pub fn resolve(
         },
         history: HistoryConfig {
             persist_tasks: file.history.persist_tasks.is_some_and(|value| value),
-            max_tasks: file.history.max_tasks.map_or(200, |value| value),
+            max_tasks: file.history.max_tasks.unwrap_or(200),
             persist_tasks_source: source_for(file.history.persist_tasks.is_some()),
             max_tasks_source: source_for(file.history.max_tasks.is_some()),
         },
@@ -660,11 +657,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
 }
 
 fn choose_bool(file: Option<bool>, default: bool, _file_source: ValueSource, cli: bool) -> bool {
-    if cli {
-        true
-    } else {
-        file.map_or(default, |value| value)
-    }
+    if cli { true } else { file.unwrap_or(default) }
 }
 
 fn source_for(from_file: bool) -> ValueSource {

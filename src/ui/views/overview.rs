@@ -297,7 +297,7 @@ fn render_attention(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let viewport = usize::from(area.height.saturating_sub(3)).max(1);
     let selected = selected_id
         .and_then(|id| findings.iter().position(|finding| finding.id == id))
-        .map_or(0, |position| position);
+        .unwrap_or(0);
     let start = selected
         .saturating_add(1)
         .saturating_sub(viewport)

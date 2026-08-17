@@ -125,7 +125,7 @@ impl EditorCommand {
         let status = command.status().await.map_err(|_| EditorError::Spawn)?;
         let elapsed = SystemTime::now()
             .duration_since(started)
-            .map_or(Duration::ZERO, |value| value);
+            .unwrap_or(Duration::ZERO);
         Ok(EditorExit {
             success: status.success(),
             code: status.code(),

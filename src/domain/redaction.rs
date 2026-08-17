@@ -226,9 +226,7 @@ impl Redactor {
         let value = self.replace_known(value);
         let mut redacted = String::with_capacity(value.len());
         for chunk in value.split_inclusive(char::is_whitespace) {
-            let boundary = chunk
-                .find(char::is_whitespace)
-                .map_or(chunk.len(), |boundary| boundary);
+            let boundary = chunk.find(char::is_whitespace).unwrap_or(chunk.len());
             let (token, whitespace) = chunk.split_at(boundary);
             redacted.push_str(&self.token(token));
             redacted.push_str(whitespace);

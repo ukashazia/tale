@@ -221,7 +221,7 @@ impl TaskStore {
         let current = self
             .selected
             .and_then(|id| ids.iter().position(|candidate| *candidate == id))
-            .map_or(0, |position| position);
+            .unwrap_or(0);
         let next = if offset.is_negative() {
             current.saturating_sub(offset.unsigned_abs())
         } else {
@@ -369,7 +369,7 @@ impl TaskStore {
         let current = self
             .selected
             .and_then(|id| self.tasks.iter().position(|task| task.id == id))
-            .map_or(0, |position| position);
+            .unwrap_or(0);
         let next = if offset.is_negative() {
             current.saturating_sub(offset.unsigned_abs())
         } else {
@@ -468,7 +468,7 @@ fn boundary_at_or_before(value: &str, limit: usize) -> usize {
         .take_while(|(index, _)| *index < limit)
         .map(|(index, _)| index)
         .last()
-        .map_or(0, |index| index)
+        .unwrap_or(0)
 }
 
 fn boundary_at_or_after(value: &str, limit: usize) -> usize {

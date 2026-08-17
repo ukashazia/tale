@@ -135,7 +135,7 @@ fn health_resource<T>(
     HealthResource {
         stable_id: stable_id.to_owned(),
         source_id: source_id.to_owned(),
-        observed_at: resource.observed_at.map_or(now, |value| value),
+        observed_at: resource.observed_at.unwrap_or(now),
         refresh_interval: refresh_interval.max(1),
         current: true,
         refresh_failures: u32::from(failure_class.is_some()),

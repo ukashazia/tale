@@ -53,7 +53,7 @@ fn content_length(request: &[u8]) -> usize {
                 None
             }
         })
-        .map_or(0, |value| value)
+        .unwrap_or(0)
 }
 
 async fn read_request(stream: &mut TcpStream) -> Vec<u8> {

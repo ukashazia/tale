@@ -13,12 +13,12 @@ pub fn summary(app: &App) -> String {
         .window
         .start
         .format(&time::format_description::well_known::Rfc3339)
-        .map_or("<invalid>".to_owned(), |value| value);
+        .unwrap_or("<invalid>".to_owned());
     let end = snapshot
         .window
         .end
         .format(&time::format_description::well_known::Rfc3339)
-        .map_or("<invalid>".to_owned(), |value| value);
+        .unwrap_or("<invalid>".to_owned());
     let clock_skew = if snapshot.has_clock_skew() {
         "\nClock-skew caveat: a node-recorded start/end falls outside the queried window while server logged time is inside."
     } else {

@@ -82,7 +82,7 @@ fn render_full_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         format!(
             " · match {}/{} · /{}",
-            position.map_or(0, |value| value),
+            position.unwrap_or(0),
             matches.len(),
             app.views.devices.detail_search
         )
@@ -97,7 +97,7 @@ fn render_full_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
             lines.len()
         )
     };
-    let scroll = u16::try_from(scroll).map_or(u16::MAX, |value| value);
+    let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
     panel::render_scrolled(frame, app, area, &title, lines, scroll);
 }
 
