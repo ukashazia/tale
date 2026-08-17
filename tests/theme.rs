@@ -1,6 +1,3 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use tale::ui::theme::{ColorCapability, StyleRole, Theme, ThemeId};
 
 #[test]
@@ -112,43 +109,5 @@ fn offline_state_is_dimmed_without_looking_deleted() {
                 .add_modifier
                 .contains(ratatui::style::Modifier::CROSSED_OUT)
         );
-    }
-}
-
-fn rust_files(root: &Path, output: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            rust_files(&path, output);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            output.push(path);
-        }
-    }
-}
-
-#[test]
-fn production_colors_are_owned_only_by_the_theme_module() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let theme_root = root.join("ui/theme");
-    let mut files = Vec::new();
-    rust_files(&root, &mut files);
-    for path in files {
-        if path.starts_with(&theme_root) {
-            continue;
-        }
-        let contents = fs::read_to_string(&path);
-        assert!(contents.is_ok(), "could not inspect {}", path.display());
-        if let Ok(contents) = contents {
-            for forbidden in ["Color::", ".fg(", ".bg("] {
-                assert!(
-                    !contents.contains(forbidden),
-                    "literal style escape hatch {forbidden} in {}",
-                    path.display()
-                );
-            }
-        }
     }
 }

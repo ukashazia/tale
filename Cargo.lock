@@ -2017,7 +2017,6 @@ dependencies = [
  "sha2",
  "shlex",
  "similar",
- "syn 2.0.119",
  "tempfile",
  "thiserror",
  "time",
