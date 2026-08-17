@@ -45,11 +45,7 @@ fn render_dns_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = vec![tab_line(app), Line::default()];
     if let Some(status) = super::dns::latest_local_status(app) {
         lines.extend(super::dns::local_status_lines(app, status));
-    } else if app
-        .local_diagnostics
-        .values()
-        .any(|state| state.kind == "dns status" && state.result.is_none())
-    {
+    } else if app.dns_status_is_loading() {
         lines.push(Line::from(Span::styled(
             "Reading DNS status…",
             app.theme.style(theme::StyleRole::TextMuted),

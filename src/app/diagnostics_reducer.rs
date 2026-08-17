@@ -40,13 +40,17 @@ impl App {
             .local_diagnostics
             .values()
             .any(|state| matches!(state.result, Some(DiagnosticResult::DnsStatus(_))))
-            && !self.local_diagnostics.iter().any(|(task_id, state)| {
-                state.kind == "dns status"
-                    && state.result.is_none()
-                    && self
-                        .tasks
-                        .get(*task_id)
-                        .is_some_and(|task| !task.state.is_terminal())
-            })
+            && !self.dns_status_is_loading()
+    }
+
+    pub(crate) fn dns_status_is_loading(&self) -> bool {
+        self.local_diagnostics.iter().any(|(task_id, state)| {
+            state.kind == "dns status"
+                && state.result.is_none()
+                && self
+                    .tasks
+                    .get(*task_id)
+                    .is_some_and(|task| !task.state.is_terminal())
+        })
     }
 }

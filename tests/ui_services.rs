@@ -15,6 +15,7 @@ use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{
     ConnectionPath, Device, DeviceCapabilities, DeviceId, Liveness, OperatingSystem,
 };
+use tale::domain::diagnostic::DiagnosticState;
 use tale::domain::service::{
     Backend, CapabilityState, Exposure, FunnelStatus, Listener, MetricsOutput, PathMount, Port,
     ProxyProtocol, ServeStatus, ServiceActionRequest, ServiceCapabilities, ServiceFailure,
@@ -102,6 +103,45 @@ fn services_render_all_sections_at_required_widths() {
             assert!(dns_status.iter().any(|line| line.contains("192.168.1.1")));
         }
     }
+}
+
+#[test]
+fn finished_dns_status_task_is_not_rendered_as_loading() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    app.set_route(Route::Diagnostics);
+    app.views.diagnostics.section = DiagnosticsSection::DnsStatus;
+    let task_id = app
+        .tasks
+        .create(ActionId::LocalDnsStatus, "dns status", OBSERVED_AT, true);
+    app.local_diagnostics
+        .insert(task_id, DiagnosticState::new("dns status"));
+    let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
+
+    let Some(loading) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(
+        loading
+            .iter()
+            .any(|line| line.contains("Reading DNS status"))
+    );
+
+    let _ = app.update(Event::Task(Box::new(TaskEvent::Failed {
+        task_id,
+        finished_at: OBSERVED_AT,
+        summary: "DNS status failed".to_owned(),
+        detail: "fictional invalid output".to_owned(),
+    })));
+    let Some(finished) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(
+        finished
+            .iter()
+            .all(|line| !line.contains("Reading DNS status"))
+    );
 }
 
 #[test]
