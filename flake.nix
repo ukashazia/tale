@@ -32,6 +32,7 @@
           default = pkgs.mkShellNoCC {
             packages = with pkgs; [
               cargo-dist
+              cargo-deny
               cargo-release
               coreutils
               ffmpeg-headless
