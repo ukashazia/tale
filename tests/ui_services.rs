@@ -9,12 +9,13 @@ use ratatui::backend::TestBackend;
 
 use tale::action::ActionId;
 use tale::action::validate_transient_sequences;
-use tale::app::{App, Focus, InteractionMode, Route};
+use tale::app::{App, DiagnosticsSection, Focus, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{
     ConnectionPath, Device, DeviceCapabilities, DeviceId, Liveness, OperatingSystem,
 };
+use tale::domain::diagnostic::DiagnosticState;
 use tale::domain::service::{
     Backend, CapabilityState, Exposure, FunnelStatus, Listener, MetricsOutput, PathMount, Port,
     ProxyProtocol, ServeStatus, ServiceActionRequest, ServiceCapabilities, ServiceFailure,
@@ -81,7 +82,66 @@ fn services_render_all_sections_at_required_widths() {
                     .any(|line| line.contains("Nothing was uploaded"))
             );
         }
+
+        app.views.diagnostics.section = DiagnosticsSection::DnsStatus;
+        app.local_diagnostics = tale::mock::local_diagnostics();
+        let dns_status = render_lines(&app, 160, 45);
+        assert!(dns_status.is_some());
+        if let Some(dns_status) = dns_status {
+            assert!(dns_status.iter().any(|line| line.contains("DNS status")));
+            assert!(
+                dns_status
+                    .iter()
+                    .any(|line| line.contains("100.100.100.100"))
+            );
+            assert!(
+                dns_status
+                    .iter()
+                    .any(|line| line.contains("corp.example.test"))
+            );
+            assert!(dns_status.iter().any(|line| line.contains("System DNS")));
+            assert!(dns_status.iter().any(|line| line.contains("192.168.1.1")));
+        }
     }
+}
+
+#[test]
+fn finished_dns_status_task_is_not_rendered_as_loading() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    app.set_route(Route::Diagnostics);
+    app.views.diagnostics.section = DiagnosticsSection::DnsStatus;
+    let task_id = app
+        .tasks
+        .create(ActionId::LocalDnsStatus, "dns status", OBSERVED_AT, true);
+    app.local_diagnostics
+        .insert(task_id, DiagnosticState::new("dns status"));
+    let _ = app.update(Event::Task(Box::new(TaskEvent::Started { task_id })));
+
+    let Some(loading) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(
+        loading
+            .iter()
+            .any(|line| line.contains("Reading DNS status"))
+    );
+
+    let _ = app.update(Event::Task(Box::new(TaskEvent::Failed {
+        task_id,
+        finished_at: OBSERVED_AT,
+        summary: "DNS status failed".to_owned(),
+        detail: "fictional invalid output".to_owned(),
+    })));
+    let Some(finished) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(
+        finished
+            .iter()
+            .all(|line| !line.contains("Reading DNS status"))
+    );
 }
 
 #[test]

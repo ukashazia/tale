@@ -84,7 +84,7 @@ impl App {
             }
             ActionId::ViewDiagnostics => {
                 self.navigate(Route::Diagnostics);
-                Vec::new()
+                self.load_visible_diagnostics()
             }
             ActionId::ProfileActivate => self.activate_selected_profile(),
             ActionId::AdminRefreshCurrent => self.start_admin_current_view_refresh(),

@@ -358,6 +358,50 @@ fn dns_and_whois_fixtures_preserve_observable_results() {
         );
         assert_eq!(status.split_routes.len(), 2);
     }
+    let current_status = parse_dns_status(
+        r#"{
+          "TailscaleDNS": true,
+          "CurrentTailnet": {
+            "MagicDNSEnabled": true,
+            "MagicDNSSuffix": "fixture-net.ts.net",
+            "SelfDNSName": "fixture-device.fixture-net.ts.net."
+          },
+          "Resolvers": [{"Addr":"1.1.1.1"}, {"Addr":"1.0.0.1"}],
+          "SplitDNSRoutes": {"ts.net.": [{"Addr":"192.0.2.53"}]},
+          "SearchDomains": ["fixture-net.ts.net"],
+          "CertDomains": ["fixture-device.fixture-net.ts.net"],
+          "ExitNodeFilteredSet": [".ts.net", ".tailscale.net"],
+          "SystemDNS": {
+            "Nameservers": ["192.0.2.10", "1.1.1.1"],
+            "SearchDomains": ["lan"],
+            "MatchDomains": ["corp.example"]
+          }
+        }"#,
+        timestamp(),
+    );
+    assert!(current_status.is_ok());
+    if let Ok(status) = current_status {
+        assert_eq!(status.forwarder_enabled, Some(true));
+        assert_eq!(status.magic_dns_enabled, Some(true));
+        assert_eq!(
+            status.magic_dns_suffix.as_deref(),
+            Some("fixture-net.ts.net")
+        );
+        assert_eq!(
+            status.current_node_dns_name.as_deref(),
+            Some("fixture-device.fixture-net.ts.net.")
+        );
+        assert_eq!(status.resolvers, ["1.1.1.1", "1.0.0.1"]);
+        assert_eq!(
+            status.split_routes.get("ts.net."),
+            Some(&vec!["192.0.2.53".to_owned()])
+        );
+        assert_eq!(status.search_domains, ["fixture-net.ts.net"]);
+        assert_eq!(status.exit_node_filtered_set, [".ts.net", ".tailscale.net"]);
+        assert_eq!(status.system_nameservers, ["192.0.2.10", "1.1.1.1"]);
+        assert_eq!(status.system_search_domains, ["lan"]);
+        assert_eq!(status.system_match_domains, ["corp.example"]);
+    }
     let query = parse_dns_query(
         DNS_QUERY_A,
         "build.tail.example.ts.net".to_owned(),

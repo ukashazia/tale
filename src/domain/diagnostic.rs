@@ -113,7 +113,12 @@ pub struct DnsStatus {
     pub current_node_dns_name: Option<String>,
     pub resolvers: Vec<String>,
     pub split_routes: BTreeMap<String, Vec<String>>,
+    pub search_domains: Vec<String>,
     pub cert_domains: Vec<String>,
+    pub exit_node_filtered_set: Vec<String>,
+    pub system_nameservers: Vec<String>,
+    pub system_search_domains: Vec<String>,
+    pub system_match_domains: Vec<String>,
     pub observed_at: Timestamp,
 }
 

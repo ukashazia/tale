@@ -6,13 +6,16 @@ use ratatui::style::Modifier;
 mod common;
 
 use tale::action::{self, ActionContext, ActionId, Binding};
-use tale::app::{App, InteractionMode, Overlay, Route};
+use tale::app::{App, DiagnosticsSection, InteractionMode, Overlay, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::account::{LocalAccount, LocalSection};
 use tale::domain::policy_workflow::{
     PolicyDocument, PolicyPreview, PolicySelectorType, PolicyWorkflow,
 };
+use tale::domain::service::ServiceActionRequest;
+use tale::domain::source::{ExecutableSource, LocalCapabilities, LocalExecutable};
+use tale::effect::Effect;
 use tale::event::{Event, InputEvent, PolicyEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
@@ -204,6 +207,53 @@ fn local_actions_are_offered_only_where_their_subject_is() {
 
     app.set_route(Route::Diagnostics);
     assert!(app.contextual_actions().contains(&ActionId::DiagnosticCopy));
+    assert!(app.contextual_actions().contains(&ActionId::LocalDnsStatus));
+    let _ = app.dispatch_action(ActionId::SectionNext);
+    assert_eq!(app.views.diagnostics.section, DiagnosticsSection::DnsStatus);
+}
+
+#[test]
+fn diagnostics_load_the_visible_section() {
+    let Some(mut app) = local_app(false) else {
+        return;
+    };
+    let capabilities = LocalCapabilities::all_supported();
+    app.local_executable = Some(LocalExecutable {
+        path: "tailscale".into(),
+        socket_path: None,
+        source: ExecutableSource::Path,
+        version: "1.98.9".to_owned(),
+        daemon_version: Some("1.98.9".to_owned()),
+        build: None,
+        capabilities,
+    });
+    app.local_capabilities = capabilities;
+
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char(':'),
+        KeyModifiers::NONE,
+    ))));
+    let _ = app.update(Event::Input(InputEvent::Paste("diagnostics".to_owned())));
+    let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::StartServiceTask {
+            request: ServiceActionRequest::Metrics,
+            ..
+        }]
+    ));
+
+    let effects = app.dispatch_action(ActionId::SectionNext);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::StartLocalDiagnostic {
+            request: tale::local::diagnostics::DiagnosticRequest::DnsStatus,
+            ..
+        }]
+    ));
 }
 
 /// A profile for the tailnet this machine is on adds the tailnet's verbs to the

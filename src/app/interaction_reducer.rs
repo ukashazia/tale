@@ -1554,10 +1554,10 @@ impl App {
         self.interaction = InteractionMode::Normal;
         if self.current_route() == route {
             self.focus = Focus::Collection;
-            return Vec::new();
+            return self.load_visible_diagnostics();
         }
         self.navigate(route);
-        Vec::new()
+        self.load_visible_diagnostics()
     }
 
     pub fn route_unavailable_reason(&self, route: Route) -> Option<&'static str> {

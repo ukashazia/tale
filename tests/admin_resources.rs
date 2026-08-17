@@ -10,8 +10,8 @@ fn admin_device_display_name_uses_the_device_name_not_the_hostname() -> Result<(
         r#"{
             "devices": [{
                 "nodeId": "node-fictional-001",
-                "name": "macbooks-macbook-pro.zuul-insen.ts.net",
-                "hostname": "MacBooks-MacBook-Pro.local"
+                "name": "fixture-device.fixture-net.ts.net",
+                "hostname": "fixture-device.local"
             }]
         }"#,
     )
@@ -21,19 +21,13 @@ fn admin_device_display_name_uses_the_device_name_not_the_hostname() -> Result<(
         .first()
         .ok_or_else(|| "decoded device is missing".to_owned())?;
 
-    assert_eq!(device.display_name(), "macbooks-macbook-pro");
-    assert_eq!(
-        device.to_display_device().display_name,
-        "macbooks-macbook-pro"
-    );
+    assert_eq!(device.display_name(), "fixture-device");
+    assert_eq!(device.to_display_device().display_name, "fixture-device");
     assert_eq!(
         device.name.as_deref(),
-        Some("macbooks-macbook-pro.zuul-insen.ts.net")
+        Some("fixture-device.fixture-net.ts.net")
     );
-    assert_eq!(
-        device.hostname.as_deref(),
-        Some("MacBooks-MacBook-Pro.local")
-    );
+    assert_eq!(device.hostname.as_deref(), Some("fixture-device.local"));
     Ok(())
 }
 

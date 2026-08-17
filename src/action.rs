@@ -1322,7 +1322,7 @@ pub fn footer_actions_filtered(
 pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
     match id {
         ActionId::SectionNext | ActionId::SectionPrevious => {
-            matches!(route, Route::Local | Route::Services)
+            matches!(route, Route::Local | Route::Services | Route::Diagnostics)
         }
         ActionId::CollectionWideColumns => matches!(route, Route::Devices),
         ActionId::DetailSearch => matches!(
@@ -1517,9 +1517,9 @@ pub fn local_observer_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::LocalDnsStatus,
-            label: "DNS status",
-            description: "Inspect local DNS configuration",
-            contexts: &[ActionContext::Root, ActionContext::Overlay],
+            label: "Refresh DNS status",
+            description: "Read the local Tailscale DNS status",
+            contexts: &[ActionContext::Detail, ActionContext::Overlay],
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
