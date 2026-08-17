@@ -35,8 +35,7 @@
               cargo-deny
               cargo-release
               coreutils
-              ffmpeg-headless
-              vhs
+              imagemagick
               just
               rust
             ];

@@ -4,125 +4,81 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/.." && pwd)
-assets_dir="${repo_root}/docs/assets"
-tapes_dir="${script_dir}/screenshots"
-wallpaper=${1:-}
-intermediates=(
-  "${assets_dir}/.tale-devices.mp4"
-)
+source_image=${1:-"${script_dir}/screenshots/tale-devices-source.png"}
+output="${repo_root}/docs/assets/tale-devices.png"
+margin=32
+title_bar=44
+radius=14
 
 if [[ $# -gt 1 ]]; then
-  printf 'usage: %s [wallpaper]\n' "$0" >&2
+  printf 'usage: %s [source-image]\n' "$0" >&2
   exit 2
 fi
 
-if [[ -n ${wallpaper} && ! -r ${wallpaper} ]]; then
-  printf 'wallpaper is not readable: %s\n' "${wallpaper}" >&2
+if ! command -v magick >/dev/null 2>&1; then
+  printf 'framing requires magick; run it from `nix develop`\n' >&2
   exit 1
 fi
 
-if [[ -n ${wallpaper} ]]; then
-  wallpaper=$(cd "$(dirname "${wallpaper}")" && pwd)/$(basename "${wallpaper}")
+if [[ ! -r ${source_image} ]]; then
+  printf 'source image is not readable: %s\n' "${source_image}" >&2
+  exit 1
 fi
 
+dimensions=$(magick identify -format '%w %h' "${source_image}")
+read -r source_width source_height <<<"${dimensions}"
+
+if [[ ! ${source_width} =~ ^[0-9]+$ || ! ${source_height} =~ ^[0-9]+$ ]]; then
+  printf 'could not determine source dimensions: %s\n' "${source_image}" >&2
+  exit 1
+fi
+
+window_width=${source_width}
+window_height=$((source_height + title_bar))
+canvas_width=$((window_width + margin * 2))
+canvas_height=$((window_height + margin * 2))
+work_dir=$(mktemp -d)
+
 cleanup() {
-  rm -f -- "${intermediates[@]}"
+  rm -rf -- "${work_dir}"
 }
 trap cleanup EXIT INT TERM
 
-for command in ffmpeg ffprobe timeout vhs; do
-  if ! command -v "${command}" >/dev/null 2>&1; then
-    printf 'capture requires %s; run it from `nix develop`\n' "${command}" >&2
-    exit 1
-  fi
-done
+magick \
+  -size "${window_width}x${window_height}" \
+  xc:'#20233b' \
+  "${source_image}" \
+  -geometry "+0+${title_bar}" \
+  -compose over \
+  -composite \
+  -fill '#ff5f57' -draw 'circle 22,22 28,22' \
+  -fill '#febc2e' -draw 'circle 42,22 48,22' \
+  -fill '#28c840' -draw 'circle 62,22 68,22' \
+  "${work_dir}/window.png"
 
-mkdir -p "${assets_dir}"
-cd "${repo_root}"
+magick \
+  -size "${window_width}x${window_height}" \
+  xc:black \
+  -fill white \
+  -draw "roundrectangle 0,0 $((window_width - 1)),$((window_height - 1)) ${radius},${radius}" \
+  "${work_dir}/mask.png"
 
-cargo build --locked --bin tale
+magick \
+  "${work_dir}/window.png" \
+  "${work_dir}/mask.png" \
+  -alpha off \
+  -compose copy_opacity \
+  -composite \
+  "${work_dir}/framed-window.png"
 
-capture_tape() {
-  local tape=$1
-  local attempt
+magick \
+  -size "${canvas_width}x${canvas_height}" \
+  xc:'#e8e2df' \
+  "${work_dir}/framed-window.png" \
+  -geometry "+${margin}+${margin}" \
+  -compose over \
+  -composite \
+  -strip \
+  "${output}"
 
-  for attempt in 1 2; do
-    if timeout --kill-after=5s 45s vhs "${tape}"; then
-      return 0
-    fi
-
-    if [[ ${attempt} -eq 1 ]]; then
-      printf 'capture stalled; retrying %s\n' "${tape}" >&2
-    fi
-  done
-
-  return 1
-}
-
-extract_frame() {
-  local name=$1
-  local video="${assets_dir}/.${name}.mp4"
-  local output="${assets_dir}/${name}.png"
-
-  if [[ -z ${wallpaper} ]]; then
-    ffmpeg \
-      -y \
-      -hide_banner \
-      -loglevel error \
-      -sseof -0.05 \
-      -i "${video}" \
-      -frames:v 1 \
-      -map_metadata -1 \
-      "${output}"
-    return
-  fi
-
-  local dimensions
-  local width
-  local height
-  dimensions=$(ffprobe \
-    -v error \
-    -select_streams v:0 \
-    -show_entries stream=width,height \
-    -of csv=s=x:p=0 \
-    "${video}")
-
-  if [[ ! ${dimensions} =~ ^[0-9]+x[0-9]+$ ]]; then
-    printf 'could not determine video dimensions: %s\n' "${video}" >&2
-    return 1
-  fi
-
-  width=${dimensions%x*}
-  height=${dimensions#*x}
-
-  ffmpeg \
-    -y \
-    -hide_banner \
-    -loglevel error \
-    -i "${wallpaper}" \
-    -sseof -0.05 \
-    -i "${video}" \
-    -filter_complex \
-    "[0:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},format=rgba,split=2[wall][blur_source]; \
-     [blur_source]gblur=sigma=64,colorchannelmixer=rr=0.50:gg=0.50:bb=0.50[blurred]; \
-     [1:v]setpts=PTS-STARTPTS,format=rgba,colorkey=0xE8E1DF:0.035:0.08,split=3[window_source][outer_mask_source][foreground_source]; \
-     [outer_mask_source]alphaextract,split=2[blur_mask][outer_mask]; \
-     [blurred][blur_mask]alphamerge[blurred_window]; \
-     [wall][blurred_window]overlay=format=auto[wall_with_blur]; \
-     [foreground_source]colorkey=0x000000:0.025:0.04,alphaextract[black_mask]; \
-     [outer_mask][black_mask]lut2=c0='x*y/255'[foreground_mask]; \
-     [window_source]format=rgb24[foreground_rgb]; \
-     [foreground_rgb][foreground_mask]alphamerge[foreground]; \
-     [wall_with_blur][foreground]overlay=format=auto,format=rgb24[out]" \
-    -map '[out]' \
-    -frames:v 1 \
-    -map_metadata -1 \
-    "${output}"
-}
-
-for name in tale-devices; do
-  capture_tape "${tapes_dir}/${name}.tape"
-  extract_frame "${name}"
-done
-
-printf '%s\n' 'Updated README screenshots in docs/assets.'
+printf '%s\n' 'Updated the framed README screenshot in docs/assets.'
