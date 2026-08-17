@@ -1190,7 +1190,7 @@ fn mock_resource_routes_use_the_shared_visual_grammar() {
     for (route, expected) in [
         (Route::Local, ["Client", "Identity", "Preferences"]),
         (Route::Routes, ["DEVICE", "subnet-gateway", "APPROVED"]),
-        (Route::Dns, ["This machine", "Tailnet", "100.100.100.100"]),
+        (Route::Dns, ["This machine", "Resolvers", "100.100.100.100"]),
         (Route::Access, ["format", "Access Explorer", "hash"]),
         (
             Route::Credentials,
@@ -1215,6 +1215,15 @@ fn mock_resource_routes_use_the_shared_visual_grammar() {
             "{route:?} rendered sentinel data"
         );
     }
+
+    app.set_route(Route::Dns);
+    let Some(lines) = lines_at(&app, 120, 45) else {
+        return;
+    };
+    assert!(
+        lines.join("\n").contains("Tailnet"),
+        "the full DNS frame did not render the tailnet configuration"
+    );
 
     for route in [Route::Routes, Route::Credentials, Route::Audit] {
         app.set_route(route);

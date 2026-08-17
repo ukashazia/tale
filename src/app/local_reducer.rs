@@ -348,6 +348,7 @@ impl App {
                     });
                 }
                 effects.extend(self.start_services_refresh());
+                effects.extend(self.load_visible_diagnostics());
                 return effects;
             }
             LocalEvent::DiscoveryFailed {

@@ -302,18 +302,49 @@ pub fn parse_netcheck_lines(
 pub fn parse_dns_status(input: &str, observed_at: Timestamp) -> Result<DnsStatus, String> {
     let value: Value =
         serde_json::from_str(input).map_err(|error| format!("invalid DNS status JSON: {error}"))?;
-    let split_routes = parse_split_routes(get(&value, &["SplitDNS", "SplitRoutes", "splitDns"]));
+    let split_routes = parse_split_routes(get(
+        &value,
+        &["SplitDNS", "SplitDNSRoutes", "SplitRoutes", "splitDns"],
+    ));
+    let current_tailnet = get(&value, &["CurrentTailnet"]);
+    let system_dns = get(&value, &["SystemDNS"]);
     Ok(DnsStatus {
-        forwarder_enabled: first_bool(&value, &["Forwarder", "ForwarderEnabled", "LocalForwarder"]),
-        magic_dns_enabled: first_bool(&value, &["MagicDNS", "MagicDNSEnabled", "magicDnsEnabled"]),
-        magic_dns_suffix: first_string(&value, &["MagicDNSSuffix", "Suffix", "magicDnsSuffix"]),
+        forwarder_enabled: first_bool(
+            &value,
+            &[
+                "Forwarder",
+                "ForwarderEnabled",
+                "LocalForwarder",
+                "TailscaleDNS",
+            ],
+        ),
+        magic_dns_enabled: first_bool(&value, &["MagicDNS", "MagicDNSEnabled", "magicDnsEnabled"])
+            .or_else(|| {
+                current_tailnet.and_then(|tailnet| first_bool(tailnet, &["MagicDNSEnabled"]))
+            }),
+        magic_dns_suffix: first_string(&value, &["MagicDNSSuffix", "Suffix", "magicDnsSuffix"])
+            .or_else(|| {
+                current_tailnet.and_then(|tailnet| first_string(tailnet, &["MagicDNSSuffix"]))
+            }),
         current_node_dns_name: first_string(
             &value,
             &["CurrentNodeDNSName", "DNSName", "currentNodeDnsName"],
-        ),
-        resolvers: parse_strings(get(&value, &["Resolvers", "Nameservers", "resolvers"])),
+        )
+        .or_else(|| current_tailnet.and_then(|tailnet| first_string(tailnet, &["SelfDNSName"]))),
+        resolvers: parse_dns_addresses(&value, &["Resolvers", "Nameservers", "resolvers"]),
         split_routes,
+        search_domains: parse_strings(get(&value, &["SearchDomains"])),
         cert_domains: parse_strings(get(&value, &["CertDomains", "CertificateDomains"])),
+        exit_node_filtered_set: parse_strings(get(&value, &["ExitNodeFilteredSet"])),
+        system_nameservers: system_dns
+            .map(|dns| parse_dns_addresses(dns, &["Nameservers"]))
+            .unwrap_or_default(),
+        system_search_domains: system_dns
+            .map(|dns| parse_strings(get(dns, &["SearchDomains"])))
+            .unwrap_or_default(),
+        system_match_domains: system_dns
+            .map(|dns| parse_strings(get(dns, &["MatchDomains"])))
+            .unwrap_or_default(),
         observed_at,
     })
 }
@@ -484,9 +515,28 @@ fn parse_split_routes(value: Option<&Value>) -> std::collections::BTreeMap<Strin
         return routes;
     };
     for (suffix, value) in map {
-        routes.insert(suffix.clone(), parse_strings(Some(value)));
+        routes.insert(suffix.clone(), parse_dns_addresses(value, &[]));
     }
     routes
+}
+
+fn parse_dns_addresses(value: &Value, names: &[&str]) -> Vec<String> {
+    let value = if names.is_empty() {
+        Some(value)
+    } else {
+        get(value, names)
+    };
+    match value {
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(|value| value_string(value).or_else(|| first_string(value, &["Addr"])))
+            .collect(),
+        Some(value) => value_string(value)
+            .or_else(|| first_string(value, &["Addr"]))
+            .into_iter()
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 fn parse_answers(value: Option<&Value>) -> Vec<DnsAnswer> {

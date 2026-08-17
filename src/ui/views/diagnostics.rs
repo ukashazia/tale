@@ -2,9 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::app::App;
+use crate::app::{App, DiagnosticsSection};
 use crate::domain::service::ServiceResourceStatus;
-use crate::ui::components::panel;
+use crate::ui::components::{panel, tabs};
 use crate::ui::text;
 use crate::ui::theme;
 
@@ -12,10 +12,21 @@ use crate::ui::theme;
 /// nothing here is something the tailnet offers, it is evidence about this
 /// machine to hand to someone else.
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let mut lines = vec![Line::from(Span::styled(
-        "Bug report",
-        app.theme.style(theme::StyleRole::SectionHeading),
-    ))];
+    match app.views.diagnostics.section {
+        DiagnosticsSection::Client => render_client(frame, app, area),
+        DiagnosticsSection::DnsStatus => render_dns_status(frame, app, area),
+    }
+}
+
+fn render_client(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut lines = vec![
+        tab_line(app),
+        Line::default(),
+        Line::from(Span::styled(
+            "Bug report",
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )),
+    ];
     lines.extend(bug_report_lines(app));
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
@@ -30,6 +41,44 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     panel::render(frame, app, area, " diagnostics ", lines);
 }
 
+fn render_dns_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut lines = vec![tab_line(app), Line::default()];
+    if let Some(status) = super::dns::latest_local_status(app) {
+        lines.extend(super::dns::local_status_lines(app, status));
+    } else if app
+        .local_diagnostics
+        .values()
+        .any(|state| state.kind == "dns status" && state.result.is_none())
+    {
+        lines.push(Line::from(Span::styled(
+            "Reading DNS status…",
+            app.theme.style(theme::StyleRole::TextMuted),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Waiting for the local client to become ready.",
+            app.theme.style(theme::StyleRole::TextMuted),
+        )));
+    }
+    panel::render_wrapped(frame, app, area, " diagnostics ", lines);
+}
+
+fn tab_line(app: &App) -> Line<'static> {
+    tabs::line(
+        app,
+        [
+            (
+                "Client",
+                app.views.diagnostics.section == DiagnosticsSection::Client,
+            ),
+            (
+                "DNS status",
+                app.views.diagnostics.section == DiagnosticsSection::DnsStatus,
+            ),
+        ],
+    )
+}
+
 pub fn metrics_lines(app: &App, viewport: u16) -> Vec<Line<'static>> {
     let Some(metrics) = app.services_snapshot.metrics.value.as_ref() else {
         return match app.services_snapshot.metrics.status {
@@ -38,10 +87,7 @@ pub fn metrics_lines(app: &App, viewport: u16) -> Vec<Line<'static>> {
                 muted(app, "Reading metrics failed"),
                 text::action_hint(app.theme, "  retry                  ", "r"),
             ],
-            _ => vec![
-                muted(app, "Metrics are read on request"),
-                text::action_hint(app.theme, "  read now               ", "a m"),
-            ],
+            _ => vec![muted(app, "Waiting for the local client to become ready.")],
         };
     };
     if metrics.text.is_empty() {

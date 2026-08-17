@@ -5,11 +5,11 @@ impl App {
         match action_id {
             ActionId::SectionNext => {
                 self.change_route_section(1);
-                Vec::new()
+                self.load_visible_diagnostics()
             }
             ActionId::SectionPrevious => {
                 self.change_route_section(-1);
-                Vec::new()
+                self.load_visible_diagnostics()
             }
             ActionId::ServicesServeRefresh
             | ActionId::ServicesDriveRefresh
@@ -44,6 +44,7 @@ impl App {
         match self.current_route() {
             Route::Local => self.change_local_section(offset),
             Route::Services => self.change_service_section(offset),
+            Route::Diagnostics => self.change_diagnostics_section(offset),
             _ => {}
         }
     }
@@ -225,6 +226,9 @@ impl App {
     }
 
     pub(super) fn metrics_max_scroll(&self) -> usize {
+        if self.views.diagnostics.section != DiagnosticsSection::Client {
+            return 0;
+        }
         let line_count = self
             .services_snapshot
             .metrics
@@ -541,6 +545,7 @@ impl App {
             Route::Diagnostics => actions.extend([
                 ActionId::ServicesMetricsRefresh,
                 ActionId::ServicesBugReportCreate,
+                ActionId::LocalDnsStatus,
             ]),
             // The one thing a row on this page can be asked to do.
             Route::Profiles => actions.push(ActionId::ProfileActivate),

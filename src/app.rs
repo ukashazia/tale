@@ -2,6 +2,7 @@ mod action_reducer;
 mod admin_reducer;
 mod collection_reducer;
 mod credential_reducer;
+mod diagnostics_reducer;
 mod interaction_reducer;
 mod local_reducer;
 mod operational_reducer;
@@ -1501,7 +1502,19 @@ impl Default for ServiceSortSpec {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiagnosticsViewState {
+    pub section: DiagnosticsSection,
     pub scroll: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum DiagnosticsSection {
+    #[default]
+    Client,
+    DnsStatus,
+}
+
+impl DiagnosticsSection {
+    pub const ALL: [Self; 2] = [Self::Client, Self::DnsStatus];
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

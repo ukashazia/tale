@@ -122,7 +122,12 @@ pub fn local_diagnostics() -> BTreeMap<TaskId, DiagnosticState> {
             "corp.example.test".to_owned(),
             vec!["10.0.0.53".to_owned()],
         )]),
+        search_domains: vec!["example.test".to_owned()],
         cert_domains: vec!["build-01.example.test".to_owned()],
+        exit_node_filtered_set: vec![".ts.net".to_owned()],
+        system_nameservers: vec!["192.168.1.1".to_owned()],
+        system_search_domains: Vec::new(),
+        system_match_domains: Vec::new(),
         observed_at: MOCK_NOW,
     }));
     diagnostics.insert(TaskId(1), status);

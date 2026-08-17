@@ -9,7 +9,7 @@ use ratatui::backend::TestBackend;
 
 use tale::action::ActionId;
 use tale::action::validate_transient_sequences;
-use tale::app::{App, Focus, InteractionMode, Route};
+use tale::app::{App, DiagnosticsSection, Focus, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::{
@@ -80,6 +80,26 @@ fn services_render_all_sections_at_required_widths() {
                     .iter()
                     .any(|line| line.contains("Nothing was uploaded"))
             );
+        }
+
+        app.views.diagnostics.section = DiagnosticsSection::DnsStatus;
+        app.local_diagnostics = tale::mock::local_diagnostics();
+        let dns_status = render_lines(&app, 160, 45);
+        assert!(dns_status.is_some());
+        if let Some(dns_status) = dns_status {
+            assert!(dns_status.iter().any(|line| line.contains("DNS status")));
+            assert!(
+                dns_status
+                    .iter()
+                    .any(|line| line.contains("100.100.100.100"))
+            );
+            assert!(
+                dns_status
+                    .iter()
+                    .any(|line| line.contains("corp.example.test"))
+            );
+            assert!(dns_status.iter().any(|line| line.contains("System DNS")));
+            assert!(dns_status.iter().any(|line| line.contains("192.168.1.1")));
         }
     }
 }
