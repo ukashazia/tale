@@ -1,24 +1,20 @@
 # Tale
 
-Tale is a keyboard-first terminal workspace for inspecting this machine and
-managing a Tailscale network.
+See what is happening across your Tailscale network—and manage it—without
+leaving the terminal.
 
 ![Tale showing a device inventory and inspector](docs/assets/tale-devices.png)
 
-## What can Tale do?
+Tale puts your devices, routes, services, DNS, access rules, and audit activity
+in one keyboard-driven interface. It can inspect the Tailscale client on this
+machine, connect to the Tailscale API to work with the whole network, or do
+both at once.
 
-- Inspect the local Tailscale client, peers, preferences, routes, and services.
-- Browse tailnet devices, users, DNS, access policy, credentials, and audit data.
-- Run diagnostics, review task history, and export redacted data.
-- Make changes through preview and confirmation flows. `--read-only` disables
-  mutations for an entire session.
+Changes are never one accidental keypress away: Tale shows you what it is
+about to do and asks for confirmation. Run it with `--read-only` when you do
+not want the session to make any changes at all.
 
-Tale works in local-only, admin-only, or combined mode. The Tailscale client is
-optional: it is needed only for views and actions involving the current
-machine. Tailnet administration uses the Control API and does not require the
-`tailscale` command or a local Tailscale daemon.
-
-## Install
+## Install Tale
 
 ### Homebrew
 
@@ -26,7 +22,7 @@ machine. Tailnet administration uses the Control API and does not require the
 brew install ukashazia/tale/tale
 ```
 
-### Shell installer
+### macOS or Linux
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ukashazia/tale/releases/latest/download/tale-installer.sh | sh
@@ -38,13 +34,13 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ukashazia/tale/releases
 nix profile install 'tarball+https://github.com/ukashazia/tale/releases/latest/download/tale-nix-flake.tar.gz'
 ```
 
-Each release contains a locked flake for its prebuilt binaries. Replace
-`releases/latest` with `releases/download/vX.Y.Z` to pin a release. The
-repository flake is only a development environment.
+The Nix download contains the release's prebuilt binaries. To pin a version,
+replace `releases/latest` with `releases/download/vX.Y.Z`.
 
-### Debian or Ubuntu
+<details>
+<summary>Debian, Ubuntu, Arch Linux, and source builds</summary>
 
-Download the `.deb` for your architecture from the
+For Debian or Ubuntu, download the `.deb` for your architecture from the
 [latest release](https://github.com/ukashazia/tale/releases/latest), then run:
 
 ```sh
@@ -55,7 +51,7 @@ sudo apt install ./tale_VERSION_amd64.deb
 sudo apt install ./tale_VERSION_arm64.deb
 ```
 
-### Arch Linux (AUR)
+On Arch Linux, install the AUR package:
 
 ```sh
 yay -S tale-bin
@@ -63,191 +59,158 @@ yay -S tale-bin
 paru -S tale-bin
 ```
 
-### Build from source
-
-From a checkout, with a stable Rust toolchain:
+To build from a checkout with a stable Rust toolchain:
 
 ```sh
 cargo install --locked --path .
 ```
 
-Once Tale is installed, launch it with:
+</details>
+
+## Take a first look
+
+Start Tale:
 
 ```sh
 tale
 ```
 
-On your first run:
+Then:
 
-1. Press `:` and choose `local` to inspect this machine.
-2. Press `:` and choose `devices` to see its peers.
-3. Press `/` to filter the current list and `Enter` to inspect a row.
-4. Press `?` at any time for help, or `q` to quit.
+1. Press `:` to choose where to go.
+2. Open **Local** to inspect this machine, or **Devices** to see its peers.
+3. Press `/` to filter a list and `Enter` to inspect the selected item.
+4. Press `a` to see the actions available for the current item.
 
-## Connect a tailnet
+Press `?` whenever you need help, and `q` to quit.
 
-Create a profile for tailnet-wide inventory or administrative actions:
+## Connect the rest of your network
+
+Tale can use the Tailscale client already running on this machine without any
+extra setup. To see and manage devices and settings across the whole network,
+give Tale a Tailscale API credential. `ops` is simply a name for this login:
+
+Create one in the Tailscale admin console: use a scoped
+[OAuth client](https://console.tailscale.com/admin/settings/trust-credentials)
+for ongoing access, or generate an
+[API access token](https://console.tailscale.com/admin/settings/keys) for a
+simpler setup.
 
 ```sh
 tale auth add ops
 tale --profile ops --read-only
+```
+
+`auth add` asks for the network and credential details, then stores the secret
+separately from your shareable configuration. Start with the smallest
+permissions you need and keep `--read-only` enabled until you intend to make
+changes.
+
+On a machine without a local Tailscale client, skip local discovery:
+
+```sh
 tale --no-local --profile ops --read-only
 ```
 
-`--no-local` skips both CLI discovery and the local daemon connection. It does
-not disable profile-backed Control API views or actions.
-
-`auth add` prompts for the tailnet, credential type, and secret. Start with a
-least-privilege credential and keep `--read-only` enabled until you need write
-actions. Tale stores credentials separately from its shareable configuration.
-
-To add an access token without an interactive secret prompt:
+For scripts, pass an access token through standard input instead of putting it
+on the command line:
 
 ```sh
 printf '%s' "$TOKEN" |
   tale auth add ops --tailnet TAILNET_ID --kind access-token --secret-stdin
 ```
 
-## Configuration
+## Keyboard shortcuts
 
-Tale reads `config.toml` from its platform configuration directory. Run
-`tale config path` to see the exact location; `--config PATH` and
-`TALE_CONFIG_FILE` select another file. Settings resolve in this order:
-command-line flags, environment variables, this file, then defaults.
+| Key | What it does |
+| --- | --- |
+| `:` | Choose a view |
+| `/` | Filter the current list |
+| `Enter` | Inspect the selected item |
+| `a` | Show available actions |
+| `Tab` / `Shift-Tab` | Move between tabs |
+| `[` / `]` | Go back or forward |
+| `r` / `R` | Refresh this view or everything |
+| `?` | Show help for the current view |
+| `Esc` | Close or cancel the current prompt |
+| `q` | Quit |
 
-The checked-in [configuration schema](docs/tale-config.schema.json) provides
-completion, validation, and hover help. The first line of this example enables
-it in Taplo and compatible language servers. Only include settings you want to
-override; credentials do not belong in `config.toml`.
+Actions that can destroy data always require typed confirmation.
+
+## Configure Tale
+
+Run `tale config path` to find your `config.toml`. You only need to add values
+you want to change; Tale supplies the rest.
+
+Here is a small starting point:
 
 ```toml
 #:schema https://raw.githubusercontent.com/ukashazia/tale/main/docs/tale-config.schema.json
 
-# Disable all mutations in this session.
+# Prevent this session from making changes.
 read_only = true
-
-[local]
-# Set false for an admin-only installation; --no-local also does this per run.
-enabled = true
-# tailscale_path = "~/bin/tailscale"
-# socket_path = "/var/run/tailscale/tailscaled.sock"
-# Reconcile local state every 5s to 10m; each command may take 1s to 10m.
-reconcile_interval = "30s"
-command_timeout = "10s"
-
-[admin]
-# Refresh Control API data every 5s to 30m; requests may take 1s to 2m.
-refresh_interval = "30s"
-request_timeout = "15s"
 
 [ui]
 theme = "terminal" # tailscale-dark, tailscale-light, or terminal
-color = "auto" # auto, none, ansi16, ansi256, or truecolor
-symbols = "auto" # auto, ascii, or unicode
 mouse = false
-detail_pane = "auto" # auto, always, or never
 time_zone = "local" # local or utc
-relative_times = true
-show_footer = true
-
-[history]
-persist_tasks = false
-max_tasks = 200 # 20 through 5000
-
-# Profile names contain letters, digits, '_' or '-'. Select one with --profile.
-[profiles.ops]
-tailnet = "-"
-read_only = true
-# A reference into the credential store, never a credential value.
-credential = "ops"
-credential_backend = "file"
-credential_file = "~/.config/tale/credentials.toml"
 ```
 
-### Credential store
+The checked-in [configuration schema](docs/tale-config.schema.json) documents
+every setting and gives compatible editors completion and validation. Run
+`tale config check` after editing the file.
 
-`credentials.toml` contains plaintext secrets. Prefer `tale auth add`, which
-writes it atomically with owner-only permissions. Never commit or share it.
+Credentials do not belong in `config.toml`. Use `tale auth add`, which writes
+them to a separate file with owner-only permissions. Never commit or share
+that credential file.
 
-Each `[credentials.NAME]` table matches a profile's `credential = "NAME"`
-value. An access-token record looks like this:
-
-```toml
-[credentials.ops]
-kind = "access_token"
-version = 1
-access_token = "REPLACE_WITH_ACCESS_TOKEN"
-```
-
-An OAuth client record uses `client_id`, `client_secret`, and its requested
-Control API scopes instead:
-
-```toml
-[credentials.automation]
-kind = "oauth_client"
-version = 1
-client_id = "REPLACE_WITH_CLIENT_ID"
-client_secret = "REPLACE_WITH_CLIENT_SECRET"
-requested_scopes = ["devices:core:read", "users:read"]
-```
-
-## Essential keys
-
-| Key | Action |
-| --- | --- |
-| `:` | Go to a view |
-| `/` | Filter the current view |
-| `a` | Show available actions |
-| `Enter` | Open or focus the selected item |
-| `Tab` / `Shift-Tab` | Move between tabs in Local and Services |
-| `[` / `]` | Go backward / forward |
-| `r` / `R` | Refresh this view / all sources |
-| `?` | Show contextual help |
-| `Esc` | Cancel the current prompt |
-| `q` | Quit |
-
-Actions that can destroy data require typed confirmation; they are never bound
-to a single direct key.
+Command-line flags override environment variables, which override
+`config.toml`.
 
 ## Useful commands
 
 ```sh
-tale config path   # show config, state, and cache locations
-tale config check  # validate configuration without opening the UI
-tale config show   # show resolved settings and where they came from
-tale doctor        # print a redacted, non-mutating diagnostic report
-tale --no-local    # run on a workstation without a local Tailscale client
+tale config path   # show where Tale stores its files
+tale config check  # check the configuration for errors
+tale config show   # show the settings Tale will use
+tale doctor        # show a redacted report without changing anything
+tale --no-local    # run without a local Tailscale client
 ```
 
-Generate shell completions with:
+Generate completions for your shell with:
 
 ```sh
 tale gen-completions --shell "$SHELL"
 ```
 
-The complete command reference is available through `tale --help` and the
-generated [`tale(1)` man page](docs/cli/tale.1).
+For every command and option, use `tale --help` or read the generated
+[`tale(1)` man page](docs/cli/tale.1).
 
 ## Troubleshooting
 
-- Use `--tailscale-path PATH` if the Tailscale executable is not on `PATH`.
-- Use `NO_COLOR=1 tale` if terminal colors render incorrectly.
-- If the terminal is left in an unusual state after an external interruption,
-  use your shell's normal `reset` command.
+- If Tale cannot find Tailscale, start it with `--tailscale-path PATH`.
+- If colors look wrong, start it with `NO_COLOR=1 tale`.
+- If an interruption leaves the terminal looking unusual, run `reset` in your
+  shell.
 
-Tale never uploads diagnostic data automatically. To write a report to a new
-file for review, run `tale doctor --output support.json`.
+Tale never uploads diagnostics automatically. To save a report that you can
+inspect before sharing, run:
+
+```sh
+tale doctor --output support.json
+```
 
 ## Development
 
-Enter the pinned development environment and run the complete repository gate:
+Enter the pinned development environment and run the complete project checks:
 
 ```sh
 nix develop
 just check
 ```
 
-After changing the CLI, regenerate the man page and completions:
+After changing the command-line interface, regenerate the man page and shell
+completions:
 
 ```sh
 cargo run --locked --bin generate-artifacts -- --output-dir .
