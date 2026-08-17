@@ -215,7 +215,7 @@ mod unix_process_tests {
             )
             .with_limits(32, 32);
             let result = run(command, &Cancellation::new()).await;
-            assert!(result.is_ok());
+            assert!(result.is_ok(), "{result:?}");
             if let Ok(result) = result {
                 assert!(result.stdout.len() <= 32);
                 assert!(result.truncated_stdout);
