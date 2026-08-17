@@ -434,51 +434,11 @@ fn append_detail(task: &mut Task, detail: &str) {
 /// compacts once per `cap` bytes produced, so appending stays amortized
 /// constant and the buffer never exceeds twice the cap.
 pub fn push_bounded(detail: &mut String, value: &str, cap: usize) {
-    if !detail.is_empty() {
-        detail.push('\n');
-    }
-    detail.push_str(value);
-    if detail.len() > cap.saturating_mul(2) {
-        *detail = bounded_detail(detail, cap);
-    }
+    crate::detail::push_bounded_ends(detail, value, cap);
 }
 
 pub fn bounded_detail(value: &str, cap: usize) -> String {
-    if value.len() <= cap {
-        return value.to_owned();
-    }
-    let marker = "\n...[output truncated]...\n";
-    if cap <= marker.len() {
-        return marker[..cap].to_owned();
-    }
-    let available = cap - marker.len();
-    let head_limit = available / 2;
-    let tail_limit = available.saturating_sub(head_limit);
-    let head_end = boundary_at_or_before(value, head_limit);
-    let tail_start = boundary_at_or_after(value, value.len().saturating_sub(tail_limit));
-    format!("{}{}{}", &value[..head_end], marker, &value[tail_start..])
-}
-
-fn boundary_at_or_before(value: &str, limit: usize) -> usize {
-    if value.is_char_boundary(limit) {
-        return limit;
-    }
-    value
-        .char_indices()
-        .take_while(|(index, _)| *index < limit)
-        .map(|(index, _)| index)
-        .last()
-        .unwrap_or(0)
-}
-
-fn boundary_at_or_after(value: &str, limit: usize) -> usize {
-    if value.is_char_boundary(limit) {
-        return limit;
-    }
-    value
-        .char_indices()
-        .find(|(index, _)| *index > limit)
-        .map_or(value.len(), |(index, _)| index)
+    crate::detail::bounded_ends(value, cap)
 }
 
 pub const fn grace_duration() -> Duration {

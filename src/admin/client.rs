@@ -1503,5 +1503,5 @@ fn strip_html(text: &str) -> String {
 }
 
 fn bounded_detail(detail: &str) -> String {
-    detail.chars().take(64 * 1024).collect()
+    crate::detail::bounded_prefix_chars(detail, 64 * 1024)
 }

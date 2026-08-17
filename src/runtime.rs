@@ -7639,9 +7639,7 @@ fn format_netcheck_summary(value: &crate::domain::diagnostic::NetcheckObservatio
 
 fn bounded_process_output(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
-    let mut redactor = Redactor::new();
-    let redacted = redactor.text(&text);
-    bounded_task_detail(&redacted)
+    crate::detail::redacted_bounded_ends(&text, TASK_DETAIL_CAP)
 }
 
 fn safe_operator_detail(value: &str) -> String {
@@ -7683,9 +7681,7 @@ fn mutation_detail(base: &str, stderr: Option<&str>) -> String {
 }
 
 fn bounded_diagnostic_detail(value: &str) -> String {
-    let mut redactor = Redactor::new();
-    let redacted = redactor.text(value);
-    bounded_task_detail(&redacted)
+    crate::detail::redacted_bounded_ends(value, TASK_DETAIL_CAP)
 }
 
 const TASK_DETAIL_CAP: usize = 256 * 1024;

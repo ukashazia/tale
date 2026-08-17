@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,6 +8,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::config::ResolvedConfig;
+use crate::private_file::write_private_atomic;
 
 const BUNDLE_SCHEMA_VERSION: u32 = 1;
 
@@ -222,28 +222,8 @@ pub fn write_new_atomic(bundle: &SupportBundle, path: &Path) -> Result<PathBuf, 
         std::process::id(),
         nonce
     ));
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true).read(true);
-        let mut file = options
-            .open(&temporary)
-            .map_err(|error| DoctorError::Write(error.to_string()))?;
-        set_private_permissions(&file)?;
-        file.write_all(&bytes)
-            .map_err(|error| DoctorError::Write(error.to_string()))?;
-        file.flush()
-            .map_err(|error| DoctorError::Write(error.to_string()))?;
-        file.sync_all()
-            .map_err(|error| DoctorError::Write(error.to_string()))?;
-        fs::rename(&temporary, path).map_err(|error| DoctorError::Write(error.to_string()))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result?;
-    if let Ok(directory) = File::open(parent) {
-        let _ = directory.sync_all();
-    }
+    write_private_atomic(&temporary, path, &bytes)
+        .map_err(|error| DoctorError::Write(error.to_string()))?;
     Ok(path.to_path_buf())
 }
 
@@ -388,16 +368,6 @@ fn terminal_capabilities(mouse_enabled: bool) -> TerminalCapabilities {
             "unsupported"
         },
     }
-}
-
-fn set_private_permissions(file: &File) -> Result<(), DoctorError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| DoctorError::Write(error.to_string()))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

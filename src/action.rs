@@ -5,472 +5,381 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::Route;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum ActionId {
-    AppQuit,
-    ViewCommandLine,
-    ViewFilter,
-    DetailSearch,
-    DeviceDetailNextMatch,
-    DeviceDetailPreviousMatch,
-    ViewRefresh,
-    ViewRefreshAll,
-    ViewHelp,
-    ViewTasks,
-    ViewHistoryBack,
-    ViewHistoryForward,
-    CollectionMoveUp,
-    CollectionMoveDown,
-    CollectionFirst,
-    CollectionLast,
-    CollectionPageUp,
-    CollectionPageDown,
-    CollectionOpen,
-    CollectionBack,
-    CollectionSort,
-    CollectionWideColumns,
-    CollectionInspect,
-    ResourceActions,
-    ResourceCopy,
-    TaskCancel,
-    MockSuccess,
-    MockFailure,
-    MockCancellable,
-    MockNonCancellable,
-    LocalDiagnostics,
-    LocalProbeConnection,
-    LocalNetcheck,
-    LocalNetcheckLive,
-    LocalDnsStatus,
-    LocalDnsQuery,
-    LocalWhois,
-    DiagnosticCopy,
-    LocalConnect,
-    LocalDisconnect,
-    LocalPreferencesEdit,
-    LocalExitNodeSelect,
-    LocalRoutesEditAdvertisements,
-    LocalAccountSwitch,
-    LocalAccountLogin,
-    LocalAccountLogout,
-    LocalAccountRemove,
-    LocalSshOpen,
-    LocalNcOpen,
-    LocalSyspolicyReload,
-    ViewServices,
-    ViewDiagnostics,
-    SectionNext,
-    SectionPrevious,
-    ServicesServeRefresh,
-    ServicesServeCreate,
-    ServicesServeEdit,
-    ServicesServeRemove,
-    ServicesServeReset,
-    ServicesFunnelCreate,
-    ServicesFunnelEdit,
-    ServicesFunnelUnpublish,
-    ServicesFunnelReset,
-    DevicesTaildropSend,
-    DevicesTaildropReceive,
-    ServicesDriveRefresh,
-    ServicesDriveShare,
-    ServicesDriveRename,
-    ServicesDriveUnshare,
-    ServicesCertificateObtain,
-    ServicesMetricsRefresh,
-    ServicesBugReportCreate,
-    ServicesDriveEnableAlpha,
-    ProfileActivate,
-    AdminRefreshCurrent,
-    AdminRefreshAll,
-    ViewProfiles,
-    ViewUsers,
-    ViewRoutes,
-    ViewDns,
-    ViewAccess,
-    ViewCredentials,
-    UsersOpenDevices,
-    RoutesOpenDevice,
-    DnsOpenLocalDiagnostics,
-    AccessCopySource,
-    ActivitySelectWindow,
-    ActivityOpenActor,
-    ActivityOpenTarget,
-    SettingsInspectCapabilities,
-    AdminDeviceRename,
-    AdminDeviceTagsReplace,
-    AdminDeviceApprove,
-    AdminDeviceRevokeApproval,
-    AdminDeviceKeyExpiryConfigure,
-    AdminDeviceKeyExpireNow,
-    AdminDeviceDelete,
-    AdminRoutesReplaceApprovals,
-    AdminDnsPreferencesEdit,
-    AdminDnsNameserversReplace,
-    AdminDnsSearchPathsReplace,
-    AdminDnsSplitCreate,
-    AdminDnsSplitEdit,
-    AdminDnsSplitRemove,
-    AdminUserApprove,
-    AdminUserRoleChange,
-    AdminUserSuspend,
-    AdminUserRestore,
-    AdminUserDelete,
-    AdminPolicyEdit,
-    AdminPolicyEditorReopen,
-    AdminPolicyCandidateDiscard,
-    AdminPolicyRemoteRefresh,
-    AdminPolicyValidate,
-    AdminPolicyPreview,
-    AdminPolicyDiff,
-    AdminPolicyApply,
-    AdminPolicyWorkflowClose,
-    AdminCredentialAuthKeyCreate,
-    SecretResultCopy,
-    SecretResultClose,
-    AdminCredentialRevoke,
-    ProfileCredentialRemove,
-    AuditFilterTime,
-    AuditFilterActor,
-    AuditFilterAction,
-    AuditFilterTarget,
-    AuditOpenTarget,
-    AuditOpenPolicyDiff,
-    BatchReviewOutcomes,
-    BatchRetrySelected,
-    OverviewHealthOpenResource,
-    OverviewHealthRunSuggestedAction,
-    ActivityFlowsSelectWindow,
-    ActivityFlowsAggregate,
-    ActivityFlowsOpenDevice,
-    AdminWebhookCreate,
-    AdminWebhookEdit,
-    AdminWebhookTest,
-    AdminWebhookRotateSecret,
-    AdminWebhookDelete,
-    AdminLogStreamReplace,
-    AdminLogStreamDelete,
-    AdminNetworkLogsSettings,
-    SavedViewCreate,
-    SavedViewReplace,
-    SavedViewRename,
-    SavedViewDelete,
-    SavedViewApply,
-    CollectionExport,
-    AccessExplorerAsk,
-    AccessExplorerOpenRule,
+macro_rules! define_action_ids {
+    (
+        listed_before { $( $before:ident => $before_name:literal; )* }
+        hidden { $( $hidden:ident => $hidden_name:literal; )* }
+        listed_after { $( $after:ident => $after_name:literal; )* }
+    ) => {
+        #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+        pub enum ActionId {
+            $( $before, )*
+            $( $hidden, )*
+            $( $after, )*
+        }
+
+        impl ActionId {
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$before => $before_name, )*
+                    $( Self::$hidden => $hidden_name, )*
+                    $( Self::$after => $after_name, )*
+                }
+            }
+
+            pub const fn all() -> &'static [Self] {
+                &[ $( Self::$before, )* $( Self::$after, )* ]
+            }
+        }
+    };
+}
+
+define_action_ids! {
+    listed_before {
+        AppQuit => "app.quit";
+        ViewCommandLine => "view.command_line";
+        ViewFilter => "view.filter";
+    }
+    hidden {
+        DetailSearch => "detail.search";
+        DeviceDetailNextMatch => "device_detail.next_match";
+        DeviceDetailPreviousMatch => "device_detail.previous_match";
+    }
+    listed_after {
+        ViewRefresh => "view.refresh";
+        ViewRefreshAll => "view.refresh_all";
+        ViewHelp => "view.help";
+        ViewTasks => "view.tasks";
+        ViewHistoryBack => "view.history.back";
+        ViewHistoryForward => "view.history.forward";
+        CollectionMoveUp => "collection.move_up";
+        CollectionMoveDown => "collection.move_down";
+        CollectionFirst => "collection.first";
+        CollectionLast => "collection.last";
+        CollectionPageUp => "collection.page_up";
+        CollectionPageDown => "collection.page_down";
+        CollectionOpen => "collection.open";
+        CollectionBack => "collection.back";
+        CollectionSort => "collection.sort";
+        CollectionWideColumns => "collection.wide_columns";
+        CollectionInspect => "collection.inspect";
+        ResourceActions => "resource.actions";
+        ResourceCopy => "resource.copy";
+        TaskCancel => "task.cancel";
+        MockSuccess => "mock.task.success";
+        MockFailure => "mock.task.failure";
+        MockCancellable => "mock.task.cancellable";
+        MockNonCancellable => "mock.task.non_cancellable";
+        LocalDiagnostics => "local.diagnostics";
+        LocalProbeConnection => "local.probe_connection";
+        LocalNetcheck => "local.netcheck";
+        LocalNetcheckLive => "local.netcheck_live";
+        LocalDnsStatus => "local.dns_status";
+        LocalDnsQuery => "local.dns_query";
+        LocalWhois => "local.whois";
+        DiagnosticCopy => "diagnostic.copy";
+        LocalConnect => "local.connect";
+        LocalDisconnect => "local.disconnect";
+        LocalPreferencesEdit => "local.preferences.edit";
+        LocalExitNodeSelect => "local.exit_node.select";
+        LocalRoutesEditAdvertisements => "local.routes.edit_advertisements";
+        LocalAccountSwitch => "local.account.switch";
+        LocalAccountLogin => "local.account.login";
+        LocalAccountLogout => "local.account.logout";
+        LocalAccountRemove => "local.account.remove";
+        LocalSshOpen => "local.ssh.open";
+        LocalNcOpen => "local.nc.open";
+        LocalSyspolicyReload => "local.syspolicy.reload";
+        ViewServices => "view.services";
+        ViewDiagnostics => "view.diagnostics";
+        SectionNext => "section.next";
+        SectionPrevious => "section.previous";
+        ServicesServeRefresh => "services.serve.refresh";
+        ServicesServeCreate => "services.serve.create";
+        ServicesServeEdit => "services.serve.edit";
+        ServicesServeRemove => "services.serve.remove";
+        ServicesServeReset => "services.serve.reset";
+        ServicesFunnelCreate => "services.funnel.create";
+        ServicesFunnelEdit => "services.funnel.edit";
+        ServicesFunnelUnpublish => "services.funnel.unpublish";
+        ServicesFunnelReset => "services.funnel.reset";
+        DevicesTaildropSend => "devices.taildrop.send";
+        DevicesTaildropReceive => "devices.taildrop.receive";
+        ServicesDriveRefresh => "services.drive.refresh";
+        ServicesDriveShare => "services.drive.share";
+        ServicesDriveRename => "services.drive.rename";
+        ServicesDriveUnshare => "services.drive.unshare";
+        ServicesCertificateObtain => "services.certificate.obtain";
+        ServicesMetricsRefresh => "services.metrics.refresh";
+        ServicesBugReportCreate => "services.bugreport.create";
+        ServicesDriveEnableAlpha => "services.drive.enable_alpha";
+        ProfileActivate => "profile.activate";
+        AdminRefreshCurrent => "admin.refresh.current";
+        AdminRefreshAll => "admin.refresh.all";
+        ViewProfiles => "view.profiles";
+        ViewUsers => "view.users";
+        ViewRoutes => "view.routes";
+        ViewDns => "view.dns";
+        ViewAccess => "view.access";
+        ViewCredentials => "view.credentials";
+        UsersOpenDevices => "users.open.devices";
+        RoutesOpenDevice => "routes.open.device";
+        DnsOpenLocalDiagnostics => "dns.open.local_diagnostics";
+        AccessCopySource => "access.copy_source";
+        ActivitySelectWindow => "activity.select_window";
+        ActivityOpenActor => "activity.open_actor";
+        ActivityOpenTarget => "activity.open_target";
+        SettingsInspectCapabilities => "settings.inspect_capabilities";
+        AdminDeviceRename => "admin.device.rename";
+        AdminDeviceTagsReplace => "admin.device.tags.replace";
+        AdminDeviceApprove => "admin.device.approve";
+        AdminDeviceRevokeApproval => "admin.device.revoke_approval";
+        AdminDeviceKeyExpiryConfigure => "admin.device.key_expiry.configure";
+        AdminDeviceKeyExpireNow => "admin.device.key_expire_now";
+        AdminDeviceDelete => "admin.device.delete";
+        AdminRoutesReplaceApprovals => "admin.routes.replace_approvals";
+        AdminDnsPreferencesEdit => "admin.dns.preferences.edit";
+        AdminDnsNameserversReplace => "admin.dns.nameservers.replace";
+        AdminDnsSearchPathsReplace => "admin.dns.search_paths.replace";
+        AdminDnsSplitCreate => "admin.dns.split.create";
+        AdminDnsSplitEdit => "admin.dns.split.edit";
+        AdminDnsSplitRemove => "admin.dns.split.remove";
+        AdminUserApprove => "admin.user.approve";
+        AdminUserRoleChange => "admin.user.role.change";
+        AdminUserSuspend => "admin.user.suspend";
+        AdminUserRestore => "admin.user.restore";
+        AdminUserDelete => "admin.user.delete";
+        AdminPolicyEdit => "admin.policy.edit";
+        AdminPolicyEditorReopen => "admin.policy.editor.reopen";
+        AdminPolicyCandidateDiscard => "admin.policy.candidate.discard";
+        AdminPolicyRemoteRefresh => "admin.policy.remote.refresh";
+        AdminPolicyValidate => "admin.policy.validate";
+        AdminPolicyPreview => "admin.policy.preview";
+        AdminPolicyDiff => "admin.policy.diff";
+        AdminPolicyApply => "admin.policy.apply";
+        AdminPolicyWorkflowClose => "admin.policy.workflow.close";
+        AdminCredentialAuthKeyCreate => "admin.credential.auth_key.create";
+        SecretResultCopy => "secret_result.copy";
+        SecretResultClose => "secret_result.close";
+        AdminCredentialRevoke => "admin.credential.revoke";
+        ProfileCredentialRemove => "profile.credential.remove";
+        AuditFilterTime => "audit.filter.time";
+        AuditFilterActor => "audit.filter.actor";
+        AuditFilterAction => "audit.filter.action";
+        AuditFilterTarget => "audit.filter.target";
+        AuditOpenTarget => "audit.open.target";
+        AuditOpenPolicyDiff => "audit.open.policy_diff";
+        BatchReviewOutcomes => "batch.review_outcomes";
+        BatchRetrySelected => "batch.retry_selected";
+        OverviewHealthOpenResource => "overview.health.open_resource";
+        OverviewHealthRunSuggestedAction => "overview.health.run_suggested_action";
+        ActivityFlowsSelectWindow => "activity.flows.select_window";
+        ActivityFlowsAggregate => "activity.flows.aggregate";
+        ActivityFlowsOpenDevice => "activity.flows.open_device";
+        AdminWebhookCreate => "admin.webhook.create";
+        AdminWebhookEdit => "admin.webhook.edit";
+        AdminWebhookTest => "admin.webhook.test";
+        AdminWebhookRotateSecret => "admin.webhook.rotate_secret";
+        AdminWebhookDelete => "admin.webhook.delete";
+        AdminLogStreamReplace => "admin.log_stream.replace";
+        AdminLogStreamDelete => "admin.log_stream.delete";
+        AdminNetworkLogsSettings => "admin.network_logs.settings";
+        SavedViewCreate => "saved_view.create";
+        SavedViewReplace => "saved_view.replace";
+        SavedViewRename => "saved_view.rename";
+        SavedViewDelete => "saved_view.delete";
+        SavedViewApply => "saved_view.apply";
+        CollectionExport => "collection.export";
+        AccessExplorerAsk => "access_explorer.ask";
+        AccessExplorerOpenRule => "access_explorer.open_rule";
+    }
 }
 
 impl ActionId {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AppQuit => "app.quit",
-            Self::ViewCommandLine => "view.command_line",
-            Self::ViewFilter => "view.filter",
-            Self::DetailSearch => "detail.search",
-            Self::DeviceDetailNextMatch => "device_detail.next_match",
-            Self::DeviceDetailPreviousMatch => "device_detail.previous_match",
-            Self::ViewRefresh => "view.refresh",
-            Self::ViewRefreshAll => "view.refresh_all",
-            Self::ViewHelp => "view.help",
-            Self::ViewTasks => "view.tasks",
-            Self::ViewHistoryBack => "view.history.back",
-            Self::ViewHistoryForward => "view.history.forward",
-            Self::CollectionMoveUp => "collection.move_up",
-            Self::CollectionMoveDown => "collection.move_down",
-            Self::CollectionFirst => "collection.first",
-            Self::CollectionLast => "collection.last",
-            Self::CollectionPageUp => "collection.page_up",
-            Self::CollectionPageDown => "collection.page_down",
-            Self::CollectionOpen => "collection.open",
-            Self::CollectionBack => "collection.back",
-            Self::CollectionSort => "collection.sort",
-            Self::CollectionWideColumns => "collection.wide_columns",
-            Self::CollectionInspect => "collection.inspect",
-            Self::ResourceActions => "resource.actions",
-            Self::ResourceCopy => "resource.copy",
-            Self::TaskCancel => "task.cancel",
-            Self::MockSuccess => "mock.task.success",
-            Self::MockFailure => "mock.task.failure",
-            Self::MockCancellable => "mock.task.cancellable",
-            Self::MockNonCancellable => "mock.task.non_cancellable",
-            Self::LocalDiagnostics => "local.diagnostics",
-            Self::LocalProbeConnection => "local.probe_connection",
-            Self::LocalNetcheck => "local.netcheck",
-            Self::LocalNetcheckLive => "local.netcheck_live",
-            Self::LocalDnsStatus => "local.dns_status",
-            Self::LocalDnsQuery => "local.dns_query",
-            Self::LocalWhois => "local.whois",
-            Self::DiagnosticCopy => "diagnostic.copy",
-            Self::LocalConnect => "local.connect",
-            Self::LocalDisconnect => "local.disconnect",
-            Self::LocalPreferencesEdit => "local.preferences.edit",
-            Self::LocalExitNodeSelect => "local.exit_node.select",
-            Self::LocalRoutesEditAdvertisements => "local.routes.edit_advertisements",
-            Self::LocalAccountSwitch => "local.account.switch",
-            Self::LocalAccountLogin => "local.account.login",
-            Self::LocalAccountLogout => "local.account.logout",
-            Self::LocalAccountRemove => "local.account.remove",
-            Self::LocalSshOpen => "local.ssh.open",
-            Self::LocalNcOpen => "local.nc.open",
-            Self::LocalSyspolicyReload => "local.syspolicy.reload",
-            Self::ViewServices => "view.services",
-            Self::ViewDiagnostics => "view.diagnostics",
-            Self::SectionNext => "section.next",
-            Self::SectionPrevious => "section.previous",
-            Self::ServicesServeRefresh => "services.serve.refresh",
-            Self::ServicesServeCreate => "services.serve.create",
-            Self::ServicesServeEdit => "services.serve.edit",
-            Self::ServicesServeRemove => "services.serve.remove",
-            Self::ServicesServeReset => "services.serve.reset",
-            Self::ServicesFunnelCreate => "services.funnel.create",
-            Self::ServicesFunnelEdit => "services.funnel.edit",
-            Self::ServicesFunnelUnpublish => "services.funnel.unpublish",
-            Self::ServicesFunnelReset => "services.funnel.reset",
-            Self::DevicesTaildropSend => "devices.taildrop.send",
-            Self::DevicesTaildropReceive => "devices.taildrop.receive",
-            Self::ServicesDriveRefresh => "services.drive.refresh",
-            Self::ServicesDriveShare => "services.drive.share",
-            Self::ServicesDriveRename => "services.drive.rename",
-            Self::ServicesDriveUnshare => "services.drive.unshare",
-            Self::ServicesCertificateObtain => "services.certificate.obtain",
-            Self::ServicesMetricsRefresh => "services.metrics.refresh",
-            Self::ServicesBugReportCreate => "services.bugreport.create",
-            Self::ServicesDriveEnableAlpha => "services.drive.enable_alpha",
-            Self::ProfileActivate => "profile.activate",
-            Self::AdminRefreshCurrent => "admin.refresh.current",
-            Self::AdminRefreshAll => "admin.refresh.all",
-            Self::ViewProfiles => "view.profiles",
-            Self::ViewUsers => "view.users",
-            Self::ViewRoutes => "view.routes",
-            Self::ViewDns => "view.dns",
-            Self::ViewAccess => "view.access",
-            Self::ViewCredentials => "view.credentials",
-            Self::UsersOpenDevices => "users.open.devices",
-            Self::RoutesOpenDevice => "routes.open.device",
-            Self::DnsOpenLocalDiagnostics => "dns.open.local_diagnostics",
-            Self::AccessCopySource => "access.copy_source",
-            Self::ActivitySelectWindow => "activity.select_window",
-            Self::ActivityOpenActor => "activity.open_actor",
-            Self::ActivityOpenTarget => "activity.open_target",
-            Self::SettingsInspectCapabilities => "settings.inspect_capabilities",
-            Self::AdminDeviceRename => "admin.device.rename",
-            Self::AdminDeviceTagsReplace => "admin.device.tags.replace",
-            Self::AdminDeviceApprove => "admin.device.approve",
-            Self::AdminDeviceRevokeApproval => "admin.device.revoke_approval",
-            Self::AdminDeviceKeyExpiryConfigure => "admin.device.key_expiry.configure",
-            Self::AdminDeviceKeyExpireNow => "admin.device.key_expire_now",
-            Self::AdminDeviceDelete => "admin.device.delete",
-            Self::AdminRoutesReplaceApprovals => "admin.routes.replace_approvals",
-            Self::AdminDnsPreferencesEdit => "admin.dns.preferences.edit",
-            Self::AdminDnsNameserversReplace => "admin.dns.nameservers.replace",
-            Self::AdminDnsSearchPathsReplace => "admin.dns.search_paths.replace",
-            Self::AdminDnsSplitCreate => "admin.dns.split.create",
-            Self::AdminDnsSplitEdit => "admin.dns.split.edit",
-            Self::AdminDnsSplitRemove => "admin.dns.split.remove",
-            Self::AdminUserApprove => "admin.user.approve",
-            Self::AdminUserRoleChange => "admin.user.role.change",
-            Self::AdminUserSuspend => "admin.user.suspend",
-            Self::AdminUserRestore => "admin.user.restore",
-            Self::AdminUserDelete => "admin.user.delete",
-            Self::AdminPolicyEdit => "admin.policy.edit",
-            Self::AdminPolicyEditorReopen => "admin.policy.editor.reopen",
-            Self::AdminPolicyCandidateDiscard => "admin.policy.candidate.discard",
-            Self::AdminPolicyRemoteRefresh => "admin.policy.remote.refresh",
-            Self::AdminPolicyValidate => "admin.policy.validate",
-            Self::AdminPolicyPreview => "admin.policy.preview",
-            Self::AdminPolicyDiff => "admin.policy.diff",
-            Self::AdminPolicyApply => "admin.policy.apply",
-            Self::AdminPolicyWorkflowClose => "admin.policy.workflow.close",
-            Self::AdminCredentialAuthKeyCreate => "admin.credential.auth_key.create",
-            Self::SecretResultCopy => "secret_result.copy",
-            Self::SecretResultClose => "secret_result.close",
-            Self::AdminCredentialRevoke => "admin.credential.revoke",
-            Self::ProfileCredentialRemove => "profile.credential.remove",
-            Self::AuditFilterTime => "audit.filter.time",
-            Self::AuditFilterActor => "audit.filter.actor",
-            Self::AuditFilterAction => "audit.filter.action",
-            Self::AuditFilterTarget => "audit.filter.target",
-            Self::AuditOpenTarget => "audit.open.target",
-            Self::AuditOpenPolicyDiff => "audit.open.policy_diff",
-            Self::BatchReviewOutcomes => "batch.review_outcomes",
-            Self::BatchRetrySelected => "batch.retry_selected",
-            Self::OverviewHealthOpenResource => "overview.health.open_resource",
-            Self::OverviewHealthRunSuggestedAction => "overview.health.run_suggested_action",
-            Self::ActivityFlowsSelectWindow => "activity.flows.select_window",
-            Self::ActivityFlowsAggregate => "activity.flows.aggregate",
-            Self::ActivityFlowsOpenDevice => "activity.flows.open_device",
-            Self::AdminWebhookCreate => "admin.webhook.create",
-            Self::AdminWebhookEdit => "admin.webhook.edit",
-            Self::AdminWebhookTest => "admin.webhook.test",
-            Self::AdminWebhookRotateSecret => "admin.webhook.rotate_secret",
-            Self::AdminWebhookDelete => "admin.webhook.delete",
-            Self::AdminLogStreamReplace => "admin.log_stream.replace",
-            Self::AdminLogStreamDelete => "admin.log_stream.delete",
-            Self::AdminNetworkLogsSettings => "admin.network_logs.settings",
-            Self::SavedViewCreate => "saved_view.create",
-            Self::SavedViewReplace => "saved_view.replace",
-            Self::SavedViewRename => "saved_view.rename",
-            Self::SavedViewDelete => "saved_view.delete",
-            Self::SavedViewApply => "saved_view.apply",
-            Self::CollectionExport => "collection.export",
-            Self::AccessExplorerAsk => "access_explorer.ask",
-            Self::AccessExplorerOpenRule => "access_explorer.open_rule",
-        }
+    pub(crate) const fn is_mutating(self) -> bool {
+        self.needs_local_verification()
+            || matches!(self, Self::LocalAccountLogin | Self::LocalAccountLogout)
+            || self.is_service_write()
     }
 
-    pub const fn all() -> &'static [Self] {
-        &[
-            Self::AppQuit,
-            Self::ViewCommandLine,
-            Self::ViewFilter,
-            Self::ViewRefresh,
-            Self::ViewRefreshAll,
-            Self::ViewHelp,
-            Self::ViewTasks,
-            Self::ViewHistoryBack,
-            Self::ViewHistoryForward,
-            Self::CollectionMoveUp,
-            Self::CollectionMoveDown,
-            Self::CollectionFirst,
-            Self::CollectionLast,
-            Self::CollectionPageUp,
-            Self::CollectionPageDown,
-            Self::CollectionOpen,
-            Self::CollectionBack,
-            Self::CollectionSort,
-            Self::CollectionWideColumns,
-            Self::CollectionInspect,
-            Self::ResourceActions,
-            Self::ResourceCopy,
-            Self::TaskCancel,
-            Self::MockSuccess,
-            Self::MockFailure,
-            Self::MockCancellable,
-            Self::MockNonCancellable,
-            Self::LocalDiagnostics,
-            Self::LocalProbeConnection,
-            Self::LocalNetcheck,
-            Self::LocalNetcheckLive,
-            Self::LocalDnsStatus,
-            Self::LocalDnsQuery,
-            Self::LocalWhois,
-            Self::DiagnosticCopy,
-            Self::LocalConnect,
-            Self::LocalDisconnect,
-            Self::LocalPreferencesEdit,
-            Self::LocalExitNodeSelect,
-            Self::LocalRoutesEditAdvertisements,
-            Self::LocalAccountSwitch,
-            Self::LocalAccountLogin,
-            Self::LocalAccountLogout,
-            Self::LocalAccountRemove,
-            Self::LocalSshOpen,
-            Self::LocalNcOpen,
-            Self::LocalSyspolicyReload,
-            Self::ViewServices,
-            Self::ViewDiagnostics,
-            Self::SectionNext,
-            Self::SectionPrevious,
-            Self::ServicesServeRefresh,
-            Self::ServicesServeCreate,
-            Self::ServicesServeEdit,
-            Self::ServicesServeRemove,
-            Self::ServicesServeReset,
-            Self::ServicesFunnelCreate,
-            Self::ServicesFunnelEdit,
-            Self::ServicesFunnelUnpublish,
-            Self::ServicesFunnelReset,
-            Self::DevicesTaildropSend,
-            Self::DevicesTaildropReceive,
-            Self::ServicesDriveRefresh,
-            Self::ServicesDriveShare,
-            Self::ServicesDriveRename,
-            Self::ServicesDriveUnshare,
-            Self::ServicesCertificateObtain,
-            Self::ServicesMetricsRefresh,
-            Self::ServicesBugReportCreate,
-            Self::ServicesDriveEnableAlpha,
-            Self::ProfileActivate,
-            Self::AdminRefreshCurrent,
-            Self::AdminRefreshAll,
-            Self::ViewProfiles,
-            Self::ViewUsers,
-            Self::ViewRoutes,
-            Self::ViewDns,
-            Self::ViewAccess,
-            Self::ViewCredentials,
-            Self::UsersOpenDevices,
-            Self::RoutesOpenDevice,
-            Self::DnsOpenLocalDiagnostics,
-            Self::AccessCopySource,
-            Self::ActivitySelectWindow,
-            Self::ActivityOpenActor,
-            Self::ActivityOpenTarget,
-            Self::SettingsInspectCapabilities,
-            Self::AdminDeviceRename,
-            Self::AdminDeviceTagsReplace,
-            Self::AdminDeviceApprove,
-            Self::AdminDeviceRevokeApproval,
-            Self::AdminDeviceKeyExpiryConfigure,
-            Self::AdminDeviceKeyExpireNow,
-            Self::AdminDeviceDelete,
-            Self::AdminRoutesReplaceApprovals,
-            Self::AdminDnsPreferencesEdit,
-            Self::AdminDnsNameserversReplace,
-            Self::AdminDnsSearchPathsReplace,
-            Self::AdminDnsSplitCreate,
-            Self::AdminDnsSplitEdit,
-            Self::AdminDnsSplitRemove,
-            Self::AdminUserApprove,
-            Self::AdminUserRoleChange,
-            Self::AdminUserSuspend,
-            Self::AdminUserRestore,
-            Self::AdminUserDelete,
-            Self::AdminPolicyEdit,
-            Self::AdminPolicyEditorReopen,
-            Self::AdminPolicyCandidateDiscard,
-            Self::AdminPolicyRemoteRefresh,
-            Self::AdminPolicyValidate,
-            Self::AdminPolicyPreview,
-            Self::AdminPolicyDiff,
-            Self::AdminPolicyApply,
-            Self::AdminPolicyWorkflowClose,
-            Self::AdminCredentialAuthKeyCreate,
-            Self::SecretResultCopy,
-            Self::SecretResultClose,
-            Self::AdminCredentialRevoke,
-            Self::ProfileCredentialRemove,
-            Self::AuditFilterTime,
-            Self::AuditFilterActor,
-            Self::AuditFilterAction,
-            Self::AuditFilterTarget,
-            Self::AuditOpenTarget,
-            Self::AuditOpenPolicyDiff,
-            Self::BatchReviewOutcomes,
-            Self::BatchRetrySelected,
-            Self::OverviewHealthOpenResource,
-            Self::OverviewHealthRunSuggestedAction,
-            Self::ActivityFlowsSelectWindow,
-            Self::ActivityFlowsAggregate,
-            Self::ActivityFlowsOpenDevice,
-            Self::AdminWebhookCreate,
-            Self::AdminWebhookEdit,
-            Self::AdminWebhookTest,
-            Self::AdminWebhookRotateSecret,
-            Self::AdminWebhookDelete,
-            Self::AdminLogStreamReplace,
-            Self::AdminLogStreamDelete,
-            Self::AdminNetworkLogsSettings,
-            Self::SavedViewCreate,
-            Self::SavedViewReplace,
-            Self::SavedViewRename,
-            Self::SavedViewDelete,
-            Self::SavedViewApply,
-            Self::CollectionExport,
-            Self::AccessExplorerAsk,
-            Self::AccessExplorerOpenRule,
-        ]
+    pub(crate) const fn needs_local_verification(self) -> bool {
+        matches!(
+            self,
+            Self::LocalConnect
+                | Self::LocalDisconnect
+                | Self::LocalPreferencesEdit
+                | Self::LocalExitNodeSelect
+                | Self::LocalRoutesEditAdvertisements
+                | Self::LocalAccountSwitch
+                | Self::LocalAccountRemove
+                | Self::LocalSyspolicyReload
+        )
+    }
+
+    pub(crate) const fn is_admin(self) -> bool {
+        self.is_admin_mutation()
+            || matches!(
+                self,
+                Self::ProfileActivate
+                    | Self::AdminRefreshCurrent
+                    | Self::AdminRefreshAll
+                    | Self::ViewProfiles
+                    | Self::ViewUsers
+                    | Self::ViewRoutes
+                    | Self::ViewDns
+                    | Self::ViewAccess
+                    | Self::ViewCredentials
+                    | Self::UsersOpenDevices
+                    | Self::RoutesOpenDevice
+                    | Self::DnsOpenLocalDiagnostics
+                    | Self::AccessCopySource
+                    | Self::ActivitySelectWindow
+                    | Self::ActivityOpenActor
+                    | Self::ActivityOpenTarget
+                    | Self::SettingsInspectCapabilities
+                    | Self::AdminPolicyEdit
+                    | Self::AdminPolicyEditorReopen
+                    | Self::AdminPolicyRemoteRefresh
+                    | Self::AdminPolicyValidate
+                    | Self::AdminPolicyPreview
+                    | Self::AdminPolicyDiff
+                    | Self::AdminPolicyWorkflowClose
+                    | Self::AuditFilterTime
+                    | Self::AuditFilterActor
+                    | Self::AuditFilterAction
+                    | Self::AuditFilterTarget
+                    | Self::AuditOpenTarget
+                    | Self::AuditOpenPolicyDiff
+                    | Self::BatchReviewOutcomes
+                    | Self::BatchRetrySelected
+                    | Self::OverviewHealthOpenResource
+                    | Self::OverviewHealthRunSuggestedAction
+                    | Self::ActivityFlowsSelectWindow
+                    | Self::ActivityFlowsAggregate
+                    | Self::ActivityFlowsOpenDevice
+                    | Self::AdminWebhookCreate
+                    | Self::AdminWebhookEdit
+                    | Self::AdminWebhookTest
+                    | Self::AdminWebhookRotateSecret
+                    | Self::AdminWebhookDelete
+                    | Self::AdminLogStreamReplace
+                    | Self::AdminLogStreamDelete
+                    | Self::AdminNetworkLogsSettings
+                    | Self::AccessExplorerAsk
+                    | Self::AccessExplorerOpenRule
+            )
+    }
+
+    pub(crate) const fn is_admin_mutation(self) -> bool {
+        self.is_admin_device_mutation()
+            || self.is_admin_dns_mutation()
+            || self.is_admin_user_mutation()
+            || matches!(
+                self,
+                Self::AdminRoutesReplaceApprovals
+                    | Self::AdminPolicyCandidateDiscard
+                    | Self::AdminPolicyApply
+                    | Self::AdminCredentialAuthKeyCreate
+                    | Self::AdminCredentialRevoke
+                    | Self::ProfileCredentialRemove
+            )
+    }
+
+    pub(crate) const fn is_admin_device_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::AdminDeviceRename
+                | Self::AdminDeviceTagsReplace
+                | Self::AdminDeviceApprove
+                | Self::AdminDeviceRevokeApproval
+                | Self::AdminDeviceKeyExpiryConfigure
+                | Self::AdminDeviceKeyExpireNow
+                | Self::AdminDeviceDelete
+        )
+    }
+
+    pub(crate) const fn is_admin_dns_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::AdminDnsPreferencesEdit
+                | Self::AdminDnsNameserversReplace
+                | Self::AdminDnsSearchPathsReplace
+                | Self::AdminDnsSplitCreate
+                | Self::AdminDnsSplitEdit
+                | Self::AdminDnsSplitRemove
+        )
+    }
+
+    pub(crate) const fn is_admin_user_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::AdminUserApprove
+                | Self::AdminUserRoleChange
+                | Self::AdminUserSuspend
+                | Self::AdminUserRestore
+                | Self::AdminUserDelete
+        )
+    }
+
+    pub(crate) const fn is_service_write(self) -> bool {
+        matches!(
+            self,
+            Self::ServicesServeCreate
+                | Self::ServicesServeEdit
+                | Self::ServicesServeRemove
+                | Self::ServicesServeReset
+                | Self::ServicesFunnelCreate
+                | Self::ServicesFunnelEdit
+                | Self::ServicesFunnelUnpublish
+                | Self::ServicesFunnelReset
+                | Self::DevicesTaildropSend
+                | Self::DevicesTaildropReceive
+                | Self::ServicesDriveShare
+                | Self::ServicesDriveRename
+                | Self::ServicesDriveUnshare
+                | Self::ServicesCertificateObtain
+                | Self::ServicesBugReportCreate
+        )
+    }
+
+    pub(crate) const fn is_taildrive(self) -> bool {
+        matches!(
+            self,
+            Self::ServicesDriveRefresh
+                | Self::ServicesDriveShare
+                | Self::ServicesDriveRename
+                | Self::ServicesDriveUnshare
+                | Self::ServicesDriveEnableAlpha
+        )
+    }
+
+    pub(crate) const fn is_local_service(self) -> bool {
+        self.is_service_write()
+            || matches!(
+                self,
+                Self::ServicesServeRefresh
+                    | Self::ServicesDriveRefresh
+                    | Self::ServicesMetricsRefresh
+                    | Self::ServicesDriveEnableAlpha
+            )
+    }
+
+    pub(crate) const fn is_local_operator(self) -> bool {
+        matches!(
+            self,
+            Self::LocalConnect
+                | Self::LocalDisconnect
+                | Self::LocalPreferencesEdit
+                | Self::LocalExitNodeSelect
+                | Self::LocalRoutesEditAdvertisements
+                | Self::LocalAccountSwitch
+                | Self::LocalAccountLogin
+                | Self::LocalAccountLogout
+                | Self::LocalAccountRemove
+                | Self::LocalSshOpen
+                | Self::LocalNcOpen
+                | Self::LocalSyspolicyReload
+        )
     }
 }
 

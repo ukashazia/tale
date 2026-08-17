@@ -1,3 +1,9 @@
+//! Long-lived access-policy editing workflow.
+//!
+//! A policy operation owns bounded documents and editor artifacts across
+//! validation, preview, remote-conflict, apply, and retention states. It is a
+//! document workflow rather than a generic mutation state machine.
+
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;

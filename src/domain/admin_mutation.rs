@@ -1,3 +1,9 @@
+//! Control-plane mutation lifecycle.
+//!
+//! Admin writes require fresh remote preflight data, resource-scoped locking,
+//! verification, optional audit correlation, and batch outcomes. Those states
+//! are not aliases for the smaller local-command lifecycle.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 

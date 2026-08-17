@@ -1,3 +1,9 @@
+//! Admin resource snapshots, preflight comparisons, and verification adapters.
+//!
+//! Lifecycle ownership remains in `domain::admin_mutation`; this module maps
+//! concrete API resources into that model and does not define another mutation
+//! framework.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::action::{ActionId, Risk};

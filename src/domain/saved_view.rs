@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::private_file::write_private_atomic;
 
 pub const SAVED_VIEW_SCHEMA_VERSION: u32 = 1;
 
@@ -540,30 +541,8 @@ impl SavedViewStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(SavedViewError::Write(error.to_string())),
         }
-        let write_result = (|| {
-            let mut options = OpenOptions::new();
-            options.create_new(true).write(true).read(true);
-            let mut file = options
-                .open(&temporary)
-                .map_err(|error| SavedViewError::Write(error.to_string()))?;
-            set_private_permissions(&file)?;
-            file.write_all(serialized.as_bytes())
-                .map_err(|error| SavedViewError::Write(error.to_string()))?;
-            file.flush()
-                .map_err(|error| SavedViewError::Write(error.to_string()))?;
-            file.sync_all()
-                .map_err(|error| SavedViewError::Write(error.to_string()))?;
-            fs::rename(&temporary, &self.path)
-                .map_err(|error| SavedViewError::Write(error.to_string()))?;
-            Ok::<(), SavedViewError>(())
-        })();
-        if write_result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        write_result?;
-        if let Ok(directory) = File::open(parent) {
-            let _ = directory.sync_all();
-        }
+        write_private_atomic(&temporary, &self.path, serialized.as_bytes())
+            .map_err(|error| SavedViewError::Write(error.to_string()))?;
         Ok(())
     }
 }
@@ -582,16 +561,6 @@ fn ensure_unique_names(views: &[SavedView]) -> Result<(), SavedViewError> {
         if !names.insert(view.name.as_str()) {
             return Err(SavedViewError::DuplicateName(view.name.clone()));
         }
-    }
-    Ok(())
-}
-
-fn set_private_permissions(file: &File) -> Result<(), SavedViewError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| SavedViewError::Write(error.to_string()))?;
     }
     Ok(())
 }

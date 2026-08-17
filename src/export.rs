@@ -1,11 +1,11 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
 use crate::domain::export::{ExportDocument, ExportError};
+use crate::private_file::{WriteStage, write_private_atomic};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ExportFormat {
@@ -67,38 +67,11 @@ pub fn write_atomic(
         std::process::id(),
         suffix
     ));
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true).read(true);
-        let mut file = options
-            .open(&temporary)
-            .map_err(|error| ExportWriteError::NotWritable(error.to_string()))?;
-        set_private_permissions(&file)?;
-        file.write_all(&bytes)
-            .map_err(|error| ExportWriteError::Write(error.to_string()))?;
-        file.flush()
-            .map_err(|error| ExportWriteError::Write(error.to_string()))?;
-        file.sync_all()
-            .map_err(|error| ExportWriteError::Write(error.to_string()))?;
-        fs::rename(&temporary, path).map_err(|error| ExportWriteError::Write(error.to_string()))?;
-        Ok::<(), ExportWriteError>(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result?;
-    if let Ok(directory) = File::open(parent) {
-        let _ = directory.sync_all();
-    }
+    write_private_atomic(&temporary, path, &bytes).map_err(|error| match error.stage() {
+        WriteStage::Open | WriteStage::Permissions => {
+            ExportWriteError::NotWritable(error.to_string())
+        }
+        WriteStage::Write | WriteStage::Rename => ExportWriteError::Write(error.to_string()),
+    })?;
     Ok(path.to_path_buf())
-}
-
-fn set_private_permissions(file: &File) -> Result<(), ExportWriteError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| ExportWriteError::NotWritable(error.to_string()))?;
-    }
-    Ok(())
 }

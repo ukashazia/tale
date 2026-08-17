@@ -1320,19 +1320,7 @@ fn optional_strings(value: Option<&Value>) -> Result<Option<Vec<String>>, LocalD
 }
 
 fn bounded_detail(value: &str) -> String {
-    const LIMIT: usize = 4096;
-    if value.len() <= LIMIT {
-        value.to_owned()
-    } else {
-        let mut end = 0;
-        for (index, character) in value.char_indices() {
-            if index.saturating_add(character.len_utf8()) > LIMIT {
-                break;
-            }
-            end = index.saturating_add(character.len_utf8());
-        }
-        format!("{}\n...[detail truncated]", &value[..end])
-    }
+    crate::detail::bounded_prefix_bytes(value, 4096)
 }
 
 impl fmt::Display for LocalEndpointKind {

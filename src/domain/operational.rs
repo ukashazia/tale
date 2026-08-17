@@ -1,3 +1,9 @@
+//! Typed one-shot operational requests.
+//!
+//! This enum groups payloads that share confirmation and dispatch plumbing. It
+//! intentionally has no lifecycle of its own: local saved-view/export work is
+//! synchronous, while remote operations are tracked by their effect result.
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

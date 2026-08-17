@@ -1,3 +1,9 @@
+//! Local CLI mutation lifecycle.
+//!
+//! These mutations dispatch one local command and verify its effect against the
+//! local daemon. Remote preflight conflicts, audit correlation, and editable
+//! policy documents deliberately belong to their own domain workflows.
+
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
