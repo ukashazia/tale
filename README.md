@@ -266,16 +266,16 @@ file for review, run `tale doctor --output support.json`.
 
 ## Development
 
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --locked
-```
-
 Enter the Nix development shell to use the pinned release tooling:
 
 ```sh
 nix develop
+```
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --locked
 ```
 
 Regenerate the man page and completions after changing the CLI:
