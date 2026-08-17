@@ -1,0 +1,71 @@
+name: Publish Nix flake
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858
+
+      - name: Generate and verify release flake
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          output_directory="$RUNNER_TEMP/tale-nix-flake"
+          archive="$RUNNER_TEMP/tale-nix-flake.tar.gz"
+
+          prefetch_hash() {
+            target="$1"
+            nix store prefetch-file --json \
+              "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/tale-${target}.tar.gz" \
+              | jq --exit-status --raw-output '.hash'
+          }
+
+          python3 packaging/nix/generate_flake.py \
+            --output-dir "$output_directory" \
+            --version "$version" \
+            --aarch64-darwin-hash "$(prefetch_hash aarch64-apple-darwin)" \
+            --aarch64-linux-hash "$(prefetch_hash aarch64-unknown-linux-gnu)" \
+            --x86-64-darwin-hash "$(prefetch_hash x86_64-apple-darwin)" \
+            --x86-64-linux-hash "$(prefetch_hash x86_64-unknown-linux-gnu)"
+
+          nix flake check "$output_directory" --all-systems
+          nix build "$output_directory#packages.x86_64-linux.default" --no-link
+          tar \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C "$RUNNER_TEMP" \
+            -czf "$archive" \
+            tale-nix-flake
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum tale-nix-flake.tar.gz > tale-nix-flake.tar.gz.sha256
+          )
+
+      - name: Upload release flake
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "$RUNNER_TEMP/tale-nix-flake.tar.gz" \
+            "$RUNNER_TEMP/tale-nix-flake.tar.gz.sha256" \
+            --clobber

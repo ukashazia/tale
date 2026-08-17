@@ -1,10 +1,7 @@
 # Tale
 
-Tale is a keyboard-first Tailscale workspace for your terminal. Use it to see
-what is happening on this machine, explore a tailnet, and manage common
-Tailscale resources without jumping between commands and the admin console.
-
-> Tale is experimental while its platform support matrix is being finalized.
+Tale is a keyboard-first terminal workspace for inspecting this machine and
+managing a Tailscale network.
 
 ![Tale showing a device inventory and inspector](docs/assets/tale-devices.png)
 
@@ -38,8 +35,12 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ukashazia/tale/releases
 ### Nix
 
 ```sh
-nix profile install 'github:ukashazia/tale?dir=packaging/nix'
+nix profile install 'tarball+https://github.com/ukashazia/tale/releases/latest/download/tale-nix-flake.tar.gz'
 ```
+
+Each release contains a locked flake for its prebuilt binaries. Replace
+`releases/latest` with `releases/download/vX.Y.Z` to pin a release. The
+repository flake is only a development environment.
 
 ### Debian or Ubuntu
 
@@ -54,11 +55,7 @@ sudo apt install ./tale_VERSION_amd64.deb
 sudo apt install ./tale_VERSION_arm64.deb
 ```
 
-Replace `VERSION` with the release version in the downloaded filename.
-
 ### Arch Linux (AUR)
-
-Using an AUR helper:
 
 ```sh
 yay -S tale-bin
@@ -80,9 +77,6 @@ Once Tale is installed, launch it with:
 tale
 ```
 
-Install Tailscale separately only if you want Tale to inspect or operate the
-current machine.
-
 On your first run:
 
 1. Press `:` and choose `local` to inspect this machine.
@@ -92,18 +86,11 @@ On your first run:
 
 ## Connect a tailnet
 
-Create a profile when you want tailnet-wide inventory or administrative
-actions. On a machine that also runs Tailscale:
+Create a profile for tailnet-wide inventory or administrative actions:
 
 ```sh
 tale auth add ops
 tale --profile ops --read-only
-```
-
-For admin-only use without the `tailscale` command or daemon:
-
-```sh
-tale auth add ops
 tale --no-local --profile ops --read-only
 ```
 
@@ -111,9 +98,8 @@ tale --no-local --profile ops --read-only
 not disable profile-backed Control API views or actions.
 
 `auth add` prompts for the tailnet, credential type, and secret. Start with a
-least-privilege credential and keep `--read-only` enabled until you intentionally
-need write actions. Tale stores credentials separately from its shareable
-configuration.
+least-privilege credential and keep `--read-only` enabled until you need write
+actions. Tale stores credentials separately from its shareable configuration.
 
 To add an access token without an interactive secret prompt:
 
@@ -130,17 +116,9 @@ Tale reads `config.toml` from its platform configuration directory. Run
 command-line flags, environment variables, this file, then defaults.
 
 The checked-in [configuration schema](docs/tale-config.schema.json) provides
-completion, validation, and hover help in TOML-aware editors. Put this comment
-at the very top of a configuration file to opt in with Taplo and compatible
-TOML language servers:
-
-```toml
-#:schema https://raw.githubusercontent.com/ukashazia/tale/main/docs/tale-config.schema.json
-```
-
-Only include settings you want to override. This annotated example shows every
-available section; credential secrets belong in the separate credential store,
-not in `config.toml`. See [Credential store](#credential-store) for its format.
+completion, validation, and hover help. The first line of this example enables
+it in Taplo and compatible language servers. Only include settings you want to
+override; credentials do not belong in `config.toml`.
 
 ```toml
 #:schema https://raw.githubusercontent.com/ukashazia/tale/main/docs/tale-config.schema.json
@@ -188,10 +166,8 @@ credential_file = "~/.config/tale/credentials.toml"
 
 ### Credential store
 
-`credentials.toml` is deliberately separate from shareable configuration and
-contains plaintext secrets. Prefer `tale auth add` to create or rotate records:
-it writes the file atomically with owner-only permissions. Do not commit, share,
-or add this file to a configuration repository.
+`credentials.toml` contains plaintext secrets. Prefer `tale auth add`, which
+writes it atomically with owner-only permissions. Never commit or share it.
 
 Each `[credentials.NAME]` table matches a profile's `credential = "NAME"`
 value. An access-token record looks like this:
@@ -254,8 +230,6 @@ generated [`tale(1)` man page](docs/cli/tale.1).
 
 ## Troubleshooting
 
-- Run `tale config check` when Tale rejects its configuration.
-- Run `tale doctor` for a redacted report that is safe to inspect locally.
 - Use `--tailscale-path PATH` if the Tailscale executable is not on `PATH`.
 - Use `NO_COLOR=1 tale` if terminal colors render incorrectly.
 - If the terminal is left in an unusual state after an external interruption,
@@ -266,26 +240,15 @@ file for review, run `tale doctor --output support.json`.
 
 ## Development
 
-Enter the Nix development shell to use the pinned release tooling:
+Enter the pinned development environment and run the complete repository gate:
 
 ```sh
 nix develop
+just check
 ```
 
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --locked
-```
-
-Regenerate the man page and completions after changing the CLI:
+After changing the CLI, regenerate the man page and completions:
 
 ```sh
 cargo run --locked --bin generate-artifacts -- --output-dir .
-```
-
-Validate generated release automation after changing distribution settings:
-
-```sh
-dist generate --check
 ```

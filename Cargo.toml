@@ -28,6 +28,8 @@ tap = "ukashazia/homebrew-tale"
 publish-jobs = ["homebrew"]
 pr-run-mode = "plan"
 plan-jobs = ["./ci"]
+post-announce-jobs = ["./publish-nix-flake"]
+github-custom-job-permissions = { publish-nix-flake = { contents = "write" } }
 install-path = "CARGO_HOME"
 hosting = "github"
 install-updater = false
