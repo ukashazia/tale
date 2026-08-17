@@ -27,6 +27,7 @@ include = ["NOTICE", "docs/cli/tale.1", "completions"]
 tap = "ukashazia/homebrew-tale"
 publish-jobs = ["homebrew"]
 pr-run-mode = "plan"
+plan-jobs = ["./ci"]
 install-path = "CARGO_HOME"
 hosting = "github"
 install-updater = false
