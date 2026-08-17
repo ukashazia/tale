@@ -18,5 +18,6 @@ check-artifacts:
 
 [arg("bump", long, help="SemVer release level or version")]
 prepare-release bump:
-    cargo run --locked --bin generate-artifacts -- --output-dir .
     cargo release version {{ bump }} --execute --no-confirm --allow-branch '*'
+    cargo run --locked --bin generate-artifacts -- --output-dir .
+    just check
