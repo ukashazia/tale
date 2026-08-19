@@ -314,11 +314,15 @@ pub fn preview_lines(
             split_list(source.values.get("tags")),
             tags.iter().map(String::as_str).collect(),
         ),
-        AdminChange::DeviceApproval { authorized } => vec![format!(
-            "approval: {} -> {}",
-            display_field(source, "authorized"),
-            authorized
-        )],
+        AdminChange::DeviceApproval { authorized } => {
+            let current = match source.values.get("authorized").map(String::as_str) {
+                Some("true") => "approved",
+                Some("false") => "not approved",
+                _ => "unknown",
+            };
+            let requested = if *authorized { "approved" } else { "revoked" };
+            vec![format!("Approval: {current} -> {requested}")]
+        }
         AdminChange::DeviceKeyExpiry { disabled } => vec![
             format!(
                 "key expiry disabled: {} -> {}",

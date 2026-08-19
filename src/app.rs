@@ -3848,95 +3848,7 @@ fn admin_preview_context(
         | AdminChange::DeviceApproval { .. }
         | AdminChange::DeviceKeyExpiry { .. }
         | AdminChange::DeviceExpireNow
-        | AdminChange::DeviceDelete => {
-            let mut lines = vec![format!("stable device ID: {}", request.target_id)];
-            lines.extend([
-                format!(
-                    "owner: {}",
-                    fields
-                        .values
-                        .get("owner")
-                        .filter(|value| !value.is_empty())
-                        .map_or("not returned", String::as_str)
-                ),
-                format!(
-                    "tags: {}",
-                    fields
-                        .values
-                        .get("tags")
-                        .filter(|value| !value.is_empty())
-                        .map_or("none", String::as_str)
-                ),
-                format!(
-                    "approval: {}",
-                    fields
-                        .values
-                        .get("authorized")
-                        .filter(|value| !value.is_empty())
-                        .map_or("unknown", String::as_str)
-                ),
-                format!(
-                    "online observation: {}",
-                    fields
-                        .values
-                        .get("connectedToControl")
-                        .filter(|value| !value.is_empty())
-                        .map_or("unknown", String::as_str)
-                ),
-                format!(
-                    "key expiry disabled: {}",
-                    fields
-                        .values
-                        .get("keyExpiryDisabled")
-                        .filter(|value| !value.is_empty())
-                        .map_or("unknown", String::as_str)
-                ),
-                format!(
-                    "key expiry timestamp: {}",
-                    fields
-                        .values
-                        .get("expires")
-                        .filter(|value| !value.is_empty())
-                        .map_or("not returned", String::as_str)
-                ),
-                format!(
-                    "advertised routes: {}",
-                    fields
-                        .values
-                        .get("advertisedRoutes")
-                        .filter(|value| !value.is_empty())
-                        .map_or("none", String::as_str)
-                ),
-                format!(
-                    "approved routes: {}",
-                    fields
-                        .values
-                        .get("enabledRoutes")
-                        .filter(|value| !value.is_empty())
-                        .map_or("none", String::as_str)
-                ),
-            ]);
-            if matches!(change, AdminChange::DeviceRename { .. }) {
-                lines.push(format!(
-                    "current MagicDNS/hostname: {}",
-                    fields
-                        .values
-                        .get("hostname")
-                        .filter(|value| !value.is_empty())
-                        .map_or("not returned", String::as_str)
-                ));
-            }
-            if matches!(change, AdminChange::DeviceTags { .. }) {
-                lines.push(
-                    "tag replacement may change device ownership identity; resulting identity is shown only after verification"
-                        .to_owned(),
-                );
-            }
-            if matches!(change, AdminChange::DeviceApproval { .. }) {
-                lines.push("device approval is independent of Tailnet Lock signing".to_owned());
-            }
-            lines
-        }
+        | AdminChange::DeviceDelete => device_confirmation_context(request, fields),
         AdminChange::DeviceRoutes { .. } => vec![
             format!("advertiser: {}", request.target_id),
             format!(
@@ -3961,55 +3873,78 @@ fn admin_preview_context(
         | AdminChange::UserRole { .. }
         | AdminChange::UserSuspend
         | AdminChange::UserRestore
-        | AdminChange::UserDelete => vec![
-            format!(
-                "user ID: {}",
-                fields
-                    .values
-                    .get("id")
-                    .filter(|value| !value.is_empty())
-                    .map_or(request.target_id.as_str(), String::as_str)
-            ),
-            format!(
-                "login: {}",
-                fields
-                    .values
-                    .get("loginName")
-                    .filter(|value| !value.is_empty())
-                    .map_or("not returned", String::as_str)
-            ),
-            format!(
-                "status: {}",
-                fields
-                    .values
-                    .get("status")
-                    .filter(|value| !value.is_empty())
-                    .map_or("unknown", String::as_str)
-            ),
-            format!(
-                "role: {}",
-                fields
-                    .values
-                    .get("role")
-                    .filter(|value| !value.is_empty())
-                    .map_or("unknown", String::as_str)
-            ),
-            format!(
-                "owned device count: {}",
-                fields
-                    .values
-                    .get("deviceCount")
-                    .filter(|value| !value.is_empty())
-                    .map_or("unknown", String::as_str)
-            ),
-            "role meanings and access enforcement remain server authoritative".to_owned(),
-        ],
+        | AdminChange::UserDelete => user_confirmation_context(request, fields),
         AdminChange::DnsNameservers { .. }
         | AdminChange::DnsPreferences { .. }
         | AdminChange::DnsSearchPaths { .. }
         | AdminChange::DnsSplitMapping { .. } => {
             vec!["configuration changes are not claimed to have reached every client".to_owned()]
         }
+    }
+}
+
+fn device_confirmation_context(
+    request: &AdminMutationRequest,
+    fields: &AdminSnapshotFields,
+) -> Vec<String> {
+    let name = fields
+        .values
+        .get("name")
+        .or_else(|| fields.values.get("hostname"))
+        .filter(|value| !value.is_empty())
+        .map_or(request.target_id.as_str(), String::as_str);
+    let mut lines = vec![format!("Device: {name}")];
+    match &request.change {
+        AdminChange::DeviceTags { .. } | AdminChange::DeviceDelete => {
+            push_present_field(&mut lines, fields, "owner", "Owner");
+            push_present_field(&mut lines, fields, "tags", "Tags");
+        }
+        AdminChange::DeviceKeyExpiry { .. } | AdminChange::DeviceExpireNow => {
+            if let Some(expires) = fields
+                .values
+                .get("expires")
+                .and_then(|value| value.parse::<Timestamp>().ok())
+            {
+                lines.push(format!(
+                    "Current key expiry: {}",
+                    format_audit_timestamp(expires)
+                ));
+            }
+        }
+        AdminChange::DeviceRename { .. } | AdminChange::DeviceApproval { .. } => {}
+        _ => {}
+    }
+    lines
+}
+
+fn user_confirmation_context(
+    request: &AdminMutationRequest,
+    fields: &AdminSnapshotFields,
+) -> Vec<String> {
+    let login = fields
+        .values
+        .get("loginName")
+        .filter(|value| !value.is_empty())
+        .map_or(request.target_id.as_str(), String::as_str);
+    let mut lines = vec![format!("User: {login}")];
+    if matches!(
+        &request.change,
+        AdminChange::UserSuspend | AdminChange::UserDelete
+    ) {
+        push_present_field(&mut lines, fields, "role", "Role");
+        push_present_field(&mut lines, fields, "deviceCount", "Owned devices");
+    }
+    lines
+}
+
+fn push_present_field(
+    lines: &mut Vec<String>,
+    fields: &AdminSnapshotFields,
+    key: &str,
+    label: &str,
+) {
+    if let Some(value) = fields.values.get(key).filter(|value| !value.is_empty()) {
+        lines.push(format!("{label}: {value}"));
     }
 }
 
@@ -4531,5 +4466,67 @@ fn instant_after(base: Instant, delay: Duration) -> Instant {
     match base.checked_add(delay) {
         Some(value) => value,
         None => base,
+    }
+}
+
+#[cfg(test)]
+mod admin_confirmation_context_tests {
+    use super::*;
+    use crate::action::Risk;
+
+    #[test]
+    fn device_approval_confirmation_keeps_only_decision_relevant_context() {
+        let fields = AdminSnapshotFields::with([
+            ("name".to_owned(), "vault.example.ts.net".to_owned()),
+            ("owner".to_owned(), String::new()),
+            ("tags".to_owned(), "tag:k8s".to_owned()),
+            ("authorized".to_owned(), "true".to_owned()),
+            ("connectedToControl".to_owned(), "true".to_owned()),
+            ("keyExpiryDisabled".to_owned(), "true".to_owned()),
+            ("expires".to_owned(), "1786791665".to_owned()),
+            ("advertisedRoutes".to_owned(), String::new()),
+            ("enabledRoutes".to_owned(), String::new()),
+        ]);
+        let request = AdminMutationRequest::new(
+            1,
+            "audit",
+            "device-id",
+            fields.clone(),
+            AdminChange::DeviceApproval { authorized: false },
+            ActionId::AdminDeviceRevokeApproval,
+            Risk::DestructiveOrSecret,
+        );
+
+        assert_eq!(
+            admin_preview_context(&request, &fields),
+            vec!["Device: vault.example.ts.net"]
+        );
+        assert_eq!(
+            crate::admin::mutation::preview_lines(&request.base_snapshot, &fields, &request.change),
+            vec!["Approval: approved -> revoked"]
+        );
+    }
+
+    #[test]
+    fn key_expiry_confirmation_formats_the_timestamp_for_people() {
+        let fields = AdminSnapshotFields::with([
+            ("name".to_owned(), "vault.example.ts.net".to_owned()),
+            ("expires".to_owned(), "1786791665".to_owned()),
+        ]);
+        let request = AdminMutationRequest::new(
+            1,
+            "audit",
+            "device-id",
+            fields.clone(),
+            AdminChange::DeviceExpireNow,
+            ActionId::AdminDeviceKeyExpireNow,
+            Risk::DestructiveOrSecret,
+        );
+
+        let context = admin_preview_context(&request, &fields);
+        assert_eq!(context.len(), 2);
+        assert_eq!(context[0], "Device: vault.example.ts.net");
+        assert!(context[1].starts_with("Current key expiry: 2026-"));
+        assert!(!context[1].contains("1786791665"));
     }
 }

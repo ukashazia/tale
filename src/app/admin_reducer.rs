@@ -5,11 +5,7 @@ impl App {
         match action_id {
             ActionId::AdminDeviceRename
             | ActionId::AdminDeviceTagsReplace
-            | ActionId::AdminDeviceApprove
-            | ActionId::AdminDeviceRevokeApproval
             | ActionId::AdminDeviceKeyExpiryConfigure
-            | ActionId::AdminDeviceKeyExpireNow
-            | ActionId::AdminDeviceDelete
             | ActionId::AdminRoutesReplaceApprovals
             | ActionId::AdminDnsPreferencesEdit
             | ActionId::AdminDnsNameserversReplace
@@ -17,11 +13,29 @@ impl App {
             | ActionId::AdminDnsSplitCreate
             | ActionId::AdminDnsSplitEdit
             | ActionId::AdminDnsSplitRemove
-            | ActionId::AdminUserApprove
-            | ActionId::AdminUserRoleChange
-            | ActionId::AdminUserSuspend
-            | ActionId::AdminUserRestore
-            | ActionId::AdminUserDelete => self.open_admin_form(action_id),
+            | ActionId::AdminUserRoleChange => self.open_admin_form(action_id),
+            ActionId::AdminDeviceApprove => {
+                self.open_admin_change(action_id, AdminChange::DeviceApproval { authorized: true })
+            }
+            ActionId::AdminDeviceRevokeApproval => {
+                self.open_admin_change(action_id, AdminChange::DeviceApproval { authorized: false })
+            }
+            ActionId::AdminDeviceKeyExpireNow => {
+                self.open_admin_change(action_id, AdminChange::DeviceExpireNow)
+            }
+            ActionId::AdminDeviceDelete => {
+                self.open_admin_change(action_id, AdminChange::DeviceDelete)
+            }
+            ActionId::AdminUserApprove => {
+                self.open_admin_change(action_id, AdminChange::UserApproval)
+            }
+            ActionId::AdminUserSuspend => {
+                self.open_admin_change(action_id, AdminChange::UserSuspend)
+            }
+            ActionId::AdminUserRestore => {
+                self.open_admin_change(action_id, AdminChange::UserRestore)
+            }
+            ActionId::AdminUserDelete => self.open_admin_change(action_id, AdminChange::UserDelete),
             ActionId::AdminPolicyEdit => self.open_policy_workflow(),
             ActionId::AdminPolicyEditorReopen => self.reopen_policy_editor(),
             ActionId::AdminPolicyCandidateDiscard => self.open_policy_discard_confirmation(),
@@ -102,6 +116,22 @@ impl App {
 }
 
 impl App {
+    /// Starts a mutation that has no values to ask for. The verified remote
+    /// preflight supplies the preview and confirmation context.
+    pub(super) fn open_admin_change(
+        &mut self,
+        action_id: ActionId,
+        change: AdminChange,
+    ) -> Vec<Effect> {
+        match self.start_admin_change(action_id, change) {
+            Ok(effects) => effects,
+            Err(error) => {
+                self.runtime_error = Some(error);
+                Vec::new()
+            }
+        }
+    }
+
     pub(super) fn open_admin_form(&mut self, action_id: ActionId) -> Vec<Effect> {
         match action_id {
             ActionId::AdminWebhookCreate | ActionId::AdminWebhookEdit => {
@@ -915,44 +945,53 @@ impl App {
                 return self.set_form_error(error);
             }
         }
-        if !self.admin_mutation_available(state.action_id) {
-            let reason = self
-                .action_unavailable_reason(state.action_id)
-                .unwrap_or_else(|| "admin mutation is unavailable".to_owned());
-            return self.set_form_error(reason);
-        }
         if state.action_id == ActionId::AdminRoutesReplaceApprovals {
             return self.accept_admin_batch_form(state, change);
         }
-        let Some(profile) = self.admin.profile.clone() else {
-            return Vec::new();
-        };
-        let (target_id, base_snapshot) = match self.admin_base_snapshot(&change) {
-            Ok(value) => value,
+        let effects = match self.start_admin_change(state.action_id, change) {
+            Ok(effects) => effects,
             Err(error) => return self.set_form_error(error),
         };
+        self.overlays.pop();
+        effects
+    }
+
+    pub(super) fn start_admin_change(
+        &mut self,
+        action_id: ActionId,
+        change: AdminChange,
+    ) -> Result<Vec<Effect>, String> {
+        if !self.admin_mutation_available(action_id) {
+            return Err(self
+                .action_unavailable_reason(action_id)
+                .unwrap_or_else(|| "admin mutation is unavailable".to_owned()));
+        }
+        let Some(profile) = self.admin.profile.clone() else {
+            return Err("an authenticated admin profile is required".to_owned());
+        };
+        let (target_id, base_snapshot) = self.admin_base_snapshot(&change)?;
         let mutation_id = self.next_mutation_id;
         self.next_mutation_id = self.next_mutation_id.saturating_add(1);
+        let risk = change.risk();
         let mut request = crate::domain::admin_mutation::AdminMutation::new(
             mutation_id,
             profile,
             target_id,
             base_snapshot,
-            change.clone(),
-            state.action_id,
-            change.risk(),
+            change,
+            action_id,
+            risk,
         );
-        if let Err(error) = request.begin_preflight() {
-            self.runtime_error = Some(error.to_string());
-            return Vec::new();
-        }
+        request
+            .begin_preflight()
+            .map_err(|error| error.to_string())?;
         let effects = self.start_admin_preflight(request);
         if effects.is_empty() {
-            return self
-                .set_form_error("a conflicting admin mutation or read is running; preview again");
+            return Err(
+                "a conflicting admin mutation or read is running; preview again".to_owned(),
+            );
         }
-        self.overlays.pop();
-        effects
+        Ok(effects)
     }
 
     pub(super) fn accept_admin_batch_form(

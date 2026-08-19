@@ -480,6 +480,37 @@ fn device_rename_starts_with_the_short_machine_name() {
 }
 
 #[test]
+fn device_danger_actions_start_verified_preflight_without_a_form() {
+    for action_id in [
+        ActionId::AdminDeviceRevokeApproval,
+        ActionId::AdminDeviceKeyExpireNow,
+        ActionId::AdminDeviceDelete,
+    ] {
+        let Some(mut app) = local_app(true) else {
+            return;
+        };
+        app.set_route(Route::Devices);
+
+        let effects = app.dispatch_action(action_id);
+
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::StartAdminPreflight { request, .. }]
+                    if request.action_id == action_id
+                        && request.change.action_id() == action_id
+            ),
+            "{action_id:?} did not start its verified admin preflight"
+        );
+        assert!(app.overlays.is_empty());
+        assert_ne!(
+            app.runtime_error.as_deref(),
+            Some("this action has no admin form")
+        );
+    }
+}
+
+#[test]
 fn danger_menu_limits_destructive_fill_to_the_heading() {
     let Some(mut app) = local_app(true) else {
         return;
