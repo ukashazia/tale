@@ -159,8 +159,22 @@ impl LocalDaemonError {
 pub struct NotifyWatchMask(u64);
 
 impl NotifyWatchMask {
+    const ENGINE_UPDATES: u64 = 1 << 0;
+    const INITIAL_STATE: u64 = 1 << 1;
+    const INITIAL_PREFERENCES: u64 = 1 << 2;
+    const INITIAL_NET_MAP: u64 = 1 << 3;
+    const INITIAL_HEALTH_STATE: u64 = 1 << 7;
+    const PEER_CHANGES: u64 = 1 << 12;
+
     pub const fn tale() -> Self {
-        Self(4495)
+        Self(
+            Self::ENGINE_UPDATES
+                | Self::INITIAL_STATE
+                | Self::INITIAL_PREFERENCES
+                | Self::INITIAL_NET_MAP
+                | Self::INITIAL_HEALTH_STATE
+                | Self::PEER_CHANGES,
+        )
     }
 
     pub const fn value(self) -> u64 {

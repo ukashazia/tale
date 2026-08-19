@@ -16,6 +16,23 @@ use tale::local::daemon::{
 use tale::local::ipn::{ObserverConfig, ObserverEvent, ReadSerializers};
 use tale::local::process::Cancellation;
 
+#[test]
+fn tale_watch_mask_keeps_peer_deltas_unthrottled() {
+    let mask = NotifyWatchMask::tale().value();
+
+    assert_eq!(mask, 4239);
+    assert_eq!(
+        mask & (1 << 8),
+        0,
+        "rate limiting corrupts peer delta streams"
+    );
+    assert_ne!(
+        mask & (1 << 12),
+        0,
+        "peer change notifications are required"
+    );
+}
+
 const STATUS: &str = include_str!("fixtures/tailscale/1.98.9/linux/status.json");
 const PREFS: &[u8] = include_bytes!("fixtures/tailscale/1.98.9/linux/prefs.json");
 
@@ -114,7 +131,7 @@ async fn observer_response(
     if let Ok(mut values) = paths.lock() {
         values.push(path.clone());
     }
-    if path.ends_with("/localapi/v0/watch-ipn-bus?mask=4495") {
+    if path.ends_with("/localapi/v0/watch-ipn-bus?mask=4239") {
         stream
             .write_all(
                 b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTailscale-Version: 1.98.9\r\n\r\n",
@@ -278,7 +295,7 @@ async fn observer_accepts_watch_before_bootstrap_reads_and_cancels_idle_stream()
     let first_path = paths.lock().ok().and_then(|values| values.first().cloned());
     assert!(matches!(
         first_path.as_deref(),
-        Some("http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=4495")
+        Some("http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=4239")
     ));
     cancellation.cancel();
     let joined = tokio::time::timeout(Duration::from_secs(1), observer).await;
