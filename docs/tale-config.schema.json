@@ -23,6 +23,9 @@
     "history": {
       "$ref": "#/$defs/history"
     },
+    "experimental_features": {
+      "$ref": "#/$defs/experimental_features"
+    },
     "profiles": {
       "type": "object",
       "description": "Named Control API profiles. A profile is active only when selected with --profile or in the Profiles view.",
@@ -175,6 +178,18 @@
           "maximum": 5000,
           "default": 200,
           "description": "Maximum number of stored task records."
+        }
+      }
+    },
+    "experimental_features": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Opt-in features whose behavior and interface may change.",
+      "properties": {
+        "saved_views": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable creating, applying, replacing, renaming, and deleting saved views."
         }
       }
     },

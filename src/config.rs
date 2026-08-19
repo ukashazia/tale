@@ -62,6 +62,7 @@ pub struct ResolvedConfig {
     pub admin: AdminConfig,
     pub ui: UiConfig,
     pub history: HistoryConfig,
+    pub experimental_features: ExperimentalFeaturesConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +203,12 @@ pub struct HistoryConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExperimentalFeaturesConfig {
+    pub saved_views: bool,
+    pub saved_views_source: ValueSource,
+}
+
+#[derive(Debug, Clone)]
 pub struct ProfileConfig {
     pub tailnet: String,
     pub read_only: bool,
@@ -295,6 +302,7 @@ struct FileConfig {
     admin: FileAdmin,
     ui: FileUi,
     history: FileHistory,
+    experimental_features: FileExperimentalFeatures,
     profiles: BTreeMap<String, ProfileConfig>,
 }
 
@@ -329,6 +337,11 @@ struct FileUi {
 struct FileHistory {
     persist_tasks: Option<bool>,
     max_tasks: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FileExperimentalFeatures {
+    saved_views: Option<bool>,
 }
 
 pub fn resolve(
@@ -519,6 +532,13 @@ pub fn resolve(
             persist_tasks_source: source_for(file.history.persist_tasks.is_some()),
             max_tasks_source: source_for(file.history.max_tasks.is_some()),
         },
+        experimental_features: ExperimentalFeaturesConfig {
+            saved_views: file
+                .experimental_features
+                .saved_views
+                .is_some_and(|value| value),
+            saved_views_source: source_for(file.experimental_features.saved_views.is_some()),
+        },
     })
 }
 
@@ -687,6 +707,7 @@ fn read_file_config(path: &Path) -> Result<FileConfig, ConfigError> {
             admin: FileAdmin::default(),
             ui: FileUi::default(),
             history: FileHistory::default(),
+            experimental_features: FileExperimentalFeatures::default(),
             profiles: BTreeMap::new(),
         }),
         Err(_) => Err(ConfigError::ReadFailure),
@@ -698,7 +719,15 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
     check_unknown(
         &root,
         "",
-        &["read_only", "local", "admin", "ui", "history", "profiles"],
+        &[
+            "read_only",
+            "local",
+            "admin",
+            "ui",
+            "history",
+            "experimental_features",
+            "profiles",
+        ],
     )?;
 
     let read_only = optional_bool(&root, "read_only", "read_only")?;
@@ -796,6 +825,21 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
         )?,
     };
 
+    let experimental_features_table =
+        optional_table(&root, "experimental_features", "experimental_features")?;
+    check_unknown(
+        experimental_features_table,
+        "experimental_features",
+        &["saved_views"],
+    )?;
+    let experimental_features = FileExperimentalFeatures {
+        saved_views: optional_bool(
+            experimental_features_table,
+            "saved_views",
+            "experimental_features.saved_views",
+        )?,
+    };
+
     let profiles_table = optional_table(&root, "profiles", "profiles")?;
     let mut profiles = BTreeMap::new();
     for (name, profile_value) in profiles_table {
@@ -864,6 +908,7 @@ fn parse_file_config(contents: &str) -> Result<FileConfig, ConfigError> {
         admin,
         ui,
         history,
+        experimental_features,
         profiles,
     })
 }
@@ -1209,6 +1254,11 @@ impl ResolvedConfig {
                 name: "history.max_tasks",
                 value: self.history.max_tasks.to_string(),
                 source: self.history.max_tasks_source,
+            },
+            SettingDisplay {
+                name: "experimental_features.saved_views",
+                value: self.experimental_features.saved_views.to_string(),
+                source: self.experimental_features.saved_views_source,
             },
         ]
     }

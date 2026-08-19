@@ -154,6 +154,9 @@ read_only = true
 theme = "terminal" # tailscale-dark, tailscale-light, or terminal
 mouse = false
 time_zone = "local" # local or utc
+
+[experimental_features]
+saved_views = false
 ```
 
 The checked-in [configuration schema](docs/tale-config.schema.json) documents

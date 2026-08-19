@@ -824,6 +824,17 @@ impl App {
     }
 
     pub(super) fn local_action_available(&self, action_id: ActionId) -> bool {
+        if matches!(
+            action_id,
+            ActionId::SavedViewCreate
+                | ActionId::SavedViewReplace
+                | ActionId::SavedViewRename
+                | ActionId::SavedViewDelete
+                | ActionId::SavedViewApply
+        ) && !self.resolved_config.experimental_features.saved_views
+        {
+            return false;
+        }
         if action_id == ActionId::ViewServices {
             return self.route_unavailable_reason(Route::Services).is_none();
         }

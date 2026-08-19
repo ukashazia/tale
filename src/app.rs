@@ -1709,10 +1709,13 @@ impl App {
         } else {
             LocalPreferencesResource::new()
         };
-        let saved_views_load = crate::saved_views::SavedViewsState::load(&config.paths.state_dir);
-        let (saved_views, saved_views_error) = match saved_views_load {
-            Ok(value) => (Some(value), None),
-            Err(error) => (None, Some(format!("saved-view state is invalid: {error}"))),
+        let (saved_views, saved_views_error) = if config.experimental_features.saved_views {
+            match crate::saved_views::SavedViewsState::load(&config.paths.state_dir) {
+                Ok(value) => (Some(value), None),
+                Err(error) => (None, Some(format!("saved-view state is invalid: {error}"))),
+            }
+        } else {
+            (None, None)
         };
         let initial_route = if source_mode == SourceMode::Unavailable && admin.profile.is_none() {
             Route::Overview

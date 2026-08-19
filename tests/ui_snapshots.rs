@@ -112,6 +112,7 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
         let app = populated_app();
         assert!(app.is_some());
         if let Some(mut app) = app {
+            app.resolved_config.experimental_features.saved_views = true;
             press(&mut app, KeyCode::Char(':'));
             let _ = app.update(Event::Input(InputEvent::Paste("dev".to_owned())));
             let lines = lines_at(&app, width, height);
@@ -992,6 +993,9 @@ fn terminal_group_headings_keep_accent_fill_with_dark_ink() {
         let Some(mut app) = populated_app() else {
             return;
         };
+        if key == KeyCode::Char('a') {
+            app.resolved_config.experimental_features.saved_views = true;
+        }
         app.theme = Theme::new(ThemeId::Terminal, ColorCapability::TrueColor);
         press(&mut app, key);
         assert!(heading_is_styled(&app, heading), "unstyled {heading}");

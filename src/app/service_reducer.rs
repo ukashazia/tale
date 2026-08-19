@@ -495,14 +495,16 @@ impl App {
         // user owns, so offering to export it or to name a view of it would be
         // offering something with no subject.
         if !matches!(self.current_route(), Route::Profiles | Route::Config) {
-            actions.extend([
-                ActionId::SavedViewCreate,
-                ActionId::SavedViewReplace,
-                ActionId::SavedViewRename,
-                ActionId::SavedViewDelete,
-                ActionId::SavedViewApply,
-                ActionId::CollectionExport,
-            ]);
+            if self.resolved_config.experimental_features.saved_views {
+                actions.extend([
+                    ActionId::SavedViewCreate,
+                    ActionId::SavedViewReplace,
+                    ActionId::SavedViewRename,
+                    ActionId::SavedViewDelete,
+                    ActionId::SavedViewApply,
+                ]);
+            }
+            actions.push(ActionId::CollectionExport);
         }
         match self.current_route() {
             Route::Overview => actions.extend([

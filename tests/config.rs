@@ -179,6 +179,11 @@ fn theme_is_strict_and_defaults_to_terminal() {
     if let Ok(resolved) = missing {
         assert_eq!(resolved.ui.theme, ThemeId::Terminal);
         assert_eq!(resolved.ui.theme_source, ValueSource::Default);
+        assert!(!resolved.experimental_features.saved_views);
+        assert_eq!(
+            resolved.experimental_features.saved_views_source,
+            ValueSource::Default
+        );
     }
 
     let file = root.join("config.toml");
@@ -204,6 +209,29 @@ fn theme_is_strict_and_defaults_to_terminal() {
         invalid,
         Err(config::ConfigError::InvalidField { field, .. }) if field == "ui.theme"
     ));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn saved_views_are_an_opt_in_experimental_feature() {
+    let root =
+        std::env::temp_dir().join(format!("tale-experimental-config-{}", std::process::id()));
+    let _ = fs::create_dir_all(&root);
+    let file = root.join("config.toml");
+    assert!(fs::write(&file, "[experimental_features]\nsaved_views = true\n").is_ok());
+    let resolved = config::resolve(
+        &cli(Some(file)),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(resolved.is_ok());
+    if let Ok(resolved) = resolved {
+        assert!(resolved.experimental_features.saved_views);
+        assert_eq!(
+            resolved.experimental_features.saved_views_source,
+            ValueSource::File
+        );
+    }
     let _ = fs::remove_dir_all(root);
 }
 

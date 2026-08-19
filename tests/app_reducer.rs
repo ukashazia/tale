@@ -659,6 +659,7 @@ fn transient_prefix_keeps_catalog_and_disabled_leaf_reports_in_place() {
     let app = mock_app();
     assert!(app.is_some());
     if let Some(mut app) = app {
+        app.resolved_config.experimental_features.saved_views = true;
         load_app(&mut app);
         app.set_route(Route::Overview);
         press(&mut app, KeyCode::Char('a'));

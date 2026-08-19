@@ -875,6 +875,9 @@ fn saved_view_form_names_the_current_view_without_exposing_storage_syntax() {
     let Some(mut app) = mock_app() else {
         return;
     };
+    app.resolved_config.experimental_features.saved_views = true;
+    app.saved_views =
+        tale::saved_views::SavedViewsState::load(&app.resolved_config.paths.state_dir).ok();
     app.set_route(Route::Devices);
     let _ = app.dispatch_action(ActionId::SavedViewCreate);
     assert!(matches!(app.overlays.last(), Some(Overlay::Form(_))));
@@ -887,6 +890,21 @@ fn saved_view_form_names_the_current_view_without_exposing_storage_syntax() {
                 .all(|field| !matches!(field.key, "columns" | "filter" | "sort" | "wide"))
         );
     }
+}
+
+#[test]
+fn saved_views_are_hidden_when_the_experimental_feature_is_disabled() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.set_route(Route::Devices);
+    assert!(app.saved_views.is_none());
+    assert!(
+        !app.contextual_actions()
+            .contains(&ActionId::SavedViewCreate)
+    );
+    let _ = app.dispatch_action(ActionId::SavedViewCreate);
+    assert!(!matches!(app.overlays.last(), Some(Overlay::Form(_))));
 }
 
 #[test]
