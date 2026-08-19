@@ -56,7 +56,7 @@ fn render_dns_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.theme.style(theme::StyleRole::TextMuted),
         )));
     }
-    panel::render_wrapped(frame, app, area, " diagnostics ", lines);
+    panel::render(frame, app, area, " diagnostics ", lines);
 }
 
 fn tab_line(app: &App) -> Line<'static> {

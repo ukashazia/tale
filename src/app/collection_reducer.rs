@@ -581,12 +581,16 @@ impl App {
 
     pub(super) fn access_max_scroll(&self) -> usize {
         let frame = self.frame_layout();
-        crate::ui::views::access::max_scroll(self, frame.content.height)
+        crate::ui::views::access::max_scroll(self, frame.content.width, frame.content.height)
     }
 
     pub(super) fn device_detail_max_scroll(&self) -> usize {
         let frame = self.frame_layout();
-        crate::ui::components::inspector::device_detail_max_scroll(self, frame.content.height)
+        crate::ui::components::inspector::device_detail_max_scroll(
+            self,
+            frame.content.width,
+            frame.content.height,
+        )
     }
 
     pub(super) fn clamp_device_detail_scroll(&mut self) {

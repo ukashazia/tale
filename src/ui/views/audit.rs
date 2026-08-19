@@ -162,7 +162,7 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
     ))];
     lines.extend(grid::detail(app, &pairs));
     lines.extend(delivery_summary(app));
-    panel::render_focusable_wrapped(
+    panel::render_focusable(
         frame,
         app,
         area,
@@ -196,7 +196,7 @@ fn delivery_summary(app: &App) -> Vec<Line<'static>> {
 }
 
 fn render_delivery(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    panel::render_wrapped(frame, app, area, "delivery", delivery_summary(app));
+    panel::render(frame, app, area, "delivery", delivery_summary(app));
 }
 
 fn push_optional(

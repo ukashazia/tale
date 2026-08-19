@@ -101,7 +101,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if has_admin {
         sources.push("admin");
     }
-    panel::render_wrapped(
+    panel::render(
         frame,
         app,
         area,

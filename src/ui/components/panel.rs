@@ -38,6 +38,7 @@ pub fn render_view(
     frame.render_widget(
         Paragraph::new(content)
             .style(app.theme.style(theme::StyleRole::Surface))
+            .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -47,19 +48,6 @@ pub fn render_view(
             ),
         area,
     );
-}
-
-/// A semantic detail pane whose values may be longer than the available
-/// column. Tables stay single-line; prose and inspector values wrap.
-pub fn render_wrapped(
-    frame: &mut Frame<'_>,
-    app: &App,
-    area: Rect,
-    title: &str,
-    content: impl Into<Text<'static>>,
-) {
-    let (title, content) = searchable_content(app, title, content.into());
-    frame.render_widget(block(app, &title, content).wrap(Wrap { trim: false }), area);
 }
 
 /// A pane whose whole surface carries a meaning — a revealed secret, say. Rare
@@ -77,6 +65,7 @@ pub fn render_styled(
     frame.render_widget(
         Paragraph::new(content)
             .style(app.theme.style(surface))
+            .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -118,35 +107,6 @@ pub fn render_focusable(
     );
 }
 
-pub fn render_focusable_wrapped(
-    frame: &mut Frame<'_>,
-    app: &App,
-    area: Rect,
-    title: &str,
-    content: impl Into<Text<'static>>,
-    focused: bool,
-) {
-    let (title, content) = searchable_content(app, title, content.into());
-    frame.render_widget(
-        Paragraph::new(content)
-            .style(app.theme.style(theme::StyleRole::Surface))
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(app.theme.style(if focused {
-                        theme::StyleRole::BorderFocused
-                    } else {
-                        theme::StyleRole::BorderNormal
-                    }))
-                    .title_style(app.theme.style(theme::StyleRole::TextPrimary))
-                    .padding(Padding::horizontal(1))
-                    .title(pad(&title)),
-            ),
-        area,
-    );
-}
-
 /// A full-screen document whose body is taller than the terminal. Its input
 /// target is unambiguous, so it keeps the normal boundary instead of claiming
 /// split-pane focus with a blue border.
@@ -162,6 +122,7 @@ pub fn render_scrolled(
     frame.render_widget(
         Paragraph::new(content)
             .style(app.theme.style(theme::StyleRole::Surface))
+            .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
             .block(
                 Block::default()
@@ -187,6 +148,15 @@ pub fn block<'a>(app: &App, title: &str, content: impl Into<Text<'static>>) -> P
                 .padding(Padding::horizontal(1))
                 .title(pad(title)),
         )
+}
+
+/// Measures the same visual rows that wrapped panels render. Scroll bounds use
+/// this instead of counting logical input lines, because one long value may
+/// occupy several terminal rows.
+pub fn wrapped_line_count(content: impl Into<Text<'static>>, width: u16) -> usize {
+    Paragraph::new(content.into())
+        .wrap(Wrap { trim: false })
+        .line_count(width)
 }
 
 /// A title touching its border is the difference between a label and a smudge.

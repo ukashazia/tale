@@ -334,7 +334,7 @@ impl AdminClient {
         replacement: &LogStreamReplacement,
     ) -> Result<MutationResponse<()>, AdminError> {
         let body = replacement.json_body()?;
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::LogStreamConfigurationReplace,
             reqwest::Method::PUT,
             token,
@@ -359,7 +359,7 @@ impl AdminClient {
         tailnet: &str,
         log_type: LogType,
     ) -> Result<MutationResponse<()>, AdminError> {
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::LogStreamConfigurationDelete,
             reqwest::Method::DELETE,
             token,

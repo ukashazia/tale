@@ -300,6 +300,28 @@ pub enum AdminError {
     Unsupported { operation: String, detail: String },
 }
 
+impl AdminError {
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Forbidden { detail, .. }
+            | Self::PlanRestricted { detail, .. }
+            | Self::NotFound { detail, .. }
+            | Self::ValidationFailed { detail, .. }
+            | Self::Conflict { detail, .. }
+            | Self::RateLimited { detail, .. }
+            | Self::ServerFailure { detail, .. }
+            | Self::Transport { detail, .. }
+            | Self::UnexpectedStatus { detail, .. }
+            | Self::DecodeFailed { detail, .. }
+            | Self::Unsupported { detail, .. } => (!detail.is_empty()).then_some(detail.as_str()),
+            Self::Unauthenticated
+            | Self::TimedOut { .. }
+            | Self::Cancelled { .. }
+            | Self::BodyTooLarge { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AdminClient {
     http: Client,
@@ -396,7 +418,7 @@ impl AdminClient {
         device_id: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["device", device_id], &[])?;
-        self.mutation_empty(Endpoint::DeviceDelete, Method::DELETE, token, url, None)
+        self.mutation_unit(Endpoint::DeviceDelete, Method::DELETE, token, url, None)
             .await
     }
 
@@ -407,7 +429,7 @@ impl AdminClient {
         authorized: bool,
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["device", device_id, "authorized"], &[])?;
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::DeviceAuthorized,
             Method::POST,
             token,
@@ -423,7 +445,7 @@ impl AdminClient {
         device_id: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["device", device_id, "expire"], &[])?;
-        self.mutation_empty(Endpoint::DeviceExpire, Method::POST, token, url, None)
+        self.mutation_unit(Endpoint::DeviceExpire, Method::POST, token, url, None)
             .await
     }
 
@@ -434,7 +456,7 @@ impl AdminClient {
         key_expiry_disabled: bool,
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["device", device_id, "key"], &[])?;
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::DeviceKey,
             Method::POST,
             token,
@@ -451,7 +473,7 @@ impl AdminClient {
         name: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["device", device_id, "name"], &[])?;
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::DeviceName,
             Method::POST,
             token,
@@ -468,7 +490,7 @@ impl AdminClient {
         tags: &[String],
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["device", device_id, "tags"], &[])?;
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::DeviceTags,
             Method::POST,
             token,
@@ -547,7 +569,7 @@ impl AdminClient {
         role: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["users", user_id, "role"], &[])?;
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::UserRole,
             Method::POST,
             token,
@@ -830,7 +852,7 @@ impl AdminClient {
         tailnet: &str,
         key_id: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::CredentialRevoke,
             Method::DELETE,
             token,
@@ -957,7 +979,7 @@ impl AdminClient {
         operation: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
         let url = self.path(&["users", user_id, operation], &[])?;
-        self.mutation_empty(endpoint, Method::POST, token, url, None)
+        self.mutation_unit(endpoint, Method::POST, token, url, None)
             .await
     }
 
@@ -989,7 +1011,12 @@ impl AdminClient {
             })
     }
 
-    pub(crate) async fn mutation_empty(
+    /// Performs a mutation whose response has no value Tale consumes.
+    ///
+    /// Tailscale's official client deliberately ignores response bodies for
+    /// these endpoints. Tale does the same after enforcing the status and body
+    /// size contracts; the authoritative follow-up read verifies the change.
+    pub(crate) async fn mutation_unit(
         &self,
         endpoint: Endpoint,
         method: Method,
@@ -1000,13 +1027,6 @@ impl AdminClient {
         let response = self
             .mutation_bytes(endpoint, method, token, url, body)
             .await?;
-        if !response.value.source_bytes.is_empty() {
-            return Err(AdminError::DecodeFailed {
-                operation: endpoint.operation().to_owned(),
-                detail: "the mutation response was documented as empty but returned bytes"
-                    .to_owned(),
-            });
-        }
         Ok(ApiResponse {
             value: (),
             meta: response.meta,

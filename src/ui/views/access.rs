@@ -39,9 +39,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     }
     let visible = viewport_height(area.height);
-    let max_scroll = lines.len().saturating_sub(visible);
+    let visual_lines = panel::wrapped_line_count(lines.clone(), area.width.saturating_sub(4));
+    let max_scroll = visual_lines.saturating_sub(visible);
     let scroll = app.detail_scroll.min(max_scroll);
-    let end = scroll.saturating_add(visible).min(lines.len());
+    let end = scroll.saturating_add(visible).min(visual_lines);
     let position = app.detail_search_match.and_then(|line| {
         matches
             .iter()
@@ -65,23 +66,25 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             "access · policy · {}-{} of {}{search}",
             scroll.saturating_add(1),
             end,
-            lines.len()
+            visual_lines
         )
     };
     let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
     panel::render_scrolled(frame, app, area, &title, lines, scroll);
 }
 
-pub fn line_count(app: &App) -> usize {
-    app.admin
+pub fn line_count(app: &App, area_width: u16) -> usize {
+    let lines = app
+        .admin
         .policy
         .snapshot
         .as_ref()
-        .map_or(0, |policy| document_lines(app, policy).len())
+        .map_or_else(Vec::new, |policy| document_lines(app, policy));
+    panel::wrapped_line_count(lines, area_width.saturating_sub(4))
 }
 
-pub fn max_scroll(app: &App, area_height: u16) -> usize {
-    line_count(app).saturating_sub(viewport_height(area_height))
+pub fn max_scroll(app: &App, area_width: u16, area_height: u16) -> usize {
+    line_count(app, area_width).saturating_sub(viewport_height(area_height))
 }
 
 fn viewport_height(area_height: u16) -> usize {

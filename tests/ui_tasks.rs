@@ -210,6 +210,45 @@ fn the_filter_narrows_the_table_and_the_border_says_so() {
     );
 }
 
+#[test]
+fn task_inspector_wraps_long_output_instead_of_clipping_its_end() {
+    let Some(mut app) = tasks_app() else {
+        return;
+    };
+    let task_id = app.tasks.create(
+        ActionId::LocalNetcheck,
+        "long-output-device",
+        app.now.saturating_sub(5),
+        false,
+    );
+    let _ = app.tasks.start(task_id);
+    let _ = app.tasks.fail(
+        task_id,
+        app.now,
+        "long output",
+        "beginning of a deliberately long diagnostic line with enough words to cross the pane boundary and preserve the final-remedy",
+    );
+    app.tasks.select_filtered_last("");
+    app.focus = Focus::Inspector;
+
+    let Some(lines) = render_lines(&app, 70, 30) else {
+        return;
+    };
+    let beginning = lines
+        .iter()
+        .position(|line| line.contains("beginning of a deliberately long"));
+    let ending = lines.iter().position(|line| line.contains("final-remedy"));
+    assert!(
+        beginning.is_some(),
+        "the start of the long line was not rendered"
+    );
+    assert!(
+        ending.is_some(),
+        "the wrapped end of the long line was clipped"
+    );
+    assert_ne!(beginning, ending, "the regression value did not wrap");
+}
+
 /// `y` offers what anyone actually pastes into a bug report, and only what this
 /// run produced.
 #[test]

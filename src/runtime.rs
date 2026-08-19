@@ -4133,13 +4133,16 @@ async fn run_admin_mutation(task: AdminMutationTask) {
             crate::domain::admin_mutation::AdminMutationState::Succeeded,
             format!(
                 "mutation response was uncertain after {}; read matches",
-                error
+                admin_mutation_error(error)
             ),
             detail.clone(),
         ),
         (Err(error), Ok(VerificationResult::Verified(detail))) => (
             crate::domain::admin_mutation::AdminMutationState::Failed,
-            format!("mutation was rejected; authoritative state already matched: {error}"),
+            format!(
+                "mutation was rejected; authoritative state already matched: {}",
+                admin_mutation_error(error)
+            ),
             detail.clone(),
         ),
         (Ok(_), Ok(VerificationResult::Mismatch(detail))) => (
@@ -4150,29 +4153,32 @@ async fn run_admin_mutation(task: AdminMutationTask) {
         (Ok(_), Err(error)) => (
             crate::domain::admin_mutation::AdminMutationState::SucceededUnverified,
             "mutation returned success but the authoritative read failed".to_owned(),
-            error.to_string(),
+            admin_mutation_error(error),
         ),
         (Err(error), Ok(VerificationResult::Mismatch(detail))) if uncertain_request => (
             crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown,
-            format!("mutation outcome is unknown after {}", error),
+            format!(
+                "mutation outcome is unknown after {}",
+                admin_mutation_error(error)
+            ),
             detail.clone(),
         ),
         (Err(error), Err(verification_error)) if uncertain_request => (
             crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown,
             format!(
                 "mutation outcome is unknown after {}; verification failed",
-                error
+                admin_mutation_error(error)
             ),
             verification_error.to_string(),
         ),
         (Err(error), Ok(VerificationResult::Mismatch(detail))) => (
             crate::domain::admin_mutation::AdminMutationState::Failed,
-            error.to_string(),
+            admin_mutation_error(error),
             detail.clone(),
         ),
         (Err(error), Err(verification_error)) => (
             crate::domain::admin_mutation::AdminMutationState::Failed,
-            error.to_string(),
+            admin_mutation_error(error),
             verification_error.to_string(),
         ),
     };
@@ -4976,6 +4982,12 @@ fn uncertain_admin_error(error: &AdminError) -> bool {
             | AdminError::RateLimited { .. }
             | AdminError::Cancelled { .. }
     )
+}
+
+fn admin_mutation_error(error: &AdminError) -> String {
+    error
+        .detail()
+        .map_or_else(|| error.to_string(), |detail| format!("{error}: {detail}"))
 }
 
 struct AdminAuditJob {

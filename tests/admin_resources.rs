@@ -28,6 +28,7 @@ fn admin_device_display_name_uses_the_device_name_not_the_hostname() -> Result<(
         Some("fixture-device.fixture-net.ts.net")
     );
     assert_eq!(device.hostname.as_deref(), Some("fixture-device.local"));
+    assert!(tale::admin::device_mutations::verify_name(device, "fixture-device").is_ok());
     Ok(())
 }
 

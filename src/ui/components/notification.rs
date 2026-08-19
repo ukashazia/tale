@@ -9,9 +9,10 @@ use crate::app::App;
 use crate::task::TaskResultKind;
 use crate::ui::theme;
 
-/// A remedy that gets cut off is not a remedy, so a long message is given a
-/// second row rather than truncated.
-pub const MAXIMUM_ROWS: u16 = 2;
+/// A remedy that gets cut off is not a remedy. The frame layout applies the
+/// final height budget; this cap only prevents a notification from consuming
+/// an unreasonable share of a very tall terminal.
+pub const MAXIMUM_ROWS: u16 = 6;
 
 pub fn rows(app: &App, width: u16) -> u16 {
     let Some(hint) = status_hint(app) else {

@@ -188,7 +188,7 @@ fn assert_json_body(request: &[u8], expected: &str) -> Result<(), String> {
 }
 
 #[derive(Clone, Copy)]
-enum EmptyMutation {
+enum UnitMutation {
     DeleteDevice,
     ApproveDevice,
     ExpireDevice,
@@ -202,27 +202,27 @@ enum EmptyMutation {
     DeleteUser,
 }
 
-async fn call_empty(
+async fn call_unit(
     client: &AdminClient,
     token: &tale::admin::auth::AccessToken,
-    operation: EmptyMutation,
+    operation: UnitMutation,
 ) -> Result<(), AdminError> {
     match operation {
-        EmptyMutation::DeleteDevice => client.delete_device(token, DEVICE_ID).await.map(|_| ()),
-        EmptyMutation::ApproveDevice => client
+        UnitMutation::DeleteDevice => client.delete_device(token, DEVICE_ID).await.map(|_| ()),
+        UnitMutation::ApproveDevice => client
             .set_device_authorized(token, DEVICE_ID, true)
             .await
             .map(|_| ()),
-        EmptyMutation::ExpireDevice => client.expire_device_key(token, DEVICE_ID).await.map(|_| ()),
-        EmptyMutation::ConfigureKeyExpiry => client
+        UnitMutation::ExpireDevice => client.expire_device_key(token, DEVICE_ID).await.map(|_| ()),
+        UnitMutation::ConfigureKeyExpiry => client
             .set_device_key_expiry(token, DEVICE_ID, false)
             .await
             .map(|_| ()),
-        EmptyMutation::RenameDevice => client
+        UnitMutation::RenameDevice => client
             .set_device_name(token, DEVICE_ID, "workstation.example.test")
             .await
             .map(|_| ()),
-        EmptyMutation::ReplaceTags => client
+        UnitMutation::ReplaceTags => client
             .set_device_tags(
                 token,
                 DEVICE_ID,
@@ -230,72 +230,72 @@ async fn call_empty(
             )
             .await
             .map(|_| ()),
-        EmptyMutation::ApproveUser => client.approve_user(token, USER_ID).await.map(|_| ()),
-        EmptyMutation::ChangeUserRole => client
+        UnitMutation::ApproveUser => client.approve_user(token, USER_ID).await.map(|_| ()),
+        UnitMutation::ChangeUserRole => client
             .set_user_role(token, USER_ID, "network-admin")
             .await
             .map(|_| ()),
-        EmptyMutation::SuspendUser => client.suspend_user(token, USER_ID).await.map(|_| ()),
-        EmptyMutation::RestoreUser => client.restore_user(token, USER_ID).await.map(|_| ()),
-        EmptyMutation::DeleteUser => client.delete_user(token, USER_ID).await.map(|_| ()),
+        UnitMutation::SuspendUser => client.suspend_user(token, USER_ID).await.map(|_| ()),
+        UnitMutation::RestoreUser => client.restore_user(token, USER_ID).await.map(|_| ()),
+        UnitMutation::DeleteUser => client.delete_user(token, USER_ID).await.map(|_| ()),
     }
 }
 
 #[tokio::test]
-async fn device_and_user_mutations_use_exact_empty_contracts() -> Result<(), String> {
+async fn device_and_user_unit_mutations_preserve_request_contracts() -> Result<(), String> {
     let cases = [
         (
-            EmptyMutation::DeleteDevice,
+            UnitMutation::DeleteDevice,
             "DELETE /api/v2/device/node-fictional-001 HTTP/1.1",
             None,
         ),
         (
-            EmptyMutation::ApproveDevice,
+            UnitMutation::ApproveDevice,
             "POST /api/v2/device/node-fictional-001/authorized HTTP/1.1",
             Some(r#"{"authorized":true}"#),
         ),
         (
-            EmptyMutation::ExpireDevice,
+            UnitMutation::ExpireDevice,
             "POST /api/v2/device/node-fictional-001/expire HTTP/1.1",
             None,
         ),
         (
-            EmptyMutation::ConfigureKeyExpiry,
+            UnitMutation::ConfigureKeyExpiry,
             "POST /api/v2/device/node-fictional-001/key HTTP/1.1",
             Some(r#"{"keyExpiryDisabled":false}"#),
         ),
         (
-            EmptyMutation::RenameDevice,
+            UnitMutation::RenameDevice,
             "POST /api/v2/device/node-fictional-001/name HTTP/1.1",
             Some(r#"{"name":"workstation.example.test"}"#),
         ),
         (
-            EmptyMutation::ReplaceTags,
+            UnitMutation::ReplaceTags,
             "POST /api/v2/device/node-fictional-001/tags HTTP/1.1",
             Some(r#"{"tags":["tag:fictional","tag:operator"]}"#),
         ),
         (
-            EmptyMutation::ApproveUser,
+            UnitMutation::ApproveUser,
             "POST /api/v2/users/user-fictional-001/approve HTTP/1.1",
             None,
         ),
         (
-            EmptyMutation::ChangeUserRole,
+            UnitMutation::ChangeUserRole,
             "POST /api/v2/users/user-fictional-001/role HTTP/1.1",
             Some(r#"{"role":"network-admin"}"#),
         ),
         (
-            EmptyMutation::SuspendUser,
+            UnitMutation::SuspendUser,
             "POST /api/v2/users/user-fictional-001/suspend HTTP/1.1",
             None,
         ),
         (
-            EmptyMutation::RestoreUser,
+            UnitMutation::RestoreUser,
             "POST /api/v2/users/user-fictional-001/restore HTTP/1.1",
             None,
         ),
         (
-            EmptyMutation::DeleteUser,
+            UnitMutation::DeleteUser,
             "POST /api/v2/users/user-fictional-001/delete HTTP/1.1",
             None,
         ),
@@ -303,7 +303,7 @@ async fn device_and_user_mutations_use_exact_empty_contracts() -> Result<(), Str
     for (operation, expected_line, expected_body) in cases {
         let (base_url, capture) = response_server("200 OK", "application/json", Vec::new()).await?;
         let (client, token) = client_with_token(base_url).await?;
-        assert!(call_empty(&client, &token, operation).await.is_ok());
+        assert!(call_unit(&client, &token, operation).await.is_ok());
         let request = captured(&capture).await?;
         assert_eq!(request_line(&request), expected_line);
         assert_bearer(&request);
@@ -423,7 +423,7 @@ async fn route_and_dns_mutations_decode_responses_and_preserve_paths() -> Result
 }
 
 #[tokio::test]
-async fn mutation_success_requires_documented_response_shape() -> Result<(), String> {
+async fn mutation_success_decodes_only_values_the_caller_consumes() -> Result<(), String> {
     let (base_url, _) = response_server(
         "200 OK",
         "application/json",
@@ -431,8 +431,7 @@ async fn mutation_success_requires_documented_response_shape() -> Result<(), Str
     )
     .await?;
     let (client, token) = client_with_token(base_url).await?;
-    let result = client.delete_device(&token, DEVICE_ID).await;
-    assert!(matches!(result, Err(AdminError::DecodeFailed { .. })));
+    assert!(client.delete_device(&token, DEVICE_ID).await.is_ok());
 
     let (base_url, _) = response_server("200 OK", "text/plain", Vec::new()).await?;
     let (client, token) = client_with_token(base_url).await?;
@@ -442,10 +441,12 @@ async fn mutation_success_requires_documented_response_shape() -> Result<(), Str
     let (base_url, _) =
         response_server("200 OK", "application/json", br#"{"dns":[]}"#.to_vec()).await?;
     let (client, token) = client_with_token(base_url).await?;
-    let result = client
-        .set_device_name(&token, DEVICE_ID, "workstation")
-        .await;
-    assert!(matches!(result, Err(AdminError::DecodeFailed { .. })));
+    assert!(
+        client
+            .set_device_name(&token, DEVICE_ID, "workstation")
+            .await
+            .is_ok()
+    );
     Ok(())
 }
 

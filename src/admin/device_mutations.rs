@@ -62,7 +62,10 @@ pub fn device_fields_for_name(device: &AdminDevice) -> Vec<String> {
 }
 
 pub fn verify_name(device: &AdminDevice, requested: &str) -> Result<(), String> {
-    if device.name.as_deref() == Some(requested) || device.hostname.as_deref() == Some(requested) {
+    if device.display_name() == requested
+        || device.name.as_deref() == Some(requested)
+        || device.hostname.as_deref() == Some(requested)
+    {
         Ok(())
     } else {
         Err(format!(

@@ -1039,6 +1039,25 @@ fn a_long_remedy_wraps_instead_of_being_cut_off() {
         app.runtime_error = Some("no device selected".to_owned());
         let layout = tale::ui::layout::compute(area, &app);
         assert_eq!(layout.notification.height, 1);
+
+        // Messages longer than two rows receive enough layout space for the
+        // wrapped tail instead of being wrapped and then vertically clipped.
+        app.runtime_error = Some(format!("{}final-remedy", "long failure detail ".repeat(16)));
+        let narrow = ratatui::layout::Rect::new(0, 0, 60, 30);
+        let layout = tale::ui::layout::compute(narrow, &app);
+        assert!(layout.notification.height > 2);
+        let lines = lines_at(&app, narrow.width, narrow.height);
+        assert!(lines.is_some());
+        if let Some(lines) = lines {
+            let notification = lines
+                .iter()
+                .skip(usize::from(layout.notification.y))
+                .take(usize::from(layout.notification.height))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(notification.contains("final-remedy"));
+        }
     }
 }
 

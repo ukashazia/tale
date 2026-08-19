@@ -28,15 +28,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 /// Used by the reducer to keep `j`/`k`, `g`/`G`, and page movement inside the
-/// full-screen document. The line count is independent of terminal width: long
-/// values are clipped, never wrapped into a second logical row.
-pub fn device_detail_line_count(app: &App) -> usize {
-    full_detail_lines(app, usize::MAX).len()
+/// full-screen document. Long values count as every visual row they occupy.
+pub fn device_detail_line_count(app: &App, area_width: u16) -> usize {
+    let width = area_width.saturating_sub(4);
+    panel::wrapped_line_count(full_detail_lines(app, usize::from(width)), width)
 }
 
-pub fn device_detail_max_scroll(app: &App, area_height: u16) -> usize {
+pub fn device_detail_max_scroll(app: &App, area_width: u16, area_height: u16) -> usize {
     let visible = usize::from(area_height.saturating_sub(2)).max(1);
-    device_detail_line_count(app).saturating_sub(visible)
+    device_detail_line_count(app, area_width).saturating_sub(visible)
 }
 
 pub fn device_detail_search_matches(app: &App, query: &str) -> Vec<usize> {
@@ -63,9 +63,10 @@ fn render_full_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     let visible = usize::from(area.height.saturating_sub(2)).max(1);
-    let max_scroll = device_detail_max_scroll(app, area.height);
+    let max_scroll = device_detail_max_scroll(app, area.width, area.height);
     let scroll = app.views.devices.detail_scroll.min(max_scroll);
-    let end = scroll.saturating_add(visible).min(lines.len());
+    let visual_lines = panel::wrapped_line_count(lines.clone(), area.width.saturating_sub(4));
+    let end = scroll.saturating_add(visible).min(visual_lines);
     let matches = style_search_matches(app, &mut lines);
     let source = match app.source_mode {
         SourceMode::Mock => "mock",
@@ -94,7 +95,7 @@ fn render_full_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
             "device details · {source} · {}-{} of {}{search}",
             scroll.saturating_add(1),
             end,
-            lines.len()
+            visual_lines
         )
     };
     let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);

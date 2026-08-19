@@ -125,7 +125,7 @@ impl AdminClient {
         token: &AccessToken,
         endpoint_id: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::WebhookTest,
             reqwest::Method::POST,
             token,
@@ -157,7 +157,7 @@ impl AdminClient {
         token: &AccessToken,
         endpoint_id: &str,
     ) -> Result<MutationResponse<()>, AdminError> {
-        self.mutation_empty(
+        self.mutation_unit(
             Endpoint::WebhookDelete,
             reqwest::Method::DELETE,
             token,
