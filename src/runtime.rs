@@ -4081,7 +4081,7 @@ async fn run_admin_mutation(task: AdminMutationTask) {
                 mutation_id,
                 state: crate::domain::admin_mutation::AdminMutationState::Failed,
                 detail: error.to_string(),
-                verification: "not attempted; mutation was not dispatched".to_owned(),
+                verification: "No change was sent".to_owned(),
                 audit: crate::domain::admin_mutation::AuditCorrelation::none(),
             };
             send_admin_mutation_finished(queue, task_id, request, outcome, false).await;
@@ -4095,7 +4095,7 @@ async fn run_admin_mutation(task: AdminMutationTask) {
                 mutation_id,
                 state: crate::domain::admin_mutation::AdminMutationState::Failed,
                 detail: error.to_string(),
-                verification: "not attempted; mutation was not dispatched".to_owned(),
+                verification: "No change was sent".to_owned(),
                 audit: crate::domain::admin_mutation::AuditCorrelation::none(),
             };
             send_admin_mutation_finished(queue, task_id, request, outcome, false).await;
@@ -4126,13 +4126,13 @@ async fn run_admin_mutation(task: AdminMutationTask) {
     let (state, detail, verification_text) = match (&mutation_result, &verification) {
         (Ok(_), Ok(VerificationResult::Verified(detail))) => (
             crate::domain::admin_mutation::AdminMutationState::Succeeded,
-            "mutation returned success".to_owned(),
+            request.change.completed_message().to_owned(),
             detail.clone(),
         ),
         (Err(error), Ok(VerificationResult::Verified(detail))) if uncertain_request => (
             crate::domain::admin_mutation::AdminMutationState::Succeeded,
             format!(
-                "mutation response was uncertain after {}; read matches",
+                "Tale lost the response after {}, but the requested change is now visible",
                 admin_mutation_error(error)
             ),
             detail.clone(),
@@ -4140,25 +4140,25 @@ async fn run_admin_mutation(task: AdminMutationTask) {
         (Err(error), Ok(VerificationResult::Verified(detail))) => (
             crate::domain::admin_mutation::AdminMutationState::Failed,
             format!(
-                "mutation was rejected; authoritative state already matched: {}",
+                "The requested setting was already in place, but Tailscale rejected the request: {}",
                 admin_mutation_error(error)
             ),
             detail.clone(),
         ),
         (Ok(_), Ok(VerificationResult::Mismatch(detail))) => (
             crate::domain::admin_mutation::AdminMutationState::Failed,
-            "authoritative verification returned a mismatch".to_owned(),
+            "Tailscale accepted the request, but the refreshed setting did not change".to_owned(),
             detail.clone(),
         ),
         (Ok(_), Err(error)) => (
             crate::domain::admin_mutation::AdminMutationState::SucceededUnverified,
-            "mutation returned success but the authoritative read failed".to_owned(),
+            "Tailscale accepted the request, but Tale could not refresh the result".to_owned(),
             admin_mutation_error(error),
         ),
         (Err(error), Ok(VerificationResult::Mismatch(detail))) if uncertain_request => (
             crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown,
             format!(
-                "mutation outcome is unknown after {}",
+                "Tale could not tell whether the change completed after {}",
                 admin_mutation_error(error)
             ),
             detail.clone(),
@@ -4166,7 +4166,7 @@ async fn run_admin_mutation(task: AdminMutationTask) {
         (Err(error), Err(verification_error)) if uncertain_request => (
             crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown,
             format!(
-                "mutation outcome is unknown after {}; verification failed",
+                "Tale could not tell whether the change completed after {}; refresh also failed",
                 admin_mutation_error(error)
             ),
             verification_error.to_string(),
@@ -4484,7 +4484,7 @@ async fn verify_admin_change(
         .await
         {
             Err(AdminError::NotFound { .. }) => Ok(VerificationResult::Verified(
-                "GET device returned not found; deletion is authoritative".to_owned(),
+                "Device no longer appears in the tailnet".to_owned(),
             )),
             Ok(_) => Ok(VerificationResult::Mismatch(
                 "device still exists after delete".to_owned(),
@@ -4507,7 +4507,7 @@ async fn verify_admin_change(
             Ok(
                 match crate::admin::device_mutations::verify_name(&device, name) {
                     Ok(()) => VerificationResult::Verified(format!(
-                        "canonical name: {}",
+                        "Machine name is {}",
                         device.display_name()
                     )),
                     Err(detail) => VerificationResult::Mismatch(detail),
@@ -4529,9 +4529,7 @@ async fn verify_admin_change(
                 .map_err(|_| decode_failure("device verification"))?;
             Ok(
                 match crate::admin::device_mutations::verify_tags(&device, tags) {
-                    Ok(()) => {
-                        VerificationResult::Verified("complete returned tag set matches".to_owned())
-                    }
+                    Ok(()) => VerificationResult::Verified("Device tags now match".to_owned()),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
             )
@@ -4551,7 +4549,11 @@ async fn verify_admin_change(
                 .map_err(|_| decode_failure("device verification"))?;
             Ok(
                 match crate::admin::device_mutations::verify_approval(&device, *authorized) {
-                    Ok(()) => VerificationResult::Verified(format!("approval: {authorized}")),
+                    Ok(()) => VerificationResult::Verified(if *authorized {
+                        "Device is approved".to_owned()
+                    } else {
+                        "Device approval is removed".to_owned()
+                    }),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
             )
@@ -4572,8 +4574,8 @@ async fn verify_admin_change(
             Ok(
                 match crate::admin::device_mutations::verify_key_expiry(&device, *disabled) {
                     Ok(()) => VerificationResult::Verified(format!(
-                        "key expiry disabled: {disabled}; server expiry timestamp: {:?}",
-                        device.expires_at
+                        "Key expiry is {}",
+                        if *disabled { "disabled" } else { "enabled" }
                     )),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
@@ -4595,10 +4597,7 @@ async fn verify_admin_change(
                 .map_err(|_| decode_failure("device verification"))?;
             Ok(
                 match crate::admin::device_mutations::verify_expire_now(&device, observed_at) {
-                    Ok(()) => VerificationResult::Verified(format!(
-                        "server expiry timestamp: {:?}",
-                        device.expires_at
-                    )),
+                    Ok(()) => VerificationResult::Verified("Device key is expired".to_owned()),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
             )
@@ -4622,9 +4621,7 @@ async fn verify_admin_change(
             .map_err(|_| decode_failure("route verification"))?;
             Ok(
                 match crate::admin::route_mutations::verify_enabled_routes(&observation, routes) {
-                    Ok(()) => VerificationResult::Verified(
-                        "complete enabled route set matches".to_owned(),
-                    ),
+                    Ok(()) => VerificationResult::Verified("Approved routes now match".to_owned()),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
             )
@@ -4644,9 +4641,7 @@ async fn verify_admin_change(
                 .map_err(|_| decode_failure("DNS nameserver verification"))?;
             Ok(
                 match crate::admin::dns_mutations::verify_nameservers(&value, values) {
-                    Ok(()) => VerificationResult::Verified(
-                        "complete ordered nameserver list matches".to_owned(),
-                    ),
+                    Ok(()) => VerificationResult::Verified("Nameservers now match".to_owned()),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
             )
@@ -4665,7 +4660,11 @@ async fn verify_admin_change(
             let value = admin::dns::decode_preferences(response.value, response.meta.observed_at);
             Ok(
                 match crate::admin::dns_mutations::verify_preferences(&value, *magic_dns) {
-                    Ok(()) => VerificationResult::Verified(format!("MagicDNS: {magic_dns}")),
+                    Ok(()) => VerificationResult::Verified(if *magic_dns {
+                        "MagicDNS is on".to_owned()
+                    } else {
+                        "MagicDNS is off".to_owned()
+                    }),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
             )
@@ -4685,9 +4684,7 @@ async fn verify_admin_change(
                 .map_err(|_| decode_failure("DNS search-path verification"))?;
             Ok(
                 match crate::admin::dns_mutations::verify_search_paths(&value, values) {
-                    Ok(()) => VerificationResult::Verified(
-                        "complete ordered search-path list matches".to_owned(),
-                    ),
+                    Ok(()) => VerificationResult::Verified("DNS search paths now match".to_owned()),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
             )
@@ -4714,7 +4711,7 @@ async fn verify_admin_change(
                     resolvers.as_deref(),
                 ) {
                     Ok(()) => VerificationResult::Verified(format!(
-                        "split-DNS mapping verified for {domain}"
+                        "Split DNS rule is updated for {domain}"
                     )),
                     Err(detail) => VerificationResult::Mismatch(detail),
                 },
@@ -4732,7 +4729,7 @@ async fn verify_admin_change(
         .await
         {
             Err(AdminError::NotFound { .. }) => Ok(VerificationResult::Verified(
-                "GET user returned not found; deletion is authoritative".to_owned(),
+                "User no longer appears in the tailnet".to_owned(),
             )),
             Ok(_) => Ok(VerificationResult::Mismatch(
                 "user still exists after delete".to_owned(),
@@ -5127,16 +5124,7 @@ async fn send_admin_mutation_finished(
     outcome: AdminMutationOutcome,
     verified: bool,
 ) {
-    let summary = match outcome.state {
-        crate::domain::admin_mutation::AdminMutationState::Succeeded => "admin mutation verified",
-        crate::domain::admin_mutation::AdminMutationState::SucceededUnverified => {
-            "admin mutation succeeded but is unverified"
-        }
-        crate::domain::admin_mutation::AdminMutationState::OutcomeUnknown => {
-            "admin mutation outcome is unknown"
-        }
-        _ => "admin mutation failed",
-    };
+    let summary = request.change.result_message(outcome.state);
     queue
         .send(Event::Task(Box::new(if verified {
             TaskEvent::Succeeded {

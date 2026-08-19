@@ -2,7 +2,7 @@ use crate::app::App;
 
 pub fn summary(app: &App) -> String {
     let Some(snapshot) = app.flow_snapshot.as_ref() else {
-        return "Flow Logs · no bounded window observed · metadata/counters only; packet contents are unavailable"
+        return "Flow Logs · choose a time range to load counters; packet contents are unavailable"
             .to_owned();
     };
     let mode = match &snapshot.mode {

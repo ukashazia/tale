@@ -95,6 +95,94 @@ pub enum AdminChange {
 }
 
 impl AdminChange {
+    pub const fn completed_message(&self) -> &'static str {
+        match self {
+            Self::DeviceRename { .. } => "Device renamed",
+            Self::DeviceTags { .. } => "Device tags updated",
+            Self::DeviceApproval { authorized: true } => "Device approved",
+            Self::DeviceApproval { authorized: false } => "Device approval removed",
+            Self::DeviceKeyExpiry { disabled: true } => "Device key expiry disabled",
+            Self::DeviceKeyExpiry { disabled: false } => "Device key expiry enabled",
+            Self::DeviceExpireNow => "Device key expired",
+            Self::DeviceDelete => "Device removed",
+            Self::DeviceRoutes { .. } => "Route approvals updated",
+            Self::DnsNameservers { .. } => "Nameservers updated",
+            Self::DnsPreferences { .. } => "DNS preferences updated",
+            Self::DnsSearchPaths { .. } => "DNS search paths updated",
+            Self::DnsSplitMapping { create: true, .. } => "Split DNS rule added",
+            Self::DnsSplitMapping {
+                resolvers: Some(_), ..
+            } => "Split DNS rule updated",
+            Self::DnsSplitMapping {
+                resolvers: None, ..
+            } => "Split DNS rule removed",
+            Self::UserApproval => "User approved",
+            Self::UserRole { .. } => "User role changed",
+            Self::UserSuspend => "User suspended",
+            Self::UserRestore => "User restored",
+            Self::UserDelete => "User removed",
+        }
+    }
+
+    pub const fn failed_message(&self) -> &'static str {
+        match self {
+            Self::DeviceRename { .. } => "Couldn’t rename device",
+            Self::DeviceTags { .. } => "Couldn’t update device tags",
+            Self::DeviceApproval { authorized: true } => "Couldn’t approve device",
+            Self::DeviceApproval { authorized: false } => "Couldn’t remove device approval",
+            Self::DeviceKeyExpiry { .. } => "Couldn’t change device key expiry",
+            Self::DeviceExpireNow => "Couldn’t expire device key",
+            Self::DeviceDelete => "Couldn’t remove device",
+            Self::DeviceRoutes { .. } => "Couldn’t update route approvals",
+            Self::DnsNameservers { .. } => "Couldn’t update nameservers",
+            Self::DnsPreferences { .. } => "Couldn’t update DNS preferences",
+            Self::DnsSearchPaths { .. } => "Couldn’t update DNS search paths",
+            Self::DnsSplitMapping { create: true, .. } => "Couldn’t add split DNS rule",
+            Self::DnsSplitMapping {
+                resolvers: Some(_), ..
+            } => "Couldn’t update split DNS rule",
+            Self::DnsSplitMapping {
+                resolvers: None, ..
+            } => "Couldn’t remove split DNS rule",
+            Self::UserApproval => "Couldn’t approve user",
+            Self::UserRole { .. } => "Couldn’t change user role",
+            Self::UserSuspend => "Couldn’t suspend user",
+            Self::UserRestore => "Couldn’t restore user",
+            Self::UserDelete => "Couldn’t remove user",
+        }
+    }
+
+    pub const fn unconfirmed_message(&self) -> &'static str {
+        match self {
+            Self::DeviceRename { .. } => "Device rename may have succeeded; refresh failed",
+            Self::DeviceTags { .. } => "Tag update may have succeeded; refresh failed",
+            Self::DeviceApproval { .. } => "Approval change may have succeeded; refresh failed",
+            Self::DeviceKeyExpiry { .. } => "Key expiry change may have succeeded; refresh failed",
+            Self::DeviceExpireNow => "Key expiry may have succeeded; refresh failed",
+            Self::DeviceDelete => "Device removal may have succeeded; refresh failed",
+            Self::DeviceRoutes { .. } => "Route update may have succeeded; refresh failed",
+            Self::DnsNameservers { .. } => "Nameserver update may have succeeded; refresh failed",
+            Self::DnsPreferences { .. } => "DNS update may have succeeded; refresh failed",
+            Self::DnsSearchPaths { .. } => "Search-path update may have succeeded; refresh failed",
+            Self::DnsSplitMapping { .. } => "Split DNS change may have succeeded; refresh failed",
+            Self::UserApproval => "User approval may have succeeded; refresh failed",
+            Self::UserRole { .. } => "Role change may have succeeded; refresh failed",
+            Self::UserSuspend => "User suspension may have succeeded; refresh failed",
+            Self::UserRestore => "User restore may have succeeded; refresh failed",
+            Self::UserDelete => "User removal may have succeeded; refresh failed",
+        }
+    }
+
+    pub const fn result_message(&self, state: AdminMutationState) -> &'static str {
+        match state {
+            AdminMutationState::Succeeded => self.completed_message(),
+            AdminMutationState::SucceededUnverified | AdminMutationState::OutcomeUnknown => {
+                self.unconfirmed_message()
+            }
+            _ => self.failed_message(),
+        }
+    }
+
     pub const fn action_id(&self) -> ActionId {
         match self {
             Self::DeviceRename { .. } => ActionId::AdminDeviceRename,
@@ -753,6 +841,25 @@ mod tests {
                 fresh: String::from("changed"),
                 requested: String::from("requested"),
             }]
+        );
+    }
+
+    #[test]
+    fn device_changes_report_the_action_in_plain_language() {
+        let rename = AdminChange::DeviceRename {
+            name: "new-name".to_owned(),
+        };
+        assert_eq!(
+            rename.result_message(AdminMutationState::Succeeded),
+            "Device renamed"
+        );
+        assert_eq!(
+            rename.result_message(AdminMutationState::Failed),
+            "Couldn’t rename device"
+        );
+        assert_eq!(
+            rename.result_message(AdminMutationState::OutcomeUnknown),
+            "Device rename may have succeeded; refresh failed"
         );
     }
 }

@@ -2014,8 +2014,8 @@ pub fn operational_actions() -> Vec<ActionSpec> {
     vec![
         ActionSpec {
             id: ActionId::OverviewHealthOpenResource,
-            label: "Open health resource",
-            description: "Open the authoritative resource behind a derived finding",
+            label: "Open affected item",
+            description: "Open the item behind an issue found by Tale",
             contexts: GLOBAL,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2025,7 +2025,7 @@ pub fn operational_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::OverviewHealthRunSuggestedAction,
             label: "Run suggested action",
-            description: "Review and run an action suggested by a derived finding",
+            description: "Review and run an action suggested for an issue",
             contexts: GLOBAL,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2035,7 +2035,7 @@ pub fn operational_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::ActivityFlowsSelectWindow,
             label: "Select flow window",
-            description: "Choose an explicit bounded UTC flow-log window",
+            description: "Choose a UTC time range for flow logs",
             contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2215,7 +2215,7 @@ pub fn operational_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AccessExplorerOpenRule,
             label: "Open matched rule",
-            description: "Open an authoritative returned policy rule location",
+            description: "Open the matching policy rule",
             contexts: &[ActionContext::Collection, ActionContext::Detail],
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2363,7 +2363,7 @@ pub fn admin_observer_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::ActivitySelectWindow,
             label: "Select audit window",
-            description: "Choose a bounded audit window",
+            description: "Choose a time range for activity",
             contexts: AUDIT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2393,7 +2393,7 @@ pub fn admin_observer_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::SettingsInspectCapabilities,
             label: "Inspect capabilities",
-            description: "Inspect observed endpoint capabilities",
+            description: "Show which administration features are available",
             contexts: ROOT,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2415,7 +2415,7 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminDeviceRename,
             label: "Rename device",
-            description: "Set a device machine name and verify the canonical result",
+            description: "Change the device's machine name",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2445,7 +2445,7 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminDeviceRevokeApproval,
             label: "Revoke device approval",
-            description: "Revoke device approval with typed device confirmation",
+            description: "Remove this device's approval to connect",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2455,7 +2455,7 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminDeviceKeyExpiryConfigure,
             label: "Configure key expiry",
-            description: "Enable or disable the documented device key-expiry behavior",
+            description: "Choose whether this device's key expires",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2485,7 +2485,7 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminRoutesReplaceApprovals,
             label: "Replace route approvals",
-            description: "Replace enabled routes for each advertising device",
+            description: "Choose which advertised routes each device may use",
             contexts: ADMIN_BATCH,
             selection_rule: SelectionRule::Many,
             default_bindings: NO_BINDING,
@@ -2565,7 +2565,7 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminUserRoleChange,
             label: "Change user role",
-            description: "Set a documented user role after showing old and new access",
+            description: "Change the user's role after showing the access difference",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2604,8 +2604,8 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::BatchReviewOutcomes,
-            label: "Review batch outcomes",
-            description: "Inspect per-target mutation outcomes",
+            label: "Review device results",
+            description: "See which devices were updated and which failed",
             contexts: COLLECTION,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2614,8 +2614,8 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::BatchRetrySelected,
-            label: "Retry selected targets",
-            description: "Build a new batch from freshly fetched failed targets",
+            label: "Retry selected devices",
+            description: "Retry the selected devices using their latest settings",
             contexts: COLLECTION,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -2640,7 +2640,7 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminPolicyEditorReopen,
             label: "Reopen policy editor",
-            description: "Reopen the retained candidate in the external editor",
+            description: "Reopen the saved draft in the external editor",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2649,8 +2649,8 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::AdminPolicyCandidateDiscard,
-            label: "Discard policy candidate",
-            description: "Discard the retained policy candidate after confirmation",
+            label: "Discard policy draft",
+            description: "Discard the saved policy draft after confirmation",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2659,8 +2659,8 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::AdminPolicyRemoteRefresh,
-            label: "Refresh remote policy",
-            description: "Fetch the latest policy bytes before continuing",
+            label: "Refresh tailnet policy",
+            description: "Fetch the latest tailnet policy before continuing",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2670,7 +2670,7 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminPolicyValidate,
             label: "Validate policy",
-            description: "Ask Tailscale to validate the exact candidate bytes",
+            description: "Ask Tailscale to validate the edited policy",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2680,7 +2680,7 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminPolicyPreview,
             label: "Preview permissions",
-            description: "Ask Tailscale for an authoritative permission preview",
+            description: "Preview how the edited policy changes access",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2690,7 +2690,7 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminPolicyDiff,
             label: "Show policy diff",
-            description: "Show a textual presentation-only diff",
+            description: "Compare the edited policy with the current tailnet policy",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2700,7 +2700,7 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::AdminPolicyApply,
             label: "Apply policy",
-            description: "Apply a fresh server-validated candidate with guarded verification",
+            description: "Apply the edited policy after Tailscale validates it",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -2709,8 +2709,8 @@ pub fn policy_and_credential_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::AdminPolicyWorkflowClose,
-            label: "Close policy workflow",
-            description: "Close the policy workflow and remove its temporary file",
+            label: "Close policy editor",
+            description: "Close editing and delete its temporary file",
             contexts: ADMIN_MUTATIONS,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,

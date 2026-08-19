@@ -198,7 +198,7 @@ impl App {
             return Vec::new();
         };
         let Some(path) = workflow.candidate_path().map(PathBuf::from) else {
-            self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+            self.runtime_error = Some("the policy draft is unavailable".to_owned());
             return Vec::new();
         };
         let workflow_id = workflow.workflow_id();
@@ -282,7 +282,7 @@ impl App {
             return Vec::new();
         };
         let Some(path) = workflow.candidate_path().map(PathBuf::from) else {
-            self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+            self.runtime_error = Some("the policy draft is unavailable".to_owned());
             return Vec::new();
         };
         let workflow_id = workflow.workflow_id();
@@ -310,7 +310,7 @@ impl App {
             return Vec::new();
         };
         let Some((base, candidate)) = workflow.base().zip(workflow.candidate()) else {
-            self.runtime_error = Some("both policy base and candidate are required".to_owned());
+            self.runtime_error = Some("both the current policy and draft are required".to_owned());
             return Vec::new();
         };
         match crate::admin::policy_mutations::build_policy_diff(base, candidate) {
@@ -346,7 +346,7 @@ impl App {
                 service_request: None,
                 operational_mutation: None,
                 handoff: None,
-                prompt: "Apply this exact policy candidate to the remote tailnet?".to_owned(),
+                prompt: "Apply this policy draft to the tailnet?".to_owned(),
                 required_phrase: Some("APPLY POLICY".to_owned()),
                 input: String::new(),
                 lose_ssh_checked: false,
@@ -355,7 +355,7 @@ impl App {
                         "base hash: {}",
                         workflow.base().map_or("not returned", |value| value.hash())
                     ),
-                    format!("candidate hash: {}", candidate.hash()),
+                    format!("draft version: {}", candidate.hash()),
                     format!(
                         "base observed: {}",
                         workflow
@@ -364,8 +364,8 @@ impl App {
                                 .observed_at()
                                 .to_string())
                     ),
-                    format!("candidate observed: {}", candidate.observed_at()),
-                    format!("candidate bytes: {}", candidate.len()),
+                    format!("draft saved: {}", candidate.observed_at()),
+                    format!("draft size: {} bytes", candidate.len()),
                     format!("validation bound: {}", workflow.validation().is_some()),
                     format!(
                         "validation/tests: {}",
@@ -448,10 +448,8 @@ impl App {
         if let Some(workflow) = self.policy_workflow.as_mut() {
             workflow.set_candidate(document, path);
         }
-        self.runtime_error = Some(
-            "the temporary candidate changed; validation, preview, and diff were invalidated"
-                .to_owned(),
-        );
+        self.runtime_error =
+            Some("The policy draft changed; validate, preview, and compare it again".to_owned());
         false
     }
 
@@ -473,13 +471,13 @@ impl App {
                 workflow.base().map_or("not returned", |value| value.hash())
             ),
             format!(
-                "candidate hash: {}",
+                "draft version: {}",
                 workflow
                     .candidate()
                     .map_or("not returned", |value| value.hash())
             ),
             format!(
-                "candidate path: {}",
+                "draft file: {}",
                 workflow
                     .candidate_path()
                     .map_or("not retained".to_owned(), |value| value
@@ -503,11 +501,12 @@ impl App {
                             .display()
                             .to_string())
                 ),
-                "replace candidate with latest remote bytes; no merge will be attempted".to_owned(),
+                "Replace the draft with the latest tailnet policy; changes will not be merged"
+                    .to_owned(),
             ]);
         } else {
             preview_lines
-                .push("the candidate will be replaced with the unchanged base bytes".to_owned());
+                .push("The draft will be replaced with the unchanged tailnet policy".to_owned());
         }
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
@@ -520,9 +519,9 @@ impl App {
                 operational_mutation: None,
                 handoff: None,
                 prompt: if replacing_remote {
-                    "Replace the retained candidate with the latest remote policy?".to_owned()
+                    "Replace the saved draft with the latest tailnet policy?".to_owned()
                 } else {
-                    "Discard the retained policy candidate?".to_owned()
+                    "Discard the saved policy draft?".to_owned()
                 },
                 required_phrase: Some(phrase.to_owned()),
                 input: String::new(),
@@ -555,14 +554,15 @@ impl App {
                 preview_lines: vec![
                     format!("state: {}", workflow.state().label()),
                     format!(
-                        "candidate path: {}",
+                        "draft file: {}",
                         workflow
                             .candidate_path()
                             .map_or("not retained".to_owned(), |value| value
                                 .display()
                                 .to_string())
                     ),
-                    "closing destroys the candidate and any retained latest-remote copy".to_owned(),
+                    "Closing deletes the draft and any saved copy of the latest tailnet policy"
+                        .to_owned(),
                 ],
                 redacted_argv: Vec::new(),
                 error: None,

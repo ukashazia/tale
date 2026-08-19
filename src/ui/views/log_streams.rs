@@ -2,7 +2,7 @@ use crate::app::App;
 
 pub fn summary(app: &App) -> String {
     if app.log_stream_configurations.is_empty() && app.log_stream_statuses.is_empty() {
-        return "Log streams · configuration and publishing status are independent resources; no secret values are shown"
+        return "Log streams · configuration and publishing status are shown separately; no secret values are shown"
             .to_owned();
     }
     let mut lines = vec!["Log streams · Activity/Settings".to_owned()];

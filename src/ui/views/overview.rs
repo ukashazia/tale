@@ -253,7 +253,7 @@ fn render_attention(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 semantic_line(
                     app,
                     theme::StyleRole::StateHealthy,
-                    "No derived findings from current authoritative snapshots".to_owned(),
+                    "No issues found in the latest tailnet data".to_owned(),
                 ),
                 Line::default(),
                 Line::from(Span::styled(

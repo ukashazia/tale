@@ -126,9 +126,11 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     };
     let width = usize::from(area.width.saturating_sub(4));
+    let action_label = crate::action::find_action(task.action_id)
+        .map_or(task.action_id.as_str(), |action| action.label);
     let mut pairs = vec![
         ("id", task.id.to_string()),
-        ("action", task.action_id.as_str().to_owned()),
+        ("action", action_label.to_owned()),
         ("target", task.target_label.clone()),
         ("state", task.state.label().to_owned()),
         ("started", ago(app, task.started_at)),
@@ -159,7 +161,7 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         pairs.push(("exit status", status.to_string()));
     }
     if let Some(verification) = task.verification.as_deref() {
-        pairs.push(("verification", verification.to_owned()));
+        pairs.push(("confirmed", verification.to_owned()));
     }
     if !task.requested_fields.is_empty() {
         pairs.push(("fields", task.requested_fields.join(", ")));
@@ -170,10 +172,7 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
     pairs.push(("result", task.summary.clone()));
 
     let mut lines = vec![Line::from(Span::styled(
-        text::ellipsize(
-            &format!("{} · {}", task.action_id.as_str(), task.target_label),
-            width,
-        ),
+        text::ellipsize(&format!("{} · {}", action_label, task.target_label), width),
         app.theme.style(theme::StyleRole::TextPrimary),
     ))];
     lines.extend(grid::detail(app, &pairs));

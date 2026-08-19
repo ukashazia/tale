@@ -117,7 +117,7 @@ impl App {
             OperationalMutation::Webhook(_)
             | OperationalMutation::LogStreamReplace(_)
             | OperationalMutation::NetworkLogSetting { .. } => {
-                "Apply this typed operational change?".to_owned()
+                "Apply this change?".to_owned()
             }
             OperationalMutation::SavedView(_) => {
                 "Apply this saved-view operation? The document stores only query and presentation state.".to_owned()
@@ -141,10 +141,10 @@ impl App {
                 input: String::new(),
                 lose_ssh_checked: false,
                 preview_lines: vec![
-                mutation.preview(),
-                "No automatic retry will be attempted; a verification read follows the mutation."
-                    .to_owned(),
-            ],
+                    mutation.preview(),
+                    "Tale sends this request once, then refreshes the setting to confirm it."
+                        .to_owned(),
+                ],
                 redacted_argv: Vec::new(),
                 error: None,
             })));
@@ -282,7 +282,7 @@ impl App {
             ActionId::AccessExplorerOpenRule => {
                 if let Some(result) = self.access_explorer_result.as_ref() {
                     self.runtime_error = Some(format!(
-                        "authoritative preview locations: {}",
+                        "Matching policy rule locations: {}",
                         result
                             .rule_locations
                             .iter()
@@ -291,8 +291,7 @@ impl App {
                             .join(", ")
                     ));
                 } else {
-                    self.runtime_error =
-                        Some("no authoritative Access Explorer result is available".to_owned());
+                    self.runtime_error = Some("No access preview is available".to_owned());
                 }
                 Vec::new()
             }

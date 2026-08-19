@@ -157,12 +157,12 @@ fn workflow_lines(app: &App) -> Vec<Line<'static>> {
                     .unwrap_or_else(|| "unavailable".to_owned()),
             ),
             (
-                "candidate",
+                "draft",
                 summary
                     .candidate_hash
                     .unwrap_or_else(|| "unavailable".to_owned()),
             ),
-            ("candidate bytes", summary.candidate_bytes.to_string()),
+            ("draft size", format!("{} bytes", summary.candidate_bytes)),
         ],
     );
     lines.push(Line::default());
@@ -251,7 +251,7 @@ fn workflow_lines(app: &App) -> Vec<Line<'static>> {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "Choose an action above. The fetched policy source is hidden while this candidate is pending.",
+            "Choose an action above. The fetched policy source is hidden while this draft is pending.",
             app.theme.style(theme::StyleRole::TextMuted),
         )));
     }
@@ -295,7 +295,7 @@ fn document_prefix(
             &[
                 ("state", summary.state.label().to_owned()),
                 (
-                    "candidate",
+                    "draft",
                     summary
                         .candidate_hash
                         .unwrap_or_else(|| "not ready".to_owned()),

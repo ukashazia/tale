@@ -23,16 +23,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, batch: &BatchMutatio
         })
         .collect::<Vec<_>>();
     let summary = if batch.child_outcomes.len() < batch.targets.len() {
-        "batch in progress: undispatched targets remain pending"
+        "Updating the remaining devices"
     } else if batch.has_partial_failure() {
-        "partial failure: verified successes are preserved"
+        "Some devices could not be updated; completed changes were kept"
     } else if batch.has_failures() {
         "failed targets require review before any new preview"
     } else {
-        "all targets verified"
+        "All devices updated"
     };
     let summary = format!(
-        "{summary} · {}/{} verified",
+        "{summary} · {}/{} updated",
         batch.verified_count(),
         batch.targets.len()
     );

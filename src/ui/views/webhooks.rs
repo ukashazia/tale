@@ -2,20 +2,18 @@ use crate::app::App;
 
 pub fn summary(app: &App) -> String {
     if app.webhooks.is_empty() {
-        return "Webhooks · no endpoint inventory observed · secrets are never shown in inventory"
-            .to_owned();
+        return "Webhooks · none configured · secrets are never shown".to_owned();
     }
     let mut lines = vec![format!(
-        "Webhooks · {} endpoint{} · secrets are never shown in inventory",
+        "Webhooks · {} configured · secrets are never shown",
         app.webhooks.len(),
-        if app.webhooks.len() == 1 { "" } else { "s" }
     )];
     lines.extend(
         app.webhooks
         .iter()
         .map(|webhook| {
             format!(
-                "{} · {} · {} · endpoint={} · creator={} · last={} · created={} · updated={} · subscriptions [{}] · unknown values preserved",
+                "{} · {} · {} · url={} · created by={} · last result={} · created={} · updated={} · subscriptions [{}]",
                 webhook.stable_id,
                 webhook.destination_type.wire_value(),
                 webhook.status,

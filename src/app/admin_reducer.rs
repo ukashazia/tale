@@ -456,7 +456,7 @@ impl App {
             | AdminChange::DeviceDelete => {
                 let device = self
                     .selected_admin_device()
-                    .ok_or_else(|| "select a verified admin device before editing it".to_owned())?;
+                    .ok_or_else(|| "select a loaded device before editing it".to_owned())?;
                 Ok((
                     device.stable_id.clone(),
                     crate::admin::mutation::device_fields(device),
@@ -469,7 +469,7 @@ impl App {
             | AdminChange::UserDelete => {
                 let user = self
                     .selected_admin_user()
-                    .ok_or_else(|| "select a verified admin user before editing it".to_owned())?;
+                    .ok_or_else(|| "select a loaded user before editing it".to_owned())?;
                 Ok((user.id.clone(), crate::admin::mutation::user_fields(user)))
             }
             AdminChange::DnsNameservers { .. } => Ok((
@@ -479,7 +479,7 @@ impl App {
                         .nameservers
                         .snapshot
                         .as_ref()
-                        .ok_or_else(|| "DNS nameservers are not verified".to_owned())?,
+                        .ok_or_else(|| "DNS nameservers have not loaded yet".to_owned())?,
                 ),
             )),
             AdminChange::DnsPreferences { .. } => Ok((
@@ -489,7 +489,7 @@ impl App {
                         .dns_preferences
                         .snapshot
                         .as_ref()
-                        .ok_or_else(|| "DNS preferences are not verified".to_owned())?,
+                        .ok_or_else(|| "DNS preferences have not loaded yet".to_owned())?,
                 ),
             )),
             AdminChange::DnsSearchPaths { .. } => Ok((
@@ -499,7 +499,7 @@ impl App {
                         .search_paths
                         .snapshot
                         .as_ref()
-                        .ok_or_else(|| "DNS search paths are not verified".to_owned())?,
+                        .ok_or_else(|| "DNS search paths have not loaded yet".to_owned())?,
                 ),
             )),
             AdminChange::DnsSplitMapping { .. } => Ok((
@@ -509,7 +509,7 @@ impl App {
                         .split_dns
                         .snapshot
                         .as_ref()
-                        .ok_or_else(|| "split DNS is not verified".to_owned())?,
+                        .ok_or_else(|| "split DNS rules have not loaded yet".to_owned())?,
                 ),
             )),
         }
@@ -523,7 +523,7 @@ impl App {
                 .lock_keys(&request.profile, &request.target_id),
         ) {
             self.runtime_error =
-                Some("a conflicting admin mutation or read is running for this target".to_owned());
+                Some("another change or refresh is already running for this item".to_owned());
             return Vec::new();
         }
         self.admin_preflight_locks.insert(request.mutation_id);
@@ -964,7 +964,7 @@ impl App {
         if !self.admin_mutation_available(action_id) {
             return Err(self
                 .action_unavailable_reason(action_id)
-                .unwrap_or_else(|| "admin mutation is unavailable".to_owned()));
+                .unwrap_or_else(|| "this change is unavailable".to_owned()));
         }
         let Some(profile) = self.admin.profile.clone() else {
             return Err("an authenticated admin profile is required".to_owned());
@@ -987,9 +987,7 @@ impl App {
             .map_err(|error| error.to_string())?;
         let effects = self.start_admin_preflight(request);
         if effects.is_empty() {
-            return Err(
-                "a conflicting admin mutation or read is running; preview again".to_owned(),
-            );
+            return Err("this item is already being changed or refreshed; review it again when that finishes".to_owned());
         }
         Ok(effects)
     }
@@ -1128,7 +1126,7 @@ impl App {
                 Ok(requested) => requested,
                 Err(error) => {
                     self.runtime_error = Some(format!(
-                        "fresh route preflight for {} rejected the old request: {error}",
+                        "could not refresh route details for {}: {error}",
                         target.target_id
                     ));
                     return Vec::new();
@@ -1146,7 +1144,7 @@ impl App {
                 AdminChange::DeviceRoutes { routes: Vec::new() }.risk(),
             );
             if request.begin_preflight().is_err() {
-                self.runtime_error = Some("could not begin retry preflight".to_owned());
+                self.runtime_error = Some("could not refresh the selected devices".to_owned());
                 return Vec::new();
             }
             let preflight_effects = self.start_admin_preflight(request.clone());
@@ -1416,7 +1414,7 @@ impl App {
             .any(|request| request.profile != *active_profile)
         {
             self.set_confirmation_error(
-                "the active administration profile changed after batch preflight; preview again",
+                "the active administration profile changed; review the route changes again",
             );
             return Vec::new();
         }
@@ -1428,7 +1426,7 @@ impl App {
         if !self.admin_mutation_available(confirmation.batch.action_id) {
             let reason = self
                 .action_unavailable_reason(confirmation.batch.action_id)
-                .unwrap_or_else(|| "admin batch mutation is no longer available".to_owned());
+                .unwrap_or_else(|| "these route changes are no longer available".to_owned());
             self.set_confirmation_error(&reason);
             return Vec::new();
         }
@@ -1438,16 +1436,22 @@ impl App {
             .map(|request| request.target_id.clone())
             .collect::<Vec<_>>();
         if !confirmation.batch.target_list_is_unchanged(&target_ids) {
-            self.set_confirmation_error("the immutable batch target list changed; preview again");
+            self.set_confirmation_error(
+                "the selected devices changed; review the route changes again",
+            );
             return Vec::new();
         }
         for request in &confirmation.requests {
             let Some(preflight) = request.preflight.as_ref() else {
-                self.set_confirmation_error("every batch target requires a fresh preflight");
+                self.set_confirmation_error(
+                    "current details are required for every selected device",
+                );
                 return Vec::new();
             };
             if !preflight.is_fresh_at(self.now) {
-                self.set_confirmation_error("a batch preflight expired; preview again");
+                self.set_confirmation_error(
+                    "the device details are out of date; review the route changes again",
+                );
                 return Vec::new();
             }
         }
@@ -1465,7 +1469,7 @@ impl App {
                     self.admin_resource_locks.release(mutation_id);
                 }
                 self.set_confirmation_error(
-                    "a conflicting admin mutation or read is running for a batch target",
+                    "a selected device is already being changed or refreshed",
                 );
                 return Vec::new();
             }
@@ -1719,7 +1723,7 @@ impl App {
                     workflow.mark_applying();
                     workflow.mark_verifying();
                     workflow.mark_succeeded();
-                    self.runtime_error = Some("mock policy applied and verified".to_owned());
+                    self.runtime_error = Some("Policy applied".to_owned());
                 }
                 return Vec::new();
             }
@@ -1750,7 +1754,7 @@ impl App {
                 return Vec::new();
             }
             let Some(path) = workflow.candidate_path().map(PathBuf::from) else {
-                self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+                self.runtime_error = Some("the policy draft is unavailable".to_owned());
                 return Vec::new();
             };
             let Some(base_hash) = workflow.base().map(|value| value.hash().to_owned()) else {
@@ -1759,7 +1763,7 @@ impl App {
             };
             let Some(candidate_hash) = workflow.candidate().map(|value| value.hash().to_owned())
             else {
-                self.runtime_error = Some("the policy candidate is unavailable".to_owned());
+                self.runtime_error = Some("the policy draft is unavailable".to_owned());
                 return Vec::new();
             };
             workflow.mark_applying();
@@ -1885,14 +1889,14 @@ impl App {
         if let Some(mut request) = state.admin_mutation {
             if self.admin.profile.as_deref() != Some(request.profile.as_str()) {
                 self.set_confirmation_error(
-                    "the active administration profile changed after preflight; preview again",
+                    "the active administration profile changed; review the change again",
                 );
                 return Vec::new();
             }
             if !self.admin_mutation_available(request.action_id) {
                 let reason = self
                     .action_unavailable_reason(request.action_id)
-                    .unwrap_or_else(|| "admin mutation is no longer available".to_owned());
+                    .unwrap_or_else(|| "this change is no longer available".to_owned());
                 if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
                     current.error = Some(reason);
                 }
@@ -1901,15 +1905,15 @@ impl App {
             if !self.admin_mutation_target_is_current(&request) {
                 if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
                     current.error = Some(
-                        "the selected admin target changed; discard this preview and start again"
-                            .to_owned(),
+                        "the selected item changed; discard this review and start again".to_owned(),
                     );
                 }
                 return Vec::new();
             }
             let Some(preflight) = request.preflight.as_ref() else {
                 if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
-                    current.error = Some("fresh preflight is required before dispatch".to_owned());
+                    current.error =
+                        Some("review the latest details before applying this change".to_owned());
                 }
                 return Vec::new();
             };
@@ -1931,7 +1935,7 @@ impl App {
             {
                 if let Some(Overlay::Confirmation(current)) = self.overlays.last_mut() {
                     current.error =
-                        Some("a conflicting admin mutation or read is running".to_owned());
+                        Some("this item is already being changed or refreshed".to_owned());
                 }
                 return Vec::new();
             }
@@ -2146,7 +2150,7 @@ impl App {
                         workflow.set_latest_remote_with_path(document, Some(latest_path));
                     }
                     self.runtime_error = Some(
-                        "remote policy changed; candidate and latest remote are retained separately"
+                        "The tailnet policy changed; the draft and latest policy were kept separately"
                             .to_owned(),
                     );
                     return Vec::new();
@@ -2157,7 +2161,7 @@ impl App {
                         workflow.set_latest_remote(document);
                     }
                     self.runtime_error = Some(
-                        "remote policy is unchanged; the edited candidate was retained".to_owned(),
+                        "The tailnet policy is unchanged; the edited draft was kept".to_owned(),
                     );
                     return Vec::new();
                 }
@@ -2229,7 +2233,7 @@ impl App {
                         self.policy_workflow_view = PolicyWorkflowView::Actions;
                         if !editor_success {
                             self.runtime_error = Some(format!(
-                                "external editor returned {}; candidate retained",
+                                "The editor exited with {}; the draft was kept",
                                 editor_code
                                     .map_or_else(|| "signal".to_owned(), |value| value.to_string())
                             ));
@@ -2259,7 +2263,7 @@ impl App {
                         Ok(validation) => {
                             if !workflow.set_validation(validation) {
                                 self.runtime_error = Some(
-                                    "server validation result was not bound to the current candidate"
+                                    "The policy changed before the validation result arrived; validate it again"
                                         .to_owned(),
                                 );
                             }
@@ -2284,7 +2288,7 @@ impl App {
                         Ok(preview) => {
                             if !workflow.set_preview(preview) {
                                 self.runtime_error = Some(
-                                    "server permission preview was not bound to the current candidate"
+                                    "The policy changed before the access preview arrived; preview it again"
                                         .to_owned(),
                                 );
                             }
@@ -2309,7 +2313,7 @@ impl App {
                         Ok(diff) => {
                             if !workflow.set_diff(diff) {
                                 self.runtime_error = Some(
-                                    "policy diff was not bound to the current candidate".to_owned(),
+                                    "The policy changed before the comparison finished; compare it again".to_owned(),
                                 );
                             }
                         }
@@ -2348,7 +2352,7 @@ impl App {
                         workflow.set_latest_remote_with_path(latest.clone(), latest_path);
                     }
                     self.runtime_error = Some(
-                        "remote policy changed; candidate and latest remote retained for review"
+                        "The tailnet policy changed; the draft and latest policy were kept for review"
                             .to_owned(),
                     );
                     return Vec::new();
@@ -2358,17 +2362,16 @@ impl App {
                     && workflow.workflow_id() == workflow_id
                 {
                     match result {
-                        PolicyApplyResult::Succeeded { saved_hash } => {
+                        PolicyApplyResult::Succeeded { saved_hash: _ } => {
                             workflow.mark_verifying();
                             workflow.mark_succeeded();
-                            self.runtime_error =
-                                Some(format!("policy applied and verified: {saved_hash}"));
+                            self.runtime_error = Some("Policy applied".to_owned());
                             refresh_audit = true;
                         }
                         PolicyApplyResult::SucceededUnverified { saved_hash } => {
                             workflow.mark_succeeded_unverified();
                             self.runtime_error = Some(format!(
-                                "policy save completed; verification unavailable: {saved_hash}"
+                                "Policy saved, but Tale could not refresh it ({saved_hash})"
                             ));
                             refresh_audit = true;
                         }
@@ -2469,7 +2472,7 @@ impl App {
                 match result {
                     CredentialRevocationResult::Verified => {
                         self.runtime_error = Some(
-                            "remote credential revocation was verified; the active profile was deactivated because opaque local credential references cannot be mapped safely to remote credential IDs"
+                            "Credential revoked. The active profile was disconnected because Tale cannot safely match the saved credential to the revoked one."
                                 .to_owned(),
                         );
                         return self.clear_admin_profile();

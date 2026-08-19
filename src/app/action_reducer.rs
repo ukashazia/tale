@@ -736,7 +736,7 @@ impl App {
         if action_id.is_admin_mutation()
             && (self.resolved_config.read_only || self.admin.profile_read_only)
         {
-            return Some("read-only mode blocks admin mutations".to_owned());
+            return Some("read-only mode prevents changes to the tailnet".to_owned());
         }
         if action_id.is_admin_mutation() && self.admin.profile.is_none() {
             return Some("an authenticated admin profile is required".to_owned());
@@ -816,7 +816,7 @@ impl App {
             ActionId::LocalNcOpen => "Tailscale netcat is unavailable for this client",
             ActionId::LocalSyspolicyReload => "system policy reload is unavailable for this client",
             action_id if action_id.is_admin_mutation() => {
-                "the selected admin resource or mutation scope is unavailable"
+                "this action is unavailable for the selected item or credential"
             }
             _ => "capability unavailable",
         };

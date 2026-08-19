@@ -2,7 +2,7 @@ use crate::app::App;
 
 pub fn summary(app: &App) -> String {
     if app.health_findings.is_empty() {
-        return "Health · no derived findings from the current authoritative snapshots".to_owned();
+        return "Health · no issues found in the latest tailnet data".to_owned();
     }
     let mut lines = vec![format!(
         "Health · {} derived finding{} · label: Derived by Tale",

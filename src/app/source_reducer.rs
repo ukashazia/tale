@@ -1209,8 +1209,7 @@ impl App {
                     Ok(fresh) => fresh,
                     Err(error) => {
                         self.runtime_error = Some(format!(
-                            "fresh preflight for {} failed: {error}",
-                            request.action_id.as_str()
+                            "could not load the latest details needed for this change: {error}"
                         ));
                         self.reopen_admin_form(
                             request.action_id,
@@ -1237,7 +1236,9 @@ impl App {
                         .collect::<Vec<_>>()
                         .join("\n");
                     let _ = transition(&mut request.state, AdminMutationState::ConflictDetected);
-                    self.runtime_error = Some(format!("admin preflight conflict:\n{detail}"));
+                    self.runtime_error = Some(format!(
+                        "the item changed while you were reviewing it:\n{detail}"
+                    ));
                     self.reopen_admin_form(request.action_id, &request.change, detail);
                     return Vec::new();
                 }
@@ -1304,14 +1305,9 @@ impl App {
                 }
                 self.admin_resource_locks.release(request.mutation_id);
                 self.admin_mutations_in_flight.remove(&request.mutation_id);
-                let _ = self.tasks.set_verification(
-                    task_id,
-                    format!(
-                        "{}; audit candidates: {}",
-                        outcome.verification,
-                        outcome.audit.candidate_event_ids.len()
-                    ),
-                );
+                let _ = self
+                    .tasks
+                    .set_verification(task_id, outcome.verification.clone());
                 let task_succeeded = self
                     .tasks
                     .get(task_id)
@@ -1320,7 +1316,7 @@ impl App {
                     self.add_notification(
                         task_id,
                         crate::task::TaskResultKind::Success,
-                        "admin mutation verified",
+                        request.change.completed_message(),
                     );
                 } else {
                     self.add_notification(
@@ -1378,12 +1374,13 @@ impl App {
                         }
                         Ok(OperationalResult::SucceededUnverified { detail }) => {
                             self.runtime_error = Some(format!(
-                                "operational write succeeded, but verification was unavailable: {detail}"
+                                "the change may have succeeded, but Tale could not refresh it: {detail}"
                             ));
                         }
                         Ok(OperationalResult::OutcomeUnknown { detail }) => {
-                            self.runtime_error =
-                                Some(format!("operational write outcome is unknown: {detail}"));
+                            self.runtime_error = Some(format!(
+                                "Tale could not tell whether the change completed: {detail}"
+                            ));
                         }
                         Err(error) => {
                             self.runtime_error = Some(error.to_string());
@@ -1391,7 +1388,7 @@ impl App {
                     }
                 } else {
                     self.runtime_error = Some(format!(
-                        "an operational write completed for {profile} / {tailnet} outside its initiating admin context; remote state was not merged locally"
+                        "a change completed for {profile} / {tailnet} after that administration view was closed; refresh to see it"
                     ));
                 }
                 if let Some(secret) = secret {
@@ -1438,10 +1435,8 @@ impl App {
             AdminEvent::AccessExplorerFinished { result } => match result {
                 Ok(result) => {
                     self.access_explorer_result = Some(result);
-                    self.runtime_error = Some(
-                        "Access Explorer result is authoritative only for the documented policy preview request"
-                            .to_owned(),
-                    );
+                    self.runtime_error =
+                        Some("Access preview loaded for the edited policy".to_owned());
                 }
                 Err(error) => self.runtime_error = Some(error.to_string()),
             },
@@ -1475,9 +1470,7 @@ impl App {
                                 AggregateDimension::Protocol,
                             ]);
                             snapshot.aggregates = Some(rows);
-                            self.runtime_error = Some(
-                                "flow counters aggregated in a cancellable generation".to_owned(),
-                            );
+                            self.runtime_error = Some("Flow counters updated".to_owned());
                         }
                     }
                     Err(FlowError::Cancelled) => {}
@@ -1492,20 +1485,11 @@ impl App {
                 self.admin_audit_correlations
                     .insert(mutation_id, correlation.clone());
                 let detail = if correlation.candidate_event_ids.is_empty() {
-                    format!("mutation {mutation_id}: no matching audit event observed")
+                    "No matching activity entry was found".to_owned()
                 } else if correlation.is_ambiguous() {
-                    format!(
-                        "mutation {mutation_id}: ambiguous audit candidates [{}]",
-                        correlation.candidate_event_ids.join(", ")
-                    )
+                    "Several possible activity entries were found".to_owned()
                 } else {
-                    format!(
-                        "mutation {mutation_id}: audit candidate {}",
-                        correlation
-                            .candidate_event_ids
-                            .first()
-                            .map_or("not returned", String::as_str)
-                    )
+                    "Matching activity entry found".to_owned()
                 };
                 let _ = self.tasks.set_verification(task_id, detail);
             }
@@ -1563,7 +1547,7 @@ impl App {
                 self.aborted_admin_batch_children
                     .extend(pending.requests.keys().copied());
                 self.runtime_error = Some(format!(
-                    "batch preflight for {} failed: {error}",
+                    "could not load current route details for {}: {error}",
                     request.target_id
                 ));
                 self.reopen_admin_form(pending.action_id, &request.change, error.to_string());
@@ -1589,7 +1573,7 @@ impl App {
                 .collect::<Vec<_>>()
                 .join("\n");
             self.runtime_error = Some(format!(
-                "batch preflight conflict for {}:\n{detail}",
+                "route details changed for {} while you were reviewing them:\n{detail}",
                 request.target_id
             ));
             self.reopen_admin_form(pending.action_id, &request.change, detail);
@@ -1628,7 +1612,7 @@ impl App {
         }
         let batch = BatchMutation::new(parent_id, pending.action_id, targets, 4);
         let mut preview = vec![format!(
-            "immutable target list: {} route advertisers",
+            "devices to update: {} route advertisers",
             requests.len()
         )];
         for request in &requests {
@@ -1661,7 +1645,7 @@ impl App {
                 service_request: None,
                 operational_mutation: None,
                 handoff: None,
-                prompt: "Apply this immutable route-approval batch? Each advertiser is verified independently; failures remain per-target."
+                prompt: "Apply these route approvals? Each device is checked separately, and one failure will not undo the others."
                     .to_owned(),
                 required_phrase: None,
                 input: String::new(),
@@ -1787,16 +1771,16 @@ impl App {
             .get(in_flight.parent_task_id)
             .is_some_and(|task| task.state == TaskState::Cancelling);
         let summary = if parent_cancelling {
-            "admin batch cancelled; review per-target outcomes"
+            "Route updates cancelled; review the device results"
         } else if has_failure && in_flight.batch.verified_count() > 0 {
-            "admin batch partially succeeded; review per-target outcomes"
+            "Some route approvals were updated; review the device results"
         } else if has_failure {
-            "admin batch failed; review per-target outcomes"
+            "Route approvals could not be updated; review the device results"
         } else {
-            "admin batch verified for every target"
+            "Route approvals updated for every device"
         };
         let detail = format!(
-            "{} of {} targets verified",
+            "{} of {} devices updated",
             in_flight
                 .batch
                 .child_outcomes

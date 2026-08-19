@@ -82,9 +82,7 @@ impl App {
         };
         let credential_type = crate::admin::key_mutations::remote_credential_type(credential);
         if !credential_type.supported_for_revoke() {
-            self.runtime_error = Some(
-                "the selected credential type has no documented revocation contract".to_owned(),
-            );
+            self.runtime_error = Some("Tale cannot revoke this type of credential".to_owned());
             return Vec::new();
         }
         let Some(read_scope) = credential_type.read_scope() else {
@@ -122,9 +120,7 @@ impl App {
     ) -> Vec<Effect> {
         let credential_type = crate::admin::key_mutations::remote_credential_type(&credential);
         if !credential_type.supported_for_revoke() {
-            self.runtime_error = Some(
-                "the selected credential type has no documented revocation contract".to_owned(),
-            );
+            self.runtime_error = Some("Tale cannot revoke this type of credential".to_owned());
             return Vec::new();
         }
         let Some(read_scope) = credential_type.read_scope() else {
@@ -164,9 +160,8 @@ impl App {
             service_request: None,
             operational_mutation: None,
             handoff: None,
-            prompt:
-                "Revoke this remote credential? Tale will issue one DELETE and then read it back."
-                    .to_owned(),
+            prompt: "Revoke this credential? Tale will send the request once, then check that it is gone."
+                .to_owned(),
             required_phrase: Some(phrase),
             input: String::new(),
             lose_ssh_checked: false,
@@ -211,11 +206,12 @@ impl App {
                     "known dependents: {}",
                     display_list(&credential.known_dependents)
                 ),
-                "profile safety: local credential references are opaque; Tale will deactivate the active profile after verified revocation"
+                "Saved credential references cannot be matched reliably. If this credential belongs to the active profile, Tale will disconnect it after revocation."
                     .to_owned(),
-                "remote revocation and local keyring removal are separate actions".to_owned(),
+                "Revoking this credential does not remove a saved credential from the OS keyring."
+                    .to_owned(),
             ],
-            redacted_argv: vec!["DELETE /tailnet/{tailnet}/keys/{exact-id}".to_owned()],
+            redacted_argv: Vec::new(),
             error: None,
         })));
         Vec::new()

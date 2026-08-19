@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     app.audit_filters.target_id,
                     app.audit_filters.text
                 ),
-                "filters use already-decoded server fields; values are redacted".to_owned(),
+                "filters use the activity data already loaded; sensitive values are hidden".to_owned(),
                 String::new(),
             ];
             lines.extend(filtered.into_iter().take(200).map(|event| {

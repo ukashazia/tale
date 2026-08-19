@@ -142,7 +142,7 @@ fn the_inspector_describes_one_task_and_shows_its_output() {
     };
     for expected in [
         "task-3",
-        "local.netcheck",
+        "Netcheck",
         "failed",
         "exit status",
         "command",
