@@ -1,0 +1,71 @@
+name: Publish Homebrew formula
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      PLAN: ${{ inputs.plan }}
+      GITHUB_USER: axo-bot
+      GITHUB_EMAIL: admin+bot@axo.dev
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: true
+          repository: ukashazia/homebrew-tale
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tale
+
+      - name: Fetch generated formula
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: artifacts-*
+          path: homebrew-tale/Formula
+          merge-multiple: true
+
+      - name: Install completions and publish formula
+        run: |
+          set -euo pipefail
+          git -C homebrew-tale config user.name "$GITHUB_USER"
+          git -C homebrew-tale config user.email "$GITHUB_EMAIL"
+
+          while IFS= read -r release; do
+            filename="$(jq --raw-output '.artifacts[] | select(endswith(".rb"))' <<<"$release")"
+            name="${filename%.rb}"
+            version="$(jq --raw-output '.app_version' <<<"$release")"
+            formula="homebrew-tale/Formula/$filename"
+
+            python3 packaging/homebrew/patch_formula.py "$formula"
+
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+            brew update
+            (
+              cd homebrew-tale
+              brew style \
+                --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict \
+                --fix "Formula/$filename" || true
+              brew audit --formula "Formula/$filename"
+            )
+
+            git -C homebrew-tale add "Formula/$filename"
+            git -C homebrew-tale commit -m "$name $version"
+          done < <(
+            jq --compact-output \
+              '.releases[] | select([.artifacts[] | endswith(".rb")] | any)' \
+              <<<"$PLAN"
+          )
+
+          git -C homebrew-tale push

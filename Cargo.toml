@@ -25,11 +25,13 @@ unix-archive = ".tar.gz"
 checksum = "sha256"
 include = ["NOTICE", "docs/cli/tale.1", "completions"]
 tap = "ukashazia/homebrew-tale"
-publish-jobs = ["homebrew"]
+# cargo-dist does not place packaged completions in Homebrew's shell-specific
+# directories, so Tale publishes its generated formula through a custom job.
+publish-jobs = ["./publish-homebrew"]
 pr-run-mode = "plan"
 plan-jobs = ["./ci"]
 post-announce-jobs = ["./publish-nix-flake"]
-github-custom-job-permissions = { publish-nix-flake = { contents = "write" } }
+github-custom-job-permissions = { publish-homebrew = { contents = "read" }, publish-nix-flake = { contents = "write" } }
 install-path = "CARGO_HOME"
 hosting = "github"
 install-updater = false

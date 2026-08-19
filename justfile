@@ -15,6 +15,7 @@ check-artifacts:
     cargo run --locked --bin generate-artifacts -- --output-dir "$temporary_directory"
     diff -ru completions "$temporary_directory/completions"
     diff -u docs/cli/tale.1 "$temporary_directory/docs/cli/tale.1"
+    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s packaging/homebrew -p 'test_*.py'
 
 [arg("bump", long, help="SemVer release level or version")]
 prepare-release bump:

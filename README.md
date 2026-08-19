@@ -37,6 +37,8 @@ nix profile install 'tarball+https://github.com/ukashazia/tale/releases/latest/d
 The Nix download contains the release's prebuilt binaries. To pin a version,
 replace `releases/latest` with `releases/download/vX.Y.Z`.
 
+Homebrew and Nix installations include completions for Bash, Zsh, and Fish.
+
 <details>
 <summary>Debian, Ubuntu, Arch Linux, and source builds</summary>
 
