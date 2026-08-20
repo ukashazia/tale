@@ -5,7 +5,7 @@ use tale::config::{self, EnvironmentValues};
 use tale::event::{Event, TaskEvent};
 use tale::mock::MOCK_NOW;
 use tale::paths::{PathEnvironment, Platform};
-use tale::task::{DETAIL_CAP, Progress, TaskState, TaskStore, bounded_detail};
+use tale::task::{DETAIL_CAP, Progress, TaskChange, TaskState, TaskStore, bounded_detail};
 
 fn app() -> Option<App> {
     let root = std::path::PathBuf::from("/fictional/tale-tasks");
@@ -86,6 +86,47 @@ fn active_tasks_survive_completed_history_eviction() {
             .count(),
         1
     );
+}
+
+#[test]
+fn restored_history_gets_fresh_session_ids_without_moving_live_tasks() {
+    let mut previous_session = TaskStore::new();
+    let historical = previous_session.create(ActionId::MockSuccess, "historical", 10, true);
+    assert!(previous_session.start(historical));
+    assert!(previous_session.succeed(historical, 11, "done", "saved"));
+    let restored = previous_session.take_dirty();
+
+    let mut current_session = TaskStore::new();
+    let live = current_session.create(ActionId::MockCancellable, "live", 20, true);
+    let live_record = current_session.get(live).map(|task| task.record_id);
+    current_session.merge_restored(restored);
+
+    assert_eq!(
+        current_session.get(live).map(|task| task.record_id),
+        live_record
+    );
+    let ids = current_session
+        .all()
+        .iter()
+        .map(|task| task.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), 2);
+}
+
+#[test]
+fn structured_changes_are_included_in_dirty_updates() {
+    let mut store = TaskStore::new();
+    let task = store.create(ActionId::AdminDeviceRename, "machine alpha", 10, true);
+    let _ = store.take_dirty();
+    let changes = vec![TaskChange {
+        field: "machine name".to_owned(),
+        before: Some("alpha".to_owned()),
+        after: Some("beta".to_owned()),
+    }];
+    assert!(store.set_changes(task, changes.clone()));
+    let dirty = store.take_dirty();
+    assert_eq!(dirty.len(), 1);
+    assert_eq!(dirty[0].changes, changes);
 }
 
 #[test]

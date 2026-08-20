@@ -10,7 +10,7 @@ use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::event::{Event, InputEvent};
 use tale::paths::{PathEnvironment, Platform};
-use tale::task::Progress;
+use tale::task::{Progress, TaskChange};
 
 /// `:tasks` is a table like `:devices`, not a run of preformatted sentences:
 /// headings, one row per task, and a state glyph rather than a `*` marker.
@@ -185,6 +185,24 @@ fn the_inspector_omits_what_the_run_did_not_report() {
     );
 }
 
+#[test]
+fn the_inspector_shows_structured_before_and_after_values() {
+    let Some(mut app) = tasks_app() else {
+        return;
+    };
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Enter);
+    let Some(lines) = render_lines(&app, 100, 30) else {
+        return;
+    };
+    assert!(lines.iter().any(|line| line.contains("changes")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("machine name: alpha → laptop-0"))
+    );
+}
+
 /// `/` narrows the history, and the border says so rather than leaving the
 /// reader to wonder where the other rows went.
 #[test]
@@ -338,6 +356,14 @@ fn tasks_app() -> Option<App> {
     app.tasks.start(renamed);
     app.tasks
         .succeed(renamed, now - 890, "renamed to laptop-0", "");
+    app.tasks.set_changes(
+        renamed,
+        vec![TaskChange {
+            field: "machine name".to_owned(),
+            before: Some("alpha".to_owned()),
+            after: Some("laptop-0".to_owned()),
+        }],
+    );
 
     let running = app
         .tasks

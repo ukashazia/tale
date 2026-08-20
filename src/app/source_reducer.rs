@@ -1743,6 +1743,9 @@ impl App {
                 vec![next.change.audit_action_class().to_owned()],
                 Vec::new(),
             );
+            let _ = self
+                .tasks
+                .set_changes(next_task_id, crate::admin::mutation::task_changes(&next));
             self.admin_mutations_in_flight
                 .insert(next.mutation_id, next_task_id);
             in_flight.child_tasks.insert(next.mutation_id, next_task_id);

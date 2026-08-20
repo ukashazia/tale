@@ -240,10 +240,13 @@ fn diagnostics_load_the_visible_section() {
     ))));
     assert!(matches!(
         effects.as_slice(),
-        [Effect::StartServiceTask {
-            request: ServiceActionRequest::Metrics,
-            ..
-        }]
+        [
+            Effect::StartServiceTask {
+                request: ServiceActionRequest::Metrics,
+                ..
+            },
+            Effect::PersistTaskHistory(tasks),
+        ] if tasks.len() == 1
     ));
 
     let effects = app.dispatch_action(ActionId::SectionNext);

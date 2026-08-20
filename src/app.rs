@@ -1606,6 +1606,7 @@ pub struct App {
     pub system_policy_failure: Option<LocalFailure>,
     pub local_diagnostics: BTreeMap<TaskId, DiagnosticState>,
     pub tasks: TaskStore,
+    pub task_history_loading: bool,
     pub notifications: Vec<Notification>,
     pub resolved_config: ResolvedConfig,
     /// Immutable visual language used by the next complete frame.
@@ -1823,6 +1824,7 @@ impl App {
                 BTreeMap::new()
             },
             tasks: TaskStore::new(),
+            task_history_loading: config.history.persist_tasks && !config.mock,
             notifications: Vec::new(),
             resolved_config: config,
             theme,
@@ -1918,7 +1920,7 @@ impl App {
         {
             return Vec::new();
         }
-        match event {
+        let mut effects = match event {
             Event::Input(input) => self.update_input(input),
             Event::Tick(tick) => self.update_tick(tick),
             Event::Task(task) => self.update_task(*task),
@@ -1928,8 +1930,31 @@ impl App {
             Event::Admin(admin) => self.update_admin(*admin),
             Event::Policy(policy) => self.update_policy(*policy),
             Event::Credential(credential) => self.update_credential(*credential),
+            Event::Database(database) => self.update_database(database),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
+        };
+        if self.resolved_config.history.persist_tasks && !self.resolved_config.mock {
+            let dirty = self.tasks.take_dirty();
+            if !dirty.is_empty() {
+                effects.push(Effect::PersistTaskHistory(dirty));
+            }
         }
+        effects
+    }
+
+    fn update_database(&mut self, event: crate::event::DatabaseEvent) -> Vec<Effect> {
+        self.task_history_loading = false;
+        match event {
+            crate::event::DatabaseEvent::TaskHistoryLoaded(tasks) => {
+                self.tasks.merge_restored(tasks);
+                self.tasks
+                    .evict_completed(self.resolved_config.history.max_tasks);
+            }
+            crate::event::DatabaseEvent::TaskHistoryFailed(_) => {
+                self.status_notice = Some("Task history is unavailable".to_owned());
+            }
+        }
+        Vec::new()
     }
 
     fn update_tick(&mut self, tick: Instant) -> Vec<Effect> {

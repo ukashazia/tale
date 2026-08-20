@@ -28,7 +28,7 @@ use crate::domain::transfer::{TaildriveShare, TaildropTarget};
 use crate::local::handoff::HandoffResult;
 use crate::local::policy::SystemPolicyEntry;
 use crate::mock::MockScenario;
-use crate::task::{Progress, TaskId};
+use crate::task::{Progress, Task, TaskId};
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -41,7 +41,14 @@ pub enum Event {
     Admin(Box<AdminEvent>),
     Policy(Box<PolicyEvent>),
     Credential(Box<CredentialEvent>),
+    Database(DatabaseEvent),
     ShutdownRequested(ShutdownReason),
+}
+
+#[derive(Debug, Clone)]
+pub enum DatabaseEvent {
+    TaskHistoryLoaded(Vec<Task>),
+    TaskHistoryFailed(String),
 }
 
 #[derive(Debug, Clone)]

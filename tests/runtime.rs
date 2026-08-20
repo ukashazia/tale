@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,7 @@ use tale::event::{Event, InputEvent, ShutdownReason, SourceEvent, TaskEvent};
 use tale::paths::{PathEnvironment, Platform};
 use tale::runtime::{EventQueue, TerminalDriver};
 use tale::task::TaskId;
+use tempfile::TempDir;
 
 fn mock_app() -> Option<App> {
     let root = PathBuf::from("/fictional/tale-runtime");
@@ -64,6 +66,81 @@ impl TerminalDriver for FakeDriver {
         self.restores = self.restores.saturating_add(1);
         Ok(())
     }
+}
+
+struct StartupDriver {
+    first_draw_loading: Option<bool>,
+}
+
+impl TerminalDriver for StartupDriver {
+    fn draw(&mut self, app: &mut App) -> Result<(), TaleError> {
+        if self.first_draw_loading.is_none() {
+            self.first_draw_loading = Some(app.task_history_loading);
+        }
+        Ok(())
+    }
+
+    fn restore(&mut self) -> Result<(), TaleError> {
+        Ok(())
+    }
+}
+
+fn persistent_app() -> Option<(App, TempDir)> {
+    let directory = TempDir::new().ok()?;
+    let config_file = directory.path().join("config.toml");
+    fs::write(&config_file, "[history]\npersist_tasks = true\n").ok()?;
+    let cli = Cli {
+        command: None,
+        profile: None,
+        config: Some(config_file),
+        view: None,
+        read_only: false,
+        no_local: true,
+        tailscale_path: None,
+        tailscale_socket: None,
+        mock: false,
+    };
+    let environment = EnvironmentValues {
+        config_file: None,
+        tailscale_path: None,
+        tailscale_socket: None,
+        no_color: false,
+    };
+    let paths = PathEnvironment {
+        platform: Platform::Unix,
+        current_dir: directory.path().to_path_buf(),
+        xdg_config_home: Some(directory.path().join("config")),
+        home: Some(directory.path().join("home")),
+        xdg_state_home: Some(directory.path().join("state")),
+        xdg_cache_home: Some(directory.path().join("cache")),
+        appdata: None,
+        localappdata: None,
+    };
+    let app = config::resolve(&cli, &environment, &paths)
+        .ok()
+        .map(App::new)?;
+    Some((app, directory))
+}
+
+#[tokio::test]
+async fn task_history_load_never_delays_the_first_frame() {
+    let Some((mut app, _directory)) = persistent_app() else {
+        return;
+    };
+    let queue = EventQueue::new();
+    queue
+        .send(Event::ShutdownRequested(ShutdownReason::Signal))
+        .await;
+    let mut driver = StartupDriver {
+        first_draw_loading: None,
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        tale::runtime::run_with_driver_and_queue(&mut app, &mut driver, queue),
+    )
+    .await;
+    assert!(matches!(result, Ok(Ok(()))));
+    assert_eq!(driver.first_draw_loading, Some(true));
 }
 
 #[tokio::test]

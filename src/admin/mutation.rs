@@ -17,6 +17,7 @@ use crate::domain::device::AdminDevice;
 use crate::domain::dns::{AdminDnsPreferences, AdminNameservers, AdminSearchPaths, AdminSplitDns};
 use crate::domain::route::IpNet;
 use crate::domain::user::AdminUser;
+use crate::task::TaskChange;
 
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct AdminSnapshotFields {
@@ -225,6 +226,100 @@ pub fn requested_fields(change: &AdminChange) -> AdminSnapshotFields {
         AdminChange::UserDelete => {
             AdminSnapshotFields::with([(String::from("deleted"), String::from("true"))])
         }
+    }
+}
+
+pub fn task_changes(request: &AdminMutationRequest) -> Vec<TaskChange> {
+    let current = request
+        .preflight
+        .as_ref()
+        .map_or(&request.base_snapshot, |preflight| &preflight.snapshot);
+    requested_fields(&request.change)
+        .values
+        .into_iter()
+        .map(|(field, after)| {
+            let (before, after) = task_values(
+                &field,
+                current.values.get(&field).map(String::as_str),
+                &after,
+            );
+            TaskChange {
+                field: field_label(&field).to_owned(),
+                before,
+                after: Some(after),
+            }
+        })
+        .collect()
+}
+
+fn task_values(field: &str, before: Option<&str>, after: &str) -> (Option<String>, String) {
+    match field {
+        "authorized" => (
+            before.map(approval_label).map(str::to_owned),
+            approval_label(after).to_owned(),
+        ),
+        "keyExpiryDisabled" => (
+            before.map(expiry_label).map(str::to_owned),
+            expiry_label(after).to_owned(),
+        ),
+        "magicDNS" => (
+            before.map(enabled_label).map(str::to_owned),
+            enabled_label(after).to_owned(),
+        ),
+        "expireNow" => (Some("active".to_owned()), "expired".to_owned()),
+        "deleted" => (Some("present".to_owned()), "deleted".to_owned()),
+        value if value.starts_with("splitDns:") => {
+            let domain = value.trim_start_matches("splitDns:");
+            let after = after
+                .strip_prefix(&format!("{domain}="))
+                .unwrap_or(after)
+                .to_owned();
+            (before.map(str::to_owned), after)
+        }
+        _ => (before.map(str::to_owned), after.to_owned()),
+    }
+}
+
+fn approval_label(value: &str) -> &str {
+    match value {
+        "true" => "approved",
+        "false" => "not approved",
+        value => value,
+    }
+}
+
+fn expiry_label(value: &str) -> &str {
+    match value {
+        "true" => "disabled",
+        "false" => "enabled",
+        value => value,
+    }
+}
+
+fn enabled_label(value: &str) -> &str {
+    match value {
+        "true" => "enabled",
+        "false" => "disabled",
+        value => value,
+    }
+}
+
+fn field_label(field: &str) -> &str {
+    match field {
+        "name" => "machine name",
+        "tags" => "tags",
+        "authorized" => "approval",
+        "keyExpiryDisabled" => "key expiry",
+        "expireNow" => "device key",
+        "deleted" => "record",
+        "enabledRoutes" => "enabled routes",
+        "dns" => "nameservers",
+        "magicDNS" => "MagicDNS",
+        "searchPaths" => "search paths",
+        "role" => "role",
+        "status" => "status",
+        value if value.starts_with("splitDns:") => "split DNS",
+        value => value,
     }
 }
 
@@ -564,6 +659,7 @@ pub fn collect_target_ids(targets: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::Risk;
     use crate::domain::admin_mutation::AdminChange;
 
     #[test]
@@ -607,6 +703,29 @@ mod tests {
                 String::from("10.0.0.0/8"),
                 String::from("2001:db8::/64")
             ])
+        );
+    }
+
+    #[test]
+    fn task_changes_keep_the_confirmed_before_and_after_values() {
+        let request = AdminMutationRequest::new(
+            1,
+            "production",
+            "device-1",
+            AdminSnapshotFields::with([("name".to_owned(), "alpha".to_owned())]),
+            AdminChange::DeviceRename {
+                name: "beta".to_owned(),
+            },
+            ActionId::AdminDeviceRename,
+            Risk::Reversible,
+        );
+        assert_eq!(
+            task_changes(&request),
+            vec![TaskChange {
+                field: "machine name".to_owned(),
+                before: Some("alpha".to_owned()),
+                after: Some("beta".to_owned()),
+            }]
         );
     }
 }

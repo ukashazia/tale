@@ -90,6 +90,9 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
 /// Nothing here is fetched, so an empty page means either that this session has
 /// not run anything yet or that the filter excluded what it did run.
 fn empty_state(app: &App) -> Vec<Line<'static>> {
+    if app.task_history_loading {
+        return vec![text::muted_help(app.theme, "Loading task history…")];
+    }
     if app.tasks.all().is_empty() {
         return vec![
             text::muted_help(app.theme, "No tasks yet"),
@@ -176,6 +179,21 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.theme.style(theme::StyleRole::TextPrimary),
     ))];
     lines.extend(grid::detail(app, &pairs));
+    if !task.changes.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "changes",
+            app.theme.style(theme::StyleRole::SectionHeading),
+        )));
+        for change in &task.changes {
+            let before = change.before.as_deref().unwrap_or("—");
+            let after = change.after.as_deref().unwrap_or("—");
+            lines.push(Line::from(format!(
+                "{}: {} → {}",
+                change.field, before, after
+            )));
+        }
+    }
     lines.extend(output_lines(app, task, area, lines.len()));
     panel::render_focusable(
         frame,
@@ -258,7 +276,7 @@ const fn state_role(state: TaskState) -> theme::StyleRole {
         TaskState::Running | TaskState::Cancelling => theme::StyleRole::TaskRunning,
         TaskState::Succeeded => theme::StyleRole::TaskSucceeded,
         TaskState::Failed => theme::StyleRole::TaskFailed,
-        TaskState::Cancelled => theme::StyleRole::TaskCancelled,
+        TaskState::Cancelled | TaskState::Interrupted => theme::StyleRole::TaskCancelled,
     }
 }
 
