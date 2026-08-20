@@ -266,11 +266,31 @@ fn missing_config_uses_defaults_and_does_not_write() {
     );
     assert!(resolved.is_ok());
     if let Ok(resolved) = resolved {
+        assert!(resolved.history.persist_tasks);
         assert_eq!(resolved.history.max_tasks, 200);
         assert_eq!(resolved.local.reconcile_interval.as_secs(), 30);
     }
     assert!(!file.exists());
     assert!(!root.exists());
+}
+
+#[test]
+fn task_history_can_be_explicitly_disabled() {
+    let root = std::env::temp_dir().join(format!("tale-history-config-{}", std::process::id()));
+    let _ = fs::create_dir_all(&root);
+    let file = root.join("config.toml");
+    assert!(fs::write(&file, "[history]\npersist_tasks = false\n").is_ok());
+    let resolved = config::resolve(
+        &cli(Some(file)),
+        &environment(),
+        &path_environment(Platform::Unix, &root),
+    );
+    assert!(resolved.is_ok());
+    if let Ok(resolved) = resolved {
+        assert!(!resolved.history.persist_tasks);
+        assert_eq!(resolved.history.persist_tasks_source, ValueSource::File);
+    }
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

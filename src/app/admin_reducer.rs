@@ -1513,6 +1513,9 @@ impl App {
                 vec![request.change.audit_action_class().to_owned()],
                 Vec::new(),
             );
+            let _ = self
+                .tasks
+                .set_changes(task_id, crate::admin::mutation::task_changes(&request));
             self.admin_mutations_in_flight
                 .insert(request.mutation_id, task_id);
             child_tasks.insert(request.mutation_id, task_id);
@@ -1971,6 +1974,9 @@ impl App {
                 vec![request.change.audit_action_class().to_owned()],
                 Vec::new(),
             );
+            let _ = self
+                .tasks
+                .set_changes(task_id, crate::admin::mutation::task_changes(&request));
             self.admin_mutations_in_flight
                 .insert(request.mutation_id, task_id);
             self.overlays.pop();

@@ -4,6 +4,7 @@ pub mod app;
 pub mod cli;
 pub mod clipboard;
 pub mod config;
+pub mod database;
 mod detail;
 pub mod doctor;
 pub mod domain;

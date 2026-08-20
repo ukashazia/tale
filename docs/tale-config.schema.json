@@ -169,8 +169,8 @@
       "properties": {
         "persist_tasks": {
           "type": "boolean",
-          "default": false,
-          "description": "Persist task history between sessions."
+          "default": true,
+          "description": "Persist task history between sessions in the Tale state database (tale.sqlite3)."
         },
         "max_tasks": {
           "type": "integer",

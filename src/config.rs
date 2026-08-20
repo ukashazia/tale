@@ -527,7 +527,7 @@ pub fn resolve(
             show_footer_source: source_for(file.ui.show_footer.is_some()),
         },
         history: HistoryConfig {
-            persist_tasks: file.history.persist_tasks.is_some_and(|value| value),
+            persist_tasks: file.history.persist_tasks.is_none_or(|value| value),
             max_tasks: file.history.max_tasks.unwrap_or(200),
             persist_tasks_source: source_for(file.history.persist_tasks.is_some()),
             max_tasks_source: source_for(file.history.max_tasks.is_some()),

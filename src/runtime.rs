@@ -255,6 +255,22 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
     let local_read_serializers = ReadSerializers::new();
     let handoff_input_gate = Arc::new(AtomicBool::new(true));
     let mut terminal_suspended = false;
+    let task_history_sender =
+        if app.resolved_config.history.persist_tasks && !app.resolved_config.mock {
+            let (sender, receiver) = mpsc::unbounded_channel();
+            let state_dir = app.resolved_config.paths.state_dir.clone();
+            let max_tasks = app.resolved_config.history.max_tasks;
+            let history_queue = queue.clone();
+            tasks.spawn(crate::database::run_task_history(
+                state_dir,
+                max_tasks,
+                receiver,
+                history_queue,
+            ));
+            Some(sender)
+        } else {
+            None
+        };
 
     spawn_input_source(
         &mut tasks,
@@ -283,6 +299,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             terminal,
             handoff_input_gate: &handoff_input_gate,
             terminal_suspended: &mut terminal_suspended,
+            task_history_sender: task_history_sender.as_ref(),
         };
 
         for effect in app.bootstrap_effects() {
@@ -328,6 +345,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
             }
         }
     }
+    drop(task_history_sender);
     stop.stop();
     for cancellation in cancellations.values() {
         cancellation.cancel();
@@ -388,6 +406,7 @@ struct DispatchContext<'a, T: TerminalDriver> {
     terminal: &'a mut T,
     handoff_input_gate: &'a Arc<AtomicBool>,
     terminal_suspended: &'a mut bool,
+    task_history_sender: Option<&'a mpsc::UnboundedSender<crate::database::TaskHistoryCommand>>,
 }
 
 fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchContext<'_, T>) {
@@ -406,6 +425,13 @@ fn dispatch_effect<T: TerminalDriver>(effect: Effect, context: &mut DispatchCont
     let handoff_input_gate = context.handoff_input_gate;
     let terminal_suspended = &mut *context.terminal_suspended;
     match effect {
+        Effect::PersistTaskHistory(tasks_to_persist) => {
+            if let Some(sender) = context.task_history_sender {
+                let _ = sender.send(crate::database::TaskHistoryCommand::Upsert(
+                    tasks_to_persist,
+                ));
+            }
+        }
         Effect::StartMockLoad {
             resource,
             generation,
@@ -7821,6 +7847,7 @@ const fn event_cause(event: &Event) -> &'static str {
         Event::Admin(_) => "admin",
         Event::Policy(_) => "policy",
         Event::Credential(_) => "credential",
+        Event::Database(_) => "database",
         Event::ShutdownRequested(_) => "shutdown",
     }
 }

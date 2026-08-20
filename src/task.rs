@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
+
+use uuid::Uuid;
 
 use crate::action::ActionId;
 use crate::domain::Timestamp;
@@ -14,6 +17,27 @@ impl std::fmt::Display for TaskId {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct TaskRecordId(pub Uuid);
+
+impl TaskRecordId {
+    pub fn new() -> Self {
+        Self(Uuid::now_v7())
+    }
+}
+
+impl Default for TaskRecordId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for TaskRecordId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TaskState {
     Queued,
@@ -22,11 +46,15 @@ pub enum TaskState {
     Succeeded,
     Failed,
     Cancelled,
+    Interrupted,
 }
 
 impl TaskState {
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
     }
 
     pub const fn label(self) -> &'static str {
@@ -37,6 +65,7 @@ impl TaskState {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
         }
     }
 }
@@ -60,6 +89,7 @@ impl Progress {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Task {
     pub id: TaskId,
+    pub record_id: TaskRecordId,
     pub action_id: ActionId,
     pub target_label: String,
     pub state: TaskState,
@@ -73,6 +103,14 @@ pub struct Task {
     pub redacted_argv: Vec<String>,
     pub exit_status: Option<i32>,
     pub verification: Option<String>,
+    pub changes: Vec<TaskChange>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TaskChange {
+    pub field: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -94,6 +132,7 @@ pub struct Notification {
 pub struct TaskStore {
     tasks: Vec<Task>,
     next_id: u64,
+    dirty: BTreeSet<TaskRecordId>,
     pub selected: Option<TaskId>,
 }
 
@@ -102,6 +141,7 @@ impl TaskStore {
         Self {
             tasks: Vec::new(),
             next_id: 1,
+            dirty: BTreeSet::new(),
             selected: None,
         }
     }
@@ -115,8 +155,10 @@ impl TaskStore {
     ) -> TaskId {
         let id = TaskId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
+        let record_id = TaskRecordId::new();
         self.tasks.push(Task {
             id,
+            record_id,
             action_id,
             target_label: target_label.into(),
             state: TaskState::Queued,
@@ -130,7 +172,9 @@ impl TaskStore {
             redacted_argv: Vec::new(),
             exit_status: None,
             verification: None,
+            changes: Vec::new(),
         });
+        self.dirty.insert(record_id);
         if self.selected.is_none() {
             self.selected = Some(id);
         }
@@ -143,6 +187,48 @@ impl TaskStore {
 
     pub fn get_mut(&mut self, id: TaskId) -> Option<&mut Task> {
         self.tasks.iter_mut().find(|task| task.id == id)
+    }
+
+    fn mark_dirty(&mut self, id: TaskId) {
+        if let Some(task) = self.get(id) {
+            self.dirty.insert(task.record_id);
+        }
+    }
+
+    pub fn take_dirty(&mut self) -> Vec<Task> {
+        let dirty = std::mem::take(&mut self.dirty);
+        self.tasks
+            .iter()
+            .filter(|task| dirty.contains(&task.record_id))
+            .cloned()
+            .collect()
+    }
+
+    pub fn merge_restored(&mut self, mut restored: Vec<Task>) {
+        let known = self
+            .tasks
+            .iter()
+            .map(|task| task.record_id)
+            .collect::<BTreeSet<_>>();
+        restored.retain(|task| !known.contains(&task.record_id));
+        for task in &mut restored {
+            task.id = TaskId(self.next_id);
+            self.next_id = self.next_id.saturating_add(1);
+        }
+        restored.append(&mut self.tasks);
+        self.tasks = restored;
+        if self.selected.is_none() {
+            self.selected = self.tasks.last().map(|task| task.id);
+        }
+    }
+
+    pub fn set_changes(&mut self, id: TaskId, changes: Vec<TaskChange>) -> bool {
+        let Some(task) = self.get_mut(id) else {
+            return false;
+        };
+        task.changes = changes;
+        self.mark_dirty(id);
+        true
     }
 
     pub fn selected_can_cancel(&self) -> bool {
@@ -168,6 +254,7 @@ impl TaskStore {
         };
         task.requested_fields = requested_fields;
         task.redacted_argv = redacted_argv;
+        self.mark_dirty(id);
         true
     }
 
@@ -176,6 +263,7 @@ impl TaskStore {
             return false;
         };
         task.exit_status = exit_status;
+        self.mark_dirty(id);
         true
     }
 
@@ -184,6 +272,7 @@ impl TaskStore {
             return false;
         };
         task.verification = Some(verification.into());
+        self.mark_dirty(id);
         true
     }
 
@@ -258,6 +347,7 @@ impl TaskStore {
         }
         task.state = TaskState::Running;
         task.summary = "running".to_owned();
+        self.mark_dirty(id);
         true
     }
 
@@ -270,6 +360,7 @@ impl TaskStore {
         }
         task.progress = Some(progress);
         append_detail(task, detail);
+        self.mark_dirty(id);
         true
     }
 
@@ -277,7 +368,7 @@ impl TaskStore {
         let Some(task) = self.get_mut(id) else {
             return false;
         };
-        match task.state {
+        let changed = match task.state {
             TaskState::Queued if task.cancellable => {
                 task.state = TaskState::Cancelling;
                 task.summary = "cancelling".to_owned();
@@ -288,9 +379,16 @@ impl TaskStore {
                 task.summary = "cancelling".to_owned();
                 true
             }
-            TaskState::Cancelling => true,
+            TaskState::Cancelling => false,
             _ => false,
+        };
+        if changed {
+            self.mark_dirty(id);
         }
+        changed
+            || self
+                .get(id)
+                .is_some_and(|task| task.state == TaskState::Cancelling)
     }
 
     pub fn succeed(
@@ -335,6 +433,7 @@ impl TaskStore {
         task.finished_at = Some(finished_at);
         task.summary = summary.to_owned();
         append_detail(task, detail);
+        self.mark_dirty(id);
         true
     }
 
@@ -386,6 +485,7 @@ impl TaskStore {
             TaskState::Succeeded => TaskResultKind::Success,
             TaskState::Failed => TaskResultKind::Failure,
             TaskState::Cancelled => TaskResultKind::Cancelled,
+            TaskState::Interrupted => TaskResultKind::Failure,
             _ => return None,
         };
         Some(Notification {

@@ -30,6 +30,15 @@ macro_rules! define_action_ids {
             pub const fn all() -> &'static [Self] {
                 &[ $( Self::$before, )* $( Self::$after, )* ]
             }
+
+            pub fn parse(value: &str) -> Option<Self> {
+                match value {
+                    $( $before_name => Some(Self::$before), )*
+                    $( $hidden_name => Some(Self::$hidden), )*
+                    $( $after_name => Some(Self::$after), )*
+                    _ => None,
+                }
+            }
         }
     };
 }

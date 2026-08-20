@@ -21,7 +21,7 @@ use crate::local::client::ExecutableResolution;
 use crate::local::diagnostics::DiagnosticRequest;
 use crate::local::handoff::HandoffCommand;
 use crate::mock::{MockLoadScenario, MockTaskBehavior};
-use crate::task::TaskId;
+use crate::task::{Task, TaskId};
 
 /// A profile and the store reference its secret lives under. The backend itself
 /// is resolved by the runtime, which already caches one per profile.
@@ -33,6 +33,7 @@ pub struct ProfileCredentialRef {
 
 #[derive(Debug, Clone)]
 pub enum Effect {
+    PersistTaskHistory(Vec<Task>),
     StartMockLoad {
         resource: Resource,
         generation: u64,
