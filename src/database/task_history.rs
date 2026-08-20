@@ -133,8 +133,8 @@ pub async fn run_task_history(
 }
 
 async fn open(state_dir: &Path) -> Result<SqlitePool, sqlx::Error> {
-    tokio::fs::create_dir_all(state_dir).await?;
     let path = state_dir.join("tale.sqlite3");
+    create_private_database(state_dir, &path).await?;
     let options = SqliteConnectOptions::new()
         .filename(&path)
         .create_if_missing(true)
@@ -147,31 +147,38 @@ async fn open(state_dir: &Path) -> Result<SqlitePool, sqlx::Error> {
         .connect_with(options)
         .await?;
     MIGRATOR.run(&pool).await?;
-    protect_database_files(state_dir, &path).await?;
     Ok(pool)
 }
 
+/// Creates the state directory and database file with owner-only permissions
+/// before SQLite opens them, so no window exists where either is readable by
+/// other local users. The state directory is also tightened when it already
+/// exists, because saved views create it with default permissions. SQLite
+/// copies the database file mode onto the `-wal` and `-shm` sidecars it
+/// creates, so they inherit the same protection.
 #[cfg(unix)]
-async fn protect_database_files(state_dir: &Path, database: &Path) -> Result<(), sqlx::Error> {
+async fn create_private_database(state_dir: &Path, database: &Path) -> Result<(), sqlx::Error> {
     use std::os::unix::fs::PermissionsExt;
 
+    tokio::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(state_dir)
+        .await?;
     tokio::fs::set_permissions(state_dir, std::fs::Permissions::from_mode(0o700)).await?;
-    for path in [
-        database.to_path_buf(),
-        database.with_extension("sqlite3-wal"),
-        database.with_extension("sqlite3-shm"),
-    ] {
-        match tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
+    tokio::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(database)
+        .await?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-async fn protect_database_files(_state_dir: &Path, _database: &Path) -> Result<(), sqlx::Error> {
+async fn create_private_database(state_dir: &Path, _database: &Path) -> Result<(), sqlx::Error> {
+    tokio::fs::create_dir_all(state_dir).await?;
     Ok(())
 }
 
