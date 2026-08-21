@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -136,11 +136,12 @@ fn local_devices_render_wide_fields_and_supported_filters() {
             .filter_map(|device| device.age_at(app.now))
             .collect::<Vec<_>>();
         assert_eq!(ages, vec![3_600, 60, 1]);
-        assert!(app
-            .visible_indices()
-            .last()
-            .and_then(|index| app.devices_resource.snapshot.get(*index))
-            .is_some_and(|device| device.last_seen.is_none()));
+        assert!(
+            app.visible_indices()
+                .last()
+                .and_then(|index| app.devices_resource.snapshot.get(*index))
+                .is_some_and(|device| device.last_seen.is_none())
+        );
         app.views.devices.sort = SortSpec {
             field: SortField::Rx,
             direction: SortDirection::Descending,
@@ -168,9 +169,11 @@ fn column_mode_is_visible_in_the_title_and_reports_changes() {
     let Some(standard) = render_lines(&app, 140, 30) else {
         return;
     };
-    assert!(standard
-        .iter()
-        .any(|line| line.contains("columns: standard")));
+    assert!(
+        standard
+            .iter()
+            .any(|line| line.contains("columns: standard"))
+    );
 
     let _ = app.dispatch_action(ActionId::CollectionWideColumns);
     assert_eq!(
@@ -181,9 +184,11 @@ fn column_mode_is_visible_in_the_title_and_reports_changes() {
     let Some(extended) = render_lines(&app, 140, 30) else {
         return;
     };
-    assert!(extended
-        .iter()
-        .any(|line| line.contains("columns: extended")));
+    assert!(
+        extended
+            .iter()
+            .any(|line| line.contains("columns: extended"))
+    );
 }
 
 #[test]
@@ -260,9 +265,11 @@ fn pressing_i_shows_and_hides_the_inspector_beside_the_table() {
 
     press(&mut app, 'i');
     let hidden_again = render_lines(&app, 160, 30);
-    assert!(hidden_again
-        .as_deref()
-        .is_some_and(|lines| !pane_drawn(lines)));
+    assert!(
+        hidden_again
+            .as_deref()
+            .is_some_and(|lines| !pane_drawn(lines))
+    );
 }
 
 /// A peer that never told us its client version gets the same dash every other
@@ -519,9 +526,11 @@ fn slash_searches_inside_device_details_and_n_walks_matches() {
     let Some(prompt) = render_lines(&app, 80, 24) else {
         return;
     };
-    assert!(prompt
-        .iter()
-        .any(|line| line.contains("Search device details")));
+    assert!(
+        prompt
+            .iter()
+            .any(|line| line.contains("Search device details"))
+    );
 
     let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -609,9 +618,11 @@ fn copying_a_field_reports_the_text_that_was_copied() {
     let lines = render_lines(&app, 120, 24);
     assert!(lines.is_some());
     if let Some(lines) = lines {
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("copied: ") && line.contains('…')));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("copied: ") && line.contains('…'))
+        );
     }
 }
 

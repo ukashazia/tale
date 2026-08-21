@@ -1,6 +1,6 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::Frame;
 
 use crate::app::{App, DiagnosticsSection};
 use crate::domain::service::ServiceResourceStatus;

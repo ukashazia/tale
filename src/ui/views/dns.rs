@@ -40,21 +40,20 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
 pub fn max_scroll(app: &App, area_width: u16, area_height: u16) -> usize {
     let visible = usize::from(area_height.saturating_sub(2)).max(1);
     content_lines(app).map_or(0, |(_, lines)| {
-        panel::wrapped_line_count(lines, area_width.saturating_sub(4))
-            .saturating_sub(visible)
+        panel::wrapped_line_count(lines, area_width.saturating_sub(4)).saturating_sub(visible)
     })
 }
 
 fn content_lines(app: &App) -> Option<(String, Vec<Line<'static>>)> {
     let status = latest_local_status(app);
-    let query = app
-        .local_diagnostics
-        .values()
-        .rev()
-        .find_map(|state| match state.result.as_ref() {
-            Some(DiagnosticResult::DnsQuery(value)) => Some(value),
-            _ => None,
-        });
+    let query =
+        app.local_diagnostics
+            .values()
+            .rev()
+            .find_map(|state| match state.result.as_ref() {
+                Some(DiagnosticResult::DnsQuery(value)) => Some(value),
+                _ => None,
+            });
     let has_admin = app.admin.nameservers.snapshot.is_some()
         || app.admin.dns_preferences.snapshot.is_some()
         || app.admin.search_paths.snapshot.is_some()

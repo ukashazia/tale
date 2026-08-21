@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
-use tale::action::validate_transient_sequences;
 use tale::action::ActionId;
+use tale::action::validate_transient_sequences;
 use tale::app::{App, DiagnosticsSection, Focus, InteractionMode, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
@@ -153,14 +153,18 @@ fn services_render_all_sections_at_required_widths() {
         let diagnostics = render_lines(&app, 160, 45);
         assert!(diagnostics.is_some());
         if let Some(diagnostics) = diagnostics {
-            assert!(diagnostics
-                .iter()
-                .any(|line| line.contains("tale_requests")));
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|line| line.contains("tale_requests"))
+            );
             assert!(diagnostics.iter().any(|line| line.contains("cut off")));
             assert!(diagnostics.iter().any(|line| line.contains("BUG-")));
-            assert!(diagnostics
-                .iter()
-                .any(|line| line.contains("Nothing was uploaded")));
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|line| line.contains("Nothing was uploaded"))
+            );
         }
 
         app.views.diagnostics.section = DiagnosticsSection::DnsStatus;
@@ -169,12 +173,16 @@ fn services_render_all_sections_at_required_widths() {
         assert!(dns_status.is_some());
         if let Some(dns_status) = dns_status {
             assert!(dns_status.iter().any(|line| line.contains("DNS status")));
-            assert!(dns_status
-                .iter()
-                .any(|line| line.contains("100.100.100.100")));
-            assert!(dns_status
-                .iter()
-                .any(|line| line.contains("corp.example.test")));
+            assert!(
+                dns_status
+                    .iter()
+                    .any(|line| line.contains("100.100.100.100"))
+            );
+            assert!(
+                dns_status
+                    .iter()
+                    .any(|line| line.contains("corp.example.test"))
+            );
             assert!(dns_status.iter().any(|line| line.contains("System DNS")));
             assert!(dns_status.iter().any(|line| line.contains("192.168.1.1")));
         }
@@ -198,9 +206,11 @@ fn finished_dns_status_task_is_not_rendered_as_loading() {
     let Some(loading) = render_lines(&app, 80, 24) else {
         return;
     };
-    assert!(loading
-        .iter()
-        .any(|line| line.contains("Reading DNS status")));
+    assert!(
+        loading
+            .iter()
+            .any(|line| line.contains("Reading DNS status"))
+    );
 
     let _ = app.update(Event::Task(Box::new(TaskEvent::Failed {
         task_id,
@@ -211,9 +221,11 @@ fn finished_dns_status_task_is_not_rendered_as_loading() {
     let Some(finished) = render_lines(&app, 80, 24) else {
         return;
     };
-    assert!(finished
-        .iter()
-        .all(|line| !line.contains("Reading DNS status")));
+    assert!(
+        finished
+            .iter()
+            .all(|line| !line.contains("Reading DNS status"))
+    );
 }
 
 #[test]
@@ -298,9 +310,11 @@ fn services_render_loading_partial_stale_failed_unsupported_read_only_and_runnin
         assert!(unsupported.is_some());
         if let Some(unsupported) = unsupported {
             assert!(unsupported.iter().any(|line| line.contains("alpha")));
-            assert!(unsupported
-                .iter()
-                .any(|line| line.contains("off for this run")));
+            assert!(
+                unsupported
+                    .iter()
+                    .any(|line| line.contains("off for this run"))
+            );
         }
 
         app.resolved_config.read_only = true;
@@ -309,9 +323,11 @@ fn services_render_loading_partial_stale_failed_unsupported_read_only_and_runnin
         let read_only = render_lines(&app, 110, 30);
         assert!(read_only.is_some());
         if let Some(read_only) = read_only {
-            assert!(read_only
-                .iter()
-                .any(|line| line.contains("read-only") || line.contains("Read-only")));
+            assert!(
+                read_only
+                    .iter()
+                    .any(|line| line.contains("read-only") || line.contains("Read-only"))
+            );
         }
 
         app.resolved_config.read_only = false;
@@ -528,10 +544,11 @@ fn the_send_form_takes_its_target_from_the_selected_device() {
     });
     let _ = app.dispatch_action(ActionId::DevicesTaildropSend);
     assert!(app.overlays.is_empty());
-    assert!(app
-        .runtime_error
-        .as_deref()
-        .is_some_and(|error| error.contains("unknown-device")));
+    assert!(
+        app.runtime_error
+            .as_deref()
+            .is_some_and(|error| error.contains("unknown-device"))
+    );
 }
 
 #[test]
@@ -568,9 +585,11 @@ fn the_send_review_expands_home_paths_and_shows_the_resolved_file() {
     assert!(lines.is_some());
     if let Some(lines) = lines {
         assert!(lines.iter().any(|line| line.contains("Resolved files:")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains(&file.display().to_string())));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&file.display().to_string()))
+        );
     }
 }
 
@@ -1062,9 +1081,11 @@ fn editing_follows_the_selected_row_rather_than_a_fixed_exposure() {
     let lines = render_lines(&app, 120, 40);
     assert!(lines.is_some());
     if let Some(lines) = lines {
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("anyone on the internet")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("anyone on the internet"))
+        );
     }
 }
 
@@ -1098,9 +1119,11 @@ fn the_confirmation_explains_the_change_rather_than_dumping_its_arguments() {
     assert!(lines.is_some());
     if let Some(lines) = lines {
         assert!(lines.iter().any(|line| line.contains("What will happen")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("Save incoming files into /tmp")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Save incoming files into /tmp"))
+        );
         assert!(
             lines
                 .iter()
@@ -1167,8 +1190,10 @@ fn forms_browse_with_jk_and_edit_one_field_at_a_time() {
         assert!(lines.iter().any(|line| line.contains("> Continue")));
     }
     press(&mut app, KeyCode::Enter);
-    assert!(render_lines(&app, 100, 34)
-        .is_some_and(|lines| lines.iter().any(|line| line.contains("Confirm"))));
+    assert!(
+        render_lines(&app, 100, 34)
+            .is_some_and(|lines| lines.iter().any(|line| line.contains("Confirm")))
+    );
 }
 
 fn form_value<'a>(app: &'a App, key: &str) -> Option<&'a str> {
@@ -1279,9 +1304,10 @@ fn one_mapping_can_stop_being_public_or_be_removed_on_its_own() {
     // A tailnet row is removable too, and asks for a quieter phrase.
     app.overlays.clear();
     app.views.services.selected = 1;
-    assert!(app
-        .selected_service_mapping()
-        .is_some_and(|mapping| mapping.exposure == Exposure::Tailnet));
+    assert!(
+        app.selected_service_mapping()
+            .is_some_and(|mapping| mapping.exposure == Exposure::Tailnet)
+    );
     let _ = app.dispatch_action(ActionId::ServicesServeRemove);
     assert_eq!(app.overlays.len(), 1);
     let lines = render_lines(&app, 120, 44);
@@ -1289,9 +1315,11 @@ fn one_mapping_can_stop_being_public_or_be_removed_on_its_own() {
     if let Some(lines) = lines {
         assert!(lines.iter().any(|line| line.contains("REMOVE")));
         assert!(!lines.iter().any(|line| line.contains("REMOVE-PUBLIC")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("left alone") || line.contains("Other mappings")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("left alone") || line.contains("Other mappings"))
+        );
     }
 
     // There is nothing to unpublish on a tailnet row, and saying so beats
@@ -1302,10 +1330,11 @@ fn one_mapping_can_stop_being_public_or_be_removed_on_its_own() {
         app.overlays.is_empty(),
         "unpublish opened a confirmation for a tailnet row"
     );
-    assert!(app
-        .runtime_error
-        .as_deref()
-        .is_some_and(|error| error.contains("already tailnet-only")));
+    assert!(
+        app.runtime_error
+            .as_deref()
+            .is_some_and(|error| error.contains("already tailnet-only"))
+    );
 }
 
 /// A node that has lost Funnel can no longer create public mappings, but it

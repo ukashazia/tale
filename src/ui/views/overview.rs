@@ -1,6 +1,6 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::Frame;
 
 use crate::admin::AdminResourceState;
 use crate::app::{App, Focus, SourceMode};

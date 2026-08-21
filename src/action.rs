@@ -2217,8 +2217,7 @@ pub fn operational_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::CollectionExport,
             label: "Export collection",
-            description:
-                "Export the active filtered and sorted collection using an allowlisted schema",
+            description: "Export the active filtered and sorted collection using an allowlisted schema",
             contexts: GLOBAL,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,

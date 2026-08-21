@@ -1472,8 +1472,7 @@ impl Default for TaskSortSpec {
 
 /// What `:tasks` remembers between frames. The selection itself lives in the
 /// task store, beside the history it indexes into.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TaskViewState {
     /// Whether the side inspector shares the pane with the table. Off by
     /// default, the way devices and users are: the table is what the route is
@@ -1483,7 +1482,6 @@ pub struct TaskViewState {
     pub sort: TaskSortSpec,
     pub show_history: bool,
 }
-
 
 /// What `:users` remembers between frames. The selection itself lives in
 /// `admin_user_selected`, beside the other admin cursors.

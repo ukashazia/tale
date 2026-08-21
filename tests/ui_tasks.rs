@@ -1,8 +1,8 @@
 use std::fs;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use tale::action::ActionId;
 use tale::app::{App, Focus, Route, TaskSortField, TaskSortSpec};
@@ -127,9 +127,11 @@ fn task_history_is_hidden_until_requested_and_does_not_count_as_session_failure(
     let Some(empty) = render_lines(&app, 120, 24) else {
         return;
     };
-    assert!(empty
-        .iter()
-        .any(|line| line.contains("No tasks executed this session")));
+    assert!(
+        empty
+            .iter()
+            .any(|line| line.contains("No tasks executed this session"))
+    );
 
     press(&mut app, KeyCode::Char('?'));
     let Some(help) = render_lines(&app, 120, 24) else {
@@ -197,9 +199,11 @@ fn i_toggles_the_inspector_and_enter_opens_it_full_width() {
     );
 
     press(&mut app, KeyCode::Char('i'));
-    assert!(render_lines(&app, 160, 30)
-        .as_deref()
-        .is_some_and(|lines| !pane_drawn(lines)));
+    assert!(
+        render_lines(&app, 160, 30)
+            .as_deref()
+            .is_some_and(|lines| !pane_drawn(lines))
+    );
 
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.focus, Focus::Inspector);
@@ -212,9 +216,11 @@ fn i_toggles_the_inspector_and_enter_opens_it_full_width() {
 
     press(&mut app, KeyCode::Char('h'));
     assert_eq!(app.focus, Focus::Collection);
-    assert!(render_lines(&app, 160, 30)
-        .as_deref()
-        .is_some_and(table_drawn));
+    assert!(
+        render_lines(&app, 160, 30)
+            .as_deref()
+            .is_some_and(table_drawn)
+    );
 }
 
 /// The inspector is what the old right pane never was: this task and nothing
@@ -288,9 +294,11 @@ fn the_inspector_shows_structured_before_and_after_values() {
         return;
     };
     assert!(lines.iter().any(|line| line.contains("changes")));
-    assert!(lines
-        .iter()
-        .any(|line| line.contains("machine name: alpha → laptop-0")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("machine name: alpha → laptop-0"))
+    );
 }
 
 /// `/` narrows the history, and the border says so rather than leaving the
@@ -388,9 +396,11 @@ fn the_copy_menu_offers_the_selected_tasks_command_and_output() {
         return;
     };
     assert!(lines.iter().any(|line| line.contains("i id")));
-    assert!(lines
-        .iter()
-        .all(|line| !line.contains("c command") && !line.contains("o output")));
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("c command") && !line.contains("o output"))
+    );
 }
 
 /// An empty page says this session has no tasks and how to reveal history.
@@ -403,9 +413,11 @@ fn an_empty_task_session_explains_itself() {
     let Some(lines) = render_lines(&app, 160, 30) else {
         return;
     };
-    assert!(lines
-        .iter()
-        .any(|line| line.contains("No tasks executed this session")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("No tasks executed this session"))
+    );
     assert!(lines.iter().any(|line| line.contains("H history")));
 }
 

@@ -5,7 +5,7 @@ use tale::config::{self, EnvironmentValues};
 use tale::event::{Event, TaskEvent};
 use tale::mock::MOCK_NOW;
 use tale::paths::{PathEnvironment, Platform};
-use tale::task::{bounded_detail, Progress, TaskChange, TaskState, TaskStore, DETAIL_CAP};
+use tale::task::{DETAIL_CAP, Progress, TaskChange, TaskState, TaskStore, bounded_detail};
 
 fn app() -> Option<App> {
     let root = std::path::PathBuf::from("/fictional/tale-tasks");
