@@ -42,6 +42,14 @@ jobs:
           git -C homebrew-tale config user.name "$GITHUB_USER"
           git -C homebrew-tale config user.email "$GITHUB_EMAIL"
 
+          export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+          brew update
+
+          # `brew audit` only accepts formula names, so expose the checkout as a tap.
+          tap_dir="$(brew --repository)/Library/Taps/ukashazia/homebrew-tale"
+          mkdir -p "$(dirname "$tap_dir")"
+          ln -sfn "$GITHUB_WORKSPACE/homebrew-tale" "$tap_dir"
+
           while IFS= read -r release; do
             filename="$(jq --raw-output '.artifacts[] | select(endswith(".rb"))' <<<"$release")"
             name="${filename%.rb}"
@@ -50,15 +58,15 @@ jobs:
 
             python3 packaging/homebrew/patch_formula.py "$formula"
 
-            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
-            brew update
             (
               cd homebrew-tale
               brew style \
                 --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict \
                 --fix "Formula/$filename" || true
-              brew audit --formula "Formula/$filename"
             )
+            # Style runs above; `version` is skipped because cargo-dist always
+            # emits the stanza the URL already encodes.
+            brew audit --formula --skip-style --except version "ukashazia/tale/$name"
 
             git -C homebrew-tale add "Formula/$filename"
             git -C homebrew-tale commit -m "$name $version"
