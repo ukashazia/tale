@@ -121,6 +121,59 @@ fn local_app(with_admin_profile: bool) -> Option<App> {
     Some(app)
 }
 
+#[test]
+fn a_started_operation_opens_its_selected_task() {
+    let Some(mut app) = local_app(true) else {
+        return;
+    };
+    let capabilities = LocalCapabilities::all_supported();
+    app.local_executable = Some(LocalExecutable {
+        path: "tailscale".into(),
+        socket_path: None,
+        source: ExecutableSource::Path,
+        version: "1.98.9".to_owned(),
+        daemon_version: Some("1.98.9".to_owned()),
+        build: None,
+        capabilities,
+    });
+    app.local_capabilities = capabilities;
+
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    ))));
+    let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('g'),
+        KeyModifiers::NONE,
+    ))));
+
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [
+                Effect::StartLocalDiagnostic { task_id, .. },
+                Effect::PersistTaskHistory(tasks),
+            ] if app.tasks.selected == Some(*task_id) && tasks.len() == 1
+        ),
+        "effects: {effects:?}; selected: {:?}; error: {:?}",
+        app.tasks.selected,
+        app.runtime_error
+    );
+    assert_eq!(app.current_route(), Route::Tasks);
+    assert_eq!(app.focus, tale::app::Focus::Inspector);
+    assert!(
+        tale::action::find_action(ActionId::LocalProbeConnection)
+            .is_some_and(|action| action.label == "Ping")
+    );
+
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.current_route(), Route::Devices);
+    assert_eq!(app.focus, tale::app::Focus::Collection);
+}
+
 /// An action is offered where its subject is on screen. The local client's
 /// verbs were one list handed to every route that had none of its own, so
 /// `:credentials` offered `remove local account` — a key acting on something
@@ -248,7 +301,9 @@ fn diagnostics_load_the_visible_section() {
             Effect::PersistTaskHistory(tasks),
         ] if tasks.len() == 1
     ));
+    assert_eq!(app.current_route(), Route::Tasks);
 
+    app.set_route(Route::Diagnostics);
     let effects = app.dispatch_action(ActionId::SectionNext);
     assert!(matches!(
         effects.as_slice(),

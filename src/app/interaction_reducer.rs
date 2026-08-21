@@ -618,9 +618,8 @@ impl App {
             return self.handle_quit_key();
         }
         if key.code == KeyCode::Esc {
-            // The detail pane is a state the user opened, so Esc leaves it.
             if self.focus == Focus::Inspector {
-                self.focus = Focus::Collection;
+                self.close_collection_inspector();
             }
             return Vec::new();
         }
@@ -1731,6 +1730,7 @@ impl App {
     }
 
     pub(super) fn restore_view_frame(&mut self, frame: &ViewFrame) {
+        self.opened_task_return = false;
         if frame.route != Route::Profiles {
             self.pending_navigation_route = None;
         }

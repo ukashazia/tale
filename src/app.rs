@@ -1565,6 +1565,7 @@ pub struct App {
     /// An admin-only destination requested before a profile was active. Profile
     /// activation resumes it only after the credential probe succeeds.
     pending_navigation_route: Option<Route>,
+    opened_task_return: bool,
     pub policy_workflow: Option<PolicyWorkflow>,
     pub policy_workflow_view: PolicyWorkflowView,
     policy_temp_file: Option<Arc<Mutex<crate::temporary::TemporaryPolicyFile>>>,
@@ -1763,6 +1764,7 @@ impl App {
             profile_statuses: BTreeMap::new(),
             profile_probe_in_flight: None,
             pending_navigation_route: None,
+            opened_task_return: false,
             policy_workflow: None,
             policy_workflow_view: PolicyWorkflowView::Actions,
             policy_temp_file: None,
@@ -1912,6 +1914,8 @@ impl App {
     }
 
     pub fn update(&mut self, event: Event) -> Vec<Effect> {
+        let input = matches!(event, Event::Input(_));
+        let task_count = self.tasks.all().len();
         if !matches!(event, Event::Tick(_)) {
             self.render_invalidated = true;
         }
@@ -1933,6 +1937,13 @@ impl App {
             Event::Database(database) => self.update_database(database),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         };
+        if input && let Some(task_id) = self.tasks.all().get(task_count).map(|task| task.id) {
+            self.navigate(Route::Tasks);
+            self.task_filter.clear();
+            self.tasks.selected = Some(task_id);
+            self.focus = Focus::Inspector;
+            self.opened_task_return = true;
+        }
         if self.resolved_config.history.persist_tasks && !self.resolved_config.mock {
             let dirty = self.tasks.take_dirty();
             if !dirty.is_empty() {

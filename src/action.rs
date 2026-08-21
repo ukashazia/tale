@@ -1492,8 +1492,8 @@ pub fn local_observer_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::LocalProbeConnection,
-            label: "Probe connection",
-            description: "Run a Tailscale ping against the selected peer",
+            label: "Ping",
+            description: "Ping the selected peer over Tailscale",
             contexts: &[
                 ActionContext::Collection,
                 ActionContext::Detail,
@@ -2204,7 +2204,8 @@ pub fn operational_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::CollectionExport,
             label: "Export collection",
-            description: "Export the active filtered and sorted collection using an allowlisted schema",
+            description:
+                "Export the active filtered and sorted collection using an allowlisted schema",
             contexts: GLOBAL,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,

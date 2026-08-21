@@ -11,7 +11,7 @@ impl App {
             ActionId::CollectionLast => self.select_collection_endpoint(true),
             ActionId::CollectionPageUp => self.move_collection(-5),
             ActionId::CollectionPageDown => self.move_collection(5),
-            ActionId::CollectionBack => self.focus = Focus::Collection,
+            ActionId::CollectionBack => self.close_collection_inspector(),
             ActionId::CollectionOpen => return self.open_collection_selection(),
             ActionId::CollectionSort => self.open_sort_menu(),
             ActionId::CollectionWideColumns => self.toggle_wide_columns(),
@@ -19,6 +19,15 @@ impl App {
             _ => return Vec::new(),
         }
         Vec::new()
+    }
+
+    pub(super) fn close_collection_inspector(&mut self) {
+        if self.current_route() == Route::Tasks && self.opened_task_return {
+            self.opened_task_return = false;
+            self.move_history(false);
+        } else {
+            self.focus = Focus::Collection;
+        }
     }
 
     pub(super) fn open_collection_filter(&mut self) -> Vec<Effect> {
