@@ -1438,6 +1438,7 @@ pub struct TaskViewState {
     /// do ask for it.
     pub inspector: bool,
     pub sort: SortDirection,
+    pub show_history: bool,
 }
 
 impl Default for TaskViewState {
@@ -1445,6 +1446,7 @@ impl Default for TaskViewState {
         Self {
             inspector: false,
             sort: SortDirection::Descending,
+            show_history: false,
         }
     }
 }
@@ -1971,6 +1973,7 @@ impl App {
                 self.tasks.merge_restored(tasks);
                 self.tasks
                     .evict_completed(self.resolved_config.history.max_tasks);
+                self.select_task_position(0);
             }
             crate::event::DatabaseEvent::TaskHistoryFailed(_) => {
                 self.status_notice = Some("Task history is unavailable".to_owned());
@@ -2048,7 +2051,12 @@ impl App {
     }
 
     pub fn filtered_tasks(&self) -> Vec<&crate::task::Task> {
-        let mut tasks = self.tasks.filtered(&self.task_filter).collect::<Vec<_>>();
+        let source: Vec<_> = if self.views.tasks.show_history {
+            self.tasks.filtered(&self.task_filter).collect()
+        } else {
+            self.tasks.session_filtered(&self.task_filter).collect()
+        };
+        let mut tasks = source;
         tasks.sort_by_key(|task| (task.started_at, task.id));
         if self.views.tasks.sort == SortDirection::Descending {
             tasks.reverse();
@@ -2058,6 +2066,21 @@ impl App {
 
     pub fn filtered_task_count(&self) -> usize {
         self.filtered_tasks().len()
+    }
+
+    pub fn visible_task_count(&self) -> usize {
+        if self.views.tasks.show_history {
+            self.tasks.all().len()
+        } else {
+            self.tasks.session().count()
+        }
+    }
+
+    pub fn current_session_failed_task_count(&self) -> usize {
+        self.tasks
+            .session()
+            .filter(|task| task.state == TaskState::Failed)
+            .count()
     }
 
     pub fn select_task_position(&mut self, position: usize) {

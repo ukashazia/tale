@@ -1,8 +1,8 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 
 use crate::app::App;
 use crate::ui::text;
@@ -466,12 +466,7 @@ fn task_state(app: &App) -> Option<(String, theme::StyleRole)> {
             theme::StyleRole::TaskRunning,
         ));
     }
-    let failed = app
-        .tasks
-        .all()
-        .iter()
-        .filter(|task| task.state == crate::task::TaskState::Failed)
-        .count();
+    let failed = app.current_session_failed_task_count();
     if failed > 0 {
         let plural = if failed == 1 { "task" } else { "tasks" };
         return Some((

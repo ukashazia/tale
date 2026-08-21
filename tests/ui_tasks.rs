@@ -11,7 +11,7 @@ use tale::config::{self, EnvironmentValues};
 use tale::domain::device::SortDirection;
 use tale::event::{Event, InputEvent};
 use tale::paths::{PathEnvironment, Platform};
-use tale::task::{Progress, TaskChange};
+use tale::task::{Progress, TaskChange, TaskStore};
 
 /// `:tasks` is a table like `:devices`, not a run of preformatted sentences:
 /// headings, one row per task, and a state glyph rather than a `*` marker.
@@ -80,6 +80,37 @@ fn tasks_default_to_newest_first_and_offer_recency_sorting() {
             .collect::<Vec<_>>(),
         vec!["laptop-0", "this machine", "phone-1"]
     );
+}
+
+#[test]
+fn task_history_is_hidden_until_requested_and_does_not_count_as_session_failure() {
+    let Some(mut app) = build_app() else {
+        return;
+    };
+    app.set_route(Route::Tasks);
+    let mut previous = TaskStore::new();
+    let historical = previous.create(ActionId::MockFailure, "historical", 1, false);
+    assert!(previous.start(historical));
+    assert!(previous.fail(historical, 2, "failed", "saved failure"));
+    app.tasks.merge_restored(previous.take_dirty());
+
+    assert!(app.filtered_tasks().is_empty());
+    assert_eq!(app.current_session_failed_task_count(), 0);
+    let Some(empty) = render_lines(&app, 120, 24) else {
+        return;
+    };
+    assert!(empty
+        .iter()
+        .any(|line| line.contains("No tasks executed this session")));
+
+    press(&mut app, KeyCode::Char('H'));
+    assert!(app.views.tasks.show_history);
+    assert_eq!(app.filtered_tasks().len(), 1);
+
+    let session = app.tasks.create(ActionId::MockFailure, "current", 3, false);
+    assert!(app.tasks.start(session));
+    assert!(app.tasks.fail(session, 4, "failed", "current failure"));
+    assert_eq!(app.current_session_failed_task_count(), 1);
 }
 
 /// The narrow terminal keeps the columns that identify a row and drops the ones
@@ -326,9 +357,9 @@ fn the_copy_menu_offers_the_selected_tasks_command_and_output() {
         .all(|line| !line.contains("c command") && !line.contains("o output")));
 }
 
-/// An empty page is a dead end unless it says what would fill it.
+/// An empty page says this session has no tasks and how to reveal history.
 #[test]
-fn an_empty_history_explains_itself() {
+fn an_empty_task_session_explains_itself() {
     let Some(mut app) = build_app() else {
         return;
     };
@@ -336,7 +367,10 @@ fn an_empty_history_explains_itself() {
     let Some(lines) = render_lines(&app, 160, 30) else {
         return;
     };
-    assert!(lines.iter().any(|line| line.contains("No tasks yet")));
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("No tasks executed this session")));
+    assert!(lines.iter().any(|line| line.contains("H history")));
 }
 
 fn press(app: &mut App, code: KeyCode) {

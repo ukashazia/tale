@@ -1,13 +1,12 @@
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
+use ratatui::Frame;
 
 use crate::admin::AdminResourceState;
 use crate::app::{App, Focus, SourceMode};
 use crate::domain::device::{ConnectionPath, Liveness};
 use crate::domain::health::{Finding, Severity};
 use crate::domain::source::LocalResourceStatus;
-use crate::task::TaskState;
 use crate::ui::components::{grid, panel};
 use crate::ui::{text, theme};
 
@@ -91,12 +90,7 @@ fn local_summary(app: &App, compact: bool) -> Vec<Line<'static>> {
         ),
     );
     let running = app.tasks.active().count();
-    let failed = app
-        .tasks
-        .all()
-        .iter()
-        .filter(|task| task.state == TaskState::Failed)
-        .count();
+    let failed = app.current_session_failed_task_count();
     let task_detail = match (running, failed) {
         (0, 0) => "no active or failed tasks".to_owned(),
         _ => format!("{running} active tasks · {failed} failed"),

@@ -192,7 +192,8 @@ impl App {
             | ActionId::CollectionOpen
             | ActionId::CollectionSort
             | ActionId::CollectionWideColumns
-            | ActionId::CollectionInspect => self.reduce_collection_action(action_id),
+            | ActionId::CollectionInspect
+            | ActionId::TaskHistoryToggle => self.reduce_collection_action(action_id),
             ActionId::ResourceActions => {
                 let actions = self.contextual_actions();
                 if let Err(error) = action::validate_transient_sequences(&actions) {

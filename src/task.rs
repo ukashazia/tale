@@ -133,6 +133,7 @@ pub struct TaskStore {
     tasks: Vec<Task>,
     next_id: u64,
     dirty: BTreeSet<TaskRecordId>,
+    session_task_ids: BTreeSet<TaskId>,
     pub selected: Option<TaskId>,
 }
 
@@ -142,6 +143,7 @@ impl TaskStore {
             tasks: Vec::new(),
             next_id: 1,
             dirty: BTreeSet::new(),
+            session_task_ids: BTreeSet::new(),
             selected: None,
         }
     }
@@ -175,6 +177,7 @@ impl TaskStore {
             changes: Vec::new(),
         });
         self.dirty.insert(record_id);
+        self.session_task_ids.insert(id);
         if self.selected.is_none() {
             self.selected = Some(id);
         }
@@ -220,6 +223,17 @@ impl TaskStore {
         if self.selected.is_none() {
             self.selected = self.tasks.last().map(|task| task.id);
         }
+    }
+
+    pub fn session(&self) -> impl Iterator<Item = &Task> {
+        self.tasks
+            .iter()
+            .filter(|task| self.session_task_ids.contains(&task.id))
+    }
+
+    pub fn session_filtered(&self, query: &str) -> impl Iterator<Item = &Task> {
+        self.session()
+            .filter(move |task| task_matches_query(task, query))
     }
 
     pub fn set_changes(&mut self, id: TaskId, changes: Vec<TaskChange>) -> bool {
@@ -455,6 +469,12 @@ impl TaskStore {
                 false
             }
         });
+        let remaining = self
+            .tasks
+            .iter()
+            .map(|task| task.id)
+            .collect::<BTreeSet<_>>();
+        self.session_task_ids.retain(|id| remaining.contains(id));
         if self.selected.is_some_and(|id| self.get(id).is_none()) {
             self.selected = self.tasks.last().map(|task| task.id);
         }

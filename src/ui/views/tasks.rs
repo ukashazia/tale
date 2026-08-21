@@ -90,19 +90,18 @@ fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
 /// Nothing here is fetched, so an empty page means either that this session has
 /// not run anything yet or that the filter excluded what it did run.
 fn empty_state(app: &App) -> Vec<Line<'static>> {
+    if !app.views.tasks.show_history {
+        return vec![
+            text::muted_help(app.theme, "No tasks executed this session"),
+            Line::default(),
+            text::action_hint(app.theme, "  task history     ", "H"),
+        ];
+    }
     if app.task_history_loading {
         return vec![text::muted_help(app.theme, "Loading task history…")];
     }
     if app.tasks.all().is_empty() {
-        return vec![
-            text::muted_help(app.theme, "No tasks yet"),
-            Line::default(),
-            text::muted_help(
-                app.theme,
-                "Every action that runs in the background records itself here:",
-            ),
-            text::muted_help(app.theme, "what ran, against what, and what came back."),
-        ];
+        return vec![text::muted_help(app.theme, "No task history yet")];
     }
     vec![
         text::muted_help(app.theme, "No tasks match the filter"),
@@ -317,6 +316,9 @@ fn cell(app: &App, task: &Task, header: &str) -> grid::Cell {
 /// Route context lives in the border, the way it does on every other route.
 fn title(app: &App) -> ratatui::text::Line<'static> {
     let mut detail = Vec::new();
+    if app.views.tasks.show_history {
+        detail.push("history".to_owned());
+    }
     if !app.task_filter.is_empty() {
         detail.push(format!("/{}", text::ellipsize(&app.task_filter, 32)));
     }
@@ -328,7 +330,7 @@ fn title(app: &App) -> ratatui::text::Line<'static> {
         app.theme,
         "tasks",
         app.filtered_task_count(),
-        app.tasks.all().len(),
+        app.visible_task_count(),
         &detail,
     )
 }

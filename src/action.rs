@@ -75,6 +75,7 @@ define_action_ids! {
         ResourceActions => "resource.actions";
         ResourceCopy => "resource.copy";
         TaskCancel => "task.cancel";
+        TaskHistoryToggle => "task.history.toggle";
         MockSuccess => "mock.task.success";
         MockFailure => "mock.task.failure";
         MockCancellable => "mock.task.cancellable";
@@ -578,6 +579,7 @@ const BIND_INSPECT: &[Binding] = &[Binding::Char('i')];
 const BIND_ACTIONS: &[Binding] = &[Binding::Char('a')];
 const BIND_COPY: &[Binding] = &[Binding::Char('y')];
 const BIND_CANCEL: &[Binding] = &[Binding::Char('x')];
+const BIND_TASK_HISTORY: &[Binding] = &[Binding::Char('H')];
 
 const BIND_ACTIONS_ROOT: &[Binding] = &[Binding::Char('a')];
 
@@ -844,6 +846,16 @@ pub fn shell_actions() -> Vec<ActionSpec> {
             default_bindings: BIND_CANCEL,
             capability: Capability::Available,
             risk: Risk::Reversible,
+        },
+        ActionSpec {
+            id: ActionId::TaskHistoryToggle,
+            label: "Toggle task history",
+            description: "Show or hide tasks from earlier Tale sessions",
+            contexts: COLLECTION,
+            selection_rule: SelectionRule::None,
+            default_bindings: BIND_TASK_HISTORY,
+            capability: Capability::Available,
+            risk: Risk::Observe,
         },
         ActionSpec {
             id: ActionId::MockSuccess,
@@ -1370,7 +1382,10 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         }
         // A task is this client's own record, so cancelling and reviewing one
         // only mean something on the page that lists them.
-        ActionId::TaskCancel | ActionId::BatchReviewOutcomes | ActionId::BatchRetrySelected => {
+        ActionId::TaskCancel
+        | ActionId::TaskHistoryToggle
+        | ActionId::BatchReviewOutcomes
+        | ActionId::BatchRetrySelected => {
             matches!(route, Route::Tasks)
         }
         // Sorting offers device fields, so it is offered where those fields
@@ -1425,7 +1440,7 @@ const fn footer_priority(id: ActionId) -> u8 {
         ActionId::CollectionMoveUp => 10,
         ActionId::CollectionMoveDown => 11,
         ActionId::CollectionOpen => 12,
-        ActionId::CollectionBack | ActionId::TaskCancel => 13,
+        ActionId::CollectionBack | ActionId::TaskCancel | ActionId::TaskHistoryToggle => 13,
         ActionId::SectionNext | ActionId::DeviceDetailNextMatch => 14,
         ActionId::SectionPrevious | ActionId::DeviceDetailPreviousMatch => 15,
         ActionId::CollectionSort => 16,
@@ -1472,6 +1487,7 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
         ActionId::ResourceActions => Some("actions"),
         ActionId::ResourceCopy => Some("copy"),
         ActionId::TaskCancel => Some("cancel"),
+        ActionId::TaskHistoryToggle => Some("history"),
         ActionId::SectionNext => Some("next tab"),
         ActionId::SectionPrevious => Some("previous tab"),
         _ => None,

@@ -5,7 +5,7 @@ use tale::config::{self, EnvironmentValues};
 use tale::event::{Event, TaskEvent};
 use tale::mock::MOCK_NOW;
 use tale::paths::{PathEnvironment, Platform};
-use tale::task::{DETAIL_CAP, Progress, TaskChange, TaskState, TaskStore, bounded_detail};
+use tale::task::{bounded_detail, Progress, TaskChange, TaskState, TaskStore, DETAIL_CAP};
 
 fn app() -> Option<App> {
     let root = std::path::PathBuf::from("/fictional/tale-tasks");
@@ -111,6 +111,13 @@ fn restored_history_gets_fresh_session_ids_without_moving_live_tasks() {
         .map(|task| task.id)
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(ids.len(), 2);
+    assert_eq!(
+        current_session
+            .session()
+            .map(|task| task.target_label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["live"]
+    );
 }
 
 #[test]
