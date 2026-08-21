@@ -1,13 +1,14 @@
 use std::fs;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 
 use tale::action::ActionId;
 use tale::app::{App, Focus, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
+use tale::domain::device::SortDirection;
 use tale::event::{Event, InputEvent};
 use tale::paths::{PathEnvironment, Platform};
 use tale::task::{Progress, TaskChange};
@@ -51,6 +52,33 @@ fn tasks_render_as_a_table_with_headings_and_no_row_marker() {
     assert!(
         lines.iter().any(|line| line.contains("┌ tasks · 3 ")),
         "the border does not carry the route and its counts"
+    );
+}
+
+#[test]
+fn tasks_default_to_newest_first_and_offer_recency_sorting() {
+    let Some(mut app) = tasks_app() else {
+        return;
+    };
+    assert_eq!(
+        app.filtered_tasks()
+            .iter()
+            .map(|task| task.target_label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["phone-1", "this machine", "laptop-0"]
+    );
+
+    let _ = app.dispatch_action(ActionId::CollectionSort);
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Char('a'));
+
+    assert_eq!(app.views.tasks.sort, SortDirection::Ascending);
+    assert_eq!(
+        app.filtered_tasks()
+            .iter()
+            .map(|task| task.target_label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["laptop-0", "this machine", "phone-1"]
     );
 }
 
@@ -102,11 +130,9 @@ fn i_toggles_the_inspector_and_enter_opens_it_full_width() {
     );
 
     press(&mut app, KeyCode::Char('i'));
-    assert!(
-        render_lines(&app, 160, 30)
-            .as_deref()
-            .is_some_and(|lines| !pane_drawn(lines))
-    );
+    assert!(render_lines(&app, 160, 30)
+        .as_deref()
+        .is_some_and(|lines| !pane_drawn(lines)));
 
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.focus, Focus::Inspector);
@@ -119,11 +145,9 @@ fn i_toggles_the_inspector_and_enter_opens_it_full_width() {
 
     press(&mut app, KeyCode::Char('h'));
     assert_eq!(app.focus, Focus::Collection);
-    assert!(
-        render_lines(&app, 160, 30)
-            .as_deref()
-            .is_some_and(table_drawn)
-    );
+    assert!(render_lines(&app, 160, 30)
+        .as_deref()
+        .is_some_and(table_drawn));
 }
 
 /// The inspector is what the old right pane never was: this task and nothing
@@ -133,7 +157,8 @@ fn the_inspector_describes_one_task_and_shows_its_output() {
     let Some(mut app) = tasks_app() else {
         return;
     };
-    press(&mut app, KeyCode::Char('G'));
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('j'));
     press(&mut app, KeyCode::Enter);
     // The responsive footer uses its second row at this width, so keep the
     // inspector's existing content budget while checking its final output row.
@@ -169,7 +194,7 @@ fn the_inspector_omits_what_the_run_did_not_report() {
     let Some(mut app) = tasks_app() else {
         return;
     };
-    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('G'));
     press(&mut app, KeyCode::Enter);
     let Some(lines) = render_lines(&app, 160, 30) else {
         return;
@@ -190,17 +215,15 @@ fn the_inspector_shows_structured_before_and_after_values() {
     let Some(mut app) = tasks_app() else {
         return;
     };
-    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('G'));
     press(&mut app, KeyCode::Enter);
     let Some(lines) = render_lines(&app, 100, 30) else {
         return;
     };
     assert!(lines.iter().any(|line| line.contains("changes")));
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("machine name: alpha → laptop-0"))
-    );
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("machine name: alpha → laptop-0")));
 }
 
 /// `/` narrows the history, and the border says so rather than leaving the
@@ -274,7 +297,8 @@ fn the_copy_menu_offers_the_selected_tasks_command_and_output() {
     let Some(mut app) = tasks_app() else {
         return;
     };
-    press(&mut app, KeyCode::Char('G'));
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('j'));
     press(&mut app, KeyCode::Char('y'));
     let Some(lines) = render_lines(&app, 120, 30) else {
         return;
@@ -291,17 +315,15 @@ fn the_copy_menu_offers_the_selected_tasks_command_and_output() {
 
     // The admin mutation ran no command and printed nothing, so the menu says
     // so by not offering either.
-    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('G'));
     press(&mut app, KeyCode::Char('y'));
     let Some(lines) = render_lines(&app, 120, 30) else {
         return;
     };
     assert!(lines.iter().any(|line| line.contains("i id")));
-    assert!(
-        lines
-            .iter()
-            .all(|line| !line.contains("c command") && !line.contains("o output"))
-    );
+    assert!(lines
+        .iter()
+        .all(|line| !line.contains("c command") && !line.contains("o output")));
 }
 
 /// An empty page is a dead end unless it says what would fill it.

@@ -140,7 +140,7 @@ impl App {
             Route::Access => self.move_access_scroll(offset),
             Route::Dns => self.move_dns_scroll(offset),
             Route::Overview => self.move_overview_selection(offset),
-            Route::Tasks => self.tasks.select_next_filtered(&self.task_filter, offset),
+            Route::Tasks => self.move_task_selection(offset),
             Route::Audit => self.move_admin_activity_selection(offset),
             Route::Local => self.move_local_account_selection(offset),
             Route::Services => self.move_service_selection(offset),
@@ -176,11 +176,7 @@ impl App {
                 self.select_overview_position(if last { usize::MAX } else { 0 });
             }
             Route::Tasks => {
-                if last {
-                    self.tasks.select_filtered_last(&self.task_filter);
-                } else {
-                    self.tasks.select_filtered_first(&self.task_filter);
-                }
+                self.select_task_position(if last { usize::MAX } else { 0 });
             }
             Route::Audit => self.admin_activity_selected = endpoint(self.audit_event_count()),
             Route::Local => {
@@ -1174,7 +1170,27 @@ impl App {
             .collect()
     }
 
+    pub(super) fn task_sort_choices(&self) -> Vec<MenuChoice> {
+        [
+            (SortDirection::Ascending, 'a', "oldest first"),
+            (SortDirection::Descending, 'd', "newest first"),
+        ]
+        .into_iter()
+        .map(|(direction, order, label)| MenuChoice {
+            sequence: format!("r{order}"),
+            group: "Column".to_owned(),
+            subject: "recency".to_owned(),
+            label: label.to_owned(),
+            active: self.views.tasks.sort == direction,
+            outcome: ChoiceOutcome::TaskSort(direction),
+        })
+        .collect()
+    }
+
     pub(super) fn sort_choices(&self) -> Vec<MenuChoice> {
+        if self.current_route() == Route::Tasks {
+            return self.task_sort_choices();
+        }
         if self.current_route() == Route::Services {
             return self.service_sort_choices();
         }
@@ -1237,6 +1253,11 @@ impl App {
             ChoiceOutcome::ConfigSort(sort) => {
                 self.views.config.sort = sort;
                 self.views.config.selected = 0;
+                Vec::new()
+            }
+            ChoiceOutcome::TaskSort(sort) => {
+                self.views.tasks.sort = sort;
+                self.select_task_position(0);
                 Vec::new()
             }
         }

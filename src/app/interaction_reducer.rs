@@ -349,8 +349,7 @@ impl App {
                         crate::ui::views::tasks::window_start(self.task_cursor(), count, visible);
                     let index = start.saturating_add(usize::from(position));
                     if index < count {
-                        self.tasks
-                            .select_filtered_position(&self.task_filter, index);
+                        self.select_task_position(index);
                     }
                 }
                 _ => {}
@@ -999,7 +998,7 @@ impl App {
         }
         if self.current_route() == Route::Tasks {
             self.task_filter = input;
-            self.tasks.select_filtered_first(&self.task_filter);
+            self.select_task_position(0);
             if let InteractionMode::FilterLine(state) = &mut self.interaction {
                 state.error = None;
                 state.generation = generation;
@@ -1632,7 +1631,7 @@ impl App {
         }
         if self.current_route() == Route::Tasks {
             self.task_filter = input.trim().to_owned();
-            self.tasks.select_filtered_first(&self.task_filter);
+            self.select_task_position(0);
             self.interaction = InteractionMode::Normal;
             return Vec::new();
         }
@@ -1771,7 +1770,7 @@ impl App {
         }
         if frame.route == Route::Tasks {
             self.task_filter = frame.task_filter.clone();
-            self.tasks.select_filtered_first(&self.task_filter);
+            self.select_task_position(0);
         }
     }
 

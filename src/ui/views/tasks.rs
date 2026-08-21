@@ -1,6 +1,6 @@
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
+use ratatui::Frame;
 
 use crate::app::{App, Focus};
 use crate::task::{Task, TaskState};
@@ -55,7 +55,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, wide_inspector: Opti
 }
 
 fn render_table(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let tasks = app.tasks.filtered(&app.task_filter).collect::<Vec<_>>();
+    let tasks = app.filtered_tasks();
     let lines = if tasks.is_empty() {
         empty_state(app)
     } else {

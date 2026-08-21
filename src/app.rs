@@ -411,6 +411,7 @@ pub enum ChoiceOutcome {
     ServiceSort(ServiceSortSpec),
     ProfileSort(ProfileSortSpec),
     ConfigSort(SettingSortSpec),
+    TaskSort(SortDirection),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1429,13 +1430,23 @@ impl<'a> ProfileRow<'a> {
 
 /// What `:tasks` remembers between frames. The selection itself lives in the
 /// task store, beside the history it indexes into.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TaskViewState {
     /// Whether the side inspector shares the pane with the table. Off by
     /// default, the way devices and users are: the table is what the route is
     /// for, and a task's output is long enough to want the full width when you
     /// do ask for it.
     pub inspector: bool,
+    pub sort: SortDirection,
+}
+
+impl Default for TaskViewState {
+    fn default() -> Self {
+        Self {
+            inspector: false,
+            sort: SortDirection::Descending,
+        }
+    }
 }
 
 /// What `:users` remembers between frames. The selection itself lives in
@@ -2036,8 +2047,34 @@ impl App {
         self.tasks.selected.and_then(|id| self.tasks.get(id))
     }
 
+    pub fn filtered_tasks(&self) -> Vec<&crate::task::Task> {
+        let mut tasks = self.tasks.filtered(&self.task_filter).collect::<Vec<_>>();
+        tasks.sort_by_key(|task| (task.started_at, task.id));
+        if self.views.tasks.sort == SortDirection::Descending {
+            tasks.reverse();
+        }
+        tasks
+    }
+
     pub fn filtered_task_count(&self) -> usize {
-        self.tasks.filtered(&self.task_filter).count()
+        self.filtered_tasks().len()
+    }
+
+    pub fn select_task_position(&mut self, position: usize) {
+        let tasks = self.filtered_tasks();
+        let index = position.min(tasks.len().saturating_sub(1));
+        self.tasks.selected = tasks.get(index).map(|task| task.id);
+    }
+
+    pub fn move_task_selection(&mut self, offset: isize) {
+        let tasks = self.filtered_tasks();
+        let current = self
+            .tasks
+            .selected
+            .and_then(|selected| tasks.iter().position(|task| task.id == selected))
+            .unwrap_or(0);
+        let next = move_bounded_index(current, tasks.len(), offset);
+        self.tasks.selected = tasks.get(next).map(|task| task.id);
     }
 
     /// Where the selection sits in the filtered history. The table and the
@@ -2047,8 +2084,8 @@ impl App {
         let Some(selected) = self.tasks.selected else {
             return 0;
         };
-        self.tasks
-            .filtered(&self.task_filter)
+        self.filtered_tasks()
+            .iter()
             .position(|task| task.id == selected)
             .unwrap_or(0)
     }

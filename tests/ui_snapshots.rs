@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use tale::action::ActionId;
 
 use tale::app::{App, Focus, InteractionMode, Route};
@@ -87,16 +87,12 @@ fn assert_frame_shape(lines: &[String], width: u16, height: u16) {
     assert_eq!(lines.len(), usize::from(height));
     assert!(lines.iter().all(|line| !line.contains('\n')));
     // The wordmark is drawn as art, so look for the status block instead.
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("Status:") || line.contains("simulated data"))
-    );
-    assert!(
-        lines
-            .iter()
-            .all(|line| line.chars().count() >= usize::from(width.saturating_sub(1)))
-    );
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("Status:") || line.contains("simulated data")));
+    assert!(lines
+        .iter()
+        .all(|line| line.chars().count() >= usize::from(width.saturating_sub(1))));
 }
 
 fn press(app: &mut App, code: KeyCode) {
@@ -130,22 +126,18 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             assert!(lines.is_some());
             if let Some(lines) = lines {
                 let prompt = lines.len().saturating_sub(2);
-                assert!(
-                    lines
-                        .get(prompt)
-                        .is_some_and(|line| line.contains("/ owner"))
-                );
+                assert!(lines
+                    .get(prompt)
+                    .is_some_and(|line| line.contains("/ owner")));
                 // The error explains the syntax on its own row, under the prompt.
                 assert!(lines.last().is_some_and(|line| line.contains("column")));
                 if width >= 80 {
                     assert!(lines.last().is_some_and(|line| line.contains("expected")));
                 }
                 if width >= 110 {
-                    assert!(
-                        lines
-                            .last()
-                            .is_some_and(|line| line.contains("showing last valid result"))
-                    );
+                    assert!(lines
+                        .last()
+                        .is_some_and(|line| line.contains("showing last valid result")));
                 }
                 assert!(lines.iter().any(|line| line.contains("Filter")));
             }
@@ -159,22 +151,19 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
                 assert!(lines.iter().any(|line| line.contains("Simulation")));
                 assert!(lines.iter().any(|line| line.contains("Views")));
                 assert!(!lines.iter().any(|line| line.contains("[disabled:")));
-                assert!(
-                    !lines.iter().take(usize::from(height / 2)).any(|line| {
-                        line.contains("Actions ›") || line.contains("Esc cancel")
-                    })
-                );
+                assert!(!lines
+                    .iter()
+                    .take(usize::from(height / 2))
+                    .any(|line| { line.contains("Actions ›") || line.contains("Esc cancel") }));
             }
 
             press(&mut app, KeyCode::Char('v'));
             let lines = lines_at(&app, width, height);
             assert!(lines.is_some());
             if let Some(lines) = lines {
-                assert!(
-                    lines
-                        .last()
-                        .is_some_and(|line| line.contains("v …  waiting for next key"))
-                );
+                assert!(lines
+                    .last()
+                    .is_some_and(|line| line.contains("v …  waiting for next key")));
                 assert!(lines.iter().any(|line| line.contains("Simulation")));
                 assert!(lines.iter().any(|line| line.contains("Views")));
                 assert!(lines.iter().any(|line| line.contains("Esc back")));
@@ -186,11 +175,9 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             if let Some(lines) = lines {
                 assert!(lines.iter().any(|line| line.contains("Actions")));
                 assert!(lines.iter().any(|line| line.contains("Esc close")));
-                assert!(
-                    !lines
-                        .iter()
-                        .any(|line| line.contains("waiting for next key"))
-                );
+                assert!(!lines
+                    .iter()
+                    .any(|line| line.contains("waiting for next key")));
             }
 
             press(&mut app, KeyCode::Esc);
@@ -244,11 +231,9 @@ fn interaction_surfaces_are_bottom_anchored_at_all_required_viewports() {
             if let Some(lines) = lines {
                 let prompt = lines.len().saturating_sub(2);
                 assert!(lines.get(prompt).is_some_and(|line| line.contains("/ ")));
-                assert!(
-                    lines
-                        .last()
-                        .is_some_and(|line| line.contains("Enter apply"))
-                );
+                assert!(lines
+                    .last()
+                    .is_some_and(|line| line.contains("Enter apply")));
             }
         }
     }
@@ -616,11 +601,9 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
             assert!(lines.iter().any(|line| line.contains("data unavailable")));
             assert!(lines.iter().any(|line| line.contains("r to retry")));
             assert!(!lines.iter().any(|line| line.contains("source:")));
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.contains("fictional source failure"))
-            );
+            assert!(lines
+                .iter()
+                .any(|line| line.contains("fictional source failure")));
         }
     }
 
@@ -632,11 +615,9 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
         let lines = lines_at(&loading_profile, 80, 24);
         assert!(lines.is_some());
         if let Some(lines) = lines {
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.contains("loading profile data"))
-            );
+            assert!(lines
+                .iter()
+                .any(|line| line.contains("loading profile data")));
         }
     }
 
@@ -676,11 +657,9 @@ fn stale_error_overlay_long_text_and_minimum_states_are_visible() {
         assert!(lines.is_some());
         if let Some(lines) = lines {
             assert!(lines.iter().any(|line| line.contains("at least 60")));
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.contains("Current terminal: 55x17"))
-            );
+            assert!(lines
+                .iter()
+                .any(|line| line.contains("Current terminal: 55x17")));
         }
     }
 }
@@ -787,16 +766,16 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
     let second = activity
         .tasks
         .create(ActionId::MockFailure, "second task", 1, false);
-    activity.tasks.selected = Some(first);
+    activity.tasks.selected = Some(second);
     // The app header, then the panel border, then the table's own heading row,
-    // and only then the first task.
+    // and only then the older task.
     let _ = activity.update(Event::Input(InputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 2,
         row: 4,
         modifiers: KeyModifiers::NONE,
     })));
-    assert_eq!(activity.tasks.selected, Some(second));
+    assert_eq!(activity.tasks.selected, Some(first));
 }
 
 #[test]
