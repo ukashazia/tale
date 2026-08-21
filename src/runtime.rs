@@ -7300,7 +7300,14 @@ async fn run_streaming_diagnostic(
     let process_result = match process_result {
         Ok(result) => result,
         Err(error) => {
-            finish_diagnostic_error(queue, task_id, error).await;
+            if error == LocalProcessError::TimedOut
+                && matches!(request, diagnostics::DiagnosticRequest::Ping { .. })
+                && !stream.ping_samples.is_empty()
+            {
+                finish_ping_diagnostic(queue, task_id, &stream).await;
+            } else {
+                finish_diagnostic_error(queue, task_id, error).await;
+            }
             return;
         }
     };
@@ -7324,19 +7331,7 @@ async fn run_streaming_diagnostic(
     }
     match request {
         diagnostics::DiagnosticRequest::Ping { .. } => {
-            let summary = diagnostics::summarize_ping(Some(10), &stream.ping_samples);
-            let summary_text = if stream.ping_samples.is_empty() {
-                "succeeded with unparsed output".to_owned()
-            } else {
-                format_ping_summary(&summary)
-            };
-            queue
-                .send(local_event(LocalEvent::DiagnosticResult {
-                    task_id,
-                    result: crate::domain::diagnostic::DiagnosticResult::Ping(summary),
-                }))
-                .await;
-            finish_diagnostic_success(queue, task_id, &summary_text, &stream.detail).await;
+            finish_ping_diagnostic(queue, task_id, &stream).await;
         }
         diagnostics::DiagnosticRequest::Netcheck { .. } => {
             let (observation, errors) =
@@ -7391,6 +7386,22 @@ impl StreamAccumulator {
             sequence: 0,
         }
     }
+}
+
+async fn finish_ping_diagnostic(queue: EventQueue, task_id: TaskId, stream: &StreamAccumulator) {
+    let summary = diagnostics::summarize_ping(Some(10), &stream.ping_samples);
+    let summary_text = if stream.ping_samples.is_empty() {
+        "succeeded with unparsed output".to_owned()
+    } else {
+        format_ping_summary(&summary)
+    };
+    queue
+        .send(local_event(LocalEvent::DiagnosticResult {
+            task_id,
+            result: crate::domain::diagnostic::DiagnosticResult::Ping(summary),
+        }))
+        .await;
+    finish_diagnostic_success(queue, task_id, &summary_text, &stream.detail).await;
 }
 
 async fn handle_stream_line(
