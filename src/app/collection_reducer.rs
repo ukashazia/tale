@@ -16,6 +16,10 @@ impl App {
             ActionId::CollectionSort => self.open_sort_menu(),
             ActionId::CollectionWideColumns => self.toggle_wide_columns(),
             ActionId::CollectionInspect => self.toggle_collection_inspector(),
+            ActionId::TaskHistoryToggle if self.current_route() == Route::Tasks => {
+                self.views.tasks.show_history = !self.views.tasks.show_history;
+                self.select_task_position(0);
+            }
             _ => return Vec::new(),
         }
         Vec::new()
@@ -1171,20 +1175,31 @@ impl App {
     }
 
     pub(super) fn task_sort_choices(&self) -> Vec<MenuChoice> {
-        [
-            (SortDirection::Ascending, 'a', "oldest first"),
-            (SortDirection::Descending, 'd', "newest first"),
-        ]
-        .into_iter()
-        .map(|(direction, order, label)| MenuChoice {
-            sequence: format!("r{order}"),
-            group: "Column".to_owned(),
-            subject: "recency".to_owned(),
-            label: label.to_owned(),
-            active: self.views.tasks.sort == direction,
-            outcome: ChoiceOutcome::TaskSort(direction),
-        })
-        .collect()
+        let current = self.views.tasks.sort;
+        TaskSortField::ALL
+            .into_iter()
+            .flat_map(|field| {
+                let labels = match field {
+                    TaskSortField::Recency => ["oldest first", "newest first"],
+                    TaskSortField::State => ["ascending", "descending"],
+                    TaskSortField::Duration => ["shortest first", "longest first"],
+                };
+                [
+                    (SortDirection::Ascending, 'a'),
+                    (SortDirection::Descending, 'd'),
+                ]
+                .into_iter()
+                .zip(labels)
+                .map(move |((direction, order), label)| MenuChoice {
+                    sequence: format!("{}{order}", field.key()),
+                    group: "Column".to_owned(),
+                    subject: field.label().to_owned(),
+                    label: label.to_owned(),
+                    active: current.field == field && current.direction == direction,
+                    outcome: ChoiceOutcome::TaskSort(TaskSortSpec { field, direction }),
+                })
+            })
+            .collect()
     }
 
     pub(super) fn sort_choices(&self) -> Vec<MenuChoice> {

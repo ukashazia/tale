@@ -1388,13 +1388,10 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
         | ActionId::BatchRetrySelected => {
             matches!(route, Route::Tasks)
         }
-        // Sorting offers device fields, so it is offered where those fields
-        // are. Tasks are already in the order they happened, which is the only
-        // order a history reads well in.
         ActionId::CollectionSort => {
             matches!(
                 route,
-                Route::Devices | Route::Profiles | Route::Config | Route::Services
+                Route::Devices | Route::Profiles | Route::Config | Route::Services | Route::Tasks
             )
         }
         // Diagnostics is one scrolling body: nothing to open into, no rows to

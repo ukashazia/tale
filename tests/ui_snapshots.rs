@@ -765,14 +765,14 @@ fn mouse_is_opt_in_and_dispatches_the_same_collection_actions() {
         .create(ActionId::MockSuccess, "first task", 1, false);
     let second = activity
         .tasks
-        .create(ActionId::MockFailure, "second task", 1, false);
+        .create(ActionId::MockFailure, "second task", 0, false);
     activity.tasks.selected = Some(second);
     // The app header, then the panel border, then the table's own heading row,
-    // and only then the older task.
+    // and only then the newer task.
     let _ = activity.update(Event::Input(InputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 2,
-        row: 4,
+        row: 3,
         modifiers: KeyModifiers::NONE,
     })));
     assert_eq!(activity.tasks.selected, Some(first));

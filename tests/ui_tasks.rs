@@ -5,7 +5,7 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
 use tale::action::ActionId;
-use tale::app::{App, Focus, Route};
+use tale::app::{App, Focus, Route, TaskSortField, TaskSortSpec};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::device::SortDirection;
@@ -68,11 +68,39 @@ fn tasks_default_to_newest_first_and_offer_recency_sorting() {
         vec!["phone-1", "this machine", "laptop-0"]
     );
 
-    let _ = app.dispatch_action(ActionId::CollectionSort);
+    press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Char('r'));
     press(&mut app, KeyCode::Char('a'));
 
-    assert_eq!(app.views.tasks.sort, SortDirection::Ascending);
+    assert_eq!(
+        app.views.tasks.sort,
+        TaskSortSpec {
+            field: TaskSortField::Recency,
+            direction: SortDirection::Ascending,
+        }
+    );
+    assert_eq!(
+        app.filtered_tasks()
+            .iter()
+            .map(|task| task.target_label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["laptop-0", "this machine", "phone-1"]
+    );
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(
+        app.filtered_tasks()
+            .iter()
+            .map(|task| task.target_label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["this machine", "phone-1", "laptop-0"]
+    );
+
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Char('t'));
+    press(&mut app, KeyCode::Char('a'));
     assert_eq!(
         app.filtered_tasks()
             .iter()
@@ -102,6 +130,14 @@ fn task_history_is_hidden_until_requested_and_does_not_count_as_session_failure(
     assert!(empty
         .iter()
         .any(|line| line.contains("No tasks executed this session")));
+
+    press(&mut app, KeyCode::Char('?'));
+    let Some(help) = render_lines(&app, 120, 24) else {
+        return;
+    };
+    assert!(help.iter().any(|line| line.contains("Current view")));
+    assert!(help.iter().any(|line| line.contains("H history")));
+    press(&mut app, KeyCode::Esc);
 
     press(&mut app, KeyCode::Char('H'));
     assert!(app.views.tasks.show_history);

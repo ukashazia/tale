@@ -411,7 +411,7 @@ pub enum ChoiceOutcome {
     ServiceSort(ServiceSortSpec),
     ProfileSort(ProfileSortSpec),
     ConfigSort(SettingSortSpec),
-    TaskSort(SortDirection),
+    TaskSort(TaskSortSpec),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1428,28 +1428,62 @@ impl<'a> ProfileRow<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TaskSortField {
+    Recency,
+    State,
+    Duration,
+}
+
+impl TaskSortField {
+    pub const ALL: [Self; 3] = [Self::Recency, Self::State, Self::Duration];
+
+    pub const fn key(self) -> char {
+        match self {
+            Self::Recency => 'r',
+            Self::State => 's',
+            Self::Duration => 't',
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Recency => "recency",
+            Self::State => "state",
+            Self::Duration => "time took",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TaskSortSpec {
+    pub field: TaskSortField,
+    pub direction: SortDirection,
+}
+
+impl Default for TaskSortSpec {
+    fn default() -> Self {
+        Self {
+            field: TaskSortField::Recency,
+            direction: SortDirection::Descending,
+        }
+    }
+}
+
 /// What `:tasks` remembers between frames. The selection itself lives in the
 /// task store, beside the history it indexes into.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct TaskViewState {
     /// Whether the side inspector shares the pane with the table. Off by
     /// default, the way devices and users are: the table is what the route is
     /// for, and a task's output is long enough to want the full width when you
     /// do ask for it.
     pub inspector: bool,
-    pub sort: SortDirection,
+    pub sort: TaskSortSpec,
     pub show_history: bool,
 }
 
-impl Default for TaskViewState {
-    fn default() -> Self {
-        Self {
-            inspector: false,
-            sort: SortDirection::Descending,
-            show_history: false,
-        }
-    }
-}
 
 /// What `:users` remembers between frames. The selection itself lives in
 /// `admin_user_selected`, beside the other admin cursors.
@@ -2057,10 +2091,33 @@ impl App {
             self.tasks.session_filtered(&self.task_filter).collect()
         };
         let mut tasks = source;
-        tasks.sort_by_key(|task| (task.started_at, task.id));
-        if self.views.tasks.sort == SortDirection::Descending {
-            tasks.reverse();
-        }
+        let sort = self.views.tasks.sort;
+        tasks.sort_by(|left, right| {
+            let order = match sort.field {
+                TaskSortField::Recency => left.started_at.cmp(&right.started_at),
+                TaskSortField::State => left
+                    .state
+                    .label()
+                    .cmp(right.state.label())
+                    .then_with(|| left.started_at.cmp(&right.started_at)),
+                TaskSortField::Duration => left
+                    .finished_at
+                    .unwrap_or(self.now)
+                    .saturating_sub(left.started_at)
+                    .cmp(
+                        &right
+                            .finished_at
+                            .unwrap_or(self.now)
+                            .saturating_sub(right.started_at),
+                    )
+                    .then_with(|| left.started_at.cmp(&right.started_at)),
+            };
+            if sort.direction == SortDirection::Descending {
+                order.reverse()
+            } else {
+                order
+            }
+        });
         tasks
     }
 
