@@ -929,7 +929,7 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::LocalAccountLogout => Some("ao"),
         ActionId::LocalAccountRemove => Some("ar"),
         ActionId::LocalSyspolicyReload => Some("y"),
-        ActionId::LocalProbeConnection => Some("g"),
+        ActionId::LocalProbeConnection => Some("p"),
         ActionId::LocalWhois => Some("w"),
         ActionId::LocalSshOpen => Some("ss"),
         ActionId::LocalNcOpen => Some("nc"),

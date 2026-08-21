@@ -143,7 +143,7 @@ fn a_started_operation_opens_its_selected_task() {
         KeyModifiers::NONE,
     ))));
     let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
-        KeyCode::Char('g'),
+        KeyCode::Char('p'),
         KeyModifiers::NONE,
     ))));
 
@@ -929,6 +929,7 @@ fn transient_sequences_and_reserved_history_bindings_are_stable() {
         ActionId::LocalConnect,
         ActionId::LocalDisconnect,
         ActionId::LocalAccountSwitch,
+        ActionId::LocalProbeConnection,
         ActionId::DiagnosticCopy,
         ActionId::SavedViewCreate,
         ActionId::CollectionExport,
@@ -945,6 +946,10 @@ fn transient_sequences_and_reserved_history_bindings_are_stable() {
     assert_eq!(
         action::transient_sequence(ActionId::LocalAccountSwitch),
         Some("as")
+    );
+    assert_eq!(
+        action::transient_sequence(ActionId::LocalProbeConnection),
+        Some("p")
     );
     assert_eq!(
         action::transient_sequence(ActionId::LocalSshOpen),
