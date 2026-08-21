@@ -8,29 +8,65 @@ use crate::ui::components::{grid, panel};
 use crate::ui::theme;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some((title, lines)) = content_lines(app) else {
+        render_empty(frame, app, area);
+        return;
+    };
+    let visible = usize::from(area.height.saturating_sub(2)).max(1);
+    let visual_lines = panel::wrapped_line_count(lines.clone(), area.width.saturating_sub(4));
+    let max_scroll = visual_lines.saturating_sub(visible);
+    let scroll = app.detail_scroll.min(max_scroll);
+    let end = scroll.saturating_add(visible).min(visual_lines);
+    let title = if max_scroll == 0 {
+        title
+    } else {
+        format!(
+            "{title} · {}-{} of {}",
+            scroll.saturating_add(1),
+            end,
+            visual_lines
+        )
+    };
+    panel::render_scrolled(
+        frame,
+        app,
+        area,
+        &title,
+        lines,
+        u16::try_from(scroll).unwrap_or(u16::MAX),
+    );
+}
+
+pub fn max_scroll(app: &App, area_width: u16, area_height: u16) -> usize {
+    let visible = usize::from(area_height.saturating_sub(2)).max(1);
+    content_lines(app).map_or(0, |(_, lines)| {
+        panel::wrapped_line_count(lines, area_width.saturating_sub(4))
+            .saturating_sub(visible)
+    })
+}
+
+fn content_lines(app: &App) -> Option<(String, Vec<Line<'static>>)> {
     let status = latest_local_status(app);
-    let query =
-        app.local_diagnostics
-            .values()
-            .rev()
-            .find_map(|state| match state.result.as_ref() {
-                Some(DiagnosticResult::DnsQuery(value)) => Some(value),
-                _ => None,
-            });
+    let query = app
+        .local_diagnostics
+        .values()
+        .rev()
+        .find_map(|state| match state.result.as_ref() {
+            Some(DiagnosticResult::DnsQuery(value)) => Some(value),
+            _ => None,
+        });
     let has_admin = app.admin.nameservers.snapshot.is_some()
         || app.admin.dns_preferences.snapshot.is_some()
         || app.admin.search_paths.snapshot.is_some()
         || app.admin.split_dns.snapshot.is_some();
     if status.is_none() && query.is_none() && !has_admin {
-        render_empty(frame, app, area);
-        return;
+        return None;
     }
 
     let mut lines = Vec::new();
     if let Some(status) = status {
         lines.extend(local_status_lines(app, status));
     }
-
     if let Some(query) = query {
         section(app, &mut lines, "Last query");
         let mut query_pairs = vec![
@@ -54,7 +90,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
         lines.extend(grid::detail(app, &query_pairs));
     }
-
     if has_admin {
         section(app, &mut lines, "Tailnet");
         let mut admin = Vec::new();
@@ -101,13 +136,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if has_admin {
         sources.push("admin");
     }
-    panel::render(
-        frame,
-        app,
-        area,
-        &format!("dns · {}", sources.join(" + ")),
-        lines,
-    );
+    Some((format!("dns · {}", sources.join(" + ")), lines))
 }
 
 pub fn latest_local_status(app: &App) -> Option<&DnsStatus> {

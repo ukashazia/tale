@@ -90,7 +90,7 @@ impl App {
         } else {
             current.saturating_add(offset.unsigned_abs())
         };
-        self.views.diagnostics.scroll = next.min(self.metrics_max_scroll());
+        self.views.diagnostics.scroll = next.min(self.diagnostics_max_scroll());
     }
 
     pub(super) fn move_service_selection(&mut self, offset: isize) {
@@ -225,9 +225,13 @@ impl App {
         }
     }
 
-    pub(super) fn metrics_max_scroll(&self) -> usize {
-        if self.views.diagnostics.section != DiagnosticsSection::Client {
-            return 0;
+    pub(super) fn diagnostics_max_scroll(&self) -> usize {
+        let frame = self.frame_layout();
+        if self.views.diagnostics.section == DiagnosticsSection::DnsStatus {
+            return crate::ui::views::diagnostics::dns_status_max_scroll(
+                self,
+                frame.content.height,
+            );
         }
         let line_count = self
             .services_snapshot
@@ -235,8 +239,18 @@ impl App {
             .value
             .as_ref()
             .map_or(0, |metrics| metrics.text.lines().count());
-        let viewport = usize::from(self.terminal_height.saturating_sub(8)).max(1);
-        line_count.saturating_sub(viewport)
+        let viewport = usize::from(crate::ui::views::diagnostics::metrics_viewport(
+            self,
+            frame.content.height,
+        ));
+        let notice_lines = self
+            .services_snapshot
+            .metrics
+            .value
+            .as_ref()
+            .map_or(0, |metrics| usize::from(metrics.truncated));
+        let body_limit = viewport.saturating_sub(notice_lines).max(1);
+        line_count.saturating_sub(body_limit)
     }
 
     pub fn contextual_actions(&self) -> Vec<ActionId> {

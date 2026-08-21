@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -31,6 +31,46 @@ fn initial_device_load_is_not_rendered_as_an_empty_fleet() {
     assert!(lines.iter().any(|line| line.contains("Loading devices…")));
     assert!(lines.iter().any(|line| line.contains("devices · loading")));
     assert!(!lines.iter().any(|line| line.contains("devices · 0")));
+}
+
+#[test]
+fn device_cursor_scrolls_to_stay_visible_at_bottom_edge() {
+    let Some(mut app) = local_app() else {
+        return;
+    };
+    let Ok(snapshot) = decode_status(STATUS, "1.98.9".to_owned(), None, 1_754_000_000) else {
+        return;
+    };
+    app.local_resource.generation = 1;
+    let _ = app.update(Event::Local(Box::new(LocalEvent::StatusSucceeded {
+        generation: 1,
+        snapshot: Box::new(snapshot),
+    })));
+    let Some(seed) = app.devices_resource.snapshot.first().cloned() else {
+        return;
+    };
+    app.devices_resource.snapshot = (0..20)
+        .map(|index| {
+            let mut device = seed.clone();
+            device.id = DeviceId::new(format!("device-{index:02}"));
+            device.display_name = format!("device-{index:02}");
+            device
+        })
+        .collect();
+    app.devices_resource.generation = app.devices_resource.generation.saturating_add(1);
+    app.set_route(Route::Devices);
+    app.set_terminal_size(80, 24);
+    app.views.devices.selected_id = Some(DeviceId::new("device-00"));
+
+    for _ in 0..19 {
+        press(&mut app, 'j');
+    }
+
+    assert!(app.views.devices.scroll > 0);
+    let Some(lines) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(lines.iter().any(|line| line.contains("device-19")));
 }
 
 #[test]
@@ -96,12 +136,11 @@ fn local_devices_render_wide_fields_and_supported_filters() {
             .filter_map(|device| device.age_at(app.now))
             .collect::<Vec<_>>();
         assert_eq!(ages, vec![3_600, 60, 1]);
-        assert!(
-            app.visible_indices()
-                .last()
-                .and_then(|index| app.devices_resource.snapshot.get(*index))
-                .is_some_and(|device| device.last_seen.is_none())
-        );
+        assert!(app
+            .visible_indices()
+            .last()
+            .and_then(|index| app.devices_resource.snapshot.get(*index))
+            .is_some_and(|device| device.last_seen.is_none()));
         app.views.devices.sort = SortSpec {
             field: SortField::Rx,
             direction: SortDirection::Descending,
@@ -129,11 +168,9 @@ fn column_mode_is_visible_in_the_title_and_reports_changes() {
     let Some(standard) = render_lines(&app, 140, 30) else {
         return;
     };
-    assert!(
-        standard
-            .iter()
-            .any(|line| line.contains("columns: standard"))
-    );
+    assert!(standard
+        .iter()
+        .any(|line| line.contains("columns: standard")));
 
     let _ = app.dispatch_action(ActionId::CollectionWideColumns);
     assert_eq!(
@@ -144,11 +181,9 @@ fn column_mode_is_visible_in_the_title_and_reports_changes() {
     let Some(extended) = render_lines(&app, 140, 30) else {
         return;
     };
-    assert!(
-        extended
-            .iter()
-            .any(|line| line.contains("columns: extended"))
-    );
+    assert!(extended
+        .iter()
+        .any(|line| line.contains("columns: extended")));
 }
 
 #[test]
@@ -225,11 +260,9 @@ fn pressing_i_shows_and_hides_the_inspector_beside_the_table() {
 
     press(&mut app, 'i');
     let hidden_again = render_lines(&app, 160, 30);
-    assert!(
-        hidden_again
-            .as_deref()
-            .is_some_and(|lines| !pane_drawn(lines))
-    );
+    assert!(hidden_again
+        .as_deref()
+        .is_some_and(|lines| !pane_drawn(lines)));
 }
 
 /// A peer that never told us its client version gets the same dash every other
@@ -486,11 +519,9 @@ fn slash_searches_inside_device_details_and_n_walks_matches() {
     let Some(prompt) = render_lines(&app, 80, 24) else {
         return;
     };
-    assert!(
-        prompt
-            .iter()
-            .any(|line| line.contains("Search device details"))
-    );
+    assert!(prompt
+        .iter()
+        .any(|line| line.contains("Search device details")));
 
     let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -578,11 +609,9 @@ fn copying_a_field_reports_the_text_that_was_copied() {
     let lines = render_lines(&app, 120, 24);
     assert!(lines.is_some());
     if let Some(lines) = lines {
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("copied: ") && line.contains('…'))
-        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("copied: ") && line.contains('…')));
     }
 }
 

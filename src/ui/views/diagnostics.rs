@@ -1,6 +1,6 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
+use ratatui::Frame;
 
 use crate::app::{App, DiagnosticsSection};
 use crate::domain::service::ServiceResourceStatus;
@@ -33,30 +33,36 @@ fn render_client(frame: &mut Frame<'_>, app: &App, area: Rect) {
         "Client metrics",
         app.theme.style(theme::StyleRole::SectionHeading),
     )));
-    let used = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    lines.extend(metrics_lines(
-        app,
-        area.height.saturating_sub(used).saturating_sub(2),
-    ));
+    lines.extend(metrics_lines(app, metrics_viewport(app, area.height)));
     panel::render(frame, app, area, " diagnostics ", lines);
 }
 
 fn render_dns_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = vec![tab_line(app), Line::default()];
-    if let Some(status) = super::dns::latest_local_status(app) {
-        lines.extend(super::dns::local_status_lines(app, status));
-    } else if app.dns_status_is_loading() {
-        lines.push(Line::from(Span::styled(
-            "Reading DNS status…",
-            app.theme.style(theme::StyleRole::TextMuted),
-        )));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "Waiting for the local client to become ready.",
-            app.theme.style(theme::StyleRole::TextMuted),
-        )));
-    }
+    let body = dns_status_lines(app);
+    let viewport = usize::from(area.height.saturating_sub(4)).max(1);
+    let start = app
+        .views
+        .diagnostics
+        .scroll
+        .min(body.len().saturating_sub(1));
+    lines.extend(body.into_iter().skip(start).take(viewport));
     panel::render(frame, app, area, " diagnostics ", lines);
+}
+
+fn dns_status_lines(app: &App) -> Vec<Line<'static>> {
+    if let Some(status) = super::dns::latest_local_status(app) {
+        super::dns::local_status_lines(app, status)
+    } else if app.dns_status_is_loading() {
+        vec![muted(app, "Reading DNS status…")]
+    } else {
+        vec![muted(app, "Waiting for the local client to become ready.")]
+    }
+}
+
+pub fn dns_status_max_scroll(app: &App, height: u16) -> usize {
+    let viewport = usize::from(height.saturating_sub(4)).max(1);
+    dns_status_lines(app).len().saturating_sub(viewport)
 }
 
 fn tab_line(app: &App) -> Line<'static> {
@@ -73,6 +79,13 @@ fn tab_line(app: &App) -> Line<'static> {
             ),
         ],
     )
+}
+
+pub fn metrics_viewport(app: &App, height: u16) -> u16 {
+    let used = 5usize.saturating_add(bug_report_lines(app).len());
+    height
+        .saturating_sub(u16::try_from(used).unwrap_or(u16::MAX))
+        .saturating_sub(2)
 }
 
 pub fn metrics_lines(app: &App, viewport: u16) -> Vec<Line<'static>> {

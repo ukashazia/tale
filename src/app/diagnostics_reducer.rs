@@ -19,18 +19,24 @@ impl App {
     }
 
     pub(super) fn load_visible_diagnostics(&mut self) -> Vec<Effect> {
-        if self.current_route() != Route::Diagnostics || self.local_executable.is_none() {
+        if self.local_executable.is_none() {
             return Vec::new();
         }
-        match self.views.diagnostics.section {
-            DiagnosticsSection::Client
-                if self.services_snapshot.metrics.status == ServiceResourceStatus::Idle =>
-            {
-                self.start_service_request(ServiceActionRequest::Metrics)
-            }
-            DiagnosticsSection::DnsStatus if self.dns_status_needs_loading() => {
+        match self.current_route() {
+            Route::Dns if self.dns_status_needs_loading() => {
                 self.start_local_diagnostic(DiagnosticRequest::DnsStatus)
             }
+            Route::Diagnostics => match self.views.diagnostics.section {
+                DiagnosticsSection::Client
+                    if self.services_snapshot.metrics.status == ServiceResourceStatus::Idle =>
+                {
+                    self.start_service_request(ServiceActionRequest::Metrics)
+                }
+                DiagnosticsSection::DnsStatus if self.dns_status_needs_loading() => {
+                    self.start_local_diagnostic(DiagnosticRequest::DnsStatus)
+                }
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         }
     }

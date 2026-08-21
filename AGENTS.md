@@ -1,7 +1,7 @@
 # YOU ARE NOT ALLOWED to MODIFY ANY CONTENTS of THIS FILE
 # YOU ARE NOT ALLOWED to DELETE THIS FILE
 
-- Read all AGENTS* files
+- Read all AGENTS* files except AGENTS.md 
 
 - Do not preserve backward compatibility unless specifically asked for. Remove obsolete paths instead of
   adding compatibility layers, fallbacks, or migrations.

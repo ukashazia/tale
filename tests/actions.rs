@@ -259,6 +259,48 @@ fn diagnostics_load_the_visible_section() {
     ));
 }
 
+#[test]
+fn dns_route_loads_local_status_directly() {
+    let Some(mut app) = local_app(false) else {
+        return;
+    };
+    let capabilities = LocalCapabilities::all_supported();
+    app.local_executable = Some(LocalExecutable {
+        path: "tailscale".into(),
+        socket_path: None,
+        source: ExecutableSource::Path,
+        version: "1.98.9".to_owned(),
+        daemon_version: Some("1.98.9".to_owned()),
+        build: None,
+        capabilities,
+    });
+    app.local_capabilities = capabilities;
+
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char(':'),
+        KeyModifiers::NONE,
+    ))));
+    let _ = app.update(Event::Input(InputEvent::Paste("dns".to_owned())));
+    let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))));
+
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [
+                Effect::StartLocalDiagnostic {
+                    request: tale::local::diagnostics::DiagnosticRequest::DnsStatus,
+                    ..
+                },
+                Effect::PersistTaskHistory(tasks),
+            ] if tasks.len() == 1
+        ),
+        "unexpected effects: {effects:?}"
+    );
+}
+
 /// A profile for the tailnet this machine is on adds the tailnet's verbs to the
 /// devices menu; it does not take away the ones the local client offers on the
 /// same row. Both sets share one menu, so no sequence may shadow another.

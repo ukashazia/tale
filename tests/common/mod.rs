@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 
 use tale::app::App;
-use tale::domain::Timestamp;
 use tale::domain::device::{AdminDevice, ConnectionPath, DeviceId, LocalDevice, OperatingSystem};
 use tale::domain::source::{LocalSnapshot, LocalState};
+use tale::domain::Timestamp;
 
 pub const OBSERVED_AT: Timestamp = 1_785_751_200;
 

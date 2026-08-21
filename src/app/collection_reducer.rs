@@ -129,6 +129,7 @@ impl App {
                 self.move_device_detail_scroll(offset);
             }
             Route::Access => self.move_access_scroll(offset),
+            Route::Dns => self.move_dns_scroll(offset),
             Route::Overview => self.move_overview_selection(offset),
             Route::Tasks => self.tasks.select_next_filtered(&self.task_filter, offset),
             Route::Audit => self.move_admin_activity_selection(offset),
@@ -159,6 +160,9 @@ impl App {
             Route::Access => {
                 self.detail_scroll = if last { self.access_max_scroll() } else { 0 };
             }
+            Route::Dns => {
+                self.detail_scroll = if last { self.dns_max_scroll() } else { 0 };
+            }
             Route::Overview => {
                 self.select_overview_position(if last { usize::MAX } else { 0 });
             }
@@ -178,8 +182,12 @@ impl App {
                 self.views.services.selected = endpoint(self.service_row_count());
                 self.views.services.scroll = self.views.services.selected;
             }
-            Route::Diagnostics if last => {
-                self.views.diagnostics.scroll = self.metrics_max_scroll();
+            Route::Diagnostics => {
+                self.views.diagnostics.scroll = if last {
+                    self.diagnostics_max_scroll()
+                } else {
+                    0
+                };
             }
             Route::Users => {
                 self.admin_user_selected = endpoint(self.filtered_admin_users().len());
@@ -523,7 +531,7 @@ impl App {
     }
 
     pub(super) fn device_viewport_rows(&self) -> usize {
-        usize::from(self.terminal_height.saturating_sub(8)).max(1)
+        usize::from(self.frame_layout().content.height.saturating_sub(3)).max(1)
     }
 
     pub(super) fn move_admin_user_selection(&mut self, offset: isize) {
@@ -582,6 +590,17 @@ impl App {
     pub(super) fn access_max_scroll(&self) -> usize {
         let frame = self.frame_layout();
         crate::ui::views::access::max_scroll(self, frame.content.width, frame.content.height)
+    }
+
+    pub(super) fn move_dns_scroll(&mut self, offset: isize) {
+        let length = self.dns_max_scroll().saturating_add(1);
+        let current = self.detail_scroll.min(length.saturating_sub(1));
+        self.detail_scroll = move_bounded_index(current, length, offset);
+    }
+
+    pub(super) fn dns_max_scroll(&self) -> usize {
+        let frame = self.frame_layout();
+        crate::ui::views::dns::max_scroll(self, frame.content.width, frame.content.height)
     }
 
     pub(super) fn device_detail_max_scroll(&self) -> usize {
