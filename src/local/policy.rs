@@ -127,12 +127,20 @@ pub fn decode_policy(input: &str) -> Result<Vec<SystemPolicyEntry>, PolicyError>
     let object = value.as_object().ok_or_else(|| {
         PolicyError::InvalidJson("policy response was not a JSON object".to_owned())
     })?;
-    let settings = object
-        .get("Settings")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            PolicyError::InvalidJson("policy response did not contain a Settings object".to_owned())
-        })?;
+    let settings = match object.get("Settings") {
+        Some(Value::Object(settings)) => settings,
+        Some(_) => {
+            return Err(PolicyError::InvalidJson(
+                "policy response Settings was not an object".to_owned(),
+            ));
+        }
+        None if object.get("Summary").is_some_and(Value::is_object) => return Ok(Vec::new()),
+        None => {
+            return Err(PolicyError::InvalidJson(
+                "policy response contained neither Settings nor Summary".to_owned(),
+            ));
+        }
+    };
     let mut entries = settings
         .iter()
         .map(|(name, value)| entry_from_value(name.clone(), value))
@@ -249,5 +257,24 @@ mod tests {
             assert_eq!(result[0].value.as_deref(), Some("false"));
             assert_eq!(result[0].error, None);
         }
+    }
+
+    #[test]
+    fn summary_only_policy_response_means_no_configured_settings() {
+        let result = decode_policy(r#"{"Summary":{"Scope":"Device"}}"#);
+
+        assert_eq!(result, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn malformed_settings_are_not_treated_as_an_empty_policy() {
+        let result = decode_policy(r#"{"Summary":{"Scope":"Device"},"Settings":[]}"#);
+
+        assert_eq!(
+            result,
+            Err(PolicyError::InvalidJson(
+                "policy response Settings was not an object".to_owned()
+            ))
+        );
     }
 }

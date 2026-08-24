@@ -298,7 +298,9 @@ impl LocalResource {
     pub fn begin(&mut self, generation: u64, attempted_at: Timestamp) {
         self.generation = generation;
         self.last_attempt_at = Some(attempted_at);
-        self.status = LocalResourceStatus::Loading;
+        if self.snapshot.is_none() {
+            self.status = LocalResourceStatus::Loading;
+        }
         self.failure = None;
     }
 
@@ -370,7 +372,9 @@ impl LocalPreferencesResource {
     pub fn begin(&mut self, generation: u64, attempted_at: Timestamp) {
         self.generation = generation;
         self.last_attempt_at = Some(attempted_at);
-        self.status = LocalResourceStatus::Loading;
+        if self.snapshot.is_none() {
+            self.status = LocalResourceStatus::Loading;
+        }
         self.failure = None;
     }
 

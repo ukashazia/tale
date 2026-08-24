@@ -73,6 +73,11 @@ fn stale_generation_cannot_replace_last_good_snapshot() {
     resource.begin(1, NOW);
     assert!(resource.succeed(1, local_snapshot("1.98.9", NOW)));
     resource.begin(2, NOW.saturating_add(1));
+    assert_eq!(
+        resource.status,
+        LocalResourceStatus::Fresh,
+        "a background refresh must keep presenting the last good snapshot"
+    );
     assert!(!resource.succeed(1, local_snapshot("obsolete", NOW.saturating_add(2))));
     assert_eq!(
         resource

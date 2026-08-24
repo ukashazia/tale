@@ -127,7 +127,14 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         panel::render(frame, app, area, "inspector", "No task selected");
         return;
     };
-    let width = usize::from(area.width.saturating_sub(4));
+    let lines = inspector_lines(app, task, area.width);
+    let max_scroll = inspector_max_scroll(app, area.width, area.height);
+    let scroll = app.views.tasks.detail_scroll.min(max_scroll);
+    panel::render_scrolled(frame, app, area, "inspector", lines, scroll as u16);
+}
+
+fn inspector_lines(app: &App, task: &Task, area_width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(area_width.saturating_sub(4));
     let action_label = crate::action::find_action(task.action_id)
         .map_or(task.action_id.as_str(), |action| action.label);
     let mut pairs = vec![
@@ -193,37 +200,19 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )));
         }
     }
-    lines.extend(output_lines(app, task, area, lines.len()));
-    panel::render_focusable(
-        frame,
-        app,
-        area,
-        "inspector",
-        lines,
-        app.focus == Focus::Inspector,
-    );
+    lines.extend(output_lines(app, task));
+    lines
 }
 
 /// Output can run to a quarter of a megabyte, and the end is the part anyone
 /// reads. The heading says how much was left above so the tail does not pass
 /// itself off as the whole of it.
-fn output_lines(app: &App, task: &Task, area: Rect, used: usize) -> Vec<Line<'static>> {
+fn output_lines(app: &App, task: &Task) -> Vec<Line<'static>> {
     if task.detail.is_empty() {
         return Vec::new();
     }
     let body = task.detail.lines().collect::<Vec<_>>();
-    let room = usize::from(area.height.saturating_sub(2))
-        .saturating_sub(used)
-        .saturating_sub(2);
-    if room == 0 {
-        return Vec::new();
-    }
-    let hidden = body.len().saturating_sub(room);
-    let heading = if hidden == 0 {
-        format!("output · {} lines", body.len())
-    } else {
-        format!("output · last {room} of {} lines", body.len())
-    };
+    let heading = format!("output · {} lines", body.len());
     let mut lines = vec![
         Line::from(String::new()),
         Line::from(Span::styled(
@@ -231,13 +220,22 @@ fn output_lines(app: &App, task: &Task, area: Rect, used: usize) -> Vec<Line<'st
             app.theme.style(theme::StyleRole::SectionHeading),
         )),
     ];
-    lines.extend(body.into_iter().skip(hidden).map(|line| {
+    lines.extend(body.into_iter().map(|line| {
         Line::from(Span::styled(
             line.to_owned(),
             app.theme.style(theme::StyleRole::TextCode),
         ))
     }));
     lines
+}
+
+pub fn inspector_max_scroll(app: &App, area_width: u16, area_height: u16) -> usize {
+    let Some(task) = app.focused_task() else {
+        return 0;
+    };
+    let lines = inspector_lines(app, task, area_width);
+    let visual_lines = panel::wrapped_line_count(lines, area_width.saturating_sub(4));
+    visual_lines.saturating_sub(usize::from(area_height.saturating_sub(2)))
 }
 
 fn ago(app: &App, moment: crate::domain::Timestamp) -> String {

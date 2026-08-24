@@ -365,6 +365,43 @@ fn task_inspector_wraps_long_output_instead_of_clipping_its_end() {
     assert_ne!(beginning, ending, "the regression value did not wrap");
 }
 
+#[test]
+fn task_inspector_scrolls_through_the_full_output() {
+    let Some(mut app) = tasks_app() else {
+        return;
+    };
+    let task_id = app.tasks.create(
+        ActionId::LocalNetcheck,
+        "scrolling-output-device",
+        app.now.saturating_sub(5),
+        false,
+    );
+    let _ = app.tasks.start(task_id);
+    let detail = (0..40)
+        .map(|index| format!("output-line-{index:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = app.tasks.fail(task_id, app.now, "long output", &detail);
+    app.tasks.select_filtered_last("");
+    app.focus = Focus::Inspector;
+    app.set_terminal_size(80, 18);
+
+    let Some(top) = render_lines(&app, 80, 18) else {
+        return;
+    };
+    assert!(
+        top.iter()
+            .any(|line| line.contains("scrolling-output-device"))
+    );
+    assert!(top.iter().all(|line| !line.contains("output-line-39")));
+
+    press(&mut app, KeyCode::Char('G'));
+    let Some(bottom) = render_lines(&app, 80, 18) else {
+        return;
+    };
+    assert!(bottom.iter().any(|line| line.contains("output-line-39")));
+}
+
 /// `y` offers what anyone actually pastes into a bug report, and only what this
 /// run produced.
 #[test]

@@ -1479,6 +1479,7 @@ pub struct TaskViewState {
     /// for, and a task's output is long enough to want the full width when you
     /// do ask for it.
     pub inspector: bool,
+    pub detail_scroll: usize,
     pub sort: TaskSortSpec,
     pub show_history: bool,
 }
@@ -1960,6 +1961,7 @@ impl App {
 
     pub fn update(&mut self, event: Event) -> Vec<Effect> {
         let input = matches!(event, Event::Input(_));
+        let input_context = (self.current_route(), self.views.diagnostics.section);
         let task_count = self.tasks.all().len();
         if !matches!(event, Event::Tick(_)) {
             self.render_invalidated = true;
@@ -1982,11 +1984,15 @@ impl App {
             Event::Database(database) => self.update_database(database),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         };
-        if input && let Some(task_id) = self.tasks.all().get(task_count).map(|task| task.id) {
+        if input
+            && input_context == (self.current_route(), self.views.diagnostics.section)
+            && let Some(task_id) = self.tasks.all().get(task_count).map(|task| task.id)
+        {
             self.navigate(Route::Tasks);
             self.task_filter.clear();
             self.tasks.selected = Some(task_id);
             self.focus = Focus::Inspector;
+            self.views.tasks.detail_scroll = 0;
             self.opened_task_return = true;
         }
         if self.resolved_config.history.persist_tasks && !self.resolved_config.mock {

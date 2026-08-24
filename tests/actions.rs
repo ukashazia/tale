@@ -301,7 +301,7 @@ fn diagnostics_load_the_visible_section() {
             Effect::PersistTaskHistory(tasks),
         ] if tasks.len() == 1
     ));
-    assert_eq!(app.current_route(), Route::Tasks);
+    assert_eq!(app.current_route(), Route::Diagnostics);
 
     app.set_route(Route::Diagnostics);
     let effects = app.dispatch_action(ActionId::SectionNext);
@@ -354,6 +354,7 @@ fn dns_route_loads_local_status_directly() {
         ),
         "unexpected effects: {effects:?}"
     );
+    assert_eq!(app.current_route(), Route::Dns);
 }
 
 /// A profile for the tailnet this machine is on adds the tailnet's verbs to the

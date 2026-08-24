@@ -144,6 +144,9 @@ impl App {
             Route::Access => self.move_access_scroll(offset),
             Route::Dns => self.move_dns_scroll(offset),
             Route::Overview => self.move_overview_selection(offset),
+            Route::Tasks if self.focus == Focus::Inspector => {
+                self.move_task_detail_scroll(offset);
+            }
             Route::Tasks => self.move_task_selection(offset),
             Route::Audit => self.move_admin_activity_selection(offset),
             Route::Local => self.move_local_account_selection(offset),
@@ -178,6 +181,13 @@ impl App {
             }
             Route::Overview => {
                 self.select_overview_position(if last { usize::MAX } else { 0 });
+            }
+            Route::Tasks if self.focus == Focus::Inspector => {
+                self.views.tasks.detail_scroll = if last {
+                    self.task_inspector_max_scroll()
+                } else {
+                    0
+                };
             }
             Route::Tasks => {
                 self.select_task_position(if last { usize::MAX } else { 0 });
@@ -232,6 +242,7 @@ impl App {
                         self.overlays.push(Overlay::TaskInspector(task_id));
                     } else {
                         self.focus = Focus::Inspector;
+                        self.views.tasks.detail_scroll = 0;
                     }
                 }
             }
@@ -275,6 +286,21 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    pub(super) fn task_inspector_max_scroll(&self) -> usize {
+        let area = self.frame_layout().content;
+        crate::ui::views::tasks::inspector_max_scroll(self, area.width, area.height)
+    }
+
+    fn move_task_detail_scroll(&mut self, offset: isize) {
+        let max = self.task_inspector_max_scroll();
+        self.views.tasks.detail_scroll = self
+            .views
+            .tasks
+            .detail_scroll
+            .saturating_add_signed(offset)
+            .min(max);
     }
 
     pub(super) fn open_sort_menu(&mut self) {
