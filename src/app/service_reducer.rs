@@ -20,6 +20,7 @@ impl App {
             | ActionId::ServicesServeReset
             | ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelPublish
             | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesFunnelReset
             | ActionId::DevicesTaildropSend
@@ -171,12 +172,48 @@ impl App {
     }
 
     pub fn selected_service_mapping(&self) -> Option<ServiceMapping> {
+        self.selected_service_mapping_ref().cloned()
+    }
+
+    /// The selected Serve row itself. Deciding whether an action applies only
+    /// needs to read the row, so it is read rather than copied.
+    pub(super) fn selected_service_mapping_ref(&self) -> Option<&ServiceMapping> {
         if self.views.services.section != ServiceSection::Serve {
             return None;
         }
         self.visible_service_mappings()
             .get(self.views.services.selected)
-            .map(|mapping| (*mapping).clone())
+            .copied()
+    }
+
+    pub(super) fn selected_public_service_mapping(&self) -> Option<&ServiceMapping> {
+        self.selected_service_mapping_ref()
+            .filter(|mapping| mapping.exposure.is_public())
+    }
+
+    /// The selected serve, if Funnel could carry it. Funnel has no HTTP
+    /// listener, so an HTTP serve can never be promoted as it stands.
+    pub(super) fn publishable_service_mapping(&self) -> Option<&ServiceMapping> {
+        self.selected_service_mapping_ref().filter(|mapping| {
+            !mapping.exposure.is_public() && !matches!(mapping.listener, Listener::Http(_))
+        })
+    }
+
+    pub(super) fn unpublish_unavailable_reason(&self) -> String {
+        match self.selected_service_mapping_ref() {
+            None => "select a public serve to stop publishing".to_owned(),
+            Some(_) => "the selected serve is already tailnet-only".to_owned(),
+        }
+    }
+
+    pub(super) fn publish_unavailable_reason(&self) -> String {
+        match self.selected_service_mapping_ref() {
+            None => "select a tailnet serve to publish".to_owned(),
+            Some(mapping) if mapping.exposure.is_public() => {
+                "the selected serve is already public".to_owned()
+            }
+            Some(_) => "HTTP is not offered as a public Funnel listener".to_owned(),
+        }
     }
 
     /// The discovered Taildrop target for the selected device row. An address
@@ -480,6 +517,7 @@ impl App {
                 ActionId::ServicesServeCreate,
                 ActionId::ServicesFunnelCreate,
                 ActionId::ServicesServeEdit,
+                ActionId::ServicesFunnelPublish,
                 ActionId::ServicesFunnelUnpublish,
                 ActionId::ServicesServeRemove,
                 ActionId::ServicesServeReset,
@@ -596,31 +634,43 @@ impl App {
             // so they go straight to the confirmation with no form in between.
             ActionId::ServicesServeRemove => {
                 let Some(mapping) = self.selected_service_mapping() else {
-                    self.runtime_error = Some("select a mapping to remove".to_owned());
+                    self.runtime_error = Some("select a serve to remove".to_owned());
                     return Vec::new();
                 };
                 self.open_service_confirmation(ServiceActionRequest::MappingRemove { mapping })
             }
             ActionId::ServicesFunnelUnpublish => {
-                let Some(mapping) = self.selected_service_mapping() else {
-                    self.runtime_error = Some("select a public mapping to unpublish".to_owned());
+                let Some(mapping) = self.selected_public_service_mapping().cloned() else {
+                    self.runtime_error = Some(self.unpublish_unavailable_reason());
                     return Vec::new();
                 };
-                if mapping.exposure != Exposure::Public {
-                    self.runtime_error =
-                        Some("the selected mapping is already tailnet-only".to_owned());
-                    return Vec::new();
-                }
                 self.open_service_confirmation(ServiceActionRequest::FunnelUnpublish { mapping })
+            }
+            // The inverse of "Stop publishing". Funnel has no "publish an
+            // existing handler" command, so the row is re-served through
+            // Funnel exactly as it stands.
+            ActionId::ServicesFunnelPublish => {
+                let Some(mapping) = self.publishable_service_mapping() else {
+                    self.runtime_error = Some(self.publish_unavailable_reason());
+                    return Vec::new();
+                };
+                let mapping = ServiceMapping {
+                    exposure: Exposure::Public,
+                    ..mapping.clone()
+                };
+                self.open_service_confirmation(ServiceActionRequest::Funnel {
+                    mapping,
+                    edit: false,
+                })
             }
             ActionId::ServicesServeCreate | ActionId::ServicesFunnelCreate => {
                 let public = action_id == ActionId::ServicesFunnelCreate;
                 self.push_form(
                     action_id,
                     if public {
-                        "New public mapping"
+                        "New public serve"
                     } else {
-                        "New tailnet mapping"
+                        "New tailnet serve"
                     },
                     vec![(
                         "reachable by",
@@ -640,12 +690,12 @@ impl App {
                 // replaces a mapping by listener and path, so those are stated
                 // rather than offered: changing them is a new mapping.
                 let Some(mapping) = self.selected_service_mapping() else {
-                    self.runtime_error = Some("select a mapping to edit".to_owned());
+                    self.runtime_error = Some("select a serve to edit".to_owned());
                     return Vec::new();
                 };
                 self.push_form(
                     action_id,
-                    "Edit mapping",
+                    "Edit serve",
                     vec![
                         ("reachable by", reachability(&mapping.exposure).to_owned()),
                         (
@@ -975,7 +1025,7 @@ impl App {
             // its listener and path are not editable, so identity always holds.
             ActionId::ServicesServeEdit => {
                 let Some(selected) = self.selected_service_mapping() else {
-                    return Err("select a mapping to edit".to_owned());
+                    return Err("select a serve to edit".to_owned());
                 };
                 let backend = parse_form_backend(required_field(&fields, "backend")?)?;
                 let proxy_protocol =
@@ -1426,7 +1476,7 @@ impl App {
                         })
                 {
                     return Err(
-                        "the selected Serve mapping changed; refresh and create or edit again"
+                        "the selected tailnet serve changed; refresh and create or edit again"
                             .to_owned(),
                     );
                 }
@@ -1458,8 +1508,7 @@ impl App {
                         })
                 {
                     return Err(
-                        "the selected PUBLIC Funnel mapping changed; refresh and edit again"
-                            .to_owned(),
+                        "the selected public serve changed; refresh and edit again".to_owned()
                     );
                 }
                 validate_mapping_backend(mapping)
@@ -1470,22 +1519,21 @@ impl App {
             ServiceActionRequest::MappingRemove { mapping } => {
                 mapping.validate().map_err(|error| error.to_string())?;
                 if !self.service_mapping_is_current(mapping) {
-                    return Err("the selected mapping changed; refresh and remove again".to_owned());
+                    return Err("the selected serve changed; refresh and remove again".to_owned());
                 }
                 Ok(())
             }
             ServiceActionRequest::FunnelUnpublish { mapping } => {
                 mapping.validate().map_err(|error| error.to_string())?;
                 if mapping.exposure != Exposure::Public {
-                    return Err("only a public mapping can stop being published".to_owned());
+                    return Err("only a public serve can stop being published".to_owned());
                 }
                 if !self.local_capabilities.serve {
                     return Err("Serve is unsupported by this CLI".to_owned());
                 }
                 if !self.service_mapping_is_current(mapping) {
                     return Err(
-                        "the selected PUBLIC mapping changed; refresh and unpublish again"
-                            .to_owned(),
+                        "the selected public serve changed; refresh and unpublish again".to_owned(),
                     );
                 }
                 // The mapping is re-served verbatim, so the backend has to be

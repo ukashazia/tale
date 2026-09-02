@@ -258,7 +258,7 @@ fn services_render_loading_partial_stale_failed_unsupported_read_only_and_runnin
         let idle = render_lines(&app, 80, 24);
         assert!(idle.is_some());
         if let Some(idle) = idle {
-            assert!(idle.iter().any(|line| line.contains("No mappings loaded")));
+            assert!(idle.iter().any(|line| line.contains("No serves loaded")));
         }
 
         let Some(port_3000) = port(3000) else {
@@ -939,6 +939,22 @@ fn press(app: &mut App, code: KeyCode) {
     ))));
 }
 
+/// A terminal reports a capital as Shift plus the character, so typed text has
+/// to arrive the way a real keyboard sends it.
+fn type_text(app: &mut App, text: &str) {
+    for character in text.chars() {
+        let modifiers = if character.is_uppercase() {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::NONE
+        };
+        let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+            KeyCode::Char(character),
+            modifiers,
+        ))));
+    }
+}
+
 fn render_lines(app: &App, width: u16, height: u16) -> Option<Vec<String>> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).ok()?;
@@ -970,18 +986,13 @@ fn service_forms_ask_field_by_field_and_never_show_their_serialization() {
             Route::Services,
             ServiceSection::Serve,
             ActionId::ServicesServeCreate,
-            vec![
-                "New tailnet mapping",
-                "this tailnet only",
-                "Protocol",
-                "Port",
-            ],
+            vec!["New tailnet serve", "this tailnet only", "Protocol", "Port"],
         ),
         (
             Route::Services,
             ServiceSection::Serve,
             ActionId::ServicesServeEdit,
-            vec!["Edit mapping", "reachable by", "listener", "Serve"],
+            vec!["Edit serve", "reachable by", "listener", "Serve"],
         ),
         (
             Route::Devices,
@@ -1318,7 +1329,7 @@ fn one_mapping_can_stop_being_public_or_be_removed_on_its_own() {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("left alone") || line.contains("Other mappings"))
+                .any(|line| line.contains("left alone") || line.contains("Other serves"))
         );
     }
 
@@ -1376,20 +1387,6 @@ fn taking_a_public_mapping_down_does_not_need_the_funnel_capability() {
 /// which made the phrase a Tier 2 confirmation demands impossible to type.
 #[test]
 fn typing_a_capital_letter_reaches_every_text_input() {
-    fn type_text(app: &mut App, text: &str) {
-        for character in text.chars() {
-            let modifiers = if character.is_uppercase() {
-                KeyModifiers::SHIFT
-            } else {
-                KeyModifiers::NONE
-            };
-            let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
-                KeyCode::Char(character),
-                modifiers,
-            ))));
-        }
-    }
-
     let Some(mut app) = populated_app() else {
         return;
     };
@@ -1429,5 +1426,69 @@ fn typing_a_capital_letter_reaches_every_text_input() {
         form_value(&app, "name"),
         Some("Quarterly Reports"),
         "a control chord was typed into the field"
+    );
+}
+
+/// "Stop publishing" had no way back, and it was offered on rows that were
+/// already tailnet-only. The pair is now offered only on the exposure it
+/// applies to, and finishing either one leaves the reader on `:services`,
+/// where the row's own exposure is the report.
+#[test]
+fn publishing_is_reversible_and_keeps_the_serve_table_on_screen() {
+    let Some(mut app) = populated_app() else {
+        return;
+    };
+    app.set_route(Route::Services);
+    app.views.services.section = ServiceSection::Serve;
+
+    // The public row can stop publishing, and has nothing left to publish.
+    app.views.services.selected = 0;
+    assert!(app.action_is_available(ActionId::ServicesFunnelUnpublish));
+    assert!(!app.action_is_available(ActionId::ServicesFunnelPublish));
+    assert_eq!(
+        app.action_unavailable_reason(ActionId::ServicesFunnelPublish)
+            .as_deref(),
+        Some("the selected serve is already public")
+    );
+
+    // The tailnet row is the mirror image of it.
+    app.views.services.selected = 1;
+    assert!(app.action_is_available(ActionId::ServicesFunnelPublish));
+    assert!(!app.action_is_available(ActionId::ServicesFunnelUnpublish));
+    assert_eq!(
+        app.action_unavailable_reason(ActionId::ServicesFunnelUnpublish)
+            .as_deref(),
+        Some("the selected serve is already tailnet-only")
+    );
+    let Some(selected) = app.selected_service_mapping() else {
+        return;
+    };
+
+    let _ = app.dispatch_action(ActionId::ServicesFunnelPublish);
+    let request = app.overlays.last().and_then(|overlay| match overlay {
+        tale::app::Overlay::Confirmation(state) => state.service_request.clone(),
+        _ => None,
+    });
+    assert!(
+        matches!(
+            &request,
+            Some(ServiceActionRequest::Funnel { mapping, .. })
+                if mapping.exposure == Exposure::Public
+                    && mapping.listener == selected.listener
+                    && mapping.mount == selected.mount
+                    && mapping.backend == selected.backend
+        ),
+        "publish did not offer the selected row unchanged: {request:?}"
+    );
+
+    // Going public is never silent, and the answer is the table itself.
+    type_text(&mut app, "PUBLIC");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.overlays.is_empty(), "the confirmation was not accepted");
+    assert_eq!(app.tasks.all().len(), 1, "publishing started no task");
+    assert_eq!(
+        app.current_route(),
+        Route::Services,
+        "publishing walked off the serve table"
     );
 }

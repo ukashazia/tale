@@ -111,6 +111,7 @@ define_action_ids! {
         ServicesServeReset => "services.serve.reset";
         ServicesFunnelCreate => "services.funnel.create";
         ServicesFunnelEdit => "services.funnel.edit";
+        ServicesFunnelPublish => "services.funnel.publish";
         ServicesFunnelUnpublish => "services.funnel.unpublish";
         ServicesFunnelReset => "services.funnel.reset";
         DevicesTaildropSend => "devices.taildrop.send";
@@ -340,6 +341,7 @@ impl ActionId {
                 | Self::ServicesServeReset
                 | Self::ServicesFunnelCreate
                 | Self::ServicesFunnelEdit
+                | Self::ServicesFunnelPublish
                 | Self::ServicesFunnelUnpublish
                 | Self::ServicesFunnelReset
                 | Self::DevicesTaildropSend
@@ -957,6 +959,7 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         // `d` deletes the one selected row; the `x` prefix stays reserved for
         // the two resets so a single letter never means "all of them".
         ActionId::ServicesServeRemove => Some("d"),
+        ActionId::ServicesFunnelPublish => Some("p"),
         ActionId::ServicesFunnelUnpublish => Some("u"),
         ActionId::ServicesServeReset => Some("xt"),
         ActionId::ServicesFunnelReset => Some("xp"),
@@ -1130,6 +1133,7 @@ pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
         | ActionId::ServicesServeReset
         | ActionId::ServicesFunnelCreate
         | ActionId::ServicesFunnelEdit
+        | ActionId::ServicesFunnelPublish
         | ActionId::ServicesFunnelUnpublish
         | ActionId::ServicesFunnelReset => Some(TransientGroup::Serve),
         ActionId::DevicesTaildropSend | ActionId::DevicesTaildropReceive => {
@@ -1806,8 +1810,8 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesServeRefresh,
-            label: "Refresh mappings",
-            description: "Re-read Serve and Funnel mappings",
+            label: "Refresh serves",
+            description: "Re-read Serve and Funnel entries",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -1816,7 +1820,7 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesServeCreate,
-            label: "Create tailnet mapping",
+            label: "Create tailnet serve",
             description: "Serve a backend to the tailnet only",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
@@ -1826,8 +1830,8 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesServeEdit,
-            label: "Edit mapping",
-            description: "Change what the selected mapping serves",
+            label: "Edit serve",
+            description: "Change what the selected serve sends traffic to",
             contexts: SERVICES,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -1836,8 +1840,8 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesServeRemove,
-            label: "Remove mapping",
-            description: "Remove only the selected mapping",
+            label: "Remove serve",
+            description: "Remove only the selected serve",
             contexts: SERVICES,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -1846,8 +1850,8 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesServeReset,
-            label: "Remove all tailnet mappings",
-            description: "Remove every local Serve mapping",
+            label: "Remove all tailnet serves",
+            description: "Remove every tailnet serve on this machine",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -1856,8 +1860,8 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesFunnelCreate,
-            label: "Create public mapping",
-            description: "Expose one mapping publicly through Funnel",
+            label: "Create public serve",
+            description: "Serve a backend publicly through Funnel",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
@@ -1866,8 +1870,20 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesFunnelEdit,
-            label: "Edit public mapping",
-            description: "Replace one public Funnel mapping",
+            label: "Edit public serve",
+            description: "Replace one public Funnel serve",
+            contexts: SERVICES,
+            selection_rule: SelectionRule::One,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
+        },
+        // The way back from "Stop publishing": the selected tailnet serve is
+        // re-served through Funnel, unchanged in every other respect.
+        ActionSpec {
+            id: ActionId::ServicesFunnelPublish,
+            label: "Publish",
+            description: "Make the selected tailnet serve reachable from the internet",
             contexts: SERVICES,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -1877,7 +1893,7 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::ServicesFunnelUnpublish,
             label: "Stop publishing",
-            description: "Keep the selected mapping but make it tailnet-only",
+            description: "Keep the selected serve, but reachable by this tailnet only",
             contexts: SERVICES,
             selection_rule: SelectionRule::One,
             default_bindings: NO_BINDING,
@@ -1886,8 +1902,8 @@ pub fn local_service_actions() -> Vec<ActionSpec> {
         },
         ActionSpec {
             id: ActionId::ServicesFunnelReset,
-            label: "Remove all public mappings",
-            description: "Remove every public Funnel mapping",
+            label: "Remove all public serves",
+            description: "Remove every public serve on this machine",
             contexts: SERVICES,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,

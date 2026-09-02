@@ -1164,7 +1164,7 @@ fn every_overlay_paints_a_surface_rather_than_showing_the_view_through_it() {
         service_request: None,
         operational_mutation: None,
         handoff: None,
-        prompt: "This mapping stops being reachable from the public internet.".to_owned(),
+        prompt: "This serve stops being reachable from the public internet.".to_owned(),
         required_phrase: Some("UNPUBLISH".to_owned()),
         input: String::new(),
         lose_ssh_checked: false,

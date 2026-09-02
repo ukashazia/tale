@@ -6,11 +6,14 @@ impl App {
             return Vec::new();
         };
         if !self.action_available(action_id, spec.capability) {
+            // A refusal is only useful if it names the reason this particular
+            // action is out, which is what the menu already greys it out for.
             self.runtime_error = Some(
                 spec.capability
                     .reason()
-                    .map_or("action unavailable", |reason| reason)
-                    .to_owned(),
+                    .map(str::to_owned)
+                    .or_else(|| self.action_unavailable_reason(action_id))
+                    .unwrap_or_else(|| "action unavailable".to_owned()),
             );
             return Vec::new();
         }
@@ -286,6 +289,7 @@ impl App {
             | ActionId::ServicesServeReset
             | ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
+            | ActionId::ServicesFunnelPublish
             | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesFunnelReset
             | ActionId::DevicesTaildropSend
@@ -795,6 +799,16 @@ impl App {
         {
             return Some("current preferences are not verified".to_owned());
         }
+        if action_id == ActionId::ServicesFunnelUnpublish
+            && self.selected_public_service_mapping().is_none()
+        {
+            return Some(self.unpublish_unavailable_reason());
+        }
+        if action_id == ActionId::ServicesFunnelPublish
+            && self.publishable_service_mapping().is_none()
+        {
+            return Some(self.publish_unavailable_reason());
+        }
         let reason = match action_id {
             ActionId::LocalProbeConnection => "ping is unavailable for this client",
             ActionId::LocalNetcheck => "one-shot netcheck is unavailable for this client",
@@ -882,13 +896,21 @@ impl App {
             ActionId::LocalSyspolicyReload => capabilities.syspolicy,
             // Removing and unpublishing both run `tailscale serve`, so they
             // survive a node that has lost Funnel: the way out of a public
-            // mapping must never depend on the capability that created it.
+            // serve must never depend on the capability that created it.
             ActionId::ServicesServeRefresh
             | ActionId::ServicesServeCreate
             | ActionId::ServicesServeEdit
             | ActionId::ServicesServeRemove
-            | ActionId::ServicesFunnelUnpublish
             | ActionId::ServicesServeReset => capabilities.serve,
+            // Publishing and unpublishing are each other's inverse, so each is
+            // offered only on the exposure the other leaves behind. An action
+            // that can only report "already in that state" is noise.
+            ActionId::ServicesFunnelUnpublish => {
+                capabilities.serve && self.selected_public_service_mapping().is_some()
+            }
+            ActionId::ServicesFunnelPublish => {
+                capabilities.funnel && self.publishable_service_mapping().is_some()
+            }
             ActionId::ServicesFunnelCreate
             | ActionId::ServicesFunnelEdit
             | ActionId::ServicesFunnelReset => capabilities.funnel,

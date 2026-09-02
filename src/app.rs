@@ -1984,8 +1984,12 @@ impl App {
             Event::Database(database) => self.update_database(database),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         };
+        // `:services` is its own progress report: the row's exposure is the
+        // outcome, and a finished task still announces itself in the status
+        // line, so a serve change has no reason to take the page away.
         if input
             && input_context == (self.current_route(), self.views.diagnostics.section)
+            && self.current_route() != Route::Services
             && let Some(task_id) = self.tasks.all().get(task_count).map(|task| task.id)
         {
             self.navigate(Route::Tasks);
@@ -3658,13 +3662,13 @@ fn service_effect_sentence(request: &ServiceActionRequest) -> String {
             mapping.backend.argument()
         ),
         ServiceActionRequest::ServeReset => {
-            "Remove every tailnet mapping on this machine.".to_owned()
+            "Remove every tailnet serve on this machine.".to_owned()
         }
         ServiceActionRequest::FunnelReset => {
-            "Remove every public mapping on this machine.".to_owned()
+            "Remove every public serve on this machine.".to_owned()
         }
         ServiceActionRequest::MappingRemove { mapping } => format!(
-            "Remove {}:{}{}, and leave every other mapping in place.",
+            "Remove {}:{}{}, and leave every other serve in place.",
             mapping.listener.label(),
             mapping.listener.port(),
             mapping.mount.as_path()
@@ -3725,7 +3729,7 @@ fn service_effect_sentence(request: &ServiceActionRequest) -> String {
 fn service_confirmation_text(request: &ServiceActionRequest) -> (String, Option<String>) {
     match request {
         ServiceActionRequest::Funnel { .. } => (
-            "This makes the mapping reachable from the public internet.".to_owned(),
+            "This makes the serve reachable from the public internet.".to_owned(),
             Some("PUBLIC".to_owned()),
         ),
         ServiceActionRequest::FunnelReset => (
@@ -3736,9 +3740,9 @@ fn service_confirmation_text(request: &ServiceActionRequest) -> (String, Option<
         // serves several paths loses public reach on all of them at once.
         ServiceActionRequest::FunnelUnpublish { mapping } => (
             format!(
-                "This mapping stays served to your tailnet but stops being reachable from the \
-                 public internet. Funnel is set per listener, so everything on {}:{} stops being \
-                 public.",
+                "This serve stays reachable inside your tailnet but stops being reachable \
+                 from the public internet. Funnel is set per listener, so everything on {}:{} \
+                 stops being public.",
                 mapping.listener.label(),
                 mapping.listener.port()
             ),
@@ -3746,14 +3750,14 @@ fn service_confirmation_text(request: &ServiceActionRequest) -> (String, Option<
         ),
         ServiceActionRequest::MappingRemove { mapping } if mapping.exposure == Exposure::Public => {
             (
-                "This public mapping is removed. Nothing on the internet or your tailnet reaches \
+                "This public serve is removed. Nothing on the internet or your tailnet reaches \
                  it afterwards."
                     .to_owned(),
                 Some("REMOVE-PUBLIC".to_owned()),
             )
         }
         ServiceActionRequest::MappingRemove { .. } => (
-            "This mapping stops being reachable from your tailnet. Other mappings are left alone."
+            "This serve stops being reachable from your tailnet. Other serves are left alone."
                 .to_owned(),
             Some("REMOVE".to_owned()),
         ),

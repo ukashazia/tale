@@ -597,7 +597,7 @@ impl ServiceSection {
     /// What a row of this section is, for counts and empty states.
     pub const fn noun(self) -> &'static str {
         match self {
-            Self::Serve => "mappings",
+            Self::Serve => "serves",
             Self::Taildrive => "shares",
             Self::Certificates => "domains",
         }
@@ -785,8 +785,8 @@ impl ServiceActionRequest {
             | Self::MappingRemove { mapping }
             | Self::Funnel { mapping, .. }
             | Self::FunnelUnpublish { mapping } => mapping.key(),
-            Self::ServeReset => "all Serve mappings".to_owned(),
-            Self::FunnelReset => "all Funnel mappings".to_owned(),
+            Self::ServeReset => "all tailnet serves".to_owned(),
+            Self::FunnelReset => "all public serves".to_owned(),
             Self::TaildropSend(request) => request.target.command_target.clone(),
             Self::TaildropReceive(request) => request.directory.display().to_string(),
             Self::TaildriveShare {

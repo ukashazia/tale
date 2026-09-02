@@ -197,7 +197,7 @@ pub fn mapping_unpublish_command(
 ) -> Result<LocalCommand, ServiceValueError> {
     if mapping.exposure != Exposure::Public {
         return Err(ServiceValueError(
-            "only a public mapping can stop being published".to_owned(),
+            "only a public serve can stop being published".to_owned(),
         ));
     }
     let tailnet = ServiceMapping {

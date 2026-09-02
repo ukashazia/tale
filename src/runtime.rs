@@ -6113,7 +6113,7 @@ async fn verify_serve_reset(
             summary: if verified {
                 "Serve reset completed and state verified".to_owned()
             } else {
-                "Serve reset completed but mappings remain".to_owned()
+                "Serve reset completed but serves remain".to_owned()
             },
         },
         run,
@@ -6140,9 +6140,9 @@ async fn verify_mapping_removed(
                 status,
                 verified,
                 summary: if verified {
-                    "PUBLIC mapping removed and state verified".to_owned()
+                    "PUBLIC serve removed and state verified".to_owned()
                 } else {
-                    "Removal completed but the PUBLIC mapping is still listed".to_owned()
+                    "Removal completed but the PUBLIC serve is still listed".to_owned()
                 },
             },
             run,
@@ -6158,9 +6158,9 @@ async fn verify_mapping_removed(
             status,
             verified,
             summary: if verified {
-                "Mapping removed and state verified".to_owned()
+                "Serve removed and state verified".to_owned()
             } else {
-                "Removal completed but the mapping is still listed".to_owned()
+                "Removal completed but the serve is still listed".to_owned()
             },
         },
         run,
@@ -6193,11 +6193,11 @@ async fn verify_funnel_unpublish(
             status,
             verified,
             summary: if verified {
-                "PUBLIC Funnel stopped; the mapping is now tailnet-only".to_owned()
+                "PUBLIC Funnel stopped; the serve is now tailnet-only".to_owned()
             } else if still_public {
-                "Unpublish completed but the mapping is still PUBLIC".to_owned()
+                "Unpublish completed but the serve is still PUBLIC".to_owned()
             } else {
-                "PUBLIC Funnel stopped but the mapping is no longer served".to_owned()
+                "PUBLIC Funnel stopped but the serve is no longer served".to_owned()
             },
         },
         run,
@@ -6246,7 +6246,7 @@ async fn verify_funnel_reset(
             summary: if verified {
                 "PUBLIC Funnel reset completed and state verified".to_owned()
             } else {
-                "PUBLIC Funnel reset completed but mappings remain".to_owned()
+                "PUBLIC Funnel reset completed but public serves remain".to_owned()
             },
         },
         run,
