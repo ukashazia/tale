@@ -15,9 +15,9 @@ _tale() {
 
     local context curcontext="$curcontext" state line
     _arguments "${_arguments_options[@]}" : \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -38,9 +38,9 @@ _tale() {
             (gen-completions)
 _arguments "${_arguments_options[@]}" : \
 '--shell=[Shell to generate completions for\: bash, zsh, or fish]:SHELL:_default' \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -51,9 +51,9 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (auth)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -77,7 +77,7 @@ _arguments "${_arguments_options[@]}" : \
 '--client-id=[OAuth client ID; required with --secret-stdin for oauth-client credentials]:ID:_default' \
 '--scopes=[Comma-separated OAuth scopes; prompts when omitted for oauth-client credentials]:SCOPES:_default' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--secret-stdin[Read the secret from standard input instead of prompting. Selects the access token, or the client secret when the kind is \`oauth_client\`]' \
@@ -91,7 +91,7 @@ _arguments "${_arguments_options[@]}" : \
 (remove)
 _arguments "${_arguments_options[@]}" : \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -104,7 +104,7 @@ _arguments "${_arguments_options[@]}" : \
 (status)
 _arguments "${_arguments_options[@]}" : \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -120,9 +120,9 @@ esac
 ;;
 (config)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -141,9 +141,9 @@ _arguments "${_arguments_options[@]}" : \
         case $line[1] in
             (path)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -154,9 +154,9 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (check)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -167,9 +167,9 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (show)
 _arguments "${_arguments_options[@]}" : \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \
@@ -185,9 +185,9 @@ esac
 (doctor)
 _arguments "${_arguments_options[@]}" : \
 '--output=[Write the report to PATH instead of standard output]:PATH:_files' \
-'--profile=[Select a configured tailnet profile for this session]:NAME:_default' \
+'--profile=[Select a configured tailnet profile for this session]:NAME:' \
 '--config=[Read configuration from PATH instead of the default config location]:PATH:_files' \
-'--view=[Open ROUTE when the terminal interface starts]:ROUTE:_default' \
+'--view=[Open ROUTE when the terminal interface starts]:ROUTE:(devices local profiles services diagnostics users routes dns access credentials tasks audit overview config)' \
 '--tailscale-path=[Use PATH as the local Tailscale executable]:PATH:_files' \
 '--tailscale-socket=[Connect to the local Tailscale daemon at PATH]:PATH:_files' \
 '--read-only[Disable every mutation for this session]' \

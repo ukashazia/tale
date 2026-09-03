@@ -4,6 +4,7 @@ use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 
+use tale::app::Route;
 use tale::cli::{Cli, Command as TaleCommand};
 
 fn parse(arguments: &[&str]) -> Option<Cli> {
@@ -102,9 +103,10 @@ fn help_does_not_expose_tui_routes_as_subcommands() {
     assert!(help.contains("doctor"));
     assert!(help.contains("Select a configured tailnet profile"));
     assert!(help.contains("Disable every mutation"));
-    assert!(!help.contains("users"));
-    assert!(!help.contains("devices"));
-    assert!(!help.contains("services"));
+    assert!(help.contains("possible values: devices"));
+    assert!(!help.contains("\n  users "));
+    assert!(!help.contains("\n  devices "));
+    assert!(!help.contains("\n  services "));
 }
 
 #[test]
@@ -157,7 +159,31 @@ fn generated_completions_are_available_from_the_binary() {
             assert!(stdout.contains("tale"), "shell: {shell}");
             assert!(!stdout.contains("--mock"), "shell: {shell}");
             assert!(!stdout.contains("\u{1b}[?1049h"), "shell: {shell}");
+            for view in Route::ALL.map(Route::label) {
+                assert!(
+                    stdout.contains(view),
+                    "--view omitted {view} from {shell} completions"
+                );
+            }
         }
+    }
+}
+
+#[test]
+fn fish_completes_space_separated_view_values_without_file_fallback() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tale"))
+        .args(["gen-completions", "--shell", "fish"])
+        .output();
+    assert!(output.is_ok());
+    if let Ok(output) = output {
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(
+            "contains -- $cmd[-1] --profile --config --view --tailscale-path --tailscale-socket"
+        ));
+        assert!(stdout.contains("__fish_tale_generated_needs_command"));
+        assert!(!stdout.contains("__fish_tale_needs_command"));
+        assert!(stdout.contains("-l profile") && stdout.contains("-r -f"));
     }
 }
 

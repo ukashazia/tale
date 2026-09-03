@@ -60,7 +60,10 @@ _tale() {
             fi
             case "${prev}" in
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -68,7 +71,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -94,7 +97,10 @@ _tale() {
             fi
             case "${prev}" in
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -102,7 +108,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -148,7 +154,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -178,7 +184,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -208,7 +214,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -234,7 +240,10 @@ _tale() {
             fi
             case "${prev}" in
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -242,7 +251,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -268,7 +277,10 @@ _tale() {
             fi
             case "${prev}" in
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -276,7 +288,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -302,7 +314,10 @@ _tale() {
             fi
             case "${prev}" in
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -310,7 +325,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -336,7 +351,10 @@ _tale() {
             fi
             case "${prev}" in
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -344,7 +362,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -374,7 +392,10 @@ _tale() {
                     return 0
                     ;;
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -382,7 +403,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)
@@ -412,7 +433,10 @@ _tale() {
                     return 0
                     ;;
                 --profile)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=("${cur}")
+                    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+                        compopt -o nospace
+                    fi
                     return 0
                     ;;
                 --config)
@@ -420,7 +444,7 @@ _tale() {
                     return 0
                     ;;
                 --view)
-                    COMPREPLY=($(compgen -f "${cur}"))
+                    COMPREPLY=($(compgen -W "devices local profiles services diagnostics users routes dns access credentials tasks audit overview config" -- "${cur}"))
                     return 0
                     ;;
                 --tailscale-path)

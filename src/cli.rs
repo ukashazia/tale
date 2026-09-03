@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueHint};
 use clap_complete::generate;
 use clap_complete::shells::{Bash, Fish, Zsh};
+
+use crate::app::Route;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -16,7 +18,12 @@ pub struct Cli {
     pub command: Option<Command>,
 
     /// Select a configured tailnet profile for this session.
-    #[arg(long, global = true, value_name = "NAME")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        value_hint = ValueHint::Other
+    )]
     pub profile: Option<String>,
 
     /// Read configuration from PATH instead of the default config location.
@@ -24,7 +31,12 @@ pub struct Cli {
     pub config: Option<PathBuf>,
 
     /// Open ROUTE when the terminal interface starts.
-    #[arg(long, global = true, value_name = "ROUTE")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "ROUTE",
+        value_parser = view_value_parser()
+    )]
     pub view: Option<String>,
 
     /// Disable every mutation for this session.
@@ -80,6 +92,10 @@ pub enum CompletionShell {
     Fish,
 }
 
+fn view_value_parser() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(Route::ALL.map(Route::label))
+}
+
 fn parse_completion_shell(value: &str) -> Result<CompletionShell, String> {
     match Path::new(value).file_name().and_then(|name| name.to_str()) {
         Some("bash") => Ok(CompletionShell::Bash),
@@ -99,10 +115,15 @@ pub fn completion(shell: CompletionShell) -> Result<String, String> {
     }
     let generated = String::from_utf8(generated)
         .map_err(|_| "generated completion was not UTF-8".to_owned())?;
-    Ok(sanitize_completion(&generated))
+    Ok(sanitize_completion(shell, &generated))
 }
 
-fn sanitize_completion(generated: &str) -> String {
+fn sanitize_completion(shell: CompletionShell, generated: &str) -> String {
+    let generated = if matches!(shell, CompletionShell::Fish) {
+        allow_pending_fish_global_value(generated)
+    } else {
+        generated.to_owned()
+    };
     generated
         .lines()
         .filter_map(|line| {
@@ -115,6 +136,26 @@ fn sanitize_completion(generated: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+fn allow_pending_fish_global_value(generated: &str) -> String {
+    const COMMAND_PREFIX: &str = "    set -e cmd[1]\n";
+    const PENDING_GLOBAL_VALUE: &str = "    if contains -- $cmd[-1] --profile --config --view --tailscale-path --tailscale-socket\n        set -e cmd[-1]\n    end\n";
+
+    generated
+        .replace(
+            "__fish_tale_needs_command",
+            "__fish_tale_generated_needs_command",
+        )
+        .replace(
+            "__fish_tale_using_subcommand",
+            "__fish_tale_generated_using_subcommand",
+        )
+        .replacen(
+            COMMAND_PREFIX,
+            &format!("{COMMAND_PREFIX}{PENDING_GLOBAL_VALUE}"),
+            1,
+        )
 }
 
 #[derive(Debug, Clone, Subcommand)]

@@ -165,6 +165,22 @@ pub enum Route {
 
 impl Route {
     pub const DEFAULT: Self = Self::Devices;
+    pub const ALL: [Self; 14] = [
+        Self::Devices,
+        Self::Local,
+        Self::Profiles,
+        Self::Services,
+        Self::Diagnostics,
+        Self::Users,
+        Self::Routes,
+        Self::Dns,
+        Self::Access,
+        Self::Credentials,
+        Self::Tasks,
+        Self::Audit,
+        Self::Overview,
+        Self::Config,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -186,26 +202,9 @@ impl Route {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "overview" => Some(Self::Overview),
-            "config" => Some(Self::Config),
-            "local" => Some(Self::Local),
-            "profiles" => Some(Self::Profiles),
-            "devices" => Some(Self::Devices),
-            "users" => Some(Self::Users),
-            "routes" => Some(Self::Routes),
-            "dns" => Some(Self::Dns),
-            "access" => Some(Self::Access),
-            "credentials" => Some(Self::Credentials),
-            // One page per subject: `tasks` is what this client did, `audit` is
-            // what the tailnet was told. The old `activity` name meant both and
-            // so described neither.
-            "tasks" => Some(Self::Tasks),
-            "audit" => Some(Self::Audit),
-            "services" => Some(Self::Services),
-            "diagnostics" => Some(Self::Diagnostics),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|route| route.label().eq_ignore_ascii_case(value))
     }
 
     pub const fn requires_admin_profile(self) -> bool {
