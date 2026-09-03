@@ -710,6 +710,9 @@ pub enum ServiceActionRequest {
         mapping: ServiceMapping,
         edit: bool,
     },
+    FunnelPublish {
+        mapping: ServiceMapping,
+    },
     /// Demote one public mapping to tailnet-only. There is no `funnel off` that
     /// keeps the handler, so this re-serves the same mapping without Funnel.
     FunnelUnpublish {
@@ -745,6 +748,7 @@ impl ServiceActionRequest {
             Self::MappingRemove { .. } => ActionId::ServicesServeRemove,
             Self::Funnel { edit: true, .. } => ActionId::ServicesFunnelEdit,
             Self::Funnel { edit: false, .. } => ActionId::ServicesFunnelCreate,
+            Self::FunnelPublish { .. } => ActionId::ServicesFunnelPublish,
             Self::FunnelUnpublish { .. } => ActionId::ServicesFunnelUnpublish,
             Self::FunnelReset => ActionId::ServicesFunnelReset,
             Self::TaildropSend(_) => ActionId::DevicesTaildropSend,
@@ -763,6 +767,7 @@ impl ServiceActionRequest {
             Self::ServeReset
             | Self::MappingRemove { .. }
             | Self::Funnel { .. }
+            | Self::FunnelPublish { .. }
             | Self::FunnelUnpublish { .. }
             | Self::FunnelReset => Risk::Disruptive,
             Self::TaildriveUnshare { .. } => Risk::Disruptive,
@@ -784,6 +789,7 @@ impl ServiceActionRequest {
             Self::Serve { mapping, .. }
             | Self::MappingRemove { mapping }
             | Self::Funnel { mapping, .. }
+            | Self::FunnelPublish { mapping }
             | Self::FunnelUnpublish { mapping } => mapping.key(),
             Self::ServeReset => "all tailnet serves".to_owned(),
             Self::FunnelReset => "all public serves".to_owned(),
@@ -815,7 +821,9 @@ impl ServiceActionRequest {
     pub fn conflict_key(&self) -> Option<ServiceConflictKey> {
         match self {
             Self::Serve { .. } | Self::ServeReset => Some(ServiceConflictKey::Serve),
-            Self::Funnel { .. } | Self::FunnelReset => Some(ServiceConflictKey::Funnel),
+            Self::Funnel { .. } | Self::FunnelPublish { .. } | Self::FunnelReset => {
+                Some(ServiceConflictKey::Funnel)
+            }
             // Both run `tailscale serve`, but the resource the user is changing
             // is the one the row is currently listed under.
             Self::MappingRemove { mapping } => Some(match mapping.exposure {

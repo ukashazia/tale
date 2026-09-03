@@ -24,7 +24,9 @@ use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
 use sha2::{Digest, Sha256};
 
-use crate::action::{self, ActionContext, ActionId, Capability};
+use crate::action::{
+    self, ActionContext, ActionId, Capability, TaskOrigin, TaskPresentation, TaskTrigger,
+};
 use crate::admin::client::AdminError;
 use crate::admin::mutation::{
     AdminBatchConfirmation, AdminMutationRequest, AdminSnapshotFields, batch_target,
@@ -1061,9 +1063,21 @@ impl CopyField {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TaskOverlayState {
+    pub task_id: TaskId,
+    pub scroll: usize,
+}
+
+impl TaskOverlayState {
+    pub const fn new(task_id: TaskId) -> Self {
+        Self { task_id, scroll: 0 }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Overlay {
     QuitConfirmation,
-    TaskInspector(TaskId),
+    Task(TaskOverlayState),
     Confirmation(Box<ConfirmationState>),
     Form(FormState),
     SecretResult,
@@ -1961,8 +1975,9 @@ impl App {
 
     pub fn update(&mut self, event: Event) -> Vec<Effect> {
         let input = matches!(event, Event::Input(_));
-        let input_context = (self.current_route(), self.views.diagnostics.section);
+        let input_origin = self.task_origin();
         let task_count = self.tasks.all().len();
+        let task_selection = self.tasks.selected;
         if !matches!(event, Event::Tick(_)) {
             self.render_invalidated = true;
         }
@@ -1984,21 +1999,7 @@ impl App {
             Event::Database(database) => self.update_database(database),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         };
-        if input && let Some(task_id) = self.tasks.all().get(task_count).map(|task| task.id) {
-            self.tasks.selected = Some(task_id);
-            self.add_task_started_notification(task_id);
-            let opens_task = self.tasks.get(task_id).is_some_and(|task| {
-                task.action_id.task_presentation() == action::TaskPresentation::OpenTask
-            });
-            if opens_task && input_context == (self.current_route(), self.views.diagnostics.section)
-            {
-                self.navigate(Route::Tasks);
-                self.task_filter.clear();
-                self.focus = Focus::Inspector;
-                self.views.tasks.detail_scroll = 0;
-                self.opened_task_return = true;
-            }
-        }
+        self.present_new_tasks(task_count, task_selection, input, input_origin);
         if self.resolved_config.history.persist_tasks && !self.resolved_config.mock {
             let dirty = self.tasks.take_dirty();
             if !dirty.is_empty() {
@@ -2006,6 +2007,94 @@ impl App {
             }
         }
         effects
+    }
+
+    fn task_origin(&self) -> TaskOrigin {
+        let route = self.current_route();
+        TaskOrigin {
+            route,
+            diagnostics_section: matches!(route, Route::Diagnostics)
+                .then_some(self.views.diagnostics.section),
+            service_section: matches!(route, Route::Services)
+                .then_some(self.views.services.section),
+        }
+    }
+
+    fn present_new_tasks(
+        &mut self,
+        previous_count: usize,
+        previous_selection: Option<TaskId>,
+        input: bool,
+        origin: TaskOrigin,
+    ) {
+        let task_ids = self
+            .tasks
+            .all()
+            .get(previous_count..)
+            .unwrap_or_default()
+            .iter()
+            .map(|task| task.id)
+            .collect::<Vec<_>>();
+        if task_ids.is_empty() {
+            return;
+        }
+        let current_origin = self.task_origin();
+        let owner = task_ids.into_iter().find_map(|task_id| {
+            let trigger = self.task_trigger(task_id, input, origin, current_origin);
+            let presentation = self
+                .tasks
+                .get(task_id)?
+                .action_id
+                .task_presentation(origin, trigger);
+            matches!(trigger, TaskTrigger::Explicit).then_some((task_id, presentation))
+        });
+        let Some((task_id, presentation)) = owner else {
+            self.tasks.selected = previous_selection;
+            return;
+        };
+
+        self.tasks.selected = Some(task_id);
+        self.add_task_started_notification(task_id);
+        match presentation {
+            TaskPresentation::Background | TaskPresentation::TerminalHandoff => {}
+            TaskPresentation::Overlay => {
+                self.overlays
+                    .push(Overlay::Task(TaskOverlayState::new(task_id)));
+            }
+            TaskPresentation::OpenInspector => self.open_task_inspector(task_id, 0),
+        }
+    }
+
+    fn task_trigger(
+        &self,
+        task_id: TaskId,
+        input: bool,
+        origin: TaskOrigin,
+        current_origin: TaskOrigin,
+    ) -> TaskTrigger {
+        if self
+            .admin_batches_in_flight
+            .values()
+            .any(|batch| batch.child_tasks.values().any(|child| *child == task_id))
+        {
+            TaskTrigger::BatchChild
+        } else if input && origin == current_origin {
+            TaskTrigger::Explicit
+        } else {
+            TaskTrigger::Automatic
+        }
+    }
+
+    fn open_task_inspector(&mut self, task_id: TaskId, detail_scroll: usize) {
+        let leaves_source_route = self.current_route() != Route::Tasks;
+        self.tasks.selected = Some(task_id);
+        self.navigate(Route::Tasks);
+        self.task_filter.clear();
+        self.focus = Focus::Inspector;
+        self.views.tasks.detail_scroll = detail_scroll;
+        if leaves_source_route {
+            self.opened_task_return = true;
+        }
     }
 
     fn update_database(&mut self, event: crate::event::DatabaseEvent) -> Vec<Effect> {
@@ -2057,7 +2146,7 @@ impl App {
     pub fn overlay_title(&self) -> Option<&'static str> {
         self.overlays.last().map(|overlay| match overlay {
             Overlay::QuitConfirmation => "quit",
-            Overlay::TaskInspector(_) => "task",
+            Overlay::Task(_) => "task",
             Overlay::Confirmation(_) => "confirm local action",
             Overlay::Form(_) => "form",
             Overlay::SecretResult => "secret result",
@@ -2090,6 +2179,13 @@ impl App {
 
     pub fn focused_task(&self) -> Option<&crate::task::Task> {
         self.tasks.selected.and_then(|id| self.tasks.get(id))
+    }
+
+    pub fn admin_batch(&self, task_id: TaskId) -> Option<&BatchMutation> {
+        self.admin_batches_in_flight
+            .get(&task_id.0)
+            .map(|batch| &batch.batch)
+            .or_else(|| self.admin_batch_results.get(&task_id))
     }
 
     pub fn filtered_tasks(&self) -> Vec<&crate::task::Task> {
@@ -3661,6 +3757,13 @@ fn service_effect_sentence(request: &ServiceActionRequest) -> String {
             mapping.mount.as_path(),
             mapping.backend.argument()
         ),
+        ServiceActionRequest::FunnelPublish { mapping } => format!(
+            "Publish {}:{}{} serving {}, reachable by anyone on the internet.",
+            mapping.listener.label(),
+            mapping.listener.port(),
+            mapping.mount.as_path(),
+            mapping.backend.argument()
+        ),
         ServiceActionRequest::ServeReset => {
             "Remove every tailnet serve on this machine.".to_owned()
         }
@@ -3728,7 +3831,7 @@ fn service_effect_sentence(request: &ServiceActionRequest) -> String {
 /// no warning at all rather than a restatement of it.
 fn service_confirmation_text(request: &ServiceActionRequest) -> (String, Option<String>) {
     match request {
-        ServiceActionRequest::Funnel { .. } => (
+        ServiceActionRequest::Funnel { .. } | ServiceActionRequest::FunnelPublish { .. } => (
             "This makes the serve reachable from the public internet.".to_owned(),
             Some("PUBLIC".to_owned()),
         ),

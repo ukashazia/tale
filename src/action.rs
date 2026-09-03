@@ -3,7 +3,8 @@ use std::sync::LazyLock;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::Route;
+use crate::app::{DiagnosticsSection, Route};
+use crate::domain::service::ServiceSection;
 
 macro_rules! define_action_ids {
     (
@@ -207,7 +208,50 @@ define_action_ids! {
 }
 
 impl ActionId {
-    pub const fn task_presentation(self) -> TaskPresentation {
+    pub const fn task_presentation(
+        self,
+        origin: TaskOrigin,
+        trigger: TaskTrigger,
+    ) -> TaskPresentation {
+        if !matches!(trigger, TaskTrigger::Explicit) {
+            return TaskPresentation::Background;
+        }
+
+        if matches!(
+            self,
+            Self::LocalAccountLogin
+                | Self::LocalAccountLogout
+                | Self::LocalSshOpen
+                | Self::LocalNcOpen
+        ) {
+            return TaskPresentation::TerminalHandoff;
+        }
+
+        if matches!(self, Self::LocalDnsStatus)
+            && (matches!(origin.route, Route::Dns)
+                || (matches!(origin.route, Route::Diagnostics)
+                    && matches!(
+                        origin.diagnostics_section,
+                        Some(DiagnosticsSection::DnsStatus)
+                    )))
+        {
+            return TaskPresentation::Background;
+        }
+
+        if matches!(self, Self::LocalDnsQuery) && matches!(origin.route, Route::Dns) {
+            return TaskPresentation::Background;
+        }
+
+        if matches!(
+            self,
+            Self::MockSuccess
+                | Self::MockFailure
+                | Self::MockCancellable
+                | Self::MockNonCancellable
+        ) {
+            return TaskPresentation::OpenInspector;
+        }
+
         if matches!(
             self,
             Self::LocalProbeConnection
@@ -216,11 +260,14 @@ impl ActionId {
                 | Self::LocalDnsStatus
                 | Self::LocalDnsQuery
                 | Self::LocalWhois
+                | Self::DevicesTaildropSend
+                | Self::DevicesTaildropReceive
+                | Self::AdminRoutesReplaceApprovals
         ) {
-            TaskPresentation::OpenTask
-        } else {
-            TaskPresentation::Background
+            return TaskPresentation::Overlay;
         }
+
+        TaskPresentation::Background
     }
 
     pub(crate) const fn is_mutating(self) -> bool {
@@ -414,7 +461,23 @@ impl ActionId {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TaskPresentation {
     Background,
-    OpenTask,
+    Overlay,
+    OpenInspector,
+    TerminalHandoff,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TaskTrigger {
+    Explicit,
+    Automatic,
+    BatchChild,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TaskOrigin {
+    pub route: Route,
+    pub diagnostics_section: Option<DiagnosticsSection>,
+    pub service_section: Option<ServiceSection>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -557,8 +620,12 @@ pub struct ActionSpec {
 }
 
 impl ActionSpec {
-    pub const fn task_presentation(&self) -> TaskPresentation {
-        self.id.task_presentation()
+    pub const fn task_presentation(
+        &self,
+        origin: TaskOrigin,
+        trigger: TaskTrigger,
+    ) -> TaskPresentation {
+        self.id.task_presentation(origin, trigger)
     }
 }
 

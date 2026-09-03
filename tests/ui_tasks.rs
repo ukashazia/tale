@@ -5,11 +5,12 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use tale::action::ActionId;
-use tale::app::{App, Focus, Route, TaskSortField, TaskSortSpec};
+use tale::app::{App, Focus, Overlay, Route, TaskOverlayState, TaskSortField, TaskSortSpec};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
+use tale::domain::admin_mutation::{BatchChildOutcome, BatchMutation, BatchTarget};
 use tale::domain::device::SortDirection;
-use tale::event::{Event, InputEvent};
+use tale::event::{Event, InputEvent, TaskEvent};
 use tale::paths::{PathEnvironment, Platform};
 use tale::task::{Progress, TaskChange, TaskStore};
 
@@ -52,6 +53,173 @@ fn tasks_render_as_a_table_with_headings_and_no_row_marker() {
     assert!(
         lines.iter().any(|line| line.contains("┌ tasks · 3 ")),
         "the border does not carry the route and its counts"
+    );
+}
+
+#[test]
+fn task_overlay_renders_live_task_state_and_dismisses_without_cancelling() {
+    let Some(mut app) = build_app() else {
+        return;
+    };
+    app.set_route(Route::Devices);
+    app.set_terminal_size(80, 24);
+    let task_id = app.tasks.create(
+        ActionId::LocalProbeConnection,
+        "node-01.fixture.ts.net",
+        tale::mock::MOCK_NOW,
+        true,
+    );
+    assert!(app.tasks.start(task_id));
+    assert!(
+        app.tasks.progress(
+            task_id,
+            Progress {
+                completed: 2,
+                total: 5,
+            },
+            &(0..24)
+                .map(|index| format!("pong {index} from node-01"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    );
+    app.overlays
+        .push(Overlay::Task(TaskOverlayState::new(task_id)));
+
+    let Some(lines) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(lines.iter().any(|line| line.contains("Ping")));
+    assert!(lines.iter().any(|line| line.contains("progress")));
+    assert!(lines.iter().any(|line| line.contains("2 of 5")));
+
+    press(&mut app, KeyCode::PageDown);
+    assert!(matches!(
+        app.overlays.last(),
+        Some(Overlay::Task(state)) if state.task_id == task_id && state.scroll > 0
+    ));
+
+    let effects = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::NONE,
+    ))));
+    assert!(matches!(
+        effects.as_slice(),
+        [tale::effect::Effect::CancelTask { task_id: cancelled }] if *cancelled == task_id
+    ));
+    assert!(matches!(app.overlays.last(), Some(Overlay::Task(_))));
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.overlays.is_empty());
+    assert_eq!(app.current_route(), Route::Devices);
+    assert!(
+        app.tasks
+            .get(task_id)
+            .is_some_and(|task| { task.state == tale::task::TaskState::Cancelling })
+    );
+    let _ = app.update(Event::Task(Box::new(TaskEvent::Cancelled {
+        task_id,
+        finished_at: tale::mock::MOCK_NOW.saturating_add(1),
+        detail: "cancelled after the viewer closed".to_owned(),
+    })));
+    assert!(
+        app.notifications
+            .last()
+            .is_some_and(|notice| notice.message.contains("@ view task"))
+    );
+}
+
+#[test]
+fn completed_task_overlay_remains_open_with_the_final_result() {
+    let Some(mut app) = build_app() else {
+        return;
+    };
+    app.set_route(Route::Devices);
+    let task_id = app.tasks.create(
+        ActionId::LocalProbeConnection,
+        "node-01.fixture.ts.net",
+        tale::mock::MOCK_NOW,
+        false,
+    );
+    assert!(app.tasks.start(task_id));
+    app.overlays
+        .push(Overlay::Task(TaskOverlayState::new(task_id)));
+    let _ = app.update(Event::Task(Box::new(TaskEvent::Succeeded {
+        task_id,
+        finished_at: tale::mock::MOCK_NOW.saturating_add(1),
+        summary: "3 replies · 18ms".to_owned(),
+        detail: "pong from node-01 direct 18ms".to_owned(),
+    })));
+
+    assert!(matches!(app.overlays.last(), Some(Overlay::Task(_))));
+    let Some(lines) = render_lines(&app, 80, 24) else {
+        return;
+    };
+    assert!(lines.iter().any(|line| line.contains("succeeded")));
+    assert!(lines.iter().any(|line| line.contains("3 replies · 18ms")));
+}
+
+#[test]
+fn batch_overlay_is_owned_by_the_parent_and_renders_child_outcomes() {
+    let Some(mut app) = build_app() else {
+        return;
+    };
+    app.set_route(Route::Routes);
+    let parent = app.tasks.create(
+        ActionId::AdminRoutesReplaceApprovals,
+        "2 route advertisers",
+        tale::mock::MOCK_NOW,
+        true,
+    );
+    assert!(app.tasks.start(parent));
+    let mut batch = BatchMutation::new(
+        parent.0,
+        ActionId::AdminRoutesReplaceApprovals,
+        vec![
+            BatchTarget {
+                target_id: "machine-a".to_owned(),
+                target_label: "machine-a".to_owned(),
+                requested_change: "approve 10.0.0.0/24".to_owned(),
+            },
+            BatchTarget {
+                target_id: "machine-b".to_owned(),
+                target_label: "machine-b".to_owned(),
+                requested_change: "approve 10.1.0.0/24".to_owned(),
+            },
+        ],
+        4,
+    );
+    batch.record("machine-a", BatchChildOutcome::VerifiedSuccess);
+    app.admin_batch_results.insert(parent, batch);
+    app.overlays
+        .push(Overlay::Task(TaskOverlayState::new(parent)));
+
+    let child = app.tasks.create(
+        ActionId::AdminRoutesReplaceApprovals,
+        "machine-b",
+        tale::mock::MOCK_NOW,
+        true,
+    );
+    assert_ne!(child, parent);
+    assert_eq!(app.tasks.selected, Some(parent));
+    assert!(matches!(
+        app.overlays.last(),
+        Some(Overlay::Task(state)) if state.task_id == parent
+    ));
+
+    let Some(lines) = render_lines(&app, 90, 28) else {
+        return;
+    };
+    assert!(lines.iter().any(|line| line.contains("1/2 updated")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("VerifiedSuccess · machine-a"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("pending · machine-b"))
     );
 }
 

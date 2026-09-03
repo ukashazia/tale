@@ -239,7 +239,8 @@ impl App {
             Route::Tasks => {
                 if let Some(task_id) = self.tasks.selected {
                     if self.admin_batch_results.contains_key(&task_id) {
-                        self.overlays.push(Overlay::TaskInspector(task_id));
+                        self.overlays
+                            .push(Overlay::Task(TaskOverlayState::new(task_id)));
                     } else {
                         self.focus = Focus::Inspector;
                         self.views.tasks.detail_scroll = 0;

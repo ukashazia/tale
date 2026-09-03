@@ -1600,7 +1600,8 @@ impl App {
             self.runtime_error = Some("the selected task has no batch outcomes".to_owned());
             return Vec::new();
         }
-        self.overlays.push(Overlay::TaskInspector(task_id));
+        self.overlays
+            .push(Overlay::Task(TaskOverlayState::new(task_id)));
         Vec::new()
     }
 

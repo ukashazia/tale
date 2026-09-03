@@ -33,6 +33,9 @@ impl App {
         if !self.resolved_config.ui.mouse {
             return Vec::new();
         }
+        if !self.overlays.is_empty() {
+            return Vec::new();
+        }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             let area = ratatui::layout::Rect {
                 x: 0,
@@ -1442,10 +1445,7 @@ impl App {
                 self.overlays.push(Overlay::QuitConfirmation);
                 Vec::new()
             }
-            Overlay::TaskInspector(task_id) => {
-                self.overlays.push(Overlay::TaskInspector(task_id));
-                Vec::new()
-            }
+            Overlay::Task(state) => self.handle_task_overlay_key(state, key),
             Overlay::Form(state) => {
                 self.overlays.push(Overlay::Form(state));
                 Vec::new()
@@ -1482,6 +1482,58 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    fn handle_task_overlay_key(
+        &mut self,
+        mut state: TaskOverlayState,
+        key: KeyEvent,
+    ) -> Vec<Effect> {
+        if action::Binding::Char('@').matches(key) {
+            self.open_task_inspector(state.task_id, state.scroll);
+            return Vec::new();
+        }
+        if action::Binding::Char('c').matches(key) {
+            let task_id = state.task_id;
+            self.overlays.push(Overlay::Task(state));
+            return self.cancel_task(task_id);
+        }
+        let offset = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Some(1),
+            KeyCode::Char('k') | KeyCode::Up => Some(-1),
+            KeyCode::PageDown => Some(5),
+            KeyCode::PageUp => Some(-5),
+            _ => None,
+        };
+        if let Some(offset) = offset {
+            state.scroll = state
+                .scroll
+                .saturating_add_signed(offset)
+                .min(self.task_overlay_max_scroll(state.task_id));
+        }
+        self.overlays.push(Overlay::Task(state));
+        Vec::new()
+    }
+
+    fn task_overlay_max_scroll(&self, task_id: TaskId) -> usize {
+        let screen = ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: self.terminal_width,
+            height: self.terminal_height,
+        };
+        let area = crate::ui::components::overlay::task_area(screen);
+        self.admin_batch(task_id).map_or_else(
+            || {
+                crate::ui::views::tasks::inspector_max_scroll_for(
+                    self,
+                    task_id,
+                    area.width,
+                    area.height,
+                )
+            },
+            |batch| crate::ui::components::batch_result::max_scroll(batch, area.width, area.height),
+        )
     }
 
     pub(super) fn handle_quit_key(&mut self) -> Vec<Effect> {

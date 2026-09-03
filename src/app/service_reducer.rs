@@ -658,10 +658,7 @@ impl App {
                     exposure: Exposure::Public,
                     ..mapping.clone()
                 };
-                self.open_service_confirmation(ServiceActionRequest::Funnel {
-                    mapping,
-                    edit: false,
-                })
+                self.open_service_confirmation(ServiceActionRequest::FunnelPublish { mapping })
             }
             ActionId::ServicesServeCreate | ActionId::ServicesFunnelCreate => {
                 let public = action_id == ActionId::ServicesFunnelCreate;
@@ -1271,7 +1268,8 @@ impl App {
         let timeout = self.resolved_config.local.command_timeout;
         let command = match request {
             ServiceActionRequest::Serve { mapping, .. }
-            | ServiceActionRequest::Funnel { mapping, .. } => {
+            | ServiceActionRequest::Funnel { mapping, .. }
+            | ServiceActionRequest::FunnelPublish { mapping } => {
                 services::mapping_command(command_path, timeout, mapping, true).ok()?
             }
             ServiceActionRequest::ServeReset => {
@@ -1513,6 +1511,19 @@ impl App {
                 }
                 validate_mapping_backend(mapping)
             }
+            ServiceActionRequest::FunnelPublish { mapping } => {
+                mapping.validate().map_err(|error| error.to_string())?;
+                if mapping.exposure != Exposure::Public {
+                    return Err("published Funnel requests must remain PUBLIC".to_owned());
+                }
+                if matches!(mapping.listener, Listener::Http(_)) {
+                    return Err("HTTP is not offered as a public Funnel listener".to_owned());
+                }
+                if !self.local_capabilities.funnel {
+                    return Err("Funnel is unsupported by this CLI".to_owned());
+                }
+                validate_mapping_backend(mapping)
+            }
             ServiceActionRequest::FunnelReset => Ok(()),
             // A stale row is the whole hazard here: removing by listener and
             // path would happily take down whatever now sits at that address.
@@ -1647,6 +1658,7 @@ impl App {
         let fields = match request {
             ServiceActionRequest::Serve { mapping, .. }
             | ServiceActionRequest::Funnel { mapping, .. }
+            | ServiceActionRequest::FunnelPublish { mapping }
             | ServiceActionRequest::FunnelUnpublish { mapping } => {
                 vec![
                     "listener".to_owned(),
@@ -1783,6 +1795,7 @@ impl App {
                         | ServiceActionRequest::ServeReset
                         | ServiceActionRequest::MappingRemove { .. }
                         | ServiceActionRequest::Funnel { .. }
+                        | ServiceActionRequest::FunnelPublish { .. }
                         | ServiceActionRequest::FunnelUnpublish { .. }
                         | ServiceActionRequest::FunnelReset
                         | ServiceActionRequest::TaildriveShare { .. }

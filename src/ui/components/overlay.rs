@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{App, Overlay};
-use crate::ui::components::{batch_result, confirm, form, panel};
+use crate::ui::components::{batch_result, confirm, form};
 use crate::ui::theme::StyleRole;
 use crate::ui::views::{audit_investigation, secret_result};
 
@@ -32,23 +32,31 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
             .style(app.theme.style(StyleRole::RiskDestructive)),
             area,
         ),
-        Overlay::TaskInspector(task_id) => {
-            if let Some(batch) = app.admin_batch_results.get(task_id) {
-                batch_result::render(frame, app, area, batch);
+        Overlay::Task(state) => {
+            let title = app.tasks.get(state.task_id).map_or_else(
+                || "task · Esc close · @ tasks".to_owned(),
+                |task| {
+                    let action = crate::action::find_action(task.action_id)
+                        .map_or(task.action_id.as_str(), |spec| spec.label);
+                    let cancel = if task.cancellable { " · c cancel" } else { "" };
+                    format!(
+                        "{action} · {} · Esc close · @ tasks{cancel}",
+                        task.target_label
+                    )
+                },
+            );
+            if let Some(batch) = app.admin_batch(state.task_id) {
+                batch_result::render(frame, app, area, batch, state.scroll, &title);
                 return;
             }
-            let detail = app.tasks.get(*task_id).map_or_else(
-                || "task no longer available".to_owned(),
-                |task| format!("{}\n{}\n{}", task.state.label(), task.summary, task.detail),
-            );
-            panel::render_styled(
+            crate::ui::views::tasks::render_task_detail(
                 frame,
                 app,
                 area,
-                "task inspector",
-                detail,
+                state.task_id,
+                state.scroll,
+                &title,
                 StyleRole::SurfaceRaised,
-                StyleRole::BorderNormal,
             );
         }
         Overlay::Confirmation(state) => confirm::render(frame, app, area, state),
@@ -58,7 +66,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
     }
 }
 
-fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
+pub fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
     match overlay {
         Overlay::QuitConfirmation | Overlay::Confirmation(_) => {
             let width = area.width.saturating_mul(2) / 3;
@@ -70,7 +78,8 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
                 height,
             }
         }
-        Overlay::TaskInspector(_) | Overlay::SecretResult | Overlay::AuditInvestigation => area,
+        Overlay::Task(_) => task_area(area),
+        Overlay::SecretResult | Overlay::AuditInvestigation => area,
         // A form is as tall as the questions it asks, so no field is asked for
         // off the bottom of the screen. It never grows past the screen itself.
         Overlay::Form(state) => {
@@ -83,6 +92,17 @@ fn overlay_area(area: Rect, overlay: &Overlay) -> Rect {
                 height,
             }
         }
+    }
+}
+
+pub fn task_area(area: Rect) -> Rect {
+    let width = area.width.saturating_mul(4) / 5;
+    let height = area.height.saturating_mul(2) / 3;
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
     }
 }
 

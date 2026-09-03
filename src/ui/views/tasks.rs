@@ -127,10 +127,35 @@ fn render_inspector(frame: &mut Frame<'_>, app: &App, area: Rect) {
         panel::render(frame, app, area, "inspector", "No task selected");
         return;
     };
+    let task_id = task.id;
+    render_task_detail(
+        frame,
+        app,
+        area,
+        task_id,
+        app.views.tasks.detail_scroll,
+        "inspector",
+        theme::StyleRole::Surface,
+    );
+}
+
+pub fn render_task_detail(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    task_id: crate::task::TaskId,
+    scroll: usize,
+    title: &str,
+    surface: theme::StyleRole,
+) {
+    let Some(task) = app.tasks.get(task_id) else {
+        panel::render(frame, app, area, title, "Task no longer available");
+        return;
+    };
     let lines = inspector_lines(app, task, area.width);
-    let max_scroll = inspector_max_scroll(app, area.width, area.height);
-    let scroll = app.views.tasks.detail_scroll.min(max_scroll);
-    panel::render_scrolled(frame, app, area, "inspector", lines, scroll as u16);
+    let max_scroll = inspector_max_scroll_for(app, task_id, area.width, area.height);
+    let scroll = scroll.min(max_scroll);
+    panel::render_scrolled_styled(frame, app, area, title, lines, scroll as u16, surface);
 }
 
 fn inspector_lines(app: &App, task: &Task, area_width: u16) -> Vec<Line<'static>> {
@@ -231,6 +256,18 @@ fn output_lines(app: &App, task: &Task) -> Vec<Line<'static>> {
 
 pub fn inspector_max_scroll(app: &App, area_width: u16, area_height: u16) -> usize {
     let Some(task) = app.focused_task() else {
+        return 0;
+    };
+    inspector_max_scroll_for(app, task.id, area_width, area_height)
+}
+
+pub fn inspector_max_scroll_for(
+    app: &App,
+    task_id: crate::task::TaskId,
+    area_width: u16,
+    area_height: u16,
+) -> usize {
+    let Some(task) = app.tasks.get(task_id) else {
         return 0;
     };
     let lines = inspector_lines(app, task, area_width);

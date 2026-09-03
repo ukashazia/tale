@@ -118,10 +118,30 @@ pub fn render_scrolled(
     content: impl Into<Text<'static>>,
     scroll: u16,
 ) {
+    render_scrolled_styled(
+        frame,
+        app,
+        area,
+        title,
+        content,
+        scroll,
+        theme::StyleRole::Surface,
+    );
+}
+
+pub fn render_scrolled_styled(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    title: &str,
+    content: impl Into<Text<'static>>,
+    scroll: u16,
+    surface: theme::StyleRole,
+) {
     let (title, content) = searchable_content(app, title, content.into());
     frame.render_widget(
         Paragraph::new(content)
-            .style(app.theme.style(theme::StyleRole::Surface))
+            .style(app.theme.style(surface))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
             .block(

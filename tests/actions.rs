@@ -5,15 +5,17 @@ use ratatui::style::Modifier;
 
 mod common;
 
-use tale::action::{self, ActionContext, ActionId, Binding, TaskPresentation};
-use tale::app::{App, DiagnosticsSection, InteractionMode, Overlay, Route};
+use tale::action::{
+    self, ActionContext, ActionId, Binding, TaskOrigin, TaskPresentation, TaskTrigger,
+};
+use tale::app::{App, DiagnosticsSection, InteractionMode, Overlay, Route, TaskOverlayState};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
 use tale::domain::account::{LocalAccount, LocalSection};
 use tale::domain::policy_workflow::{
     PolicyDocument, PolicyPreview, PolicySelectorType, PolicyWorkflow,
 };
-use tale::domain::service::ServiceActionRequest;
+use tale::domain::service::{ServiceActionRequest, ServiceSection};
 use tale::domain::source::{ExecutableSource, LocalCapabilities, LocalExecutable};
 use tale::effect::Effect;
 use tale::event::{Event, InputEvent, PolicyEvent, SourceEvent};
@@ -57,35 +59,194 @@ fn mock_app() -> Option<App> {
 }
 
 #[test]
-fn task_presentation_is_semantic_and_background_by_default() {
-    for action_id in [
-        ActionId::LocalProbeConnection,
-        ActionId::LocalNetcheck,
-        ActionId::LocalNetcheckLive,
-        ActionId::LocalDnsStatus,
-        ActionId::LocalDnsQuery,
-        ActionId::LocalWhois,
+fn task_presentation_uses_action_origin_and_trigger() {
+    let origin = |route, diagnostics_section, service_section| TaskOrigin {
+        route,
+        diagnostics_section,
+        service_section,
+    };
+    let devices = origin(Route::Devices, None, None);
+    let dns = origin(Route::Dns, None, None);
+    let diagnostics_client = origin(Route::Diagnostics, Some(DiagnosticsSection::Client), None);
+    let diagnostics_dns = origin(
+        Route::Diagnostics,
+        Some(DiagnosticsSection::DnsStatus),
+        None,
+    );
+    let services = origin(Route::Services, None, Some(ServiceSection::Serve));
+    let explicit = TaskTrigger::Explicit;
+
+    for (action_id, action_origin, expected) in [
+        (
+            ActionId::LocalProbeConnection,
+            devices,
+            TaskPresentation::Overlay,
+        ),
+        (
+            ActionId::LocalNetcheck,
+            diagnostics_client,
+            TaskPresentation::Overlay,
+        ),
+        (
+            ActionId::LocalNetcheckLive,
+            diagnostics_client,
+            TaskPresentation::Overlay,
+        ),
+        (ActionId::LocalWhois, devices, TaskPresentation::Overlay),
+        (ActionId::LocalDnsStatus, dns, TaskPresentation::Background),
+        (
+            ActionId::LocalDnsStatus,
+            diagnostics_dns,
+            TaskPresentation::Background,
+        ),
+        (ActionId::LocalDnsStatus, devices, TaskPresentation::Overlay),
+        (ActionId::LocalDnsQuery, dns, TaskPresentation::Background),
+        (ActionId::LocalDnsQuery, devices, TaskPresentation::Overlay),
+        (
+            ActionId::DevicesTaildropSend,
+            devices,
+            TaskPresentation::Overlay,
+        ),
+        (
+            ActionId::DevicesTaildropReceive,
+            devices,
+            TaskPresentation::Overlay,
+        ),
+        (
+            ActionId::ServicesServeCreate,
+            services,
+            TaskPresentation::Background,
+        ),
+        (
+            ActionId::ServicesMetricsRefresh,
+            diagnostics_client,
+            TaskPresentation::Background,
+        ),
+        (
+            ActionId::ServicesBugReportCreate,
+            diagnostics_client,
+            TaskPresentation::Background,
+        ),
+        (
+            ActionId::LocalConnect,
+            origin(Route::Local, None, None),
+            TaskPresentation::Background,
+        ),
+        (
+            ActionId::AdminDeviceRename,
+            devices,
+            TaskPresentation::Background,
+        ),
+        (
+            ActionId::AdminRoutesReplaceApprovals,
+            origin(Route::Routes, None, None),
+            TaskPresentation::Overlay,
+        ),
+        (
+            ActionId::LocalAccountLogin,
+            origin(Route::Local, None, None),
+            TaskPresentation::TerminalHandoff,
+        ),
+        (
+            ActionId::LocalAccountLogout,
+            origin(Route::Local, None, None),
+            TaskPresentation::TerminalHandoff,
+        ),
+        (
+            ActionId::LocalSshOpen,
+            devices,
+            TaskPresentation::TerminalHandoff,
+        ),
+        (
+            ActionId::LocalNcOpen,
+            devices,
+            TaskPresentation::TerminalHandoff,
+        ),
+        (
+            ActionId::MockSuccess,
+            devices,
+            TaskPresentation::OpenInspector,
+        ),
+        (
+            ActionId::MockFailure,
+            devices,
+            TaskPresentation::OpenInspector,
+        ),
+        (
+            ActionId::MockCancellable,
+            devices,
+            TaskPresentation::OpenInspector,
+        ),
+        (
+            ActionId::MockNonCancellable,
+            devices,
+            TaskPresentation::OpenInspector,
+        ),
     ] {
         assert_eq!(
-            action::find_action(action_id).map(|spec| spec.task_presentation()),
-            Some(TaskPresentation::OpenTask),
-            "action: {action_id:?}"
+            action_id.task_presentation(action_origin, explicit),
+            expected,
+            "action: {action_id:?}, origin: {action_origin:?}"
         );
     }
 
     for action_id in [
-        ActionId::AdminDeviceRename,
-        ActionId::AdminDeviceApprove,
-        ActionId::AdminDeviceTagsReplace,
-        ActionId::AdminDeviceDelete,
+        ActionId::LocalConnect,
+        ActionId::LocalDisconnect,
+        ActionId::LocalPreferencesEdit,
+        ActionId::LocalExitNodeSelect,
+        ActionId::LocalRoutesEditAdvertisements,
+        ActionId::LocalAccountSwitch,
+        ActionId::LocalAccountRemove,
+        ActionId::LocalSyspolicyReload,
+        ActionId::ServicesServeCreate,
+        ActionId::ServicesServeEdit,
+        ActionId::ServicesServeRemove,
+        ActionId::ServicesServeReset,
+        ActionId::ServicesFunnelCreate,
+        ActionId::ServicesFunnelEdit,
+        ActionId::ServicesFunnelPublish,
+        ActionId::ServicesFunnelUnpublish,
+        ActionId::ServicesFunnelReset,
         ActionId::ServicesDriveShare,
+        ActionId::ServicesDriveRename,
+        ActionId::ServicesDriveUnshare,
+        ActionId::ServicesCertificateObtain,
+        ActionId::AdminDeviceRename,
+        ActionId::AdminDeviceTagsReplace,
+        ActionId::AdminDeviceApprove,
+        ActionId::AdminDeviceRevokeApproval,
+        ActionId::AdminDeviceKeyExpiryConfigure,
+        ActionId::AdminDeviceKeyExpireNow,
+        ActionId::AdminDeviceDelete,
+        ActionId::AdminDnsPreferencesEdit,
+        ActionId::AdminDnsNameserversReplace,
+        ActionId::AdminDnsSearchPathsReplace,
+        ActionId::AdminDnsSplitCreate,
+        ActionId::AdminDnsSplitEdit,
+        ActionId::AdminDnsSplitRemove,
+        ActionId::AdminUserApprove,
+        ActionId::AdminUserRoleChange,
+        ActionId::AdminUserSuspend,
+        ActionId::AdminUserRestore,
+        ActionId::AdminUserDelete,
     ] {
         assert_eq!(
-            action::find_action(action_id).map(|spec| spec.task_presentation()),
-            Some(TaskPresentation::Background),
-            "action: {action_id:?}"
+            action_id.task_presentation(services, explicit),
+            TaskPresentation::Background,
+            "background action: {action_id:?}"
         );
     }
+
+    assert_eq!(
+        ActionId::LocalProbeConnection.task_presentation(devices, TaskTrigger::Automatic),
+        TaskPresentation::Background
+    );
+    assert_eq!(
+        ActionId::AdminRoutesReplaceApprovals
+            .task_presentation(origin(Route::Routes, None, None), TaskTrigger::BatchChild),
+        TaskPresentation::Background
+    );
 }
 
 /// The same app the screenshots come from: a local client, and an admin
@@ -154,7 +315,7 @@ fn local_app(with_admin_profile: bool) -> Option<App> {
 }
 
 #[test]
-fn a_started_operation_opens_its_selected_task() {
+fn a_started_output_operation_opens_a_contextual_task_overlay() {
     let Some(mut app) = local_app(true) else {
         return;
     };
@@ -169,6 +330,9 @@ fn a_started_operation_opens_its_selected_task() {
         capabilities,
     });
     app.local_capabilities = capabilities;
+    app.views.devices.scroll = 1;
+    app.views.devices.filter_draft = "node".to_owned();
+    let source_selection = app.views.devices.selected_id.clone();
 
     let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
@@ -191,8 +355,12 @@ fn a_started_operation_opens_its_selected_task() {
         app.tasks.selected,
         app.runtime_error
     );
-    assert_eq!(app.current_route(), Route::Tasks);
-    assert_eq!(app.focus, tale::app::Focus::Inspector);
+    assert_eq!(app.current_route(), Route::Devices);
+    let task_id = app.tasks.selected;
+    assert!(matches!(
+        app.overlays.last(),
+        Some(Overlay::Task(state)) if Some(state.task_id) == task_id && state.scroll == 0
+    ));
     assert!(app.notifications.last().is_some_and(|notice| {
         notice.message == "ping target node-01.fixture.ts.net running · @ view task"
     }));
@@ -202,11 +370,68 @@ fn a_started_operation_opens_its_selected_task() {
     );
 
     let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('@'),
+        KeyModifiers::NONE,
+    ))));
+    assert_eq!(app.current_route(), Route::Tasks);
+    assert_eq!(app.focus, tale::app::Focus::Inspector);
+    assert_eq!(app.tasks.selected, task_id);
+
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     ))));
     assert_eq!(app.current_route(), Route::Devices);
     assert_eq!(app.focus, tale::app::Focus::Collection);
+
+    let Some(task_id) = task_id else {
+        return;
+    };
+    app.overlays
+        .push(Overlay::Task(TaskOverlayState::new(task_id)));
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    ))));
+    assert!(app.overlays.is_empty());
+    assert_eq!(app.current_route(), Route::Devices);
+    assert_eq!(app.views.devices.selected_id, source_selection);
+    assert_eq!(app.views.devices.scroll, 1);
+    assert_eq!(app.views.devices.filter_draft, "node");
+    assert!(
+        app.tasks
+            .get(task_id)
+            .is_some_and(|task| !task.state.is_terminal())
+    );
+}
+
+#[test]
+fn mock_task_actions_open_the_full_task_inspector() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    let _ = app.update(Event::Source(SourceEvent::LoadSucceeded {
+        generation: 1,
+        devices: mock::devices(),
+        observed_at: mock::MOCK_NOW,
+    }));
+    app.set_route(Route::Devices);
+
+    for code in [KeyCode::Char('a'), KeyCode::Char('m'), KeyCode::Char('s')] {
+        let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+            code,
+            KeyModifiers::NONE,
+        ))));
+    }
+
+    assert_eq!(app.current_route(), Route::Tasks);
+    assert_eq!(app.focus, tale::app::Focus::Inspector);
+    assert!(app.tasks.selected.is_some());
+    assert!(app.overlays.is_empty());
+    assert_eq!(
+        app.focused_task().map(|task| task.action_id),
+        Some(ActionId::MockSuccess)
+    );
 }
 
 /// An action is offered where its subject is on screen. The local client's
@@ -337,6 +562,9 @@ fn diagnostics_load_the_visible_section() {
         ] if tasks.len() == 1
     ));
     assert_eq!(app.current_route(), Route::Diagnostics);
+    assert!(app.overlays.is_empty());
+    assert!(app.tasks.selected.is_none());
+    assert!(app.notifications.is_empty());
 
     app.set_route(Route::Diagnostics);
     let effects = app.dispatch_action(ActionId::SectionNext);
@@ -390,6 +618,9 @@ fn dns_route_loads_local_status_directly() {
         "unexpected effects: {effects:?}"
     );
     assert_eq!(app.current_route(), Route::Dns);
+    assert!(app.overlays.is_empty());
+    assert!(app.tasks.selected.is_none());
+    assert!(app.notifications.is_empty());
 }
 
 /// A profile for the tailnet this machine is on adds the tailnet's verbs to the

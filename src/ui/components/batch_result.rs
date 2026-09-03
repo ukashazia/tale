@@ -1,13 +1,34 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 
 use crate::app::App;
 use crate::domain::admin_mutation::{BatchChildOutcome, BatchMutation};
 use crate::ui::components::panel;
-use crate::ui::theme;
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, batch: &BatchMutation) {
-    let lines = batch
+pub fn render(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    batch: &BatchMutation,
+    scroll: usize,
+    title: &str,
+) {
+    let lines = lines(batch);
+    let max_scroll = max_scroll(batch, area.width, area.height);
+    panel::render_scrolled_styled(
+        frame,
+        app,
+        area,
+        title,
+        lines,
+        scroll.min(max_scroll) as u16,
+        crate::ui::theme::StyleRole::SurfaceRaised,
+    );
+}
+
+fn lines(batch: &BatchMutation) -> Vec<Line<'static>> {
+    let outcomes = batch
         .targets
         .iter()
         .map(|target| {
@@ -16,10 +37,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, batch: &BatchMutatio
                 .get(&target.target_id)
                 .copied()
                 .map_or("pending", BatchChildOutcome::label);
-            format!(
+            Line::from(format!(
                 "{outcome} · {} · {}",
                 target.target_label, target.requested_change
-            )
+            ))
         })
         .collect::<Vec<_>>();
     let summary = if batch.child_outcomes.len() < batch.targets.len() {
@@ -31,18 +52,18 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, batch: &BatchMutatio
     } else {
         "All devices updated"
     };
-    let summary = format!(
+    let summary = Line::from(format!(
         "{summary} · {}/{} updated",
         batch.verified_count(),
         batch.targets.len()
-    );
-    panel::render_styled(
-        frame,
-        app,
-        area,
-        "batch outcomes",
-        format!("{summary}\n\n{}", lines.join("\n")),
-        theme::StyleRole::SurfaceRaised,
-        theme::StyleRole::BorderNormal,
-    );
+    ));
+    std::iter::once(summary)
+        .chain(std::iter::once(Line::default()))
+        .chain(outcomes)
+        .collect()
+}
+
+pub fn max_scroll(batch: &BatchMutation, area_width: u16, area_height: u16) -> usize {
+    let visual_lines = panel::wrapped_line_count(lines(batch), area_width.saturating_sub(4));
+    visual_lines.saturating_sub(usize::from(area_height.saturating_sub(2)))
 }

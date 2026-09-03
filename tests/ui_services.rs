@@ -1472,7 +1472,7 @@ fn publishing_is_reversible_and_keeps_the_serve_table_on_screen() {
     assert!(
         matches!(
             &request,
-            Some(ServiceActionRequest::Funnel { mapping, .. })
+            Some(ServiceActionRequest::FunnelPublish { mapping })
                 if mapping.exposure == Exposure::Public
                     && mapping.listener == selected.listener
                     && mapping.mount == selected.mount
@@ -1486,6 +1486,11 @@ fn publishing_is_reversible_and_keeps_the_serve_table_on_screen() {
     press(&mut app, KeyCode::Enter);
     assert!(app.overlays.is_empty(), "the confirmation was not accepted");
     assert_eq!(app.tasks.all().len(), 1, "publishing started no task");
+    assert_eq!(
+        app.tasks.all().first().map(|task| task.action_id),
+        Some(ActionId::ServicesFunnelPublish),
+        "publishing was recorded as a Funnel create"
+    );
     let task_id = app.tasks.all().first().map(|task| task.id);
     assert_eq!(app.tasks.selected, task_id, "the new task was not selected");
     assert!(

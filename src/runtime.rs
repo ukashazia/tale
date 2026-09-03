@@ -5585,7 +5585,8 @@ async fn run_service_task(
                 }
             }
         }
-        ServiceActionRequest::Funnel { mapping, .. } => {
+        ServiceActionRequest::Funnel { mapping, .. }
+        | ServiceActionRequest::FunnelPublish { mapping } => {
             if !executable.capabilities.funnel {
                 Err(unsupported_service(
                     "funnel",

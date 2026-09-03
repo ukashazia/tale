@@ -35,6 +35,10 @@ impl App {
         let Some(id) = self.tasks.selected else {
             return Vec::new();
         };
+        self.cancel_task(id)
+    }
+
+    pub(super) fn cancel_task(&mut self, id: TaskId) -> Vec<Effect> {
         if !self.tasks.request_cancel(id) {
             return Vec::new();
         }
