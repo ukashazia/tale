@@ -11,7 +11,7 @@ use tale::config::{self, ColorMode, EnvironmentValues, SymbolsMode};
 use tale::event::{Event, InputEvent, SourceEvent};
 use tale::mock;
 use tale::paths::{PathEnvironment, Platform};
-use tale::task::{Notification, TaskId, TaskResultKind};
+use tale::task::{Notification, TaskId, TaskNotificationKind};
 use tale::ui;
 use tale::ui::theme::{ColorCapability, StyleRole, Theme, ThemeId};
 
@@ -426,9 +426,10 @@ fn status_hints_use_their_semantic_colors() {
     app.status_notice = None;
 
     for (kind, role) in [
-        (TaskResultKind::Success, StyleRole::TaskSucceeded),
-        (TaskResultKind::Failure, StyleRole::TaskFailed),
-        (TaskResultKind::Cancelled, StyleRole::TaskCancelled),
+        (TaskNotificationKind::Running, StyleRole::TaskRunning),
+        (TaskNotificationKind::Success, StyleRole::TaskSucceeded),
+        (TaskNotificationKind::Failure, StyleRole::TaskFailed),
+        (TaskNotificationKind::Cancelled, StyleRole::TaskCancelled),
     ] {
         app.notifications = vec![Notification {
             task_id: TaskId(1),

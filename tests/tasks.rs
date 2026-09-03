@@ -201,6 +201,12 @@ fn notifications_expire_without_removing_task_results() {
             detail: "finished".to_owned(),
         })));
         assert_eq!(application.notifications.len(), 1);
+        assert!(
+            application
+                .notifications
+                .last()
+                .is_some_and(|notice| notice.message == "fictional: done · @ view task")
+        );
         let started = std::time::Instant::now();
         for seconds in 0..=6 {
             let _ = application.update(Event::Tick(

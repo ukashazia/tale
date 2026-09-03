@@ -1984,20 +1984,20 @@ impl App {
             Event::Database(database) => self.update_database(database),
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         };
-        // `:services` is its own progress report: the row's exposure is the
-        // outcome, and a finished task still announces itself in the status
-        // line, so a serve change has no reason to take the page away.
-        if input
-            && input_context == (self.current_route(), self.views.diagnostics.section)
-            && self.current_route() != Route::Services
-            && let Some(task_id) = self.tasks.all().get(task_count).map(|task| task.id)
-        {
-            self.navigate(Route::Tasks);
-            self.task_filter.clear();
+        if input && let Some(task_id) = self.tasks.all().get(task_count).map(|task| task.id) {
             self.tasks.selected = Some(task_id);
-            self.focus = Focus::Inspector;
-            self.views.tasks.detail_scroll = 0;
-            self.opened_task_return = true;
+            self.add_task_started_notification(task_id);
+            let opens_task = self.tasks.get(task_id).is_some_and(|task| {
+                task.action_id.task_presentation() == action::TaskPresentation::OpenTask
+            });
+            if opens_task && input_context == (self.current_route(), self.views.diagnostics.section)
+            {
+                self.navigate(Route::Tasks);
+                self.task_filter.clear();
+                self.focus = Focus::Inspector;
+                self.views.tasks.detail_scroll = 0;
+                self.opened_task_return = true;
+            }
         }
         if self.resolved_config.history.persist_tasks && !self.resolved_config.mock {
             let dirty = self.tasks.take_dirty();

@@ -1315,13 +1315,13 @@ impl App {
                 if task_succeeded {
                     self.add_notification(
                         task_id,
-                        crate::task::TaskResultKind::Success,
+                        crate::task::TaskNotificationKind::Success,
                         request.change.completed_message(),
                     );
                 } else {
                     self.add_notification(
                         task_id,
-                        crate::task::TaskResultKind::Failure,
+                        crate::task::TaskNotificationKind::Failure,
                         &outcome.detail,
                     );
                 }

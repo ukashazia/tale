@@ -1,6 +1,18 @@
 use super::*;
 
 impl App {
+    pub(super) fn add_task_started_notification(&mut self, task_id: TaskId) {
+        let Some(task) = self.tasks.get(task_id) else {
+            return;
+        };
+        self.notifications.push(Notification {
+            task_id,
+            message: format!("{} running · @ view task", task.target_label),
+            kind: crate::task::TaskNotificationKind::Running,
+            expires_at: self.now.saturating_add(5),
+        });
+    }
+
     pub(super) fn start_task(
         &mut self,
         action_id: ActionId,
@@ -93,7 +105,11 @@ impl App {
                 detail,
             } => {
                 if self.tasks.succeed(task_id, finished_at, &summary, &detail) {
-                    self.add_notification(task_id, crate::task::TaskResultKind::Success, &summary);
+                    self.add_notification(
+                        task_id,
+                        crate::task::TaskNotificationKind::Success,
+                        &summary,
+                    );
                     self.tasks
                         .evict_completed(self.resolved_config.history.max_tasks);
                 }
@@ -105,7 +121,11 @@ impl App {
                 detail,
             } => {
                 if self.tasks.fail(task_id, finished_at, &summary, &detail) {
-                    self.add_notification(task_id, crate::task::TaskResultKind::Failure, &summary);
+                    self.add_notification(
+                        task_id,
+                        crate::task::TaskNotificationKind::Failure,
+                        &summary,
+                    );
                     self.tasks
                         .evict_completed(self.resolved_config.history.max_tasks);
                 }
@@ -118,7 +138,7 @@ impl App {
                 if self.tasks.cancel(task_id, finished_at, &detail) {
                     self.add_notification(
                         task_id,
-                        crate::task::TaskResultKind::Cancelled,
+                        crate::task::TaskNotificationKind::Cancelled,
                         "cancelled",
                     );
                     self.tasks
@@ -150,12 +170,16 @@ impl App {
     pub(super) fn add_notification(
         &mut self,
         task_id: TaskId,
-        kind: crate::task::TaskResultKind,
+        kind: crate::task::TaskNotificationKind,
         message: &str,
     ) {
+        let message = self.tasks.get(task_id).map_or_else(
+            || format!("{message} · @ view task"),
+            |task| format!("{}: {message} · @ view task", task.target_label),
+        );
         self.notifications.push(Notification {
             task_id,
-            message: message.to_owned(),
+            message,
             kind,
             expires_at: self.now.saturating_add(5),
         });

@@ -114,7 +114,8 @@ pub struct TaskChange {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum TaskResultKind {
+pub enum TaskNotificationKind {
+    Running,
     Success,
     Failure,
     Cancelled,
@@ -124,7 +125,7 @@ pub enum TaskResultKind {
 pub struct Notification {
     pub task_id: TaskId,
     pub message: String,
-    pub kind: TaskResultKind,
+    pub kind: TaskNotificationKind,
     pub expires_at: Timestamp,
 }
 
@@ -502,15 +503,15 @@ impl TaskStore {
     pub fn notification_for(&self, id: TaskId, now: Timestamp) -> Option<Notification> {
         let task = self.get(id)?;
         let kind = match task.state {
-            TaskState::Succeeded => TaskResultKind::Success,
-            TaskState::Failed => TaskResultKind::Failure,
-            TaskState::Cancelled => TaskResultKind::Cancelled,
-            TaskState::Interrupted => TaskResultKind::Failure,
+            TaskState::Succeeded => TaskNotificationKind::Success,
+            TaskState::Failed => TaskNotificationKind::Failure,
+            TaskState::Cancelled => TaskNotificationKind::Cancelled,
+            TaskState::Interrupted => TaskNotificationKind::Failure,
             _ => return None,
         };
         Some(Notification {
             task_id: id,
-            message: format!("{}: {}", task.target_label, task.summary),
+            message: format!("{}: {} · @ view task", task.target_label, task.summary),
             kind,
             expires_at: now.saturating_add(5),
         })

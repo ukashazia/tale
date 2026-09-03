@@ -1486,9 +1486,21 @@ fn publishing_is_reversible_and_keeps_the_serve_table_on_screen() {
     press(&mut app, KeyCode::Enter);
     assert!(app.overlays.is_empty(), "the confirmation was not accepted");
     assert_eq!(app.tasks.all().len(), 1, "publishing started no task");
+    let task_id = app.tasks.all().first().map(|task| task.id);
+    assert_eq!(app.tasks.selected, task_id, "the new task was not selected");
+    assert!(
+        app.notifications
+            .last()
+            .is_some_and(|notice| notice.message.ends_with("running · @ view task")),
+        "the task-started notice did not expose the Tasks shortcut"
+    );
     assert_eq!(
         app.current_route(),
         Route::Services,
         "publishing walked off the serve table"
     );
+
+    press(&mut app, KeyCode::Char('@'));
+    assert_eq!(app.current_route(), Route::Tasks);
+    assert_eq!(app.tasks.selected, task_id);
 }

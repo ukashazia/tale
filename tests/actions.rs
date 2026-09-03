@@ -5,7 +5,7 @@ use ratatui::style::Modifier;
 
 mod common;
 
-use tale::action::{self, ActionContext, ActionId, Binding};
+use tale::action::{self, ActionContext, ActionId, Binding, TaskPresentation};
 use tale::app::{App, DiagnosticsSection, InteractionMode, Overlay, Route};
 use tale::cli::Cli;
 use tale::config::{self, EnvironmentValues};
@@ -54,6 +54,38 @@ fn mock_app() -> Option<App> {
     config::resolve(&cli, &environment, &path_environment)
         .ok()
         .map(App::new)
+}
+
+#[test]
+fn task_presentation_is_semantic_and_background_by_default() {
+    for action_id in [
+        ActionId::LocalProbeConnection,
+        ActionId::LocalNetcheck,
+        ActionId::LocalNetcheckLive,
+        ActionId::LocalDnsStatus,
+        ActionId::LocalDnsQuery,
+        ActionId::LocalWhois,
+    ] {
+        assert_eq!(
+            action::find_action(action_id).map(|spec| spec.task_presentation()),
+            Some(TaskPresentation::OpenTask),
+            "action: {action_id:?}"
+        );
+    }
+
+    for action_id in [
+        ActionId::AdminDeviceRename,
+        ActionId::AdminDeviceApprove,
+        ActionId::AdminDeviceTagsReplace,
+        ActionId::AdminDeviceDelete,
+        ActionId::ServicesDriveShare,
+    ] {
+        assert_eq!(
+            action::find_action(action_id).map(|spec| spec.task_presentation()),
+            Some(TaskPresentation::Background),
+            "action: {action_id:?}"
+        );
+    }
 }
 
 /// The same app the screenshots come from: a local client, and an admin
@@ -161,6 +193,9 @@ fn a_started_operation_opens_its_selected_task() {
     );
     assert_eq!(app.current_route(), Route::Tasks);
     assert_eq!(app.focus, tale::app::Focus::Inspector);
+    assert!(app.notifications.last().is_some_and(|notice| {
+        notice.message == "ping target node-01.fixture.ts.net running · @ view task"
+    }));
     assert!(
         tale::action::find_action(ActionId::LocalProbeConnection)
             .is_some_and(|action| action.label == "Ping")

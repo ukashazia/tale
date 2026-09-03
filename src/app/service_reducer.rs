@@ -1940,7 +1940,7 @@ impl App {
                         );
                         self.add_notification(
                             task_id,
-                            crate::task::TaskResultKind::Success,
+                            crate::task::TaskNotificationKind::Success,
                             &summary,
                         );
                     }
@@ -1967,14 +1967,14 @@ impl App {
                             let _ = self.tasks.cancel(task_id, self.now, &detail);
                             self.add_notification(
                                 task_id,
-                                crate::task::TaskResultKind::Cancelled,
+                                crate::task::TaskNotificationKind::Cancelled,
                                 &summary,
                             );
                         } else {
                             let _ = self.tasks.fail(task_id, self.now, &summary, &detail);
                             self.add_notification(
                                 task_id,
-                                crate::task::TaskResultKind::Failure,
+                                crate::task::TaskNotificationKind::Failure,
                                 &summary,
                             );
                         }

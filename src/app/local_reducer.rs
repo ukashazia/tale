@@ -582,15 +582,23 @@ impl App {
                     let _ = self.tasks.cancel(task_id, self.now, &detail);
                     self.add_notification(
                         task_id,
-                        crate::task::TaskResultKind::Cancelled,
+                        crate::task::TaskNotificationKind::Cancelled,
                         &summary,
                     );
                 } else if result.is_success() {
                     let _ = self.tasks.succeed(task_id, self.now, &summary, &detail);
-                    self.add_notification(task_id, crate::task::TaskResultKind::Success, &summary);
+                    self.add_notification(
+                        task_id,
+                        crate::task::TaskNotificationKind::Success,
+                        &summary,
+                    );
                 } else {
                     let _ = self.tasks.fail(task_id, self.now, &summary, &detail);
-                    self.add_notification(task_id, crate::task::TaskResultKind::Failure, &summary);
+                    self.add_notification(
+                        task_id,
+                        crate::task::TaskNotificationKind::Failure,
+                        &summary,
+                    );
                 }
                 self.tasks
                     .evict_completed(self.resolved_config.history.max_tasks);
@@ -659,9 +667,9 @@ impl App {
                         self.add_notification(
                             task_id,
                             if completed {
-                                crate::task::TaskResultKind::Success
+                                crate::task::TaskNotificationKind::Success
                             } else {
-                                crate::task::TaskResultKind::Failure
+                                crate::task::TaskNotificationKind::Failure
                             },
                             if completed {
                                 &summary
@@ -684,7 +692,7 @@ impl App {
                         );
                         self.add_notification(
                             task_id,
-                            crate::task::TaskResultKind::Failure,
+                            crate::task::TaskNotificationKind::Failure,
                             "interactive handoff failed",
                         );
                         self.tasks

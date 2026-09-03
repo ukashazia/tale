@@ -207,6 +207,22 @@ define_action_ids! {
 }
 
 impl ActionId {
+    pub const fn task_presentation(self) -> TaskPresentation {
+        if matches!(
+            self,
+            Self::LocalProbeConnection
+                | Self::LocalNetcheck
+                | Self::LocalNetcheckLive
+                | Self::LocalDnsStatus
+                | Self::LocalDnsQuery
+                | Self::LocalWhois
+        ) {
+            TaskPresentation::OpenTask
+        } else {
+            TaskPresentation::Background
+        }
+    }
+
     pub(crate) const fn is_mutating(self) -> bool {
         self.needs_local_verification()
             || matches!(self, Self::LocalAccountLogin | Self::LocalAccountLogout)
@@ -396,6 +412,12 @@ impl ActionId {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TaskPresentation {
+    Background,
+    OpenTask,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ActionContext {
     Root,
     Collection,
@@ -532,6 +554,12 @@ pub struct ActionSpec {
     pub default_bindings: &'static [Binding],
     pub capability: Capability,
     pub risk: Risk,
+}
+
+impl ActionSpec {
+    pub const fn task_presentation(&self) -> TaskPresentation {
+        self.id.task_presentation()
+    }
 }
 
 const ROOT: &[ActionContext] = &[ActionContext::Root];

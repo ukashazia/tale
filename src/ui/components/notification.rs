@@ -6,7 +6,7 @@ use ratatui::style::Modifier;
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::App;
-use crate::task::TaskResultKind;
+use crate::task::TaskNotificationKind;
 use crate::ui::theme;
 
 /// A remedy that gets cut off is not a remedy. The frame layout applies the
@@ -44,9 +44,10 @@ fn status_hint(app: &App) -> Option<StatusHint<'_>> {
     }
     if let Some(notification) = app.notifications.last() {
         let role = match notification.kind {
-            TaskResultKind::Success => theme::StyleRole::TaskSucceeded,
-            TaskResultKind::Failure => theme::StyleRole::TaskFailed,
-            TaskResultKind::Cancelled => theme::StyleRole::TaskCancelled,
+            TaskNotificationKind::Running => theme::StyleRole::TaskRunning,
+            TaskNotificationKind::Success => theme::StyleRole::TaskSucceeded,
+            TaskNotificationKind::Failure => theme::StyleRole::TaskFailed,
+            TaskNotificationKind::Cancelled => theme::StyleRole::TaskCancelled,
         };
         return Some(StatusHint {
             text: Cow::Borrowed(&notification.message),
