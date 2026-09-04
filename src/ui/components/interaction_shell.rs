@@ -1761,7 +1761,8 @@ fn help_group(id: ActionId) -> Option<HelpGroup> {
         ActionId::CollectionSort
         | ActionId::CollectionWideColumns
         | ActionId::CollectionInspect
-        | ActionId::TaskCancel
+        | ActionId::TaskStop
+        | ActionId::TaskRetry
         | ActionId::TaskHistoryToggle => Some(HelpGroup::CurrentView),
         ActionId::ViewCommandLine
         | ActionId::ViewFilter

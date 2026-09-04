@@ -291,7 +291,9 @@ impl App {
     }
 
     pub fn contextual_actions(&self) -> Vec<ActionId> {
-        let mut actions = if self.current_route() == Route::Services {
+        let mut actions = if self.current_route() == Route::Tasks {
+            vec![ActionId::TaskRetry, ActionId::TaskStop]
+        } else if self.current_route() == Route::Services {
             self.service_actions_for_section()
         } else if self.admin.profile.is_some() && self.current_route() == Route::Devices {
             vec![
@@ -1408,6 +1410,8 @@ impl App {
         let task_id = self
             .tasks
             .create(action_id, request.target_label(), self.now, true);
+        self.task_replays
+            .insert(task_id, TaskReplay::Service(request.clone()));
         if let Some(key) = request.conflict_key() {
             self.service_locks.push((key, task_id));
         }

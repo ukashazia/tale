@@ -124,6 +124,15 @@ pub enum SourceMode {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum TaskReplay {
+    AdminMutation(AdminMutationRequest),
+    Diagnostic(DiagnosticRequest),
+    LocalMutation(LocalMutation),
+    Service(ServiceActionRequest),
+    TerminalHandoff(HandoffCommand),
+}
+
 impl SourceMode {
     pub const fn label(self) -> &'static str {
         match self {
@@ -1666,6 +1675,7 @@ pub struct App {
     pub system_policy_failure: Option<LocalFailure>,
     pub local_diagnostics: BTreeMap<TaskId, DiagnosticState>,
     pub tasks: TaskStore,
+    task_replays: BTreeMap<TaskId, TaskReplay>,
     pub task_history_loading: bool,
     pub notifications: Vec<Notification>,
     pub resolved_config: ResolvedConfig,
@@ -1885,6 +1895,7 @@ impl App {
                 BTreeMap::new()
             },
             tasks: TaskStore::new(),
+            task_replays: BTreeMap::new(),
             task_history_loading: config.history.persist_tasks && !config.mock,
             notifications: Vec::new(),
             resolved_config: config,
@@ -1999,6 +2010,9 @@ impl App {
             Event::ShutdownRequested(reason) => self.request_shutdown(reason),
         };
         self.present_new_tasks(task_count, task_selection, input, input_origin);
+        let tasks = &self.tasks;
+        self.task_replays
+            .retain(|task_id, _| tasks.get(*task_id).is_some());
         if self.resolved_config.history.persist_tasks && !self.resolved_config.mock {
             let dirty = self.tasks.take_dirty();
             if !dirty.is_empty() {

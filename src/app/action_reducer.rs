@@ -237,7 +237,8 @@ impl App {
                 });
                 Vec::new()
             }
-            ActionId::TaskCancel => self.cancel_focused_task(),
+            ActionId::TaskStop => self.cancel_focused_task(),
+            ActionId::TaskRetry => self.retry_focused_task(),
             ActionId::MockSuccess => self.start_task(
                 ActionId::MockSuccess,
                 MockTaskBehavior::DelayedSuccess,
@@ -340,7 +341,6 @@ impl App {
             | ActionId::AuditOpenTarget
             | ActionId::AuditOpenPolicyDiff
             | ActionId::BatchReviewOutcomes
-            | ActionId::BatchRetrySelected
             | ActionId::ActivityFlowsSelectWindow
             | ActionId::ActivityFlowsAggregate
             | ActionId::ActivityFlowsOpenDevice
@@ -368,6 +368,15 @@ impl App {
     pub(super) fn action_available(&self, action_id: ActionId, capability: Capability) -> bool {
         if action_id == ActionId::ResourceCopy {
             return !self.contextual_copy_fields().is_empty();
+        }
+        if action_id == ActionId::TaskStop {
+            return self.tasks.selected_can_cancel();
+        }
+        if action_id == ActionId::TaskRetry {
+            return self
+                .tasks
+                .selected
+                .is_some_and(|task_id| self.task_retry_unavailable_reason(task_id).is_none());
         }
         match capability {
             Capability::Available if action_id.is_admin() => self.admin_action_available(action_id),
@@ -445,16 +454,6 @@ impl App {
                 .tasks
                 .selected
                 .is_some_and(|task_id| self.admin_batch_results.contains_key(&task_id)),
-            ActionId::BatchRetrySelected => self.tasks.selected.is_some_and(|task_id| {
-                self.admin_batch_results.get(&task_id).is_some_and(|batch| {
-                    batch.child_outcomes.values().any(|outcome| {
-                        !matches!(
-                            outcome,
-                            crate::domain::admin_mutation::BatchChildOutcome::VerifiedSuccess
-                        )
-                    })
-                })
-            }),
             _ => false,
         }
     }
@@ -694,6 +693,15 @@ impl App {
     pub fn action_unavailable_reason(&self, action_id: ActionId) -> Option<String> {
         if self.action_is_available(action_id) {
             return None;
+        }
+        if action_id == ActionId::TaskStop {
+            return Some("the selected task is not running or cannot be stopped".to_owned());
+        }
+        if action_id == ActionId::TaskRetry {
+            return self.tasks.selected.map_or_else(
+                || Some("select a task to retry".to_owned()),
+                |task_id| self.task_retry_unavailable_reason(task_id),
+            );
         }
         if action_id == ActionId::OverviewHealthOpenResource
             && self.selected_overview_finding().is_none()

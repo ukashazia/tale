@@ -1588,7 +1588,7 @@ impl App {
             | ActionId::CollectionSort
             | ActionId::CollectionInspect => self.collection_subject_available(),
             ActionId::CollectionBack => self.focus == Focus::Inspector,
-            ActionId::TaskCancel => self.tasks.selected_can_cancel(),
+            ActionId::TaskStop => self.tasks.selected_can_cancel(),
             _ => true,
         }
     }

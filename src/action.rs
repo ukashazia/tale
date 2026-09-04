@@ -75,7 +75,8 @@ define_action_ids! {
         CollectionInspect => "collection.inspect";
         ResourceActions => "resource.actions";
         ResourceCopy => "resource.copy";
-        TaskCancel => "task.cancel";
+        TaskStop => "task.stop";
+        TaskRetry => "task.retry";
         TaskHistoryToggle => "task.history.toggle";
         MockSuccess => "mock.task.success";
         MockFailure => "mock.task.failure";
@@ -182,7 +183,6 @@ define_action_ids! {
         AuditOpenTarget => "audit.open.target";
         AuditOpenPolicyDiff => "audit.open.policy_diff";
         BatchReviewOutcomes => "batch.review_outcomes";
-        BatchRetrySelected => "batch.retry_selected";
         OverviewHealthOpenResource => "overview.health.open_resource";
         OverviewHealthRunSuggestedAction => "overview.health.run_suggested_action";
         ActivityFlowsSelectWindow => "activity.flows.select_window";
@@ -325,7 +325,6 @@ impl ActionId {
                     | Self::AuditOpenTarget
                     | Self::AuditOpenPolicyDiff
                     | Self::BatchReviewOutcomes
-                    | Self::BatchRetrySelected
                     | Self::OverviewHealthOpenResource
                     | Self::OverviewHealthRunSuggestedAction
                     | Self::ActivityFlowsSelectWindow
@@ -675,7 +674,7 @@ const BIND_WIDE: &[Binding] = &[Binding::Char('w')];
 const BIND_INSPECT: &[Binding] = &[Binding::Char('i')];
 const BIND_ACTIONS: &[Binding] = &[Binding::Char('a')];
 const BIND_COPY: &[Binding] = &[Binding::Char('y')];
-const BIND_CANCEL: &[Binding] = &[Binding::Char('x')];
+const BIND_STOP: &[Binding] = &[Binding::Char('x')];
 const BIND_TASK_HISTORY: &[Binding] = &[Binding::Char('H')];
 
 const BIND_ACTIONS_ROOT: &[Binding] = &[Binding::Char('a')];
@@ -935,14 +934,24 @@ pub fn shell_actions() -> Vec<ActionSpec> {
             risk: Risk::Observe,
         },
         ActionSpec {
-            id: ActionId::TaskCancel,
-            label: "Cancel task",
-            description: "Cancel the focused cancellable task",
+            id: ActionId::TaskStop,
+            label: "Stop task",
+            description: "Stop the selected running task",
             contexts: COLLECTION,
             selection_rule: SelectionRule::One,
-            default_bindings: BIND_CANCEL,
+            default_bindings: BIND_STOP,
             capability: Capability::Available,
-            risk: Risk::Reversible,
+            risk: Risk::Disruptive,
+        },
+        ActionSpec {
+            id: ActionId::TaskRetry,
+            label: "Retry task",
+            description: "Run the selected task again from its retained request",
+            contexts: COLLECTION,
+            selection_rule: SelectionRule::One,
+            default_bindings: NO_BINDING,
+            capability: Capability::Available,
+            risk: Risk::Disruptive,
         },
         ActionSpec {
             id: ActionId::TaskHistoryToggle,
@@ -1121,12 +1130,15 @@ pub const fn transient_sequence(id: ActionId) -> Option<&'static str> {
         ActionId::AdminLogStreamReplace => Some("lr"),
         ActionId::AdminLogStreamDelete => Some("ld"),
         ActionId::AdminNetworkLogsSettings => Some("ln"),
+        ActionId::TaskStop => Some("s"),
+        ActionId::TaskRetry => Some("r"),
         _ => None,
     }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TransientGroup {
+    Task,
     Simulation,
     Machine,
     Account,
@@ -1158,6 +1170,7 @@ pub enum TransientGroup {
 impl TransientGroup {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Task => "Task",
             Self::Simulation => "Simulation",
             Self::Machine => "Machine",
             Self::Account => "Account",
@@ -1190,6 +1203,7 @@ impl TransientGroup {
 
 pub const fn transient_group(id: ActionId) -> Option<TransientGroup> {
     match id {
+        ActionId::TaskStop | ActionId::TaskRetry => Some(TransientGroup::Task),
         ActionId::MockSuccess
         | ActionId::MockFailure
         | ActionId::MockCancellable
@@ -1479,12 +1493,12 @@ pub const fn applies_to_route(id: ActionId, route: Route) -> bool {
                     | Route::Services
             )
         }
-        // A task is this client's own record, so cancelling and reviewing one
-        // only mean something on the page that lists them.
-        ActionId::TaskCancel
+        // A task is this client's own record, so stopping and retrying one only
+        // mean something on the page that lists them.
+        ActionId::TaskStop
+        | ActionId::TaskRetry
         | ActionId::TaskHistoryToggle
-        | ActionId::BatchReviewOutcomes
-        | ActionId::BatchRetrySelected => {
+        | ActionId::BatchReviewOutcomes => {
             matches!(route, Route::Tasks)
         }
         ActionId::CollectionSort => {
@@ -1536,7 +1550,7 @@ const fn footer_priority(id: ActionId) -> u8 {
         ActionId::CollectionMoveUp => 10,
         ActionId::CollectionMoveDown => 11,
         ActionId::CollectionOpen => 12,
-        ActionId::CollectionBack | ActionId::TaskCancel | ActionId::TaskHistoryToggle => 13,
+        ActionId::CollectionBack | ActionId::TaskStop | ActionId::TaskHistoryToggle => 13,
         ActionId::SectionNext | ActionId::DeviceDetailNextMatch => 14,
         ActionId::SectionPrevious | ActionId::DeviceDetailPreviousMatch => 15,
         ActionId::CollectionSort => 16,
@@ -1582,7 +1596,8 @@ pub const fn compact_help_label(id: ActionId) -> Option<&'static str> {
         ActionId::CollectionInspect => Some("inspector"),
         ActionId::ResourceActions => Some("actions"),
         ActionId::ResourceCopy => Some("copy"),
-        ActionId::TaskCancel => Some("cancel"),
+        ActionId::TaskStop => Some("stop"),
+        ActionId::TaskRetry => Some("retry"),
         ActionId::TaskHistoryToggle => Some("history"),
         ActionId::SectionNext => Some("next tab"),
         ActionId::SectionPrevious => Some("previous tab"),
@@ -2744,16 +2759,6 @@ pub fn admin_operator_actions() -> Vec<ActionSpec> {
             default_bindings: NO_BINDING,
             capability: Capability::Available,
             risk: Risk::Observe,
-        },
-        ActionSpec {
-            id: ActionId::BatchRetrySelected,
-            label: "Retry selected devices",
-            description: "Retry the selected devices using their latest settings",
-            contexts: COLLECTION,
-            selection_rule: SelectionRule::One,
-            default_bindings: NO_BINDING,
-            capability: Capability::Available,
-            risk: Risk::Disruptive,
         },
     ]
 }

@@ -57,7 +57,6 @@ impl App {
             ActionId::AuditOpenTarget => self.open_audit_reference(true),
             ActionId::AuditOpenPolicyDiff => self.open_audit_investigation(),
             ActionId::BatchReviewOutcomes => self.open_selected_batch_result(),
-            ActionId::BatchRetrySelected => self.retry_selected_batch(),
             ActionId::ActivityFlowsSelectWindow => self.open_flow_window_form(),
             ActionId::ActivityFlowsAggregate => self.start_flow_aggregation(),
             ActionId::ActivityFlowsOpenDevice => {
@@ -1508,6 +1507,8 @@ impl App {
                 self.now,
                 true,
             );
+            self.task_replays
+                .insert(task_id, TaskReplay::AdminMutation(request.clone()));
             let _ = self.tasks.set_local_metadata(
                 task_id,
                 vec![request.change.audit_action_class().to_owned()],
@@ -2040,6 +2041,8 @@ impl App {
                 self.now,
                 true,
             );
+            self.task_replays
+                .insert(task_id, TaskReplay::LocalMutation(mutation.clone()));
             let (fields, argv) = mutation_metadata(
                 &executable.path,
                 &mutation,
@@ -2079,6 +2082,8 @@ impl App {
                 self.now,
                 false,
             );
+            self.task_replays
+                .insert(task_id, TaskReplay::TerminalHandoff(command.clone()));
             let requested_fields = match state.action_id {
                 ActionId::LocalSshOpen => vec!["host".to_owned(), "username".to_owned()],
                 ActionId::LocalNcOpen => vec!["host".to_owned(), "port".to_owned()],

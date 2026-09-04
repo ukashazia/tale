@@ -142,6 +142,8 @@ impl App {
             _ => request.label().to_owned(),
         };
         let task_id = self.tasks.create(action_id, target_label, self.now, true);
+        self.task_replays
+            .insert(task_id, TaskReplay::Diagnostic(request.clone()));
         self.local_diagnostics
             .insert(task_id, DiagnosticState::new(request.label()));
         vec![Effect::StartLocalDiagnostic {

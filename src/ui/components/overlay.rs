@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, overlay: &Overlay) {
                 |task| {
                     let action = crate::action::find_action(task.action_id)
                         .map_or(task.action_id.as_str(), |spec| spec.label);
-                    let cancel = if task.cancellable { " · c cancel" } else { "" };
+                    let cancel = if task.cancellable { " · c stop" } else { "" };
                     format!(
                         "{action} · {} · Esc close · @ tasks{cancel}",
                         task.target_label

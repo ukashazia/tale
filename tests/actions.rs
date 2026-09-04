@@ -956,7 +956,7 @@ fn every_required_action_is_registered() {
         ActionId::CollectionWideColumns,
         ActionId::ResourceActions,
         ActionId::ResourceCopy,
-        ActionId::TaskCancel,
+        ActionId::TaskStop,
     ] {
         assert!(registered.contains(&id), "missing {}", id.as_str());
     }
@@ -1302,7 +1302,7 @@ fn empty_collections_do_not_advertise_row_actions() {
 }
 
 #[test]
-fn task_cancel_is_advertised_only_while_the_selected_task_can_cancel() {
+fn task_stop_is_advertised_only_while_the_selected_task_can_stop() {
     let Some(mut app) = mock_app() else {
         return;
     };
@@ -1310,7 +1310,7 @@ fn task_cancel_is_advertised_only_while_the_selected_task_can_cancel() {
     assert!(
         !app.footer_actions(160)
             .iter()
-            .any(|hint| hint.action_id == ActionId::TaskCancel)
+            .any(|hint| hint.action_id == ActionId::TaskStop)
     );
     let task_id = app.tasks.create(
         ActionId::MockCancellable,
@@ -1321,7 +1321,7 @@ fn task_cancel_is_advertised_only_while_the_selected_task_can_cancel() {
     assert!(
         app.footer_actions(160)
             .iter()
-            .any(|hint| hint.action_id == ActionId::TaskCancel)
+            .any(|hint| hint.action_id == ActionId::TaskStop)
     );
     assert!(app.tasks.start(task_id));
     assert!(app.tasks.succeed(
@@ -1333,7 +1333,159 @@ fn task_cancel_is_advertised_only_while_the_selected_task_can_cancel() {
     assert!(
         !app.footer_actions(160)
             .iter()
-            .any(|hint| hint.action_id == ActionId::TaskCancel)
+            .any(|hint| hint.action_id == ActionId::TaskStop)
+    );
+}
+
+#[test]
+fn tasks_offer_stop_for_active_work_and_retry_for_failed_replayable_work() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.set_route(Route::Tasks);
+
+    let running = app.tasks.create(
+        ActionId::MockCancellable,
+        "running simulation",
+        mock::MOCK_NOW,
+        true,
+    );
+    assert!(app.tasks.start(running));
+    app.tasks.selected = Some(running);
+    assert!(app.contextual_actions().contains(&ActionId::TaskStop));
+    assert!(app.contextual_actions().contains(&ActionId::TaskRetry));
+    assert!(
+        !app.contextual_actions()
+            .contains(&ActionId::BatchReviewOutcomes)
+    );
+    assert!(app.action_unavailable_reason(ActionId::TaskStop).is_none());
+    assert!(app.action_unavailable_reason(ActionId::TaskRetry).is_some());
+    assert!(matches!(
+        app.dispatch_action(ActionId::TaskStop).as_slice(),
+        [Effect::CancelTask { task_id }] if *task_id == running
+    ));
+
+    let failed = app.tasks.create(
+        ActionId::MockFailure,
+        "failed simulation",
+        mock::MOCK_NOW,
+        true,
+    );
+    assert!(app.tasks.start(failed));
+    assert!(app.tasks.fail(
+        failed,
+        mock::MOCK_NOW.saturating_add(1),
+        "failed",
+        "simulated failure"
+    ));
+    app.tasks.selected = Some(failed);
+    assert!(app.action_unavailable_reason(ActionId::TaskStop).is_some());
+    assert!(app.action_unavailable_reason(ActionId::TaskRetry).is_none());
+    let effects = app.dispatch_action(ActionId::TaskRetry);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::StartMockTask {
+            behavior: mock::MockTaskBehavior::DelayedFailure,
+            ..
+        }]
+    ));
+    assert_eq!(app.tasks.all().len(), 3);
+}
+
+#[test]
+fn retry_reuses_the_retained_typed_diagnostic_request() {
+    let Some(mut app) = local_app(true) else {
+        return;
+    };
+    let capabilities = LocalCapabilities::all_supported();
+    app.local_executable = Some(LocalExecutable {
+        path: "tailscale".into(),
+        socket_path: None,
+        source: ExecutableSource::Path,
+        version: "1.98.9".to_owned(),
+        daemon_version: Some("1.98.9".to_owned()),
+        build: None,
+        capabilities,
+    });
+    app.local_capabilities = capabilities;
+
+    let effects = app.dispatch_action(ActionId::LocalProbeConnection);
+    let Some(task_id) = effects.iter().find_map(|effect| match effect {
+        Effect::StartLocalDiagnostic { task_id, .. } => Some(*task_id),
+        _ => None,
+    }) else {
+        return;
+    };
+    assert!(app.tasks.start(task_id));
+    assert!(app.tasks.fail(
+        task_id,
+        mock::MOCK_NOW.saturating_add(1),
+        "failed",
+        "network unavailable"
+    ));
+    app.tasks.selected = Some(task_id);
+    app.set_route(Route::Tasks);
+
+    assert!(app.action_unavailable_reason(ActionId::TaskRetry).is_none());
+    assert!(matches!(
+        app.dispatch_action(ActionId::TaskRetry).as_slice(),
+        [Effect::StartLocalDiagnostic {
+            request: tale::local::diagnostics::DiagnosticRequest::Ping { target },
+            ..
+        }] if target == "node-01.fixture.ts.net"
+    ));
+}
+
+#[test]
+fn persisted_task_without_a_replay_request_explains_why_retry_is_disabled() {
+    let Some(mut app) = mock_app() else {
+        return;
+    };
+    app.set_route(Route::Tasks);
+    let task_id = app.tasks.create(
+        ActionId::LocalSshOpen,
+        "Tailscale SSH",
+        mock::MOCK_NOW,
+        false,
+    );
+    assert!(app.tasks.start(task_id));
+    assert!(app.tasks.fail(
+        task_id,
+        mock::MOCK_NOW.saturating_add(1),
+        "interrupted",
+        "Tale stopped before this task completed"
+    ));
+    app.tasks.selected = Some(task_id);
+
+    assert!(
+        app.action_unavailable_reason(ActionId::TaskRetry)
+            .is_some_and(|reason| reason.contains("not retained in task history"))
+    );
+
+    let _ = app.dispatch_action(ActionId::ResourceActions);
+    let _ = app.update(Event::Input(InputEvent::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::NONE,
+    ))));
+    let backend = TestBackend::new(160, 40);
+    let Some(mut terminal) = Terminal::new(backend).ok() else {
+        return;
+    };
+    assert!(terminal.draw(|frame| ui::render(frame, &app)).is_ok());
+    let rendered = (0..40)
+        .map(|y| {
+            (0..160)
+                .filter_map(|x| terminal.backend().buffer().cell((x, y)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("retry task"), "{rendered}");
+    assert!(rendered.contains("stop task"), "{rendered}");
+    assert!(
+        rendered.contains("not retained in task history"),
+        "{rendered}"
     );
 }
 
