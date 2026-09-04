@@ -1,9 +1,11 @@
 name: Publish Debian packages
 
 on:
-  release:
-    types:
-      - published
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -26,7 +28,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.ref_name }}
 
       - name: Generate command-line artifacts
         run: cargo run --locked --bin generate-artifacts -- --output-dir .
@@ -38,7 +40,7 @@ jobs:
         env:
           ARCHITECTURE: ${{ matrix.architecture }}
           TARGET: ${{ matrix.target }}
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ github.ref_name }}
         run: |
           version=${VERSION#v}
           output="tale_${version}_${ARCHITECTURE}.deb"
@@ -53,5 +55,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.ref_name }}
         run: gh release upload "$TAG" ./*.deb ./*.deb.sha256 --clobber

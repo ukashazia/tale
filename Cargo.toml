@@ -30,8 +30,8 @@ tap = "ukashazia/homebrew-tale"
 publish-jobs = ["./publish-homebrew"]
 pr-run-mode = "plan"
 plan-jobs = ["./ci"]
-post-announce-jobs = ["./publish-nix-flake"]
-github-custom-job-permissions = { publish-homebrew = { contents = "read" }, publish-nix-flake = { contents = "write" } }
+post-announce-jobs = ["./publish-nix-flake", "./publish-debian"]
+github-custom-job-permissions = { publish-homebrew = { contents = "read" }, publish-nix-flake = { contents = "write" }, publish-debian = { contents = "write" } }
 install-path = "CARGO_HOME"
 hosting = "github"
 install-updater = false
