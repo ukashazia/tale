@@ -65,9 +65,9 @@ impl App {
         action_id: ActionId,
         mutation: OperationalMutation,
     ) -> Vec<Effect> {
-        self.pending_export_fingerprint = match &mutation {
-            OperationalMutation::Export(request) => match self.export_fingerprint(request) {
-                Ok(fingerprint) => Some(fingerprint),
+        self.pending_export_document = match &mutation {
+            OperationalMutation::Export(request) => match self.build_export_document(request) {
+                Ok(document) => Some(document),
                 Err(error) => {
                     self.runtime_error = Some(format!("export preview unavailable: {error}"));
                     return Vec::new();
@@ -1095,8 +1095,8 @@ impl App {
     ) -> Vec<Effect> {
         match mutation {
             OperationalMutation::SavedView(operation) => self.apply_saved_view_operation(operation),
-            OperationalMutation::Export(request) => match self.build_export_document(&request) {
-                Ok(document) => {
+            OperationalMutation::Export(request) => match self.pending_export_document.take() {
+                Some(document) => {
                     let format = if request.format == "csv" {
                         crate::export::ExportFormat::Csv
                     } else {
@@ -1119,8 +1119,9 @@ impl App {
                     }
                     Vec::new()
                 }
-                Err(error) => {
-                    self.runtime_error = Some(error);
+                None => {
+                    self.runtime_error =
+                        Some("the confirmed export snapshot is unavailable".to_owned());
                     Vec::new()
                 }
             },
@@ -1241,20 +1242,6 @@ impl App {
             self.view_history.replace_current(frame);
         }
         Ok(())
-    }
-
-    pub(super) fn export_fingerprint(&self, request: &ExportRequest) -> Result<[u8; 32], String> {
-        let mut document = self.build_export_document(request)?;
-        document.metadata.export_timestamp = None;
-        let bytes = document
-            .json_bytes_in_order()
-            .map_err(|error| error.to_string())?;
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        let digest = hasher.finalize();
-        let mut fingerprint = [0_u8; 32];
-        fingerprint.copy_from_slice(&digest);
-        Ok(fingerprint)
     }
 
     pub(super) fn build_export_document(

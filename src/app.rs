@@ -19,11 +19,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
-use sha2::{Digest, Sha256};
-
 use crate::action::{
     self, ActionContext, ActionId, Capability, TaskOrigin, TaskPresentation, TaskTrigger,
 };
@@ -116,6 +111,9 @@ use crate::mock::{self, MOCK_NOW, MockLoadScenario, MockTaskBehavior};
 use crate::paths;
 use crate::task::{Notification, TaskId, TaskState, TaskStore};
 use crate::ui::theme::Theme;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config as MatcherConfig, Matcher, Utf32Str};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SourceMode {
@@ -1623,7 +1621,7 @@ pub struct App {
     pub log_stream_statuses: BTreeMap<LogType, LogStreamStatus>,
     pub access_explorer_result: Option<AccessResult>,
     pub saved_views: Option<crate::saved_views::SavedViewsState>,
-    pending_export_fingerprint: Option<[u8; 32]>,
+    pending_export_document: Option<crate::domain::export::ExportDocument>,
     pub admin_profile_snapshots: BTreeMap<String, AdminSnapshot>,
     /// What `:profiles` knows about each configured profile, keyed by name.
     pub profile_statuses: BTreeMap<String, ProfileStatus>,
@@ -1828,7 +1826,7 @@ impl App {
             log_stream_statuses: BTreeMap::new(),
             access_explorer_result: None,
             saved_views,
-            pending_export_fingerprint: None,
+            pending_export_document: None,
             admin_profile_snapshots: BTreeMap::new(),
             profile_statuses: BTreeMap::new(),
             profile_probe_in_flight: None,

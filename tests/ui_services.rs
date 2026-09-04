@@ -427,6 +427,36 @@ fn populated_app() -> Option<App> {
     Some(app)
 }
 
+#[test]
+fn export_confirmation_writes_the_snapshot_that_was_reviewed() -> Result<(), String> {
+    let mut app = populated_app().ok_or_else(|| "service fixture is unavailable".to_owned())?;
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let path = directory.path().join("devices.json");
+    app.set_route(Route::Devices);
+    app.devices_resource.observed_at = Some(OBSERVED_AT);
+
+    let _ = app.dispatch_action(ActionId::CollectionExport);
+    submit_form(&mut app, &[("path", &path.display().to_string())]);
+
+    app.devices_resource.observed_at = Some(OBSERVED_AT.saturating_add(60));
+    if let Some(device) = app.devices_resource.snapshot.first_mut() {
+        device.display_name = "changed-after-confirmation".to_owned();
+    }
+    press(&mut app, KeyCode::Enter);
+
+    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+    let document: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    assert_eq!(
+        document
+            .pointer("/rows/0/name")
+            .and_then(serde_json::Value::as_str),
+        Some("office-laptop")
+    );
+    assert!(app.overlays.is_empty());
+    Ok(())
+}
+
 fn local_app() -> Option<App> {
     let root = PathBuf::from("/fictional/tale-services");
     let cli = Cli {

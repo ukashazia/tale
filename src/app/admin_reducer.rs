@@ -1659,12 +1659,13 @@ impl App {
             return Vec::new();
         }
         let overwrite_confirmed = state.required_phrase.as_deref() == Some("OVERWRITE EXPORT");
-        if let Some(OperationalMutation::Export(request)) = state.operational_mutation.as_ref()
-            && let Some(expected) = self.pending_export_fingerprint
-            && self.export_fingerprint(request).ok() != Some(expected)
+        if matches!(
+            state.operational_mutation.as_ref(),
+            Some(OperationalMutation::Export(_))
+        ) && self.pending_export_document.is_none()
         {
             self.set_confirmation_error(
-                "the export source changed after preview; refresh and review the export again",
+                "the confirmed export snapshot is unavailable; review the export again",
             );
             return Vec::new();
         }
@@ -1678,7 +1679,6 @@ impl App {
             return Vec::new();
         }
         if let Some(mutation) = state.operational_mutation.clone() {
-            self.pending_export_fingerprint = None;
             return self.accept_operational_mutation(
                 state.action_id,
                 mutation,

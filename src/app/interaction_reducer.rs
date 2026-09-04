@@ -1555,7 +1555,7 @@ impl App {
                 _ => None,
             };
             if confirmation_action == Some(ActionId::CollectionExport) {
-                self.pending_export_fingerprint = None;
+                self.pending_export_document = None;
             }
             if confirmation_action == Some(ActionId::AdminCredentialAuthKeyCreate) {
                 self.pending_auth_key_request = None;
