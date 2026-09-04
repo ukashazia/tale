@@ -2343,12 +2343,12 @@ pub fn operational_actions() -> Vec<ActionSpec> {
         ActionSpec {
             id: ActionId::CollectionExport,
             label: "Export collection",
-            description: "Export the active filtered and sorted collection using an allowlisted schema",
+            description: "Save the current filtered and sorted list as a JSON or CSV file",
             contexts: GLOBAL,
             selection_rule: SelectionRule::None,
             default_bindings: NO_BINDING,
             capability: Capability::Available,
-            risk: Risk::Observe,
+            risk: Risk::Reversible,
         },
         ActionSpec {
             id: ActionId::AccessExplorerAsk,

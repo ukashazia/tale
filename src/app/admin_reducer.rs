@@ -1664,9 +1664,7 @@ impl App {
             Some(OperationalMutation::Export(_))
         ) && self.pending_export_document.is_none()
         {
-            self.set_confirmation_error(
-                "the confirmed export snapshot is unavailable; review the export again",
-            );
+            self.set_confirmation_error("This export is no longer available. Review it again.");
             return Vec::new();
         }
         if let Some(OperationalMutation::Export(request)) = state.operational_mutation.as_ref()
@@ -1674,7 +1672,7 @@ impl App {
             && !overwrite_confirmed
         {
             self.set_confirmation_error(
-                "the export target appeared after preview; review the overwrite confirmation again",
+                "A file now exists at this location. Review the overwrite warning.",
             );
             return Vec::new();
         }

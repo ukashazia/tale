@@ -19,11 +19,26 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
         .map(crate::domain::mutation::LocalMutation::risk)
         .or_else(|| state.admin_mutation.as_ref().map(|mutation| mutation.risk))
         .or_else(|| state.service_request.as_ref().map(|request| request.risk()))
+        .or_else(|| {
+            state
+                .operational_mutation
+                .as_ref()
+                .and_then(|mutation| match mutation {
+                    crate::domain::operational::OperationalMutation::Export(request) => {
+                        Some(if request.path.exists() {
+                            Risk::DestructiveOrSecret
+                        } else {
+                            Risk::Reversible
+                        })
+                    }
+                    _ => None,
+                })
+        })
         .or_else(|| crate::action::find_action(state.action_id).map(|spec| spec.risk));
     let mut lines = Vec::new();
     if let Some(risk) = risk {
         lines.push(Line::from(Span::styled(
-            format!(" {} ", risk_label(risk)),
+            format!(" {} ", risk_label(state, risk)),
             app.theme
                 .style(risk.style_role())
                 .add_modifier(Modifier::REVERSED),
@@ -70,32 +85,27 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
             std::slice::from_ref(&state.redacted_argv.join(" ")),
         ));
     }
-    lines.push(Line::default());
-    match state.required_phrase.as_deref() {
-        Some(phrase) => {
-            lines.push(Line::from(vec![
-                Span::styled("Type ", app.theme.style(theme::StyleRole::TextMuted)),
-                Span::styled(
-                    phrase.to_owned(),
-                    app.theme.style(theme::StyleRole::StateDanger),
-                ),
-                Span::styled(" to confirm", app.theme.style(theme::StyleRole::TextMuted)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("> ", app.theme.style(theme::StyleRole::KeyHint)),
-                Span::styled(
-                    state.input.clone(),
-                    app.theme.style(theme::StyleRole::TextPrimary),
-                ),
-                Span::styled("\u{2588}", app.theme.style(theme::StyleRole::Focus)),
-            ]));
-        }
-        None => lines.push(Line::from(Span::styled(
-            "Nothing else is needed to confirm.",
-            app.theme.style(theme::StyleRole::TextMuted),
-        ))),
+    if let Some(phrase) = state.required_phrase.as_deref() {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled("Type ", app.theme.style(theme::StyleRole::TextMuted)),
+            Span::styled(
+                phrase.to_owned(),
+                app.theme.style(theme::StyleRole::StateDanger),
+            ),
+            Span::styled(" to confirm", app.theme.style(theme::StyleRole::TextMuted)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("> ", app.theme.style(theme::StyleRole::KeyHint)),
+            Span::styled(
+                state.input.clone(),
+                app.theme.style(theme::StyleRole::TextPrimary),
+            ),
+            Span::styled("\u{2588}", app.theme.style(theme::StyleRole::Focus)),
+        ]));
     }
     if let Some(error) = state.error.as_deref() {
+        lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             error.to_owned(),
             app.theme.style(theme::StyleRole::StateDanger),
@@ -104,7 +114,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
     lines.push(Line::default());
     lines.push(Line::from(vec![
         Span::styled("Enter", app.theme.style(theme::StyleRole::KeyHint)),
-        Span::styled(" run", app.theme.style(theme::StyleRole::TextMuted)),
+        Span::styled(" confirm", app.theme.style(theme::StyleRole::TextMuted)),
         Span::styled("   ", app.theme.style(theme::StyleRole::TextMuted)),
         Span::styled("Esc", app.theme.style(theme::StyleRole::KeyHint)),
         Span::styled(" cancel", app.theme.style(theme::StyleRole::TextMuted)),
@@ -118,7 +128,13 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect, state: &Confirmation
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(app.theme.style(theme::StyleRole::BorderDanger))
+                    .border_style(app.theme.style(
+                        if matches!(risk, Some(Risk::Disruptive | Risk::DestructiveOrSecret)) {
+                            theme::StyleRole::BorderDanger
+                        } else {
+                            theme::StyleRole::BorderFocused
+                        },
+                    ))
                     .title_style(app.theme.style(theme::StyleRole::TextPrimary))
                     .title(" Confirm "),
             ),
@@ -147,7 +163,16 @@ fn section(app: &App, heading: &'static str, body: &[String]) -> Vec<Line<'stati
 }
 
 /// Risk in the reader's terms rather than the enum's.
-const fn risk_label(risk: Risk) -> &'static str {
+fn risk_label(state: &ConfirmationState, risk: Risk) -> &'static str {
+    if let Some(crate::domain::operational::OperationalMutation::Export(request)) =
+        state.operational_mutation.as_ref()
+    {
+        return if request.path.exists() {
+            "Replaces a file"
+        } else {
+            "Writes a file"
+        };
+    }
     match risk {
         Risk::Observe => "Reads only",
         Risk::Reversible => "Reversible",

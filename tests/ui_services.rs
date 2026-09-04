@@ -438,6 +438,21 @@ fn export_confirmation_writes_the_snapshot_that_was_reviewed() -> Result<(), Str
     let _ = app.dispatch_action(ActionId::CollectionExport);
     submit_form(&mut app, &[("path", &path.display().to_string())]);
 
+    let review = render_lines(&app, 120, 36).ok_or_else(|| "review did not render".to_owned())?;
+    let review = review.join("\n");
+    assert!(review.contains("Writes a file"));
+    assert!(review.contains("Save devices as JSON"));
+    assert!(review.contains("Enter confirm"));
+    for internal_wording in [
+        "allowlisted",
+        "deterministic",
+        "sends this request",
+        "refreshes the setting",
+        "Nothing else is needed",
+    ] {
+        assert!(!review.contains(internal_wording));
+    }
+
     app.devices_resource.observed_at = Some(OBSERVED_AT.saturating_add(60));
     if let Some(device) = app.devices_resource.snapshot.first_mut() {
         device.display_name = "changed-after-confirmation".to_owned();
@@ -454,6 +469,11 @@ fn export_confirmation_writes_the_snapshot_that_was_reviewed() -> Result<(), Str
         Some("office-laptop")
     );
     assert!(app.overlays.is_empty());
+    assert!(app.runtime_error.is_none());
+    assert_eq!(
+        app.status_notice.as_deref(),
+        Some(format!("Saved devices as JSON to {}", path.display()).as_str())
+    );
     Ok(())
 }
 

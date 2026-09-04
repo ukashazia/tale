@@ -199,9 +199,9 @@ impl OperationalMutation {
                 SavedViewMutation::Apply { name } => format!("Apply saved view {name}"),
             },
             Self::Export(request) => format!(
-                "Export {} as {} to {}",
+                "Save {} as {} to {}",
                 request.collection.schema_name(),
-                request.format,
+                request.format.to_ascii_uppercase(),
                 request.path.display()
             ),
         }

@@ -69,7 +69,7 @@ impl App {
             OperationalMutation::Export(request) => match self.build_export_document(request) {
                 Ok(document) => Some(document),
                 Err(error) => {
-                    self.runtime_error = Some(format!("export preview unavailable: {error}"));
+                    self.runtime_error = Some(format!("Can't prepare the export: {error}"));
                     return Vec::new();
                 }
             },
@@ -122,9 +122,7 @@ impl App {
             OperationalMutation::SavedView(_) => {
                 "Apply this saved-view operation? The document stores only query and presentation state.".to_owned()
             }
-            OperationalMutation::Export(_) => {
-                "Write this allowlisted deterministic export?".to_owned()
-            }
+            OperationalMutation::Export(_) => String::new(),
         };
         self.overlays
             .push(Overlay::Confirmation(Box::new(ConfirmationState {
@@ -140,11 +138,7 @@ impl App {
                 required_phrase,
                 input: String::new(),
                 lose_ssh_checked: false,
-                preview_lines: vec![
-                    mutation.preview(),
-                    "Tale sends this request once, then refreshes the setting to confirm it."
-                        .to_owned(),
-                ],
+                preview_lines: vec![mutation.preview()],
                 redacted_argv: Vec::new(),
                 error: None,
             })));
@@ -349,7 +343,7 @@ impl App {
             ActionId::CollectionExport => {
                 self.push_form(
                     action_id,
-                    "Export a collection to a file",
+                    "Save this list to a file",
                     Vec::new(),
                     vec![
                         FormField::options(
@@ -1109,9 +1103,11 @@ impl App {
                         overwrite_confirmed,
                     ) {
                         Ok(path) => {
-                            self.runtime_error = Some(format!(
-                                "deterministic {} export written to {}",
-                                request.format,
+                            self.runtime_error = None;
+                            self.status_notice = Some(format!(
+                                "Saved {} as {} to {}",
+                                request.collection.schema_name(),
+                                request.format.to_ascii_uppercase(),
                                 path.display()
                             ));
                         }
@@ -1121,7 +1117,7 @@ impl App {
                 }
                 None => {
                     self.runtime_error =
-                        Some("the confirmed export snapshot is unavailable".to_owned());
+                        Some("This export is no longer available. Review it again.".to_owned());
                     Vec::new()
                 }
             },
