@@ -309,6 +309,7 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
         let trace = RenderTrace::from_environment();
         let mut cause = "startup";
         loop {
+            reap_finished_tasks(dispatch_context.tasks);
             if app.render_invalidated()
                 && !shutdown_requested
                 && !*dispatch_context.terminal_suspended
@@ -387,6 +388,30 @@ pub async fn run_with_driver_and_queue<T: TerminalDriver>(
         return Err(TaleError::Application(error));
     }
     restore_result
+}
+
+fn reap_finished_tasks(tasks: &mut JoinSet<()>) {
+    while tasks.try_join_next().is_some() {}
+}
+
+#[cfg(test)]
+mod task_lifecycle_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn completed_runtime_tasks_are_reaped() {
+        let mut tasks = JoinSet::new();
+        for _ in 0..1_024 {
+            tasks.spawn(async {});
+        }
+
+        while !tasks.is_empty() {
+            tokio::task::yield_now().await;
+            reap_finished_tasks(&mut tasks);
+        }
+
+        assert!(tasks.is_empty());
+    }
 }
 
 struct DispatchContext<'a, T: TerminalDriver> {
