@@ -286,7 +286,6 @@ fn parser_and_transfer_commands_cover_targets_progress_and_conflicts() {
 
     let send = taildrop_send_command(
         Path::new("tailscale"),
-        Duration::from_secs(1),
         &[
             Path::new("/tmp/a path").to_path_buf(),
             Path::new("/tmp/b").to_path_buf(),
@@ -295,6 +294,7 @@ fn parser_and_transfer_commands_cover_targets_progress_and_conflicts() {
     );
     assert!(send.is_ok());
     if let Ok(send) = send {
+        assert_eq!(send.timeout, None);
         let args = send
             .args
             .iter()
@@ -305,13 +305,13 @@ fn parser_and_transfer_commands_cover_targets_progress_and_conflicts() {
     }
     let receive = taildrop_receive_command(
         Path::new("tailscale"),
-        Duration::from_secs(1),
         Path::new("/tmp/inbox"),
         TaildropConflict::Overwrite,
         true,
     );
     assert!(receive.is_ok());
     if let Ok(receive) = receive {
+        assert_eq!(receive.timeout, None);
         let args = receive
             .args
             .iter()

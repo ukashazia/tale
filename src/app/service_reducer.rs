@@ -1288,7 +1288,6 @@ impl App {
             }
             ServiceActionRequest::TaildropSend(request) => transfers::taildrop_send_command(
                 command_path,
-                timeout,
                 &request
                     .files
                     .iter()
@@ -1299,7 +1298,6 @@ impl App {
             .ok()?,
             ServiceActionRequest::TaildropReceive(request) => transfers::taildrop_receive_command(
                 command_path,
-                timeout,
                 &request.directory,
                 request.conflict,
                 request.wait,
