@@ -5674,7 +5674,6 @@ async fn run_service_task(
                     .collect::<Vec<_>>();
                 match transfers::taildrop_send_command(
                     &executable.path,
-                    timeout,
                     &files,
                     &request.target.command_target,
                 ) {
@@ -5750,7 +5749,6 @@ async fn run_service_task(
             } else {
                 match transfers::taildrop_receive_command(
                     &executable.path,
-                    timeout,
                     &request.directory,
                     request.conflict,
                     request.wait,

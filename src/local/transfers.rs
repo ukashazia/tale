@@ -45,7 +45,6 @@ pub fn taildrop_targets_command(path: &Path, timeout: Duration) -> LocalCommand 
 
 pub fn taildrop_send_command(
     path: &Path,
-    timeout: Duration,
     files: &[std::path::PathBuf],
     target: &str,
 ) -> Result<LocalCommand, TransferParseError> {
@@ -67,13 +66,14 @@ pub fn taildrop_send_command(
         LocalOperation::TaildropSend,
         args,
     )
-    .with_timeout(timeout)
+    // Transfer duration depends on file size and network speed. The task remains
+    // cancellable through `Cancellation`, so a fixed command deadline is wrong.
+    .without_timeout()
     .with_modes(OutputMode::Lines, OutputMode::Lines))
 }
 
 pub fn taildrop_receive_command(
     path: &Path,
-    timeout: Duration,
     directory: &Path,
     conflict: TaildropConflict,
     wait: bool,
@@ -95,7 +95,9 @@ pub fn taildrop_receive_command(
         LocalOperation::TaildropReceive,
         args,
     )
-    .with_timeout(timeout)
+    // A transfer can be large, and `--wait` intentionally waits for future work.
+    // Task cancellation is the only deadline that applies here.
+    .without_timeout()
     .with_modes(OutputMode::Lines, OutputMode::Lines))
 }
 
